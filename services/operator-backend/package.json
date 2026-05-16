@@ -1,0 +1,36 @@
+{
+  "name": "@canton-dex/operator-backend",
+  "version": "0.0.1",
+  "description": "Operator backend for the Canton-Dex reference DEX. Wraps Canton JSON LAPI with idempotency, an indexer, and HTTP endpoints for the dApp.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/canton-foundation/canton-dex",
+    "directory": "services/operator-backend"
+  },
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "dev": "node --import tsx src/dev-server.ts",
+    "testnet": "node --import tsx src/testnet-server.ts"
+  },
+  "dependencies": {
+    "@canton-dex/registry-client": "file:../registry-client",
+    "better-sqlite3": "^12.10.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  }
+}

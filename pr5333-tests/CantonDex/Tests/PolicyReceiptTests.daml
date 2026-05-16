@@ -1,0 +1,268 @@
+module CantonDex.Tests.PolicyReceiptTests where
+
+-- Daml Script tests for the PolicyReceipt + MatchedTrade wiring.
+--
+-- Scope: focused on the contract-shape invariants we own. We do NOT ride
+-- the upstream splice-token-standard-test-v2 WalletClient/MultiRegistry
+-- harness here because its utility layer is blocked on the PR 5333 admin
+-- field move (see docs/pr5333-allocation-surface.md). End-to-end DvP
+-- testing waits on that unblocked.
+--
+-- What we verify:
+--   1. policyReceiptValues encodes a header + a per-rank row block, in order
+--   2. foldPolicyReceiptIntoMetadata leaves existing keys, adds dex.policy.*
+--   3. isWellFormed rejects malformed receipts (rank/length mismatches)
+--   4. MatchedTrade with a None receipt creates fine (ensure passes)
+--   5. MatchedTrade with a Some receipt whose signedBy == venue creates fine
+--   6. MatchedTrade with signedBy != venue is rejected (authority guard)
+--   7. MatchedTrade with isWellFormed=False is rejected (structural guard)
+--   8. mkTradeSettlementInfo on a trade with a receipt produces metadata
+--      containing the expected dex.policy.* keys
+--   9. mkTradeSettlementInfo on a trade with no receipt produces empty meta
+
+import DA.Assert
+import DA.Optional (isSome, isNone)
+import DA.TextMap qualified as TextMap
+
+import Daml.Script
+
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Dex.PolicyReceipt qualified as PR
+
+-- Test fixtures -------------------------------------------------------------
+
+mkRanked : Party -> Int -> Decimal -> Text -> PR.RankedDealer
+mkRanked party rank price tier =
+  PR.RankedDealer with party; rank; price; tier
+
+mkValidReceipt : Party -> [PR.RankedDealer] -> Party -> Int -> Time -> PR.PolicyReceipt
+mkValidReceipt venue ranked acceptedDealer acceptedRank now =
+  PR.PolicyReceipt with
+    policyVersion = "v1.4"
+    policyHash = "sha256:abc123"
+    rfqId = "rfq-aa31"
+    rankedDealers = ranked
+    acceptedDealer
+    acceptedRank
+    consideredCount = length ranked
+    signedBy = venue
+    signedAt = now
+    signature = "0xdeadbeef"
+
+-- 1. Encoding test ----------------------------------------------------------
+
+testPolicyReceiptValuesShape : Script ()
+testPolicyReceiptValuesShape = do
+  venue <- allocateParty "venue"
+  dealerA <- allocateParty "orca-mm"
+  dealerB <- allocateParty "wintermute"
+  now <- getTime
+  let ranked =
+        [ mkRanked dealerA 1 60510.00 "trusted"
+        , mkRanked dealerB 2 60522.40 "trusted"
+        ]
+      r = mkValidReceipt venue ranked dealerA 1 now
+      kvs = PR.policyReceiptValues r
+      keys = map fst kvs
+  -- Header keys present
+  assertMsg "version key" (("dex.policy.version", "v1.4") `elem` kvs)
+  assertMsg "hash key" (("dex.policy.hash", "sha256:abc123") `elem` kvs)
+  assertMsg "rfqId key" (("dex.policy.rfqId", "rfq-aa31") `elem` kvs)
+  assertMsg "considered key" (("dex.policy.consideredCount", "2") `elem` kvs)
+  assertMsg "rank key" (("dex.policy.acceptedRank", "1") `elem` kvs)
+  -- Per-ranked-dealer rows present, one entry per (party, price, tier) per rank
+  assertMsg "rank 1 party row" $
+    any (\k -> k == "dex.policy.ranked.1.party") keys
+  assertMsg "rank 1 price row" $
+    any (\k -> k == "dex.policy.ranked.1.price") keys
+  assertMsg "rank 1 tier row" $
+    any (\k -> k == "dex.policy.ranked.1.tier") keys
+  assertMsg "rank 2 tier row" $
+    any (\k -> k == "dex.policy.ranked.2.tier") keys
+  pure ()
+
+-- 2. Fold preserves existing keys -------------------------------------------
+
+testFoldPreservesExistingKeys : Script ()
+testFoldPreservesExistingKeys = do
+  venue <- allocateParty "venue"
+  dealerA <- allocateParty "orca-mm"
+  now <- getTime
+  let ranked = [ mkRanked dealerA 1 60510.00 "trusted" ]
+      r = mkValidReceipt venue ranked dealerA 1 now
+      pre = emptyMetadata with values = TextMap.fromList [("custom.key", "carry-me")]
+      out = PR.foldPolicyReceiptIntoMetadata (Some r) pre
+  -- Existing custom key still there
+  assertMsg "existing key preserved" $
+    TextMap.lookup "custom.key" out.values == Some "carry-me"
+  -- Receipt key is there
+  assertMsg "receipt key added" $
+    TextMap.lookup "dex.policy.rfqId" out.values == Some "rfq-aa31"
+  -- None of the policy keys are missing
+  assertMsg "version added" $
+    TextMap.lookup "dex.policy.version" out.values == Some "v1.4"
+  pure ()
+
+testFoldNoneIsIdentity : Script ()
+testFoldNoneIsIdentity = do
+  let pre = emptyMetadata with values = TextMap.fromList [("custom.key", "carry-me")]
+      out = PR.foldPolicyReceiptIntoMetadata None pre
+  assertMsg "None fold is identity" (out == pre)
+  pure ()
+
+-- 3. isWellFormed rejects malformed receipts --------------------------------
+
+testIsWellFormed : Script ()
+testIsWellFormed = do
+  venue <- allocateParty "venue"
+  dealerA <- allocateParty "orca-mm"
+  dealerB <- allocateParty "wintermute"
+  now <- getTime
+  let ranked =
+        [ mkRanked dealerA 1 60510.00 "trusted"
+        , mkRanked dealerB 2 60522.40 "trusted"
+        ]
+      good = mkValidReceipt venue ranked dealerA 1 now
+  assertMsg "good receipt is well-formed" (PR.isWellFormed good)
+
+  -- considered count mismatch
+  let badCount = good with consideredCount = 99
+  assertMsg "wrong consideredCount fails" (not (PR.isWellFormed badCount))
+
+  -- accepted rank out of range
+  let badRank = good with acceptedRank = 99
+  assertMsg "out-of-range acceptedRank fails" (not (PR.isWellFormed badRank))
+
+  -- accepted dealer not present in the ranking
+  outsider <- allocateParty "outsider"
+  let badDealer = good with acceptedDealer = outsider
+  assertMsg "unranked acceptedDealer fails" (not (PR.isWellFormed badDealer))
+
+  -- ranks not 1..N
+  let scrambledRanked =
+        [ mkRanked dealerA 5 60510.00 "trusted"
+        , mkRanked dealerB 7 60522.40 "trusted"
+        ]
+  let scrambled = good with rankedDealers = scrambledRanked
+  assertMsg "non-sequential ranks fail" (not (PR.isWellFormed scrambled))
+  pure ()
+
+-- 4-7. MatchedTrade ensure clauses ------------------------------------------
+
+testMatchedTradeWithNoReceipt : Script ()
+testMatchedTradeWithNoReceipt = do
+  venue <- allocateParty "venue"
+  admin <- allocateParty "admin"
+  cid <- submit venue $ createCmd MT.MatchedTrade with
+    venue
+    admin
+    transferLegs = []
+    settlementDeadline = None
+    policyReceipt = None
+  Some _ <- queryContractId venue cid
+  pure ()
+
+testMatchedTradeWithGoodReceipt : Script ()
+testMatchedTradeWithGoodReceipt = do
+  venue <- allocateParty "venue"
+  admin <- allocateParty "admin"
+  dealerA <- allocateParty "orca-mm"
+  now <- getTime
+  let ranked = [ mkRanked dealerA 1 60510.00 "trusted" ]
+      r = mkValidReceipt venue ranked dealerA 1 now
+  cid <- submit venue $ createCmd MT.MatchedTrade with
+    venue
+    admin
+    transferLegs = []
+    settlementDeadline = None
+    policyReceipt = Some r
+  Some _ <- queryContractId venue cid
+  pure ()
+
+testMatchedTradeRejectsWrongSigner : Script ()
+testMatchedTradeRejectsWrongSigner = do
+  venue <- allocateParty "venue"
+  admin <- allocateParty "admin"
+  imposter <- allocateParty "imposter"
+  dealerA <- allocateParty "orca-mm"
+  now <- getTime
+  let ranked = [ mkRanked dealerA 1 60510.00 "trusted" ]
+      -- signedBy claims a party that isn't the contract's signatory.
+      r = (mkValidReceipt venue ranked dealerA 1 now) with signedBy = imposter
+  submitMustFail venue $ createCmd MT.MatchedTrade with
+    venue
+    admin
+    transferLegs = []
+    settlementDeadline = None
+    policyReceipt = Some r
+  pure ()
+
+testMatchedTradeRejectsMalformed : Script ()
+testMatchedTradeRejectsMalformed = do
+  venue <- allocateParty "venue"
+  admin <- allocateParty "admin"
+  dealerA <- allocateParty "orca-mm"
+  now <- getTime
+  let ranked = [ mkRanked dealerA 1 60510.00 "trusted" ]
+      -- consideredCount lies about the list length.
+      r = (mkValidReceipt venue ranked dealerA 1 now) with consideredCount = 99
+  submitMustFail venue $ createCmd MT.MatchedTrade with
+    venue
+    admin
+    transferLegs = []
+    settlementDeadline = None
+    policyReceipt = Some r
+  pure ()
+
+-- 8-9. SettlementInfo metadata folding --------------------------------------
+--
+-- mkTradeSettlementInfo is a pure helper, so we exercise it by constructing
+-- a trade record (without creating it on-ledger) and inspecting the result.
+
+testSettlementInfoCarriesReceipt : Script ()
+testSettlementInfoCarriesReceipt = do
+  venue <- allocateParty "venue"
+  admin <- allocateParty "admin"
+  dealerA <- allocateParty "orca-mm"
+  now <- getTime
+  let ranked = [ mkRanked dealerA 1 60510.00 "trusted" ]
+      r = mkValidReceipt venue ranked dealerA 1 now
+  cid <- submit venue $ createCmd MT.MatchedTrade with
+    venue
+    admin
+    transferLegs = []
+    settlementDeadline = None
+    policyReceipt = Some r
+  Some trade <- queryContractId venue cid
+  let info = MT.mkTradeSettlementInfo cid trade
+  assertMsg "policy version in meta" $
+    TextMap.lookup "dex.policy.version" info.meta.values == Some "v1.4"
+  assertMsg "rfqId in meta" $
+    TextMap.lookup "dex.policy.rfqId" info.meta.values == Some "rfq-aa31"
+  assertMsg "ranked.1.tier in meta" $
+    TextMap.lookup "dex.policy.ranked.1.tier" info.meta.values == Some "trusted"
+  pure ()
+
+testSettlementInfoEmptyWithoutReceipt : Script ()
+testSettlementInfoEmptyWithoutReceipt = do
+  venue <- allocateParty "venue"
+  admin <- allocateParty "admin"
+  cid <- submit venue $ createCmd MT.MatchedTrade with
+    venue
+    admin
+    transferLegs = []
+    settlementDeadline = None
+    policyReceipt = None
+  Some trade <- queryContractId venue cid
+  let info = MT.mkTradeSettlementInfo cid trade
+  assertMsg "no policy keys when receipt absent" $
+    isNone (TextMap.lookup "dex.policy.version" info.meta.values)
+  pure ()
+
+-- Useful import guard
+_unused : Optional (ContractId V2.Allocation) -> Bool
+_unused = isSome

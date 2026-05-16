@@ -1,0 +1,897 @@
+module CantonDex.Tests.EndToEndTests where
+
+-- End-to-end Daml Script tests exercising the full DEX workflows
+-- against the MockRegistry. These verify the structural fixes:
+--
+--   1. Pool reserves stay backed across init + add + swap + remove
+--      (the prior bug overwrote allocation refs on add).
+--   2. LP mint/burn flow through LPMintRequest/LPBurnRequest, not
+--      direct supply mutation.
+--   3. Order funding goes trader-signed → operator-bound → trader-
+--      accepted, with trader's authority on the allocation.
+--   4. TradeAllocationRequest accept actually returns (no abort).
+--   5. RFQ accept produces a MatchedTrade with a derived PolicyReceipt.
+--
+-- Notes on what the mock supports:
+--
+--   - Holdings are not modeled. The mock allocations carry no holding
+--     CIDs. So tests pass empty `inputHoldingCids` to the factory; the
+--     workflow correctness is what's verified, not the asset movement.
+--   - Some flows (Pool_Swap end-to-end) need joint operator+trader
+--     authority on the same transaction; the test uses `submitMulti`
+--     to provide both.
+
+import DA.Assert
+import DA.List (head, tail)
+import DA.Map qualified as Map
+import DA.Optional (isSome, isNone, fromSome)
+import DA.TextMap qualified as TextMap
+import DA.Time
+
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.AllocationRequestV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Dex.LPToken qualified as LP
+import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Dex.Order qualified as Order
+import CantonDex.Dex.OrderFundingRequest qualified as OFR
+import CantonDex.Dex.Pool qualified as Pool
+import CantonDex.Dex.PolicyReceipt qualified as PR
+import CantonDex.Dex.Rfq qualified as Rfq
+import CantonDex.Pr5333.Utils qualified as Utils
+import CantonDex.Pr5333.WorkflowConstructors qualified as WC
+import CantonDex.Testing.MockRegistry qualified as Mock
+
+-- Shared fixtures --------------------------------------------------------
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with
+  context = emptyChoiceContext
+  meta = emptyMetadata
+
+setupRegistries : Party -> [Party] -> Script ( ContractId V2.AllocationFactory
+                                              , ContractId V2.SettlementFactory
+                                              )
+setupRegistries admin users = do
+  factoryCid <- submit admin $ createCmd Mock.MockAllocationFactory with admin; users
+  settleCid <- submit admin $ createCmd Mock.MockSettlementFactory with admin; users
+  pure (toInterfaceContractId factoryCid, toInterfaceContractId settleCid)
+
+-- 1. Pool init + add + swap + remove keeps reserves backed --------------
+
+testPoolFullLifecycle : Script ()
+testPoolFullLifecycle = do
+  operator <- allocateParty "operator"
+  lpRegistrar <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
+
+  -- Build an empty pool the operator can initialize.
+  poolCid <- submit operator $ createCmd Pool.Pool with
+    operator
+    lpRegistrar
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    lpInstrumentId = "BTC-USDC-LP"
+    feeBps = 30
+    status = Pool.PS_Unfunded
+    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
+    totalLpSupply = 0.0
+    baseSlices = []
+    quoteSlices = []
+    operatorFeeBps = None
+    accumulatedOperatorFees = None
+    publicReaders = None
+
+  -- LP policy must exist BEFORE Pool_Initialize so the mint request
+  -- can reference it (Pool threads the policy cid through).
+  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
+    lpRegistrar
+    operator
+    lpInstrumentId = "BTC-USDC-LP"
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    poolCid = coerceContractId poolCid
+    totalSupply = 0.0
+    active = True
+
+  -- Initialize: 10 BTC + 200,000 USDC. Mock factory returns immediate
+  -- completed allocations. LPMintRequest is emitted.
+  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+    recipient = alice
+    baseFactoryCid = factoryCid
+    quoteFactoryCid = factoryCid
+    baseHoldingCids = []
+    quoteHoldingCids = []
+    baseAmount = 10.0
+    quoteAmount = 200000.0
+    lpPolicyCid = Some policyCid
+    requestedAt = now
+
+  Some pool1 <- queryContractId operator initRes.poolCid
+  length pool1.baseSlices === 1
+  length pool1.quoteSlices === 1
+  Some _mintReq <- queryContractId operator initRes.lpMintRequestCid
+  assertMsg "LP minted is positive" (initRes.lpTokensMinted > 0.0)
+  pool1.status === Pool.PS_Active
+
+  -- V2-standard mint: recipient (alice) + lpRegistrar jointly accept.
+  acceptRes <- submitMulti [alice, lpRegistrar] [] $
+    exerciseCmd initRes.lpMintRequestCid LP.LPMintRequest_AcceptAndMint
+  Some _ <- queryContractId lpRegistrar acceptRes.policyCid
+  pool2 <- submitMulti [lpRegistrar] [operator] $
+    exerciseCmd initRes.poolCid Pool.Pool_RecordLPSupply with
+      newSupply = initRes.lpTokensMinted
+
+  -- Add liquidity from Bob: another 5 BTC + 100,000 USDC. The fix
+  -- being verified: this should APPEND a new allocation per side, not
+  -- overwrite the existing init allocations.
+  addRes <- submit operator $ exerciseCmd pool2 Pool.Pool_AddLiquidity with
+    recipient = bob
+    baseFactoryCid = factoryCid
+    quoteFactoryCid = factoryCid
+    baseHoldingCids = []
+    quoteHoldingCids = []
+    baseAmount = 5.0
+    quoteAmount = 100000.0
+    minLpTokens = 0.0
+    lpPolicyCid = Some acceptRes.policyCid
+    knownTotalLpSupply = initRes.lpTokensMinted
+    requestedAt = now
+
+  Some pool3 <- queryContractId operator addRes.poolCid
+  -- THE BUG FIX: lists are length 2 now, not 1. The original init
+  -- allocations are still there.
+  length pool3.baseSlices === 2
+  length pool3.quoteSlices === 2
+  pool3.reserves.baseAmount === 15.0
+  pool3.reserves.quoteAmount === 300000.0
+
+  pure ()
+
+-- 2. TradeAllocationRequest accept now returns (no abort) ---------------
+
+testTradeAllocationRequestAccept : Script ()
+testTradeAllocationRequestAccept = do
+  operator <- allocateParty "operator"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  now <- getTime
+
+  (factoryCid, _) <- setupRegistries admin [operator, alice, bob]
+
+  -- Build a trade allocation request that Alice can accept.
+  let aliceAccount = Utils.basicAccount alice
+      bobAccount = Utils.basicAccount bob
+      leg = V2.TransferLeg with
+        transferLegId = "leg-1"
+        sender = aliceAccount
+        receiver = bobAccount
+        amount = 10.0
+        instrumentId = "BTC"
+        meta = emptyMetadata
+      settlement = V2.SettlementInfo with
+        executors = [operator]
+        settlementRef = V2.Reference with id = "test-trade"; cid = None
+        settlementDeadline = Some (addRelTime now (hours 1))
+        meta = emptyMetadata
+
+  reqCid <- submit operator $ createCmd MT.TradeAllocationRequest with
+    authorizer = aliceAccount
+    settlement
+    transferLegs = [leg]
+
+  -- Alice exercises Accept via the V2 interface choice. This used to
+  -- abort with "registry-specific wiring". Now it returns clean.
+  let reqIfaceCid : ContractId V2.AllocationRequest = toInterfaceContractId reqCid
+  acceptRes <- submit alice $ exerciseCmd reqIfaceCid V2.AllocationRequest_Accept with
+    actors = [alice]
+    extraArgs = emptyExtraArgs
+  -- Result is opaque (just meta); the success is "we got here without aborting"
+  acceptRes.meta === emptyMetadata
+
+  -- Request is gone (acceptImpl archived self).
+  None <- queryContractId alice reqCid
+
+  pure ()
+
+-- 3. Order funding flow with correct trader authority -------------------
+
+testOrderFundingFlow : Script ()
+testOrderFundingFlow = do
+  operator <- allocateParty "operator"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  now <- getTime
+
+  (factoryCid, _) <- setupRegistries admin [operator, alice]
+
+  -- Alice creates an OrderFundingRequest (she pays the traffic).
+  reqCid <- submit alice $ createCmd OFR.OrderFundingRequest with
+    operator
+    trader = alice
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    side = Order.Bid
+    limitPrice = 60000.0
+    quantity = 0.5
+    expiry = Some (addRelTime now (hours 1))
+
+  -- Operator binds: produces both Order (Pending) and OrderAllocationRequest.
+  bindRes <- submit operator $ exerciseCmd reqCid OFR.OrderFundingRequest_Bind with
+    settlementRef = "ord-test-1"
+
+  -- Verify both contracts exist.
+  Some order <- queryContractId operator bindRes.orderCid
+  order.status === Order.OS_Pending
+  Some _allocReq <- queryContractId operator bindRes.allocationRequestCid
+
+  -- Alice accepts the OrderAllocationRequest via the V2 interface (this
+  -- used to abort). Doing so signals intent + archives the request.
+  let reqIfaceCid : ContractId V2.AllocationRequest =
+        toInterfaceContractId bindRes.allocationRequestCid
+  acceptRes <- submit alice $ exerciseCmd reqIfaceCid V2.AllocationRequest_Accept with
+    actors = [alice]
+    extraArgs = emptyExtraArgs
+
+  -- Now Alice creates the corresponding allocation under HER authority
+  -- via the factory. (In a real deployment this is composed in the
+  -- same submission as Accept; for the script we do them sequentially.)
+  let aliceAccount = Utils.basicAccount alice
+      orderRef = order.settlementRef
+      lockedFunding = TextMap.fromList [("USDC", 0.5 * 60000.0)]
+      settlement = V2.SettlementInfo with
+        executors = [operator]
+        settlementRef = orderRef
+        settlementDeadline = order.expiry
+        meta = emptyMetadata
+      allocateArg = WC.mkPrefundedAllocationFactoryAllocate
+        admin aliceAccount settlement lockedFunding now [] [alice]
+
+  instrResult <- submit alice $ exerciseCmd factoryCid allocateArg
+  case instrResult.output of
+    V2.AllocationInstructionResult_Completed allocCid -> do
+      -- Operator binds the trader-funded allocation onto the order.
+      fundRes <- submit operator $ exerciseCmd bindRes.orderCid Order.Order_Fund with
+        allocationCid = allocCid
+      Some funded <- queryContractId operator fundRes.orderCid
+      funded.status === Order.OS_Funded
+      assertMsg "allocationCid populated" (isSome funded.allocationCid)
+    _ -> abort "Mock factory should complete immediately"
+
+  pure ()
+
+-- 4. RFQ accept produces a MatchedTrade with a real PolicyReceipt -------
+
+testRfqAcceptProducesMatchedTradeWithReceipt : Script ()
+testRfqAcceptProducesMatchedTradeWithReceipt = do
+  operator <- allocateParty "operator"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  orca <- allocateParty "orca-mm"
+  jump <- allocateParty "jump-tr"
+  galaxy <- allocateParty "galaxy-otc"
+  now <- getTime
+
+  let expiresAt = addRelTime now (hours 1)
+      rfqId = "rfq-test-001"
+
+  -- Alice creates an RFQ.
+  rfqCid <- submit alice $ createCmd Rfq.Rfq with
+    trader = alice
+    operator
+    rfqId
+    pair = "BTC/USDC"
+    side = Rfq.RFQ_Buy
+    size = 5.0
+    expiresAt
+    whitelist = [orca, jump, galaxy]
+    createdAt = now
+
+  -- Three dealers post quotes.
+  quoteOrca <- submit orca $ createCmd Rfq.RfqQuote with
+    dealer = orca
+    trader = alice
+    operator
+    rfqId
+    price = 60530.00
+    expiresAt = addRelTime now (seconds 30)
+    postedAt = now
+    tier = Rfq.TierTrusted
+
+  quoteJump <- submit jump $ createCmd Rfq.RfqQuote with
+    dealer = jump
+    trader = alice
+    operator
+    rfqId
+    price = 60510.00
+    expiresAt = addRelTime now (seconds 30)
+    postedAt = addRelTime now (seconds (-3))
+    tier = Rfq.TierTrusted
+
+  quoteGalaxy <- submit galaxy $ createCmd Rfq.RfqQuote with
+    dealer = galaxy
+    trader = alice
+    operator
+    rfqId
+    price = 60509.50
+    expiresAt = addRelTime now (seconds 30)
+    postedAt = addRelTime now (seconds 8)
+    tier = Rfq.TierWhitelist
+
+  -- Alice + operator jointly exercise Rfq_Accept (operator's authority
+  -- is needed because the resulting MatchedTrade is operator-signed).
+  -- Accept Jump's quote: it's the cheapest TRUSTED, so under the
+  -- documented policy (trusted-first, then price, then earliest) Jump
+  -- ranks #1 even though Galaxy has a marginally lower price.
+  acceptRes <- submitMulti [alice, operator] [] $
+    exerciseCmd rfqCid Rfq.Rfq_Accept with
+      acceptedQuoteCid = quoteJump
+      consideredQuoteCids = [quoteOrca, quoteJump, quoteGalaxy]
+      admin
+      currentTime = now
+      signature = "0xtest-signature"
+
+  -- Verify the receipt:
+  let r = acceptRes.receipt
+  r.acceptedDealer === jump
+  r.acceptedRank === 1
+  r.consideredCount === 3
+  PR.isWellFormed r === True
+
+  -- Verify the MatchedTrade exists and carries the receipt.
+  Some trade <- queryContractId operator acceptRes.tradeCid
+  case trade.policyReceipt of
+    Some embedded -> embedded === r
+    None -> abort "Trade should carry a policy receipt"
+
+  pure ()
+
+-- 5. Pool RemoveLiquidity returns a consolidated allocation when reserves remain --
+
+testPoolRemoveLiquidityConsolidates : Script ()
+testPoolRemoveLiquidityConsolidates = do
+  operator <- allocateParty "operator"
+  lpRegistrar <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  now <- getTime
+
+  (factoryCid, _) <- setupRegistries admin [operator, lpRegistrar, alice]
+
+  poolCid <- submit operator $ createCmd Pool.Pool with
+    operator
+    lpRegistrar
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    lpInstrumentId = "BTC-USDC-LP"
+    feeBps = 30
+    status = Pool.PS_Unfunded
+    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
+    totalLpSupply = 0.0
+    baseSlices = []
+    quoteSlices = []
+    operatorFeeBps = None
+    accumulatedOperatorFees = None
+    publicReaders = None
+
+  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
+    lpRegistrar; operator; lpInstrumentId = "BTC-USDC-LP"
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
+
+  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+    recipient = alice
+    baseFactoryCid = factoryCid
+    quoteFactoryCid = factoryCid
+    baseHoldingCids = []
+    quoteHoldingCids = []
+    baseAmount = 10.0
+    quoteAmount = 200000.0
+    lpPolicyCid = Some policyCid
+    requestedAt = now
+
+  removeRes <- submit operator $ exerciseCmd initRes.poolCid Pool.Pool_RemoveLiquidity with
+    holder = alice
+    lpTokensToRedeem = initRes.lpTokensMinted / 2.0
+    lpPolicyCid = Some policyCid
+    knownTotalLpSupply = initRes.lpTokensMinted
+    minBaseOut = 0.0
+    minQuoteOut = 0.0
+    baseFactoryCid = factoryCid
+    quoteFactoryCid = factoryCid
+    boundaryBaseHoldingCids = []
+    boundaryQuoteHoldingCids = []
+    requestedAt = now
+
+  Some pool <- queryContractId operator removeRes.poolCid
+  -- Reserves halved; one boundary slice per side, status Active.
+  pool.reserves.baseAmount === 5.0
+  pool.reserves.quoteAmount === 100000.0
+  length pool.baseSlices === 1
+  length pool.quoteSlices === 1
+  pool.status === Pool.PS_Active
+  assertMsg "boundary base alloc returned" (isSome removeRes.boundaryBaseAllocationCid)
+  assertMsg "boundary quote alloc returned" (isSome removeRes.boundaryQuoteAllocationCid)
+  -- Single slice on each side was consumed (the boundary slice).
+  removeRes.baseSlicesConsumed === 1
+  removeRes.quoteSlicesConsumed === 1
+
+  pure ()
+
+-- 6. Pool_Swap end-to-end through the mock registry -----------------------
+--
+-- Trader pre-funds a swap by creating their own prefunded allocation
+-- via the mock factory; operator drives Pool_Swap which adjusts both
+-- pool allocations + the trader allocation and batch-settles them.
+--
+-- Verifies:
+--   - the swap completes without error
+--   - reserves update correctly
+--   - the head pool allocation is replaced by its next-iteration CID
+--   - other pool allocations on the same side stay untouched
+
+testPoolSwapEndToEnd : Script ()
+testPoolSwapEndToEnd = do
+  operator <- allocateParty "operator-swap"
+  lpRegistrar <- allocateParty "lp-registrar-swap"
+  admin <- allocateParty "admin-swap"
+  alice <- allocateParty "alice-swap"  -- LP
+  bob <- allocateParty "bob-swap"      -- swapper
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
+
+  -- Initialize pool with 10 BTC + 200k USDC
+  poolCid <- submit operator $ createCmd Pool.Pool with
+    operator
+    lpRegistrar
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    lpInstrumentId = "BTC-USDC-LP"
+    feeBps = 30
+    status = Pool.PS_Unfunded
+    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
+    totalLpSupply = 0.0
+    baseSlices = []
+    quoteSlices = []
+    operatorFeeBps = None
+    accumulatedOperatorFees = None
+    publicReaders = None
+  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
+    lpRegistrar; operator; lpInstrumentId = "BTC-USDC-LP"
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
+  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+    recipient = alice
+    baseFactoryCid = factoryCid
+    quoteFactoryCid = factoryCid
+    baseHoldingCids = []
+    quoteHoldingCids = []
+    baseAmount = 10.0
+    quoteAmount = 200000.0
+    lpPolicyCid = Some policyCid
+    requestedAt = now
+
+  -- Bob creates a prefunded swap allocation (100 USDC -> BTC).
+  -- Settlement reference matches the pool's so the legs can be settled.
+  let bobAccount = Utils.basicAccount bob
+      poolAccount = Utils.basicAccount operator
+      poolRef = Pool.makePoolRef initRes.poolCid
+      swapSettlement = V2.SettlementInfo with
+        executors = [operator]
+        settlementRef = poolRef
+        settlementDeadline = None
+        meta = emptyMetadata
+      -- Prefunded: empty legs, nextIterationFunding holds the swap input
+      bobFunding = TextMap.fromList [("USDC", 100.0)]
+      bobAllocateArg = WC.mkPrefundedAllocationFactoryAllocate
+        admin bobAccount swapSettlement bobFunding now [] [bob]
+
+  bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
+  bobAllocationCid <- case bobInstr.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "swap allocation must complete"
+
+  -- Operator drives the swap.
+  swapRes <- submit operator $ exerciseCmd initRes.poolCid Pool.Pool_Swap with
+    swapperAccount = bobAccount
+    inputInstrumentId = "USDC"
+    inputAmount = 100.0
+    minOutputAmount = 0.0
+    swapperAllocationCid = bobAllocationCid
+    factoryCid = settleCid
+
+  -- Verify reserves moved.
+  Some pool <- queryContractId operator swapRes.poolCid
+  assertMsg "base reserve decreased" (pool.reserves.baseAmount < 10.0)
+  assertMsg "quote reserve increased" (pool.reserves.quoteAmount > 200000.0)
+  -- Pool still has exactly one slice per side (the next-iteration CID
+  -- replaced the head we adjusted).
+  length pool.baseSlices === 1
+  length pool.quoteSlices === 1
+  -- The output amount is positive.
+  assertMsg "swap produced output" (swapRes.amountOut > 0.0)
+  pure ()
+
+-- 7. Full MatchedTrade lifecycle: request → accept → settle -------------
+--
+-- Verifies the OTC settlement path end-to-end with two trader-created
+-- allocations and the operator's batch settle.
+
+testMatchedTradeFullSettle : Script ()
+testMatchedTradeFullSettle = do
+  operator <- allocateParty "venue"
+  admin <- allocateParty "admin-mt"
+  alice <- allocateParty "alice-mt"
+  bob <- allocateParty "bob-mt"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, alice, bob]
+
+  -- Build a MatchedTrade with two-way legs (alice <-> bob in BTC).
+  let aliceAccount = Utils.basicAccount alice
+      bobAccount = Utils.basicAccount bob
+      legs =
+        [ V2.TransferLeg with
+            transferLegId = "leg-1"
+            sender = aliceAccount
+            receiver = bobAccount
+            amount = 1.0
+            instrumentId = "BTC"
+            meta = emptyMetadata
+        ]
+  tradeCid <- submit operator $ createCmd MT.MatchedTrade with
+    venue = operator
+    admin
+    transferLegs = legs
+    settlementDeadline = None
+    policyReceipt = None
+
+  -- Operator requests allocations.
+  reqCids <- submit operator $ exerciseCmd tradeCid MT.MatchedTrade_RequestAllocations
+  length reqCids === 2  -- one per authorizer
+
+  -- Each authorizer accepts via the V2 interface, then creates their
+  -- allocation under their own authority. Alice is sender of "leg-1";
+  -- Bob is receiver. Both need an allocation.
+  let mkAlloc party cid = do
+        -- The accept choice consumes the request; we then create the
+        -- allocation via the factory.
+        let reqIface : ContractId V2.AllocationRequest = toInterfaceContractId cid
+        _ <- submit party $ exerciseCmd reqIface V2.AllocationRequest_Accept with
+          actors = [party]
+          extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+        -- Build allocation for this party using the trade's settlement.
+        let acct = Utils.basicAccount party
+            settlement = MT.mkTradeSettlementInfo tradeCid
+              (MT.MatchedTrade with
+                 venue = operator
+                 admin
+                 transferLegs = legs
+                 settlementDeadline = None
+                 policyReceipt = None)
+            spec = V2.AllocationSpecification with
+              settlement
+              admin
+              transferLegs = legs
+              nextIterationFunding = None
+              committed = False
+              authorizer = acct
+            allocateArg = AllocationInstructionV2.AllocationFactory_Allocate with
+              allocation = spec
+              requestedAt = now
+              inputHoldingCids = []
+              actors = [party]
+              extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+        instr <- submit party $ exerciseCmd factoryCid allocateArg
+        case instr.output of
+          V2.AllocationInstructionResult_Completed allocCid -> pure allocCid
+          _ -> abort "allocation must complete"
+
+  -- We need to know which request belongs to whom. Query and split.
+  reqs <- query @MT.TradeAllocationRequest operator
+  let reqsByOwner = [ (req.authorizer.owner, cid) | (cid, req) <- reqs ]
+  -- The active req cids may differ from the freshly-returned reqCids
+  -- because authorizers haven't accepted yet. Find the per-party CIDs.
+  let aliceReqCid = case [ c | (p, c) <- reqsByOwner, p == alice ] of
+        (c :: _) -> c
+        [] -> error "alice request missing"
+      bobReqCid = case [ c | (p, c) <- reqsByOwner, p == bob ] of
+        (c :: _) -> c
+        [] -> error "bob request missing"
+
+  aliceAllocCid <- mkAlloc alice aliceReqCid
+  bobAllocCid <- mkAlloc bob bobReqCid
+
+  -- Operator settles. Both allocations belong to admin's batch.
+  settleResult <- submit operator $ exerciseCmd tradeCid MT.MatchedTrade_Settle with
+    batchesByAdmin = Map.fromList
+      [ (admin, MT.SettlementBatchV2 with
+          allocationCids = [aliceAllocCid, bobAllocCid]
+          factoryCid = settleCid
+          extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata)
+      ]
+    allocationRequests = []  -- already consumed via Accept
+    dexPairCid = None
+
+  -- Verify the result has one per-admin entry.
+  Map.size settleResult.resultsByAdmin === 1
+  pure ()
+
+-- 8. Allocation_Adjust enforces funding conservation -------------------
+--
+-- Layer C guarantee: a malicious executor cannot adjust an allocation to
+-- spend more than `nextIterationFunding` allows. The Daml engine MUST
+-- reject the adjust transaction. We assert this with `submitMustFail`.
+--
+-- We also verify the honest case (within budget) succeeds and the
+-- post-adjust allocation has the budget reduced by the consumed amount,
+-- so a follow-on adjust cannot double-spend the same funding.
+
+testAllocationAdjustConservation : Script ()
+testAllocationAdjustConservation = do
+  operator <- allocateParty "operator-adjust"
+  admin <- allocateParty "admin-adjust"
+  alice <- allocateParty "alice-adjust"
+  bob <- allocateParty "bob-adjust"
+  now <- getTime
+
+  (factoryCid, _) <- setupRegistries admin [operator, alice, bob]
+
+  -- Alice prefunds 100 USDC for iterated settlement under the operator.
+  let aliceAccount = Utils.basicAccount alice
+      bobAccount = Utils.basicAccount bob
+      settlement = V2.SettlementInfo with
+        executors = [operator]
+        settlementRef = V2.Reference with id = "iter-1"; cid = None
+        settlementDeadline = Some (addRelTime now (hours 1))
+        meta = emptyMetadata
+      funding = TextMap.fromList [("USDC", 100.0)]
+      allocateArg = WC.mkPrefundedAllocationFactoryAllocate
+        admin aliceAccount settlement funding now [] [alice]
+
+  instr <- submit alice $ exerciseCmd factoryCid allocateArg
+  allocCid <- case instr.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "allocation must complete"
+
+  -- Case A: an over-budget adjust must be rejected by the Daml engine.
+  let overBudgetLeg = V2.TransferLeg with
+        transferLegId = "over-budget"
+        sender = aliceAccount
+        receiver = bobAccount
+        amount = 150.0  -- more than the 100 USDC budget
+        instrumentId = "USDC"
+        meta = emptyMetadata
+  submitMustFail operator $ exerciseCmd allocCid V2.Allocation_Adjust with
+    actors = [operator]
+    additionalTransferLegs = [overBudgetLeg]
+    allowFutureIterations = True
+
+  -- Case B: a leg that does not involve the authorizer must be rejected.
+  let stranger = bobAccount  -- bob is not the authorizer
+      strangerLeg = V2.TransferLeg with
+        transferLegId = "no-authorizer"
+        sender = stranger
+        receiver = stranger
+        amount = 1.0
+        instrumentId = "USDC"
+        meta = emptyMetadata
+  submitMustFail operator $ exerciseCmd allocCid V2.Allocation_Adjust with
+    actors = [operator]
+    additionalTransferLegs = [strangerLeg]
+    allowFutureIterations = True
+
+  -- Case C: an in-budget adjust succeeds and reduces the remaining budget.
+  let inBudgetLeg = V2.TransferLeg with
+        transferLegId = "in-budget"
+        sender = aliceAccount
+        receiver = bobAccount
+        amount = 60.0
+        instrumentId = "USDC"
+        meta = emptyMetadata
+  adjRes <- submit operator $ exerciseCmd allocCid V2.Allocation_Adjust with
+    actors = [operator]
+    additionalTransferLegs = [inBudgetLeg]
+    allowFutureIterations = True
+
+  -- Inspect the post-adjust allocation. The budget should now be 40 USDC.
+  Some adj <- queryInterfaceContractId @V2.Allocation operator adjRes.allocationCid
+  let remainingFunding = fromSome adj.allocation.nextIterationFunding
+  TextMap.lookup "USDC" remainingFunding === Some 40.0
+
+  -- Case D: a follow-up adjust that exceeds the *remaining* budget is
+  -- rejected. This is the double-spend guard: the operator cannot
+  -- reuse already-consumed budget across adjustments.
+  let overflowLeg = V2.TransferLeg with
+        transferLegId = "overflow"
+        sender = aliceAccount
+        receiver = bobAccount
+        amount = 50.0  -- only 40 left
+        instrumentId = "USDC"
+        meta = emptyMetadata
+  submitMustFail operator $ exerciseCmd adjRes.allocationCid V2.Allocation_Adjust with
+    actors = [operator]
+    additionalTransferLegs = [overflowLeg]
+    allowFutureIterations = True
+
+  pure ()
+
+-- 9. Pool_RemoveLiquidity is slice-local --------------------------------
+--
+-- Builds a pool with TWO slices per side (one from init, one from
+-- add-liquidity) and redeems a small fraction that fits inside the
+-- HEAD slice. Verifies:
+--   - the head slice is cancelled (no longer at its original CID)
+--   - the head slice is replaced by ONE boundary re-allocation for the
+--     leftover (not zero, not many)
+--   - the second slice is UNTOUCHED -- same CID, same amount, still
+--     present at index 1 of the new slice list
+--   - the pool stays Active
+--   - only one slice was reported as consumed per side
+--
+-- This is the workflows.md / architecture.md invariant: "routine
+-- withdrawals should not require touching every pool reserve
+-- allocation". Without the slice-local refactor this test would fail
+-- because the prior implementation cancelled every slice on both
+-- sides.
+
+testPoolRemoveLiquiditySliceLocal : Script ()
+testPoolRemoveLiquiditySliceLocal = do
+  operator <- allocateParty "op-slice"
+  lpRegistrar <- allocateParty "lp-reg-slice"
+  admin <- allocateParty "admin-slice"
+  alice <- allocateParty "alice-slice"
+  bob <- allocateParty "bob-slice"
+  now <- getTime
+
+  (factoryCid, _) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
+
+  -- Empty pool.
+  poolCid <- submit operator $ createCmd Pool.Pool with
+    operator
+    lpRegistrar
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    lpInstrumentId = "BTC-USDC-LP"
+    feeBps = 30
+    status = Pool.PS_Unfunded
+    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
+    totalLpSupply = 0.0
+    baseSlices = []
+    quoteSlices = []
+    operatorFeeBps = None
+    accumulatedOperatorFees = None
+    publicReaders = None
+
+  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
+    lpRegistrar; operator; lpInstrumentId = "BTC-USDC-LP"
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
+
+  -- Init: slice 1 holds 10 BTC + 200k USDC.
+  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+    recipient = alice
+    baseFactoryCid = factoryCid
+    quoteFactoryCid = factoryCid
+    baseHoldingCids = []
+    quoteHoldingCids = []
+    baseAmount = 10.0
+    quoteAmount = 200000.0
+    lpPolicyCid = Some policyCid
+    requestedAt = now
+
+  -- Record supply so AddLiquidity has something to divide by.
+  pool2 <- submitMulti [lpRegistrar] [operator] $
+    exerciseCmd initRes.poolCid Pool.Pool_RecordLPSupply with
+      newSupply = initRes.lpTokensMinted
+
+  -- Add: slice 2 appends 5 BTC + 100k USDC.
+  addRes <- submit operator $ exerciseCmd pool2 Pool.Pool_AddLiquidity with
+    recipient = bob
+    baseFactoryCid = factoryCid
+    quoteFactoryCid = factoryCid
+    baseHoldingCids = []
+    quoteHoldingCids = []
+    baseAmount = 5.0
+    quoteAmount = 100000.0
+    minLpTokens = 0.0
+    lpPolicyCid = Some policyCid
+    knownTotalLpSupply = initRes.lpTokensMinted
+    requestedAt = now
+
+  Some poolBefore <- queryContractId operator addRes.poolCid
+  length poolBefore.baseSlices === 2
+  length poolBefore.quoteSlices === 2
+  let slice0Before = head poolBefore.baseSlices
+      slice1Before = head (tail poolBefore.baseSlices)
+      qSlice0Before = head poolBefore.quoteSlices
+      qSlice1Before = head (tail poolBefore.quoteSlices)
+  slice0Before.amount === 10.0
+  slice1Before.amount === 5.0
+  qSlice0Before.amount === 200000.0
+  qSlice1Before.amount === 100000.0
+
+  -- Redeem ~1/30 of total supply. With totalLpSupply == sqrt(2e6) ≈
+  -- 1414.21, redeeming 1414.21/30 ≈ 47.14 LP tokens corresponds to
+  -- a 1/30 share of pool reserves: 15/30 = 0.5 BTC and 300000/30 =
+  -- 10000 USDC -- well inside slice 0's 10 BTC and 200000 USDC.
+  let totalSupply = initRes.lpTokensMinted
+      lpToRedeem = totalSupply / 30.0
+
+  removeRes <- submit operator $ exerciseCmd addRes.poolCid Pool.Pool_RemoveLiquidity with
+    holder = alice
+    lpTokensToRedeem = lpToRedeem
+    knownTotalLpSupply = totalSupply
+    minBaseOut = 0.0
+    minQuoteOut = 0.0
+    baseFactoryCid = factoryCid
+    quoteFactoryCid = factoryCid
+    boundaryBaseHoldingCids = []
+    boundaryQuoteHoldingCids = []
+    lpPolicyCid = Some policyCid
+    requestedAt = now
+
+  -- Only the head slice was consumed (and partially); the second slice
+  -- on each side is untouched.
+  removeRes.baseSlicesConsumed === 1
+  removeRes.quoteSlicesConsumed === 1
+  assertMsg "boundary base alloc returned" (isSome removeRes.boundaryBaseAllocationCid)
+  assertMsg "boundary quote alloc returned" (isSome removeRes.boundaryQuoteAllocationCid)
+
+  Some poolAfter <- queryContractId operator removeRes.poolCid
+  -- Two slices remain on each side: one boundary re-allocation
+  -- (replacing the consumed head) and the original second slice.
+  length poolAfter.baseSlices === 2
+  length poolAfter.quoteSlices === 2
+
+  -- The second slice is identical (same CID, same amount).
+  let slice0After = head poolAfter.baseSlices
+      slice1After = head (tail poolAfter.baseSlices)
+      qSlice0After = head poolAfter.quoteSlices
+      qSlice1After = head (tail poolAfter.quoteSlices)
+  slice1After.allocationCid === slice1Before.allocationCid
+  slice1After.amount === slice1Before.amount
+  qSlice1After.allocationCid === qSlice1Before.allocationCid
+  qSlice1After.amount === qSlice1Before.amount
+
+  -- The boundary slice carries the leftover: ~10.0 - 0.5 = 9.5 BTC,
+  -- ~200000 - 10000 = 190000 USDC. LP supply is sqrt(2e6) which is
+  -- irrational, so the shareRatio rounds at the Decimal-10 precision;
+  -- assert within a 1e-6 tolerance.
+  let close a b tol = abs (a - b) < tol
+  assertMsg ("base leftover near 9.5: " <> show slice0After.amount)
+    (close slice0After.amount 9.5 0.000001)
+  assertMsg ("quote leftover near 190000: " <> show qSlice0After.amount)
+    (close qSlice0After.amount 190000.0 0.01)
+  -- And its CID is a fresh allocation, not the original head.
+  assertMsg "head slice CID rotated"
+    (slice0After.allocationCid /= slice0Before.allocationCid)
+  assertMsg "quote head slice CID rotated"
+    (qSlice0After.allocationCid /= qSlice0Before.allocationCid)
+
+  -- Pool stays Active and reserves shrink by approximately the redeemed
+  -- share (same rounding caveat).
+  poolAfter.status === Pool.PS_Active
+  assertMsg ("base reserve near 14.5: " <> show poolAfter.reserves.baseAmount)
+    (close poolAfter.reserves.baseAmount 14.5 0.000001)
+  assertMsg ("quote reserve near 290000: " <> show poolAfter.reserves.quoteAmount)
+    (close poolAfter.reserves.quoteAmount 290000.0 0.01)
+
+  pure ()

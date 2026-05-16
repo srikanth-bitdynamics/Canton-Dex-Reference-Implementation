@@ -1,0 +1,64 @@
+module CantonDex.Instrument.Mint where
+
+-- Mint request / accept / reject / cancel.
+--
+-- Mirrors the Registry Utility user guide's Mint workflow. The
+-- requestor signs the request; the registrar accepts or rejects; the
+-- requestor can cancel before acceptance.
+--
+-- Acceptance creates a Holding for the requestor.
+
+import CantonDex.Instrument.Credentials qualified as Cred
+import CantonDex.Instrument.Holding qualified as H
+import CantonDex.Instrument.InstrumentConfiguration qualified as IC
+
+data MintRequest_AcceptResult = MintRequest_AcceptResult with
+    holdingCid : ContractId H.Holding
+  deriving (Eq, Show)
+
+template MintRequest with
+    requestor : Party
+    admin : Party
+    instrumentId : Text
+    amount : Decimal
+    reference : Text
+  where
+    signatory requestor
+    observer admin
+
+    ensure amount > 0.0
+
+    choice MintRequest_Cancel : ()
+      controller requestor
+      do pure ()
+
+    choice MintRequest_Reject : ()
+      with
+        reason : Text
+      controller admin
+      do
+        debug $ "MintRequest rejected: " <> reason
+        pure ()
+
+    choice MintRequest_Accept : MintRequest_AcceptResult
+      with
+        configCid : ContractId IC.InstrumentConfiguration
+        issuerClaims : [Cred.Credential]
+          -- ^ Claims the requestor presents to satisfy issuerRequirements.
+      controller admin
+      do
+        config <- fetch configCid
+        assertMsg "instrumentId mismatch" (config.instrumentId == instrumentId)
+        assertMsg "admin mismatch" (config.admin == admin)
+        -- Verify requestor satisfies issuer requirements (if any).
+        -- Empty issuerRequirements list means open issuance.
+        let credsOk = null config.issuerRequirements
+                   || Cred.verifyCredentials requestor config.issuerRequirements issuerClaims
+        assertMsg "Issuer credentials not satisfied" credsOk
+        holdingCid <- create H.Holding with
+          admin
+          owner = requestor
+          instrumentId
+          amount
+          locked = False
+        pure MintRequest_AcceptResult with holdingCid

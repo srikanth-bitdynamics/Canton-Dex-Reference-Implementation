@@ -1,0 +1,221 @@
+module CantonDex.Dex.LPToken where
+
+-- LP token issuance policy for DEX pools.
+--
+-- Party model:
+--   - lpRegistrar : the DEX-controlled party that owns the LP instrument's
+--     InstrumentConfiguration and authorizes mint/burn. Logically separate
+--     from `operator` so traffic and audit roles stay distinct.
+--   - operator   : the DEX market party. Submits mint/burn requests as part
+--     of pool deposit/withdrawal flows. Has visibility on supply.
+--
+-- One LPTokenPolicy per pool. Pool identity and redemption policy live in
+-- the LP instrument's `InstrumentConfiguration`, not here.
+--
+-- v0.0.7: LP holdings are now Token Standard V2 (CIP-0056) instruments
+-- produced via `CantonDex.Registry.V2.Holding`. The change:
+--   1. operator creates an LPMintRequest as part of Pool_AddLiquidity
+--      (operator-paid traffic for orchestration).
+--   2. lpRegistrar + recipient JOINTLY accept via
+--      `LPTokenPolicy_AcceptMint`. The dual-signature is required by
+--      the V2 standard: V2.Holding has `signatory admin, owner`, so
+--      the recipient must consent to receive a token (prevents spam
+--      mints into a recipient's ledger view). The operator-backend
+--      co-signs as lpRegistrar; the recipient's authority comes from
+--      their wallet (submitMulti [recipient, lpRegistrar]).
+--   3. Burn follows the symmetric pattern: holder + lpRegistrar
+--      jointly archive the V2.Holding.
+--
+-- This makes LP tokens fully fungible with other V2-standard holdings:
+-- they implement the `V2.Holding` interface, can be used as inputs to
+-- a `V2.TransferInstruction`, and can be locked into a `V2.Allocation`
+-- exactly like base/quote holdings.
+
+import CantonDex.Instrument.Holding qualified as RegHolding
+  -- ^ kept for smart-upgrade compatibility of the deprecated
+  --   LPTokenPolicy_AcceptBurn choice's input type.
+import CantonDex.Registry.V2 qualified as RegV2
+
+-- Original result type kept verbatim for smart-upgrade lineage of the
+-- deprecated `LPTokenPolicy_AcceptMint` choice. New V2 flow uses
+-- `LPMintResultV2` (below).
+data LPTokenPolicy_MintResult = LPTokenPolicy_MintResult with
+    policyCid : ContractId LPTokenPolicy
+    holdingCid : ContractId RegHolding.Holding
+  deriving (Eq, Show)
+
+data LPTokenPolicy_BurnResult = LPTokenPolicy_BurnResult with
+    policyCid : ContractId LPTokenPolicy
+  deriving (Eq, Show)
+
+-- V2-standard mint result: holdingCid is a `Registry.V2.Holding`.
+data LPMintResultV2 = LPMintResultV2 with
+    policyCid : ContractId LPTokenPolicy
+    holdingCid : ContractId RegV2.Holding
+  deriving (Eq, Show)
+
+template LPTokenPolicy with
+    lpRegistrar : Party
+    operator : Party
+    lpInstrumentId : Text
+    baseInstrumentId : Text
+    quoteInstrumentId : Text
+    poolCid : ContractId ()
+      -- ^ Opaque reference to the Pool contract; coerced when binding.
+      --   Kept opaque here to avoid a Pool import cycle.
+    totalSupply : Decimal
+    active : Bool
+  where
+    signatory lpRegistrar
+    observer operator
+
+    -- DEPRECATED in v0.0.7. Kept for smart-upgrade lineage; throws on
+    -- exercise. The current mint flow is `LPMintRequest_AcceptAndMint`
+    -- on the request, jointly controlled by recipient + lpRegistrar.
+    nonconsuming choice LPTokenPolicy_AcceptMint : LPTokenPolicy_MintResult
+      with
+        requestCid : ContractId LPMintRequest
+      controller lpRegistrar
+      do
+        abort "LPTokenPolicy_AcceptMint is removed in v0.0.7; \
+              \use LPMintRequest_AcceptAndMint (recipient + lpRegistrar)."
+
+    -- DEPRECATED in v0.0.7. Kept for smart-upgrade lineage. See
+    -- `LPBurnRequest_AcceptAndBurn` for the current flow.
+    nonconsuming choice LPTokenPolicy_AcceptBurn : LPTokenPolicy_BurnResult
+      with
+        requestCid : ContractId LPBurnRequest
+        holderHoldingCid : ContractId RegHolding.Holding
+      controller lpRegistrar
+      do
+        abort "LPTokenPolicy_AcceptBurn is removed in v0.0.7; \
+              \use LPBurnRequest_AcceptAndBurn (holder + lpRegistrar)."
+
+    -- Driver: called from `LPMintRequest_AcceptAndMint`. Requires both
+    -- lpRegistrar (signatory of this policy) and the recipient's
+    -- authority; the calling choice provides those via its multi-
+    -- controller. We can't directly express that constraint on a
+    -- choice of LPTokenPolicy because the recipient isn't a field of
+    -- the policy, so we expose this as an internal helper choice that
+    -- only LPMintRequest can authorize.
+    choice LPTokenPolicy_RecordMint : ContractId LPTokenPolicy
+      with
+        amount : Decimal
+      controller lpRegistrar
+      do
+        assertMsg "Policy must be active" active
+        create this with totalSupply = totalSupply + amount
+
+    -- Symmetric helper for burn: bumps policy supply down. The
+    -- holding archive happens in `LPBurnRequest_AcceptAndBurn` where
+    -- both holder + lpRegistrar authority are present.
+    choice LPTokenPolicy_RecordBurn : ContractId LPTokenPolicy
+      with
+        amount : Decimal
+      controller lpRegistrar
+      do
+        assertMsg "Policy must be active" active
+        assertMsg "Cannot burn more than supply" (amount <= totalSupply)
+        create this with totalSupply = totalSupply - amount
+
+    choice LPTokenPolicy_Deactivate : ContractId LPTokenPolicy
+      controller lpRegistrar
+      do
+        assertMsg "Cannot deactivate with outstanding supply" (totalSupply == 0.0)
+        create this with active = False
+
+-- | Operator-signed request to mint LP tokens for `recipient`.
+--
+-- Created as part of `Pool_AddLiquidity`. The lpRegistrar consumes this
+-- via `LPTokenPolicy_AcceptMint` to update supply and (in the registry-
+-- side workflow) emit the holding mint to `recipient`.
+template LPMintRequest with
+    operator : Party
+    lpRegistrar : Party
+    lpInstrumentId : Text
+    recipient : Party
+    amount : Decimal
+    policyCid : Optional (ContractId LPTokenPolicy)
+      -- ^ V0.0.7: Optional for smart-upgrade compat with v0.0.6.
+      --   Old v0.0.6 requests had no policyCid; the new
+      --   `*_AcceptAndMint` / `*_AcceptAndBurn` choices require it
+      --   and assert when absent.
+  where
+    signatory operator
+    observer lpRegistrar, recipient
+
+    ensure amount > 0.0
+
+    choice LPMintRequest_Cancel : ()
+      controller operator
+      do pure ()
+
+    -- Backward-compat / cancel-side helper.
+    choice LPMintRequest_Consume : ()
+      controller lpRegistrar
+      do pure ()
+
+    -- The V2-standard mint: recipient + lpRegistrar jointly sign,
+    -- creating a `Registry.V2.Holding` (which has `signatory admin,
+    -- owner`). Submitter must actAs both [recipient, lpRegistrar].
+    choice LPMintRequest_AcceptAndMint : LPMintResultV2
+      controller recipient, lpRegistrar
+      do
+        pcid <- case policyCid of
+          Some c -> pure c
+          None -> abort "LPMintRequest requires policyCid (v0.0.7+)"
+        newPolicyCid <- exercise pcid LPTokenPolicy_RecordMint with amount
+        holdingCid <- create RegV2.Holding with
+          admin = lpRegistrar
+          owner = recipient
+          instrumentId = lpInstrumentId
+          amount
+          locked = False
+        pure LPMintResultV2 with
+          policyCid = newPolicyCid
+          holdingCid
+
+-- | Operator-signed request to burn LP tokens from `holder`.
+--
+-- Created as part of `Pool_RemoveLiquidity`. The lpRegistrar consumes
+-- this via `LPTokenPolicy_AcceptBurn`.
+template LPBurnRequest with
+    operator : Party
+    lpRegistrar : Party
+    lpInstrumentId : Text
+    holder : Party
+    amount : Decimal
+    policyCid : Optional (ContractId LPTokenPolicy)
+      -- ^ V0.0.7: Optional for smart-upgrade compat with v0.0.6.
+  where
+    signatory operator
+    observer lpRegistrar, holder
+
+    ensure amount > 0.0
+
+    choice LPBurnRequest_Cancel : ()
+      controller operator
+      do pure ()
+
+    choice LPBurnRequest_Consume : ()
+      controller lpRegistrar
+      do pure ()
+
+    -- V2-standard burn: holder + lpRegistrar jointly archive the
+    -- V2.Holding (signatory admin, owner) and decrement supply.
+    choice LPBurnRequest_AcceptAndBurn : LPTokenPolicy_BurnResult
+      with
+        holderHoldingCid : ContractId RegV2.Holding
+      controller holder, lpRegistrar
+      do
+        h <- fetch holderHoldingCid
+        assertMsg "Holding owner mismatch" (h.owner == holder)
+        assertMsg "Holding admin must be lpRegistrar" (h.admin == lpRegistrar)
+        assertMsg "Holding instrument mismatch" (h.instrumentId == lpInstrumentId)
+        assertMsg "Holding amount must equal burn amount" (h.amount == amount)
+        archive holderHoldingCid
+        pcid <- case policyCid of
+          Some c -> pure c
+          None -> abort "LPBurnRequest requires policyCid (v0.0.7+)"
+        newPolicyCid <- exercise pcid LPTokenPolicy_RecordBurn with amount
+        pure LPTokenPolicy_BurnResult with policyCid = newPolicyCid

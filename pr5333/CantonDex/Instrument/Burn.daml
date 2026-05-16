@@ -1,0 +1,72 @@
+module CantonDex.Instrument.Burn where
+
+-- Burn request / accept / reject / cancel.
+--
+-- The registry user guide says: at request time, holdings are
+-- selected to cover the amount and locked. On accept, the locked
+-- holdings are archived. On reject or cancel, they are unlocked.
+--
+-- For simplicity the prototype takes a SINGLE holding CID (already
+-- equal to or larger than `amount`) and only handles the equal case
+-- (Holding_Split would be the production answer for the larger case).
+-- The operator backend selects holdings off-chain to cover the burn.
+
+import CantonDex.Instrument.Credentials qualified as Cred
+import CantonDex.Instrument.Holding qualified as H
+import CantonDex.Instrument.InstrumentConfiguration qualified as IC
+
+data BurnRequest_AcceptResult = BurnRequest_AcceptResult with
+    burnedAmount : Decimal
+  deriving (Eq, Show)
+
+template BurnRequest with
+    requestor : Party
+    admin : Party
+    instrumentId : Text
+    amount : Decimal
+    reference : Text
+    lockedHoldingCid : ContractId H.Holding
+  where
+    signatory requestor
+    observer admin
+
+    ensure amount > 0.0
+
+    choice BurnRequest_Cancel : ()
+      controller requestor
+      do
+        -- Unlock the holding so the requestor can use it again.
+        _ <- exercise lockedHoldingCid H.Holding_Unlock
+        pure ()
+
+    choice BurnRequest_Reject : ()
+      with
+        reason : Text
+      controller admin
+      do
+        debug $ "BurnRequest rejected: " <> reason
+        _ <- exercise lockedHoldingCid H.Holding_Unlock
+        pure ()
+
+    choice BurnRequest_Accept : BurnRequest_AcceptResult
+      with
+        configCid : ContractId IC.InstrumentConfiguration
+        issuerClaims : [Cred.Credential]
+      controller admin
+      do
+        holding <- fetch lockedHoldingCid
+        assertMsg "Holding not locked" holding.locked
+        assertMsg "instrumentId mismatch" (holding.instrumentId == instrumentId)
+        assertMsg "owner mismatch" (holding.owner == requestor)
+        assertMsg "Holding amount must equal burn amount" (holding.amount == amount)
+
+        config <- fetch configCid
+        assertMsg "config instrumentId mismatch" (config.instrumentId == instrumentId)
+        assertMsg "config admin mismatch" (config.admin == admin)
+
+        let credsOk = null config.issuerRequirements
+                   || Cred.verifyCredentials requestor config.issuerRequirements issuerClaims
+        assertMsg "Issuer credentials not satisfied" credsOk
+
+        archive lockedHoldingCid
+        pure BurnRequest_AcceptResult with burnedAmount = amount

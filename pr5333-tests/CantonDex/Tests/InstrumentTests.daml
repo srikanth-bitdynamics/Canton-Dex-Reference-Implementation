@@ -1,0 +1,265 @@
+module CantonDex.Tests.InstrumentTests where
+
+-- Daml Script tests for the registry workflows:
+--   1. InstrumentConfiguration create/update
+--   2. Mint request → registrar accept (with credential check)
+--   3. Mint request → requestor cancel
+--   4. Burn request → registrar accept
+--   5. Transfer offer → receiver accept
+--   6. Transfer offer with TransferPreapproval (direct delivery)
+--   7. Open issuance: empty issuerRequirements lets anyone mint
+
+import DA.Assert
+import Daml.Script
+
+import CantonDex.Instrument.Burn qualified as Burn
+import CantonDex.Instrument.Credentials qualified as Cred
+import CantonDex.Instrument.Holding qualified as H
+import CantonDex.Instrument.InstrumentConfiguration qualified as IC
+import CantonDex.Instrument.Mint qualified as Mint
+import CantonDex.Instrument.Transfer qualified as Tx
+
+-- 1. InstrumentConfiguration ---------------------------------------------
+
+testInstrumentConfigCreate : Script ()
+testInstrumentConfigCreate = do
+  registrar <- allocateParty "registrar"
+  cfgCid <- submit registrar $ createCmd IC.InstrumentConfiguration with
+    admin = registrar
+    instrumentId = "BTC"
+    holderRequirements = []
+    issuerRequirements = []
+    isin = None
+    cusip = None
+    description = "Wrapped Bitcoin (test)"
+  Some _ <- queryContractId registrar cfgCid
+  pure ()
+
+-- 2. Open-issuance mint accept --------------------------------------
+
+testMintAcceptOpenIssuance : Script ()
+testMintAcceptOpenIssuance = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+  cfgCid <- submit registrar $ createCmd IC.InstrumentConfiguration with
+    admin = registrar
+    instrumentId = "BTC"
+    holderRequirements = []
+    issuerRequirements = []  -- open issuance
+    isin = None
+    cusip = None
+    description = "test"
+
+  reqCid <- submit alice $ createCmd Mint.MintRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 10.0
+    reference = "test-mint"
+
+  acceptRes <- submit registrar $ exerciseCmd reqCid Mint.MintRequest_Accept with
+    configCid = cfgCid
+    issuerClaims = []
+  Some holding <- queryContractId alice acceptRes.holdingCid
+  holding.amount === 10.0
+  holding.owner === alice
+  holding.locked === False
+  pure ()
+
+-- 3. Gated issuance: missing credentials fail; matching credentials succeed --
+
+testMintGatedIssuance : Script ()
+testMintGatedIssuance = do
+  registrar <- allocateParty "registrar"
+  authority <- allocateParty "authority"  -- credential issuer
+  alice <- allocateParty "alice"          -- has the credential
+  bob <- allocateParty "bob"              -- does not
+
+  let req = Cred.CredentialRequirement with
+        issuer = authority
+        property = "isIssuerOf"
+        value = "BTC"
+
+  cfgCid <- submit registrar $ createCmd IC.InstrumentConfiguration with
+    admin = registrar
+    instrumentId = "BTC"
+    holderRequirements = []
+    issuerRequirements = [req]
+    isin = None
+    cusip = None
+    description = "test"
+
+  -- Alice has the credential.
+  let aliceCred = Cred.Credential with
+        issuer = authority
+        holder = alice
+        property = "isIssuerOf"
+        value = "BTC"
+
+  -- Alice can mint.
+  aliceReq <- submit alice $ createCmd Mint.MintRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 5.0
+    reference = "alice-mint"
+  aliceAccept <- submit registrar $ exerciseCmd aliceReq Mint.MintRequest_Accept with
+    configCid = cfgCid
+    issuerClaims = [aliceCred]
+  Some _ <- queryContractId alice aliceAccept.holdingCid
+
+  -- Bob cannot.
+  bobReq <- submit bob $ createCmd Mint.MintRequest with
+    requestor = bob
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 5.0
+    reference = "bob-mint"
+  submitMustFail registrar $ exerciseCmd bobReq Mint.MintRequest_Accept with
+    configCid = cfgCid
+    issuerClaims = []  -- empty: no credential to satisfy the requirement
+  pure ()
+
+-- 4. Burn round-trip: mint, lock, burn -----------------------------------
+
+testBurnRoundTrip : Script ()
+testBurnRoundTrip = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+  cfgCid <- submit registrar $ createCmd IC.InstrumentConfiguration with
+    admin = registrar
+    instrumentId = "BTC"
+    holderRequirements = []
+    issuerRequirements = []
+    isin = None
+    cusip = None
+    description = "test"
+
+  -- Mint
+  mintReq <- submit alice $ createCmd Mint.MintRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 3.0
+    reference = "mint"
+  mintRes <- submit registrar $ exerciseCmd mintReq Mint.MintRequest_Accept with
+    configCid = cfgCid
+    issuerClaims = []
+
+  -- Lock the holding (operator backend or registrar does this before
+  -- creating the burn request).
+  lockedCid <- submit registrar $ exerciseCmd mintRes.holdingCid H.Holding_Lock
+
+  -- Burn
+  burnReq <- submit alice $ createCmd Burn.BurnRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 3.0
+    reference = "burn"
+    lockedHoldingCid = lockedCid
+  burnRes <- submit registrar $ exerciseCmd burnReq Burn.BurnRequest_Accept with
+    configCid = cfgCid
+    issuerClaims = []
+  burnRes.burnedAmount === 3.0
+
+  -- Holding is gone.
+  None <- queryContractId alice lockedCid
+  pure ()
+
+-- 5. Transfer offer / accept --------------------------------------------
+
+testTransferOfferAccept : Script ()
+testTransferOfferAccept = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  cfgCid <- submit registrar $ createCmd IC.InstrumentConfiguration with
+    admin = registrar
+    instrumentId = "BTC"
+    holderRequirements = []
+    issuerRequirements = []
+    isin = None
+    cusip = None
+    description = "test"
+
+  mintReq <- submit alice $ createCmd Mint.MintRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 2.0
+    reference = "mint"
+  mintRes <- submit registrar $ exerciseCmd mintReq Mint.MintRequest_Accept with
+    configCid = cfgCid
+    issuerClaims = []
+  lockedCid <- submit registrar $ exerciseCmd mintRes.holdingCid H.Holding_Lock
+
+  offerCid <- submit alice $ createCmd Tx.TransferOffer with
+    sender = alice
+    receiver = bob
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 2.0
+    reference = "tx-test"
+    lockedHoldingCid = lockedCid
+  acceptRes <- submitMulti [bob, registrar] [] $
+    exerciseCmd offerCid Tx.TransferOffer_Accept with
+      configCid = cfgCid
+      senderClaims = []
+      receiverClaims = []
+  Some bobHolding <- queryContractId bob acceptRes.receiverHoldingCid
+  bobHolding.owner === bob
+  bobHolding.amount === 2.0
+  None <- queryContractId alice lockedCid
+  pure ()
+
+-- 6. Transfer with preapproval ------------------------------------------
+
+testTransferPreapproved : Script ()
+testTransferPreapproved = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  cfgCid <- submit registrar $ createCmd IC.InstrumentConfiguration with
+    admin = registrar
+    instrumentId = "BTC"
+    holderRequirements = []
+    issuerRequirements = []
+    isin = None
+    cusip = None
+    description = "test"
+
+  mintReq <- submit alice $ createCmd Mint.MintRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 1.0
+    reference = "mint"
+  mintRes <- submit registrar $ exerciseCmd mintReq Mint.MintRequest_Accept with
+    configCid = cfgCid
+    issuerClaims = []
+  lockedCid <- submit registrar $ exerciseCmd mintRes.holdingCid H.Holding_Lock
+
+  -- Bob preapproves.
+  preapprovalCid <- submit bob $ createCmd Tx.TransferPreapproval with
+    receiver = bob
+    admin = registrar
+    instrumentIds = []  -- all instruments under registrar
+
+  offerCid <- submit alice $ createCmd Tx.TransferOffer with
+    sender = alice
+    receiver = bob
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 1.0
+    reference = "preapproved-tx"
+    lockedHoldingCid = lockedCid
+
+  acceptRes <- submitMulti [alice, registrar] [] $
+    exerciseCmd offerCid Tx.TransferOffer_AcceptPreapproved with
+      preapprovalCid
+      configCid = cfgCid
+      senderClaims = []
+  Some bobHolding <- queryContractId bob acceptRes.receiverHoldingCid
+  bobHolding.amount === 1.0
+  pure ()

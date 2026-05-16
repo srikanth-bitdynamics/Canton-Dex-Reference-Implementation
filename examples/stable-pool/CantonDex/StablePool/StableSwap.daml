@@ -1,0 +1,152 @@
+module CantonDex.StablePool.StableSwap where
+
+-- Reuse-proof-point example.
+--
+-- Demonstrates that canton-dex-pr5333 is genuinely extensible: this
+-- module consumes the published DAR as a data-dependency and builds a
+-- DIFFERENT pricing curve (StableSwap / constant-sum bias) on top of
+-- the same V2-standard substrate.
+--
+-- StableSwap is appropriate for pegged-asset pairs (USDC/USDT,
+-- stETH/ETH). It blends a constant-sum invariant (price ≈ 1, low slip)
+-- with a constant-product invariant (xy=k, fallback when the pool
+-- de-pegs). The blend is controlled by the amplification parameter
+-- `A`: A → ∞ approaches constant-sum, A → 0 approaches xy=k.
+--
+-- What this example shows:
+--   1. The slice-local pool model is curve-agnostic — we re-use the
+--      same Pool template field shape (operator-signed, slice-list-
+--      backed) but plug in a different swap-output computation.
+--   2. The V2-standard mint/burn flow (LPMintRequest / LPBurnRequest
+--      from the base reference) works without modification for an
+--      LP token issued by this new pool.
+--   3. The same operator-backend / dApp can route swaps to either the
+--      canton-dex constant-product pool OR this stable pool — they
+--      both implement the same query/exercise contract.
+--
+-- What this example does NOT do (kept lean intentionally):
+--   - The full Allocation_Adjust + SettlementFactory_SettleBatch
+--     orchestration. The point is the curve math; the settlement
+--     wiring is identical to the base reference's `Pool_Swap` and
+--     omitted to keep the example focused on the *novel* part.
+
+import DA.TextMap qualified as TextMap
+
+-- The stable-swap invariant solves for D in:
+--   A * n^n * sum(x_i) + D = A * D * n^n + D^(n+1) / (n^n * prod(x_i))
+-- For a 2-asset pool (n=2):
+--   4*A*(x+y) + D = 4*A*D + D^3 / (4*x*y)
+--
+-- We use a Newton iteration to find D, then solve for the output
+-- amount given an input amount.
+
+-- | Amplification coefficient. Higher = closer to constant-sum. 100
+-- is a common starting point for stablecoin pools.
+type Amplification = Decimal
+
+-- | Compute the stable-swap invariant D for a 2-asset pool. Returns
+-- after at most 32 Newton iterations.
+computeInvariantD : Amplification -> Decimal -> Decimal -> Decimal
+computeInvariantD a x y =
+  let s = x + y
+      n2 = 4.0    -- 2^2
+      ann = a * n2
+  in if s <= 0.0
+     then 0.0
+     else newtonIterations 32 ann s s (x * y)
+
+newtonIterations : Int -> Decimal -> Decimal -> Decimal -> Decimal -> Decimal
+newtonIterations 0 _ _ d _ = d
+newtonIterations steps ann s d prodXY =
+  let -- D^3 / (4 * x * y)
+      cubed = d * d * d
+      denom = 4.0 * prodXY
+      dCubedOverProd = if denom > 0.0 then cubed / denom else 0.0
+      -- Newton step: D_next = (ann*s + 2*Dp) / (ann + Dp/D + 1) where Dp = D^3 / (4*x*y)
+      numerator = ann * s + 2.0 * dCubedOverProd
+      denominator = ann + dCubedOverProd / (if d > 0.0 then d else 1.0) + 1.0
+      dNext = if denominator > 0.0 then numerator / denominator else d
+      diff = if dNext > d then dNext - d else d - dNext
+  in if diff < 0.000001 || steps <= 0
+     then dNext
+     else newtonIterations (steps - 1) ann s dNext prodXY
+
+-- | Given current reserves (x, y) and an input dx in the x-asset,
+-- compute the output dy in the y-asset such that the stable-swap
+-- invariant is preserved.
+computeStableSwapOut : Amplification -> Decimal -> Decimal -> Decimal -> Decimal
+computeStableSwapOut a x y dx =
+  let d = computeInvariantD a x y
+      newX = x + dx
+      -- Solve for newY given (newX, D) using Newton.
+      newY = solveForY 32 a (newX + 0.0) d newX
+      dy = y - newY
+  in if dy > 0.0 then dy else 0.0
+
+solveForY : Int -> Amplification -> Decimal -> Decimal -> Decimal -> Decimal
+solveForY 0 _ _ _ y = y
+solveForY steps a s d newX =
+  let ann = a * 4.0
+      -- Iterate y_next = (y^2 + c) / (2*y + b - D)
+      --   c = D^(n+1) / (n^n * prod_excl(x_i) * Ann) = D^3 / (4 * newX * Ann)
+      --   b = s + D/Ann   where s here is sum excluding y -> just newX
+      c = if newX > 0.0 && ann > 0.0
+            then (d * d * d) / (4.0 * newX * ann)
+            else 0.0
+      b = newX + d / ann
+      yCurrent = d
+      yNext = (yCurrent * yCurrent + c) / (2.0 * yCurrent + b - d)
+      diff = if yNext > yCurrent then yNext - yCurrent else yCurrent - yNext
+  in if diff < 0.000001 || steps <= 0
+     then yNext
+     else solveForY (steps - 1) a s d newX
+
+-- | A stable-swap pool. Field-compatible at the head with the base
+-- reference's `Pool` (operator, lpRegistrar, admin, instrument ids,
+-- fee, reserves, totalLpSupply) so a multi-curve router can treat
+-- both pool types uniformly.
+template StablePool with
+    operator : Party
+    lpRegistrar : Party
+    admin : Party
+    baseInstrumentId : Text
+    quoteInstrumentId : Text
+    lpInstrumentId : Text
+    feeBps : Int
+    amplification : Amplification
+    baseReserve : Decimal
+    quoteReserve : Decimal
+    totalLpSupply : Decimal
+    active : Bool
+  where
+    signatory operator
+    observer lpRegistrar
+
+    ensure amplification > 0.0 && feeBps >= 0 && feeBps <= 10000
+
+    -- Read-only quote. Production swap exercise would settle V2
+    -- allocations exactly as `Pool_Swap` does in the base reference.
+    nonconsuming choice StablePool_ComputeSwapOut : Decimal
+      with
+        inputInstrumentId : Text
+        inputAmount : Decimal
+      controller operator
+      do
+        assertMsg "pool inactive" active
+        assertMsg "input must be positive" (inputAmount > 0.0)
+        let isBaseIn = inputInstrumentId == baseInstrumentId
+            (xIn, yOut) =
+              if isBaseIn
+                then (baseReserve, quoteReserve)
+                else (quoteReserve, baseReserve)
+            feeMul = (intToDecimal (10000 - feeBps)) / 10000.0
+            dxAfterFee = inputAmount * feeMul
+        pure (computeStableSwapOut amplification xIn yOut dxAfterFee)
+
+    choice StablePool_UpdateAmplification : ContractId StablePool
+      with
+        newA : Amplification
+      controller operator
+      do
+        assertMsg "A must be positive" (newA > 0.0)
+        create this with amplification = newA

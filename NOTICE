@@ -1,0 +1,38 @@
+Canton-Dex
+Copyright 2026 The Canton-Dex Authors
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may
+not use this file except in compliance with the License. A copy of the
+License is in the LICENSE file at the root of this repository.
+
+================================================================================
+Third-party / vendored code
+================================================================================
+
+This repository contains vendored snapshots of upstream Canton Network
+projects, each governed by their own license (see LICENSE files inside
+the vendored directories):
+
+- vendor/splice/
+    Source: https://github.com/canton-network/splice
+    License: vendor/splice/LICENSE
+    Purpose: shared Daml/Splice utilities consumed by Canton-Dex during
+    development. Snapshot of the main branch at the time of vendoring.
+
+- vendor/splice-pr5333/
+    Source: https://github.com/canton-network/splice/pull/5333
+    License: vendor/splice-pr5333/LICENSE
+    Purpose: snapshot of Splice PR 5333 (V2 token standard, iterated
+    settlement) used as the build target for canton-dex-pr5333.
+
+Token Standard V2 / CIP-0056 surface (`splice-api-token-*-v2` packages)
+is included as compiled DAR artefacts under
+`vendor/splice-pr5333/token-standard/`; the source these were built
+from is in the snapshot above.
+
+================================================================================
+Acknowledgements
+================================================================================
+
+The matched-trade settlement pattern follows the shape established by
+the upstream `TradingAppV2` reference (link in README.md).

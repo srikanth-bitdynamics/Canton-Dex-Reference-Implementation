@@ -1,0 +1,119 @@
+module CantonDex.Pr5333.AllocationSurface where
+
+-- Source-derived anchor module for the branch-only `AllocationV2` surface from
+-- Splice PR 5333.
+
+import DA.TextMap qualified as TextMap
+
+import CantonDex.Pr5333.Utils qualified as Utils
+
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.AllocationRequestV2 qualified as AllocationRequestV2
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+
+mkPr5333SettlementInfo : [Party] -> V2.Reference -> Optional Time -> V2.SettlementInfo
+mkPr5333SettlementInfo executors settlementRef settlementDeadline =
+  V2.SettlementInfo with
+    executors
+    settlementRef
+    settlementDeadline
+    meta = emptyMetadata
+
+pr5333AdjustActionAnchor : V2.AllocationAction
+pr5333AdjustActionAnchor = V2.AA_Adjust
+
+pr5333AdjustArgAnchor : [Party] -> [V2.TransferLeg] -> Bool -> V2.Allocation_Adjust
+pr5333AdjustArgAnchor = Utils.mkAllocationAdjust
+
+pr5333SettleResultAnchor
+  : Optional (ContractId V2.Allocation)
+  -> V2.Allocation_SettleResult
+pr5333SettleResultAnchor nextIterationAllocationCid =
+  V2.Allocation_SettleResult with
+    authorizerHoldingCids = TextMap.empty
+    nextIterationAllocationCid
+    meta = emptyMetadata
+
+pr5333SettleBatchResultAnchor
+  : [V2.Allocation_SettleResult]
+  -> V2.SettlementFactory_SettleBatchResult
+pr5333SettleBatchResultAnchor allocationSettleResults =
+  V2.SettlementFactory_SettleBatchResult with
+    allocationSettleResults
+    meta = emptyMetadata
+
+pr5333AllocationRequestViewAnchor
+  : HoldingV2.Account
+  -> V2.SettlementInfo
+  -> AllocationRequestV2.AllocationRequestView
+pr5333AllocationRequestViewAnchor authorizer settlement =
+  AllocationRequestV2.AllocationRequestView with
+    originalRequestCid = None
+    settlement
+    transferLegs = []
+    authorizer
+    availableActions = mempty
+    meta = emptyMetadata
+
+pr5333AllocationInstructionResultAnchor
+  : AllocationInstructionV2.AllocationInstructionResult_Output
+  -> AllocationInstructionV2.AllocationInstructionResult
+pr5333AllocationInstructionResultAnchor output =
+  AllocationInstructionV2.AllocationInstructionResult with
+    output
+    authorizerChangeCids = TextMap.empty
+    meta = emptyMetadata
+
+pr5333TransferEventLegAnchor
+  : HoldingV2.Account
+  -> HoldingV2.Account
+  -> HoldingV2.InstrumentId
+  -> TransferEventsV2.TransferLeg
+pr5333TransferEventLegAnchor sender receiver instrumentId =
+  TransferEventsV2.TransferLeg with
+    transferLegId = "anchor"
+    sender
+    receiver
+    instrumentId
+    amount = 1.0
+    meta = emptyMetadata
+
+pr5333FundingDeltaAnchor
+  : HoldingV2.Account
+  -> [V2.TransferLeg]
+  -> TextMap.TextMap Decimal
+pr5333FundingDeltaAnchor = Utils.netFundingDelta
+
+pr5333AdjustedFundingAnchor
+  : HoldingV2.Account
+  -> TextMap.TextMap Decimal
+  -> [V2.TransferLeg]
+  -> Optional (TextMap.TextMap Decimal)
+pr5333AdjustedFundingAnchor = Utils.adjustedNextIterationFunding
+
+pr5333PrefundedAllocationAnchor
+  : Party
+  -> HoldingV2.Account
+  -> V2.SettlementInfo
+  -> V2.AllocationSpecification
+pr5333PrefundedAllocationAnchor admin authorizer settlement =
+  Utils.mkPrefundedAllocationSpecification
+    admin
+    authorizer
+    settlement
+    (TextMap.fromList [("anchor", 1.0)])
+
+pr5333CommittedAllocationAnchor
+  : Party
+  -> HoldingV2.Account
+  -> V2.SettlementInfo
+  -> V2.AllocationSpecification
+pr5333CommittedAllocationAnchor admin authorizer settlement =
+  Utils.mkCommittedPoolAllocationSpecification
+    admin
+    authorizer
+    settlement
+    (TextMap.fromList [("anchor", 1.0)])

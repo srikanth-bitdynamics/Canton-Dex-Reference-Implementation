@@ -1,0 +1,171 @@
+-- Copyright (c) 2024 Digital Asset (Switzerland) GmbH and/or its affiliates. All rights reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
+module Splice.AmuletConfig where
+
+import DA.Optional
+import DA.Time
+
+import Splice.Fees
+import Splice.DecentralizedSynchronizer
+import Splice.Issuance
+import Splice.Schedule
+import Splice.Util
+
+-- TODO(#14972): Get rid of the unused Amulet data type
+data Amulet = Amulet deriving (Show, Eq)
+-- ^ Deprecated type for specifying amounts and fees in units of Amulet. Use Splice.Amulet.Amulet directly instead.
+data USD = USD deriving (Show, Eq)
+
+-- | Configuration determining the fees and limits for Amulet transfers granted by
+-- the AmuletRules.
+--
+-- See Splice.Scripts.Parameters for concrete values.
+data TransferConfig unit = TransferConfig with
+    createFee : FixedFee -- ^ Fee to create a new amulet.
+    holdingFee : RatePerRound -- ^ Fee for keeping an amulet around.
+    transferFee : SteppedRate -- ^ Fee for transferring some amount of amulet to a new owner.
+    lockHolderFee : FixedFee -- ^ Fee per lock holder of a locked amulet.
+    extraFeaturedAppRewardAmount : Decimal -- ^ Extra $-amount of reward for featured apps.
+    maxNumInputs : Int -- ^ Maximum number of batch inputs for a transfer.
+    maxNumOutputs : Int -- ^ Maximum number of batch outputs for a transfer.
+    maxNumLockHolders : Int -- ^ Maximum number of lock holders allowed for a locked amulet.
+  deriving (Eq, Show)
+
+transferConfigToTransferConfigV2 : TransferConfig unit -> TransferConfigV2 unit
+transferConfigToTransferConfigV2 tc = TransferConfigV2 with
+    holdingFee = tc.holdingFee
+    maxNumInputs = tc.maxNumInputs
+    maxNumOutputs = tc.maxNumOutputs
+    maxNumLockHolders = tc.maxNumLockHolders
+
+-- | Stripped down TransferConfig after CIP 78 removed fees.
+data TransferConfigV2 unit = TransferConfigV2 with
+    holdingFee : RatePerRound
+    maxNumInputs : Int
+    maxNumOutputs : Int
+    maxNumLockHolders : Int
+  deriving (Eq, Show)
+
+-- | Configuration includes TransferConfig, issuance curve and tickDuration
+--
+-- See Splice.Scripts.Parameters for concrete values.
+data AmuletConfig unit = AmuletConfig with
+    transferConfig : TransferConfig unit -- ^ Configuration determining the fees and limits for Amulet transfers
+    issuanceCurve : Schedule RelTime IssuanceConfig -- ^ Issuance curve to use.
+    decentralizedSynchronizer : AmuletDecentralizedSynchronizerConfig -- ^ Configuration for the decentralized synchronizer and its fees.
+    -- TODO(M4-85): the values in here are likely quite large (several URls and long synchronizerIds) and not required for executing transfers. Split this part of the config out into a separate contract as a performance optimization.
+    tickDuration : RelTime -- ^ Duration of a tick, which is the duration of half a round.
+    packageConfig : PackageConfig
+      -- ^ Configuration determining the version of each package
+      -- that should be used for command submissions.
+    transferPreapprovalFee : Optional Decimal -- ^ Fee for keeping a transfer pre-approval around.
+    featuredAppActivityMarkerAmount : Optional Decimal -- ^ $-amount used for the conversion from FeaturedAppActivityMarker -> AppRewardCoupon
+    optDevelopmentFundManager : Optional Party
+      -- ^ Party authorized to manage and allocate minting rights from the Development Fund.
+    externalPartyConfigStateTickDuration : Optional RelTime
+      -- ^ Half the lifetime of an `ExternalPartyConfigState` contract and the overlap between two successive contracts. Default: 24h.
+  deriving (Eq, Show)
+
+getExternalPartyConfigStateTickDuration : AmuletConfig a -> RelTime
+getExternalPartyConfigStateTickDuration config = fromOptional (hours 24) config.externalPartyConfigStateTickDuration
+
+-- $1/year specified as a daily rate
+defaultTransferPreapprovalFee : Decimal
+defaultTransferPreapprovalFee = 0.00274
+
+-- Check constraints on config params on which the implementation of the choices rely.
+validAmuletConfig : AmuletConfig unit -> Bool
+validAmuletConfig AmuletConfig
+    -- intentional pattern match to avoid forgetting checking a field
+    { transferConfig
+    , issuanceCurve
+    , decentralizedSynchronizer
+    , tickDuration
+    , packageConfig
+    , transferPreapprovalFee
+    , featuredAppActivityMarkerAmount}
+  =
+    validTransferConfig transferConfig &&
+    validIssuanceCurve issuanceCurve &&
+    validAmuletDecentralizedSynchronizerConfig decentralizedSynchronizer &&
+    tickDuration > days 0 &&
+    validPackageConfig packageConfig &&
+    optional True (>= 0.0) transferPreapprovalFee &&
+    optional True (>= 0.0) featuredAppActivityMarkerAmount &&
+    featuredAppActivityMarkerAmount == Some transferConfig.extraFeaturedAppRewardAmount
+
+validTransferConfig : TransferConfig unit -> Bool
+validTransferConfig TransferConfig
+    { createFee
+    , holdingFee
+    , transferFee
+    , lockHolderFee
+    , extraFeaturedAppRewardAmount
+    , maxNumInputs
+    , maxNumOutputs
+    , maxNumLockHolders
+    }
+  =
+    createFee == FixedFee 0.0 &&
+    lockHolderFee == FixedFee 0.0 &&
+    lockHolderFee == FixedFee 0.0 &&
+    transferFee.initialRate == 0.0 &&
+    -- TODO(#4424) Enforce `null transferFee.steps`
+    all (\(_step, rate) -> rate == 0.0) transferFee.steps &&
+    positiveRatePerRound holdingFee &&
+    extraFeaturedAppRewardAmount >= 0.0 &&
+    maxNumInputs >= 1 &&
+    maxNumOutputs >= 1 &&
+    maxNumLockHolders >= 0
+
+-- | The package config defines for each daml package (identified by name)
+-- the package version that should be used for command submissions
+-- at that point.
+data PackageConfig = PackageConfig
+  with
+    amulet : Text
+    amuletNameService : Text
+    dsoGovernance : Text
+    validatorLifecycle : Text
+    wallet : Text
+    walletPayments : Text
+  deriving (Show, Eq)
+
+-- | Package configs are not constrained at the Daml level to maximize flexibility.
+-- In particular, empty packages versions might be used in the future to indicate that
+-- no version of that package should be vetted.
+validPackageConfig : PackageConfig -> Bool
+validPackageConfig _ = True
+
+instance Patchable (AmuletConfig USD) where
+  patch new base current = AmuletConfig with
+    transferConfig = patch new.transferConfig base.transferConfig current.transferConfig
+    issuanceCurve = patch new.issuanceCurve base.issuanceCurve current.issuanceCurve
+    decentralizedSynchronizer = patch new.decentralizedSynchronizer base.decentralizedSynchronizer current.decentralizedSynchronizer
+    tickDuration = patch new.tickDuration base.tickDuration current.tickDuration
+    packageConfig = patch new.packageConfig base.packageConfig current.packageConfig
+    transferPreapprovalFee = patch new.transferPreapprovalFee base.transferPreapprovalFee current.transferPreapprovalFee
+    featuredAppActivityMarkerAmount = patch new.featuredAppActivityMarkerAmount base.featuredAppActivityMarkerAmount current.featuredAppActivityMarkerAmount
+    optDevelopmentFundManager = patch new.optDevelopmentFundManager base.optDevelopmentFundManager current.optDevelopmentFundManager
+    externalPartyConfigStateTickDuration = patch new.externalPartyConfigStateTickDuration base.externalPartyConfigStateTickDuration current.externalPartyConfigStateTickDuration
+
+instance Patchable (TransferConfig USD) where
+  patch new base current = TransferConfig with
+    createFee = patch new.createFee base.createFee current.createFee
+    holdingFee = patch new.holdingFee base.holdingFee current.holdingFee
+    transferFee = patch new.transferFee base.transferFee current.transferFee
+    lockHolderFee = patch new.lockHolderFee base.lockHolderFee current.lockHolderFee
+    extraFeaturedAppRewardAmount = patch new.extraFeaturedAppRewardAmount base.extraFeaturedAppRewardAmount current.extraFeaturedAppRewardAmount
+    maxNumInputs = patch new.maxNumInputs base.maxNumInputs current.maxNumInputs
+    maxNumOutputs = patch new.maxNumOutputs base.maxNumOutputs current.maxNumOutputs
+    maxNumLockHolders = patch new.maxNumLockHolders base.maxNumLockHolders current.maxNumLockHolders
+
+instance Patchable PackageConfig where
+  patch new base current = PackageConfig with
+    amulet = patch new.amulet base.amulet current.amulet
+    amuletNameService = patch new.amuletNameService base.amuletNameService current.amuletNameService
+    dsoGovernance = patch new.dsoGovernance base.dsoGovernance current.dsoGovernance
+    validatorLifecycle = patch new.validatorLifecycle base.validatorLifecycle current.validatorLifecycle
+    wallet = patch new.wallet base.wallet current.wallet
+    walletPayments = patch new.walletPayments base.walletPayments current.walletPayments

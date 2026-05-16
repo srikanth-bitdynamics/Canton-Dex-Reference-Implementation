@@ -1,0 +1,62 @@
+module CantonDex.Instrument.Holding where
+
+-- Registry-side Holding. Conceptually corresponds to a V2.HoldingV2
+-- holding but lives in the local registry namespace so we can reason
+-- about supply changes (mint/burn) without re-implementing the V2
+-- interface.
+--
+-- A real registry would have the Holding implement V2.HoldingV2
+-- (interface) so the DEX layer's allocation factories can move it.
+-- For the prototype this is a plain template; tests don't move actual
+-- holdings (they go through the MockRegistry).
+
+template Holding with
+    admin : Party
+    owner : Party
+    instrumentId : Text
+    amount : Decimal
+    locked : Bool
+      -- ^ True while the holding is referenced by an open
+      --   AllocationRequest, MintRequest accept-pending, or BurnRequest.
+      --   The registry is the authority on locking.
+  where
+    signatory admin
+    observer owner
+
+    ensure amount > 0.0
+
+    choice Holding_Lock : ContractId Holding
+      controller admin
+      do
+        assertMsg "Already locked" (not locked)
+        create this with locked = True
+
+    choice Holding_Unlock : ContractId Holding
+      controller admin
+      do
+        assertMsg "Not locked" locked
+        create this with locked = False
+
+    choice Holding_Split : (ContractId Holding, ContractId Holding)
+      with
+        splitAmount : Decimal
+      controller admin
+      do
+        assertMsg "Cannot split a locked holding" (not locked)
+        assertMsg "Split amount must be positive" (splitAmount > 0.0)
+        assertMsg "Split amount must be less than amount" (splitAmount < amount)
+        a <- create this with amount = splitAmount
+        b <- create this with amount = amount - splitAmount
+        pure (a, b)
+
+    choice Holding_Merge : ContractId Holding
+      with
+        otherCid : ContractId Holding
+      controller admin
+      do
+        other <- fetch otherCid
+        assertMsg "Same owner" (other.owner == owner)
+        assertMsg "Same instrument" (other.instrumentId == instrumentId)
+        assertMsg "Both unlocked" (not locked && not other.locked)
+        archive otherCid
+        create this with amount = amount + other.amount

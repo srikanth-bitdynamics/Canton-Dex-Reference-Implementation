@@ -1,0 +1,34 @@
+# Daml / Node build outputs
+.daml/
+dist/
+node_modules/
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Secrets & local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Runtime data (sqlite + WAL)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-journal
+data/
+services/*/data/
+
+# Backup / scratch files
+*.bak
+*.bak.*
+*.orig
+*.log

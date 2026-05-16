@@ -1,0 +1,120 @@
+module CantonDex.Dex.DexPair where
+
+import DA.TextMap qualified as TextMap
+
+data TradingMode
+  = TM_OrderBook
+  | TM_Pool
+  | TM_Both
+  deriving (Eq, Show)
+
+data FeeModel = FeeModel with
+    makerFeeBps : Int
+    takerFeeBps : Int
+    poolFeeBps : Int
+  deriving (Eq, Show)
+
+template DexPair with
+    operator : Party
+    admin : Party
+    baseInstrumentId : Text
+    quoteInstrumentId : Text
+    tradingMode : TradingMode
+    feeModel : FeeModel
+    active : Bool
+    -- New in v0.0.6: Optional for Daml smart-upgrade compatibility with
+    -- the v0.0.5-vetted DexPair template on the testnet synchronizer.
+    publicReaders : Optional [Party]
+      -- ^ Parties allowed to observe the pair listing on-ledger.
+      --   None / [] = pair is operator-private except for admin.
+    accumulatedMakerFees : Optional (TextMap.TextMap Decimal)
+      -- ^ Per-instrument running total of maker-side fee accrual,
+      --   keyed by `instrumentId`. Bumped by
+      --   `DexPair_RecordMatchedTrade` from `MatchedTrade_Settle`.
+    accumulatedTakerFees : Optional (TextMap.TextMap Decimal)
+      -- ^ Per-instrument running total of taker-side fee accrual.
+  where
+    signatory operator
+    observer admin :: optional [] identity publicReaders
+
+    choice DexPair_UpdateFeeModel : ContractId DexPair
+      with
+        newFeeModel : FeeModel
+      controller operator
+      do create this with feeModel = newFeeModel
+
+    choice DexPair_SetActive : ContractId DexPair
+      with
+        newActive : Bool
+      controller operator
+      do create this with active = newActive
+
+    choice DexPair_UpdateTradingMode : ContractId DexPair
+      with
+        newTradingMode : TradingMode
+      controller operator
+      do create this with tradingMode = newTradingMode
+
+    choice DexPair_UpdatePublicReaders : ContractId DexPair
+      with
+        newReaders : [Party]
+      controller operator
+      do create this with publicReaders = Some newReaders
+
+    -- Called from `MatchedTrade_Settle` to record fees for one trade.
+    -- `legAmounts` is the per-instrument notional touched by the trade
+    -- (we don't currently distinguish maker vs taker on which leg —
+    -- in our matched-trade model, sender is taker and receiver is
+    -- maker; the choice splits the bps accordingly).
+    nonconsuming choice DexPair_RecordMatchedTrade : ContractId DexPair
+      with
+        legNotionals : TextMap.TextMap Decimal
+          -- ^ Total notional touched per instrument id by the
+          --   matched trade. We bump both maker and taker accrual
+          --   counters at their respective bps.
+      controller operator
+      do
+        let curMaker = optional TextMap.empty identity accumulatedMakerFees
+            curTaker = optional TextMap.empty identity accumulatedTakerFees
+            bumpedMaker = foldl
+              (\acc (iid, notional) ->
+                let cur = optional 0.0 identity (TextMap.lookup iid acc)
+                    fee = notional * intToDecimal feeModel.makerFeeBps / 10000.0
+                in TextMap.insert iid (cur + fee) acc)
+              curMaker
+              (TextMap.toList legNotionals)
+            bumpedTaker = foldl
+              (\acc (iid, notional) ->
+                let cur = optional 0.0 identity (TextMap.lookup iid acc)
+                    fee = notional * intToDecimal feeModel.takerFeeBps / 10000.0
+                in TextMap.insert iid (cur + fee) acc)
+              curTaker
+              (TextMap.toList legNotionals)
+        archive self
+        create this with
+          accumulatedMakerFees = Some bumpedMaker
+          accumulatedTakerFees = Some bumpedTaker
+
+    -- Operator's "collect" workflow. STUB: zeroes out the accrual
+    -- counters and returns the cleared totals. Asset emission (actually
+    -- creating operator-side holdings for the accrued amounts) is the
+    -- next-level workstream and requires a registry-side allocation
+    -- against the operator-treasury account.
+    choice DexPair_CollectFees : DexPair_CollectFeesResult
+      controller operator
+      do
+        let makerCleared = optional TextMap.empty identity accumulatedMakerFees
+            takerCleared = optional TextMap.empty identity accumulatedTakerFees
+        cid <- create this with
+          accumulatedMakerFees = Some TextMap.empty
+          accumulatedTakerFees = Some TextMap.empty
+        pure DexPair_CollectFeesResult with
+          pairCid = cid
+          makerFees = makerCleared
+          takerFees = takerCleared
+
+data DexPair_CollectFeesResult = DexPair_CollectFeesResult with
+    pairCid : ContractId DexPair
+    makerFees : TextMap.TextMap Decimal
+    takerFees : TextMap.TextMap Decimal
+  deriving (Eq, Show)

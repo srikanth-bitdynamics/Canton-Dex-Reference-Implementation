@@ -1,0 +1,19 @@
+module CantonDex.DexApp.AllocationExtensionsV2 where
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+
+-- Source anchor:
+--   PR 5333 allocation extensions.
+--
+-- This module is scaffold-only until the local package can depend on the
+-- relevant token-standard surface.
+--
+-- Required source-aligned surface:
+--   * iterated settlement
+--   * nextIterationFunding
+--   * committed allocations
+--   * Allocation_Adjust
+--   * nextIterationAllocationCid
+
+sourceAllocationExtensionAnchor : Optional (ContractId V2.Allocation)
+sourceAllocationExtensionAnchor = None

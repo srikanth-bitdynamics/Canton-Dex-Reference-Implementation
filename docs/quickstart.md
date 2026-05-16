@@ -1,0 +1,149 @@
+# Canton-Dex Quickstart
+
+This is the M1 builder onboarding path. It gets a new evaluator from a fresh
+clone to a passing local test run in under 10 minutes, then walks the four
+runnable workflows they can read and adapt.
+
+## Prerequisites
+
+- macOS or Linux
+- [Daml SDK 3.4.x](https://docs.digitalasset.com/getting-started/installation.html)
+  - install via `curl -sSL https://get.daml.com/ | sh -s 3.4.11`
+  - verify: `daml version` reports `3.4.11`
+- `bash` (any recent version)
+- `git` (only if you need to refresh `vendor/splice` or `vendor/splice-pr5333`)
+
+The Daml CLI emits a "DPM" deprecation warning on each build. It is informational;
+the existing `daml build` flow is the supported path for this repo today.
+
+## Two stacks, one repo
+
+The repo carries two co-existing Daml projects against two different token-standard
+snapshots:
+
+| Path        | Daml package           | Token-standard surface                | What it proves                                                                  |
+| ----------- | ---------------------- | ------------------------------------- | ------------------------------------------------------------------------------- |
+| `src/`      | `canton-dex`           | current upstream (`vendor/splice`)    | OTC / RFQ matched-trade settlement using the `TradingAppV2` pattern             |
+| `pr5333/`   | `canton-dex-pr5333`    | PR-5333 branch (`vendor/splice-pr5333`) | Resting orders, RFQ with policy receipts, pools, swaps, LP token, registry flows |
+
+The split is intentional. PR 108 explicitly distinguishes "what is possible
+today" from "what depends on PR 5333 landing". Builders evaluating only the
+OTC settlement substrate can ignore `pr5333/` entirely.
+
+## One-command build + test
+
+```bash
+# OTC / RFQ stack (TradingAppV2-style):
+bash scripts/build-source-stack.sh
+bash scripts/run-local-daml-tests.sh
+
+# Full stack (orders, pools, LP, registry):
+bash scripts/build-pr5333-surface.sh
+( cd pr5333-tests && daml test )
+```
+
+A successful run prints 3 OTC test results for the `src/` stack and 25 test
+results for the `pr5333/` stack — all marked `ok`. Any `failed` line means
+something broke.
+
+## What the four runnable workflow families look like
+
+These are the four families called out in PR 108. Each one corresponds to a
+specific test in `pr5333-tests/CantonDex/Tests/EndToEndTests.daml` and an
+optional `src/`-stack analog.
+
+### A. Pair / instrument listing
+
+- `pr5333/CantonDex/Dex/DexPair.daml` — listing record with base + quote
+  instrument id, fee model, trading mode (`OrderBook`, `Pool`, `Both`),
+  and an `active` flag.
+- `pr5333/CantonDex/Instrument/InstrumentConfiguration.daml` — registry-side
+  `InstrumentConfiguration` with holder/issuer credential requirements and
+  optional ISIN / CUSIP.
+- Test: `InstrumentTests.daml::testInstrumentConfigCreate`.
+
+### B. Matched-trade OTC / RFQ settlement (TradingAppV2 pattern)
+
+- `pr5333/CantonDex/Dex/MatchedTrade.daml` — V2-only adaptation of
+  `TradingAppV2`. `MatchedTrade_RequestAllocations` creates one request per
+  authorizer; `MatchedTrade_Settle` groups by admin and calls
+  `SettlementFactory_SettleBatch`; `MatchedTrade_Cancel` mirrors the cleanup.
+- `pr5333/CantonDex/Dex/Rfq.daml` + `PolicyReceipt.daml` — the bilateral
+  block-trade flow: trader RFQ, dealer quotes, joint `Rfq_Accept` that emits a
+  `MatchedTrade` carrying an operator-signed `PolicyReceipt` folded into
+  `SettlementInfo.meta`.
+- Tests: `EndToEndTests.daml::testMatchedTradeFullSettle`,
+  `testRfqAcceptProducesMatchedTradeWithReceipt`,
+  `testTradeAllocationRequestAccept`.
+- `src/` analog: `OTCTradeV2.daml` — verbatim port of upstream TradingAppV2;
+  alignment enforced by `scripts/check-tradingappv2-alignment.sh`.
+
+### C. Resting orders backed by V2.Allocation
+
+- `pr5333/CantonDex/Dex/OrderFundingRequest.daml` — trader-signed intent.
+- `pr5333/CantonDex/Dex/Order.daml` — operator-bound `Order` plus
+  `OrderAllocationRequest`. Funding requires the trader to accept the allocation
+  request AND compose `AllocationFactory_Allocate` in the same submission, so
+  the trader's authority drives the holding movement (the operator cannot move
+  trader holdings on their own).
+- `pr5333/CantonDex/Dex/OrderMatchExecution.daml` — applies the PR 5333
+  prefunded-trade pattern: both prefunded allocations get `Allocation_Adjust`-ed
+  with the concrete match legs, then batch-settled; next-iteration CIDs roll
+  forward onto partial fills.
+- Tests: `EndToEndTests.daml::testOrderFundingFlow`,
+  `testAllocationAdjustConservation`.
+
+### D. Constant-product pool with committed allocations
+
+- `pr5333/CantonDex/Dex/Pool.daml` — `Pool_Initialize`,
+  `Pool_AddLiquidity`, `Pool_RemoveLiquidity` (slice-local), `Pool_Swap`
+  (iterated-settlement roll-forward of the head slice), plus
+  `Pool_ComputeSwapOut`, `Pool_Pause`, `Pool_Resume`, `Pool_RecordLPSupply`.
+- `pr5333/CantonDex/Dex/LPToken.daml` — `LPTokenPolicy` owned by an
+  `lpRegistrar` party (distinct from the DEX `operator`), plus
+  `LPMintRequest` and `LPBurnRequest`. Accept exercises produce registry-side
+  `Holding` records, so the LP token is a real token-standard-native instrument.
+- `pr5333/CantonDex/Dex/SwapExecution.daml` — trader-facing `SwapRequest`.
+- `pr5333/CantonDex/Dex/LiquidityRequest.daml` — LP-initiated deposit and
+  withdraw intents (traffic-cost split: LP pays for their own funding actions).
+- Tests: `EndToEndTests.daml::testPoolFullLifecycle`, `testPoolSwapEndToEnd`,
+  `testPoolRemoveLiquidityConsolidates`, `testPoolRemoveLiquiditySliceLocal`.
+
+## What to read first
+
+Approach the repo in this order; each layer references only the four pinned
+upstream sources:
+
+1. `docs/architecture.md` — system model and the four-layer separation.
+2. `docs/workflows.md` — the ten workflows, with which ones run today vs. need PR 5333.
+3. `pr5333/CantonDex/Dex/Pool.daml` — read top-to-bottom to see the
+   slice-local invariant and the iterated-settlement pattern in one place.
+4. `pr5333-tests/CantonDex/Tests/EndToEndTests.daml` — the same workflows
+   exercised against the mock registry.
+
+## How to adapt the reference
+
+The repo is meant to be read AND copied. Common adaptations:
+
+| Goal                                  | Files to copy or extend                                                                          |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Add a new trading pair                | Create a `DexPair`; optionally a `Pool` if the pair runs pool-mode                                |
+| Use a different instrument family     | Create a new `InstrumentConfiguration` (different `admin`, different credential requirements)     |
+| Swap out the mock registry            | Replace `CantonDex.Testing.MockRegistry` with the real registry's `AllocationFactory` + `SettlementFactory` |
+| Add a fee policy                      | Extend `Pool.feeBps` / `DexPair.feeModel` and the `Pool_ComputeSwapOut` math                      |
+| Change RFQ ranking policy             | Modify `Rfq.applyPolicy` and bump the `PolicyReceipt.policyVersion` / `policyHash`               |
+
+The boundary that must NOT move:
+
+- DEX contracts own market structure (orders, trades, pools, LP issuance).
+- Token-standard contracts own reservation and settlement.
+- Registry contracts own asset semantics.
+
+Any change that blurs these is going against the design and will surface as
+duplicated state or authority confusion in the workflows.
+
+## Where to ask for help
+
+- File issues against this repo.
+- For upstream questions on the token-standard or PR 5333 semantics, follow
+  the canonical references linked at the top of [README.md](../README.md).

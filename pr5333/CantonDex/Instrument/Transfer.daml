@@ -1,0 +1,136 @@
+module CantonDex.Instrument.Transfer where
+
+-- Transfer offer / accept / reject / withdraw + TransferPreapproval.
+--
+-- Mirrors the Registry Utility user guide. Two paths:
+--   - offer/accept (default): sender locks holding; receiver accepts
+--     to take ownership.
+--   - direct (preapproved): if the receiver has a TransferPreapproval
+--     for this admin (and optionally for this instrument id), the
+--     sender's offer is treated as immediately accepted by the
+--     registry. The prototype models this as a separate
+--     TransferPreapproved choice the sender can take when the
+--     preapproval contract is in scope.
+
+import CantonDex.Instrument.Credentials qualified as Cred
+import CantonDex.Instrument.Holding qualified as H
+import CantonDex.Instrument.InstrumentConfiguration qualified as IC
+
+-- | A receiver-issued preapproval that lets specific admins (and
+-- optionally specific instrument ids) deliver to the receiver without
+-- an explicit accept step.
+template TransferPreapproval with
+    receiver : Party
+    admin : Party
+    instrumentIds : [Text]
+      -- ^ Empty list = preapproval for all instruments under `admin`.
+  where
+    signatory receiver
+    observer admin
+
+    choice TransferPreapproval_Revoke : ()
+      controller receiver
+      do pure ()
+
+-- | Result of accepting a transfer.
+data TransferOffer_AcceptResult = TransferOffer_AcceptResult with
+    receiverHoldingCid : ContractId H.Holding
+  deriving (Eq, Show)
+
+-- | Sender-signed transfer offer. Sender's holding is pre-locked.
+-- Receiver accepts to take ownership; receiver rejects to release;
+-- sender withdraws to release.
+template TransferOffer with
+    sender : Party
+    receiver : Party
+    admin : Party
+    instrumentId : Text
+    amount : Decimal
+    reference : Text
+    lockedHoldingCid : ContractId H.Holding
+  where
+    signatory sender
+    observer receiver, admin
+
+    ensure amount > 0.0
+
+    choice TransferOffer_Withdraw : ()
+      controller sender
+      do
+        _ <- exercise lockedHoldingCid H.Holding_Unlock
+        pure ()
+
+    choice TransferOffer_Reject : ()
+      with
+        reason : Text
+      controller receiver
+      do
+        _ <- exercise lockedHoldingCid H.Holding_Unlock
+        debug $ "TransferOffer rejected: " <> reason
+        pure ()
+
+    choice TransferOffer_Accept : TransferOffer_AcceptResult
+      with
+        configCid : ContractId IC.InstrumentConfiguration
+        senderClaims : [Cred.Credential]
+        receiverClaims : [Cred.Credential]
+      controller receiver, admin
+      do
+        config <- fetch configCid
+        assertMsg "config instrumentId mismatch" (config.instrumentId == instrumentId)
+        assertMsg "config admin mismatch" (config.admin == admin)
+
+        -- Both sender and receiver must satisfy the holder requirements.
+        let senderOk = null config.holderRequirements
+                    || Cred.verifyCredentials sender config.holderRequirements senderClaims
+            receiverOk = null config.holderRequirements
+                      || Cred.verifyCredentials receiver config.holderRequirements receiverClaims
+        assertMsg "Sender holder credentials not satisfied" senderOk
+        assertMsg "Receiver holder credentials not satisfied" receiverOk
+
+        holding <- fetch lockedHoldingCid
+        assertMsg "Holding amount must equal transfer amount" (holding.amount == amount)
+        archive lockedHoldingCid
+
+        receiverHoldingCid <- create H.Holding with
+          admin
+          owner = receiver
+          instrumentId
+          amount
+          locked = False
+        pure TransferOffer_AcceptResult with receiverHoldingCid
+
+    -- Direct (preapproved) acceptance: the sender exercises this when
+    -- a matching TransferPreapproval is in scope. The receiver's
+    -- preapproval contract authorizes the implicit accept.
+    choice TransferOffer_AcceptPreapproved : TransferOffer_AcceptResult
+      with
+        preapprovalCid : ContractId TransferPreapproval
+        configCid : ContractId IC.InstrumentConfiguration
+        senderClaims : [Cred.Credential]
+      controller sender, admin
+      do
+        preapproval <- fetch preapprovalCid
+        assertMsg "Preapproval receiver mismatch" (preapproval.receiver == receiver)
+        assertMsg "Preapproval admin mismatch" (preapproval.admin == admin)
+        assertMsg "Instrument not in preapproval scope" $
+          null preapproval.instrumentIds
+            || instrumentId `elem` preapproval.instrumentIds
+
+        config <- fetch configCid
+        assertMsg "config instrumentId mismatch" (config.instrumentId == instrumentId)
+        let senderOk = null config.holderRequirements
+                    || Cred.verifyCredentials sender config.holderRequirements senderClaims
+        assertMsg "Sender holder credentials not satisfied" senderOk
+
+        holding <- fetch lockedHoldingCid
+        assertMsg "Holding amount must equal transfer amount" (holding.amount == amount)
+        archive lockedHoldingCid
+
+        receiverHoldingCid <- create H.Holding with
+          admin
+          owner = receiver
+          instrumentId
+          amount
+          locked = False
+        pure TransferOffer_AcceptResult with receiverHoldingCid

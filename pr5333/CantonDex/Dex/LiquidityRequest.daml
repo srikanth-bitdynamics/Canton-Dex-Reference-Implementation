@@ -1,0 +1,74 @@
+module CantonDex.Dex.LiquidityRequest where
+
+-- LP-initiated pool deposit and withdrawal requests.
+--
+-- Traffic-cost split:
+--   - LP pays for creating this request (their own intent)
+--   - LP pays for accepting the downstream allocation requests for the
+--     deposit assets, or for the LP-burn allocation on withdraw
+--   - operator pays for binding the request into Pool state and the
+--     downstream Pool_AddLiquidity / Pool_RemoveLiquidity orchestration
+--   - lpRegistrar pays for the LP holding mint/burn on the registry side
+
+template LiquidityDepositRequest with
+    operator : Party
+    lp : Party
+    admin : Party
+    baseInstrumentId : Text
+    quoteInstrumentId : Text
+    baseAmount : Decimal
+    quoteAmount : Decimal
+    minLpTokens : Decimal
+  where
+    signatory lp
+    observer operator
+
+    ensure baseAmount > 0.0 && quoteAmount > 0.0
+
+    choice LiquidityDepositRequest_Cancel : ()
+      controller lp
+      do pure ()
+
+    choice LiquidityDepositRequest_Reject : ()
+      with
+        reason : Text
+      controller operator
+      do
+        debug $ "LiquidityDepositRequest rejected: " <> reason
+        pure ()
+
+    -- After binding, the operator drives the allocation-request creation
+    -- targeted at this LP. This choice archives the deposit intent so it
+    -- cannot be double-bound.
+    choice LiquidityDepositRequest_Bind : ()
+      controller operator
+      do pure ()
+
+template LiquidityWithdrawRequest with
+    operator : Party
+    lp : Party
+    lpInstrumentId : Text
+    lpTokensToRedeem : Decimal
+    minBaseOut : Decimal
+    minQuoteOut : Decimal
+  where
+    signatory lp
+    observer operator
+
+    ensure lpTokensToRedeem > 0.0
+
+    choice LiquidityWithdrawRequest_Cancel : ()
+      controller lp
+      do pure ()
+
+    choice LiquidityWithdrawRequest_Reject : ()
+      with
+        reason : Text
+      controller operator
+      do
+        debug $ "LiquidityWithdrawRequest rejected: " <> reason
+        pure ()
+
+    choice LiquidityWithdrawRequest_Bind : ()
+      controller operator
+      do pure ()

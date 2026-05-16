@@ -1,0 +1,311 @@
+module CantonDex.Dex.Rfq where
+
+-- Minimal on-ledger RFQ state machine for the bilateral block-trade
+-- (MatchedTrade) workflow.
+--
+-- Scope:
+--
+--   - `Rfq` is the trader's request for quotes against a whitelisted
+--     set of dealers. Trader-signed; operator + whitelisted dealers
+--     observe.
+--   - `RfqQuote` is a dealer's signed quote in response. Dealer-signed;
+--     trader + operator observe.
+--   - `Rfq_Accept` is a trader-controlled choice that consumes the Rfq
+--     and a chosen RfqQuote, and (in the same transaction) creates a
+--     `MatchedTrade` carrying a derived `PolicyReceipt`. The receipt's
+--     `rankedDealers` is computed from the quote ACS the trader saw at
+--     accept time, so the operator's published policy can be replayed
+--     against it for audit.
+--
+-- What this DOES NOT do:
+--
+--   - The operator's policy is currently hard-coded as the same chain
+--     used by the prototype's `rankQuotes` (validity → trusted tier →
+--     price → postedAt → tiebreaker). Production should make the policy
+--     a separate first-class contract that both trader and dealer
+--     reference; the receipt would carry that contract's hash.
+--   - Dealer quotes are not evaluated for actual execution price impact
+--     against trader holdings; that's the trader's business and the
+--     accept choice trusts the dealer's quoted price.
+--   - The MatchedTrade created here is operator-signed; in production
+--     creation needs the operator's authority via a delegation
+--     contract. For testing we exercise the RFQ accept while submitting
+--     as both trader and operator (Daml Script supports this via
+--     submitMulti).
+
+import DA.Foldable (forA_)
+import DA.List qualified as List
+import DA.Text qualified as Text
+import DA.TextMap qualified as TextMap
+import DA.Time
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Dex.PolicyReceipt qualified as PR
+import CantonDex.Pr5333.Utils qualified as Utils
+
+data RfqSide = RFQ_Buy | RFQ_Sell
+  deriving (Eq, Show)
+
+data RfqStatus
+  = RFQ_Open
+  | RFQ_Accepted
+  | RFQ_Cancelled
+  | RFQ_Expired
+  deriving (Eq, Show)
+
+data DealerTier = TierTrusted | TierWhitelist
+  deriving (Eq, Show, Ord)
+
+dealerTierToText : DealerTier -> Text
+dealerTierToText TierTrusted = "trusted"
+dealerTierToText TierWhitelist = "whitelist"
+
+-- | Trader-signed request for quotes. Whitelisted dealers + operator
+-- observe so they can post quotes against it.
+template Rfq with
+    trader : Party
+    operator : Party
+    rfqId : Text
+    pair : Text
+      -- ^ "BASE/QUOTE" string. Kept as text to match the prototype.
+    side : RfqSide
+    size : Decimal
+    expiresAt : Time
+    whitelist : [Party]
+    createdAt : Time
+  where
+    signatory trader
+    observer operator :: whitelist
+
+    ensure size > 0.0
+
+    choice Rfq_Cancel : ()
+      controller trader
+      do pure ()
+
+    choice Rfq_Expire : ()
+      with
+        currentTime : Time
+      controller operator
+      do
+        assertMsg "RFQ has not expired yet" (currentTime >= expiresAt)
+        pure ()
+
+    -- Trader+operator joint accept. Picks a specific quote, builds the
+    -- PolicyReceipt from the full quote ACS (which the trader supplies
+    -- as `consideredQuoteCids`), and creates a MatchedTrade with the
+    -- receipt attached.
+    --
+    -- Controller is BOTH `trader` and `operator`. Both authorities are
+    -- needed in the choice body: trader's to consume the Rfq + quotes,
+    -- operator's to create the MatchedTrade (signatory operator).
+    -- Submitting via submitMulti [trader, operator] [] gives both.
+    choice Rfq_Accept : Rfq_AcceptResult
+      with
+        acceptedQuoteCid : ContractId RfqQuote
+        consideredQuoteCids : [ContractId RfqQuote]
+          -- ^ All valid quotes the operator's matcher considered, in
+          --   ACS order. The choice computes the policy ranking over
+          --   these; the resulting PolicyReceipt is the audit anchor.
+        admin : Party
+        currentTime : Time
+        signature : Text
+          -- ^ Operator-supplied digest of the receipt inputs. Treated
+          --   as opaque text on-ledger; off-chain replay re-derives it.
+      controller trader, operator
+      do
+        assertMsg "RFQ must not be expired" (currentTime < expiresAt)
+
+        -- Fetch all considered quotes and the chosen one.
+        considered <- forA consideredQuoteCids fetch
+        accepted <- fetch acceptedQuoteCid
+        assertMsg "Accepted quote must be in considered set" $
+          any (\q -> q.dealer == accepted.dealer && q.price == accepted.price) considered
+        assertMsg "Accepted quote must reference this RFQ" $
+          accepted.rfqId == rfqId
+        forA_ considered $ \q -> do
+          assertMsg "All considered quotes must reference this RFQ" $
+            q.rfqId == rfqId
+          assertMsg "Considered quote must still be valid" $
+            currentTime < q.expiresAt
+
+        -- Compute the ranking under operator policy v2.0:
+        --   whitelist-preference (trusted-tier first) → expiry (later
+        --   expiresAt preferred — more time to act) → createdAt
+        --   (postedAt earliest first) → venue tie-breaker (deterministic
+        --   hash of dealer party id).
+        let ranked = applyPolicy side considered
+            n = length ranked
+            indexed = zip ranked [1..n]
+            acceptedRank = case List.find (\(q, _) -> q.dealer == accepted.dealer) indexed of
+              Some (_, r) -> r
+              None -> 0
+        assertMsg "Accepted dealer must be in the ranked list" (acceptedRank > 0)
+
+        let rankedDealers = do
+              (q, r) <- indexed
+              pure PR.RankedDealer with
+                party = q.dealer
+                rank = r
+                price = q.price
+                tier = dealerTierToText q.tier
+
+        let receipt = PR.PolicyReceipt with
+              policyVersion = "v2.0"
+              policyHash = "sha256:rfq-policy-v2.0"
+              rfqId
+              rankedDealers
+              acceptedDealer = accepted.dealer
+              acceptedRank
+              consideredCount = n
+              signedBy = operator
+              signedAt = currentTime
+              signature
+
+        -- Build the trade legs from the accepted quote. The exact leg
+        -- shape depends on the side: a BUY RFQ means trader sends
+        -- quote-asset and receives base-asset; SELL is the inverse.
+        let (baseSym, quoteSym) = splitPair pair
+            traderAccount = Utils.basicAccount trader
+            dealerAccount = Utils.basicAccount accepted.dealer
+            quoteNotional = accepted.price * size
+            legs = case side of
+              RFQ_Buy ->
+                [ V2.TransferLeg with
+                    transferLegId = "base-leg"
+                    sender = dealerAccount
+                    receiver = traderAccount
+                    amount = size
+                    instrumentId = baseSym
+                    meta = emptyMetadata
+                , V2.TransferLeg with
+                    transferLegId = "quote-leg"
+                    sender = traderAccount
+                    receiver = dealerAccount
+                    amount = quoteNotional
+                    instrumentId = quoteSym
+                    meta = emptyMetadata
+                ]
+              RFQ_Sell ->
+                [ V2.TransferLeg with
+                    transferLegId = "base-leg"
+                    sender = traderAccount
+                    receiver = dealerAccount
+                    amount = size
+                    instrumentId = baseSym
+                    meta = emptyMetadata
+                , V2.TransferLeg with
+                    transferLegId = "quote-leg"
+                    sender = dealerAccount
+                    receiver = traderAccount
+                    amount = quoteNotional
+                    instrumentId = quoteSym
+                    meta = emptyMetadata
+                ]
+
+        -- Rfq_Accept is consuming by default, so `self` is archived
+        -- automatically -- no explicit archive needed.
+        --
+        -- Quotes are dealer-signed; consume them via their own
+        -- trader-controlled choice (same pattern as LPMintRequest_Consume).
+        forA_ consideredQuoteCids $ \cid -> exercise cid RfqQuote_TraderConsume
+
+        tradeCid <- create MT.MatchedTrade with
+          venue = operator
+          admin
+          transferLegs = legs
+          settlementDeadline = Some expiresAt
+          policyReceipt = Some receipt
+
+        pure Rfq_AcceptResult with
+          tradeCid
+          receipt
+
+data Rfq_AcceptResult = Rfq_AcceptResult with
+    tradeCid : ContractId MT.MatchedTrade
+    receipt : PR.PolicyReceipt
+  deriving (Eq, Show)
+
+-- | Dealer-signed quote in response to an Rfq.
+template RfqQuote with
+    dealer : Party
+    trader : Party
+    operator : Party
+    rfqId : Text
+    price : Decimal
+    expiresAt : Time
+    postedAt : Time
+    tier : DealerTier
+      -- ^ Operator-assigned tier at quote-post time. Operator is
+      --   observer of the quote so the tier label is verifiable.
+  where
+    signatory dealer
+    observer trader, operator
+
+    ensure price > 0.0
+
+    choice RfqQuote_Withdraw : ()
+      controller dealer
+      do pure ()
+
+    -- Allows the trader to consume the quote when they accept the RFQ.
+    -- Same cross-authority pattern as LPMintRequest_Consume: the quote
+    -- is dealer-signed; the trader exercising this choice provides the
+    -- consumption authority. The quote is observed by the trader so the
+    -- choice is exercisable.
+    choice RfqQuote_TraderConsume : ()
+      controller trader
+      do pure ()
+
+-- | Apply the operator's RFQ ranking policy v2.0 to a list of quotes.
+-- Sort chain, in order:
+--   1. whitelist-preference: trusted-tier dealers rank above
+--      whitelist-tier dealers (filter-then-rank model: only
+--      whitelisted dealers can post on an RFQ in the first place,
+--      so this row distinguishes trusted-subset within the whitelist).
+--   2. expiry: later `expiresAt` ranks higher — the trader has more
+--      time to act on a longer-lived quote.
+--   3. createdAt: earlier `postedAt` ranks higher — first-mover.
+--   4. venue tie-breaker: deterministic, derived from the dealer
+--      party id, so two quotes that tie on (1)-(3) get a stable
+--      ordering. Uses Text.compareOn the party id string.
+--
+-- The `side` parameter is no longer used by `policy` mode itself
+-- (price isn't a sort key here — the trader picks among the policy-
+-- ranked candidates), but it's still consumed by the other sort
+-- modes which the UI exposes for trader convenience.
+applyPolicy : RfqSide -> [RfqQuote] -> [RfqQuote]
+applyPolicy _side quotes =
+  -- Validity (currentTime < expiresAt) is enforced by Rfq_Accept's
+  -- pre-flight check on each considered quote. applyPolicy is a pure
+  -- ranking and trusts its input.
+  List.sortBy policyCmp quotes
+  where
+    policyCmp a b =
+      let tierA = if a.tier == TierTrusted then 0 else 1
+          tierB = if b.tier == TierTrusted then 0 else 1
+          tierCmp = compare tierA tierB
+          -- Later expiry first ⇒ reverse compare on expiresAt.
+          expiryCmp = compare b.expiresAt a.expiresAt
+          -- Earlier postedAt first ⇒ normal compare.
+          postedCmp = compare a.postedAt b.postedAt
+          -- Deterministic tie-break on dealer party id text.
+          venueCmp = compare (partyToText a.dealer) (partyToText b.dealer)
+      in case tierCmp of
+           EQ -> case expiryCmp of
+             EQ -> case postedCmp of
+               EQ -> venueCmp
+               c -> c
+             c -> c
+           c -> c
+
+-- | Split "BASE/QUOTE" into (base, quote). Defensive: returns ("","") on
+-- malformed input.
+splitPair : Text -> (Text, Text)
+splitPair pair = case Text.splitOn "/" pair of
+  [b, q] -> (b, q)
+  _ -> ("", "")

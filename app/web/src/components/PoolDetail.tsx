@@ -1,0 +1,560 @@
+// Pool detail screen — add liquidity, remove liquidity, LP position
+// summary, and on-ledger details. Direct port of `cdex-pools.jsx
+// PoolDetail` adapted to the typed Pool shape.
+//
+// Add/remove liquidity are gated through `ledger.addLiquidity` /
+// `ledger.removeLiquidity` (which delegates to wallet handoff for the
+// trader-authority allocation creation).
+
+import { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+
+import { ASSETS } from '@/primitives/assets';
+import { PairGlyph } from '@/primitives/Glyph';
+import { StatusBadge } from '@/primitives/StatusBadge';
+import { Spark, genSpark } from '@/primitives/Spark';
+import { fmt, fmtUsd, fmtUsdK } from '@/primitives/format';
+import { ledger } from '@/services/ledger';
+import type { Holding, Pool } from '@/types/contracts';
+import { useCurrentParty } from '@/wallet/hooks';
+
+interface Props {
+  pool: Pool;
+  holdings: Holding[];
+  /** User's LP holding for this pool, if any. */
+  lpHeld: number;
+  onBack: () => void;
+}
+
+export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
+  const party = useCurrentParty();
+  const { data: context } = useQuery({
+    queryKey: ['context'],
+    queryFn: ledger.getContext,
+  });
+  const balanceOf = (s: string) =>
+    holdings.find((h) => h.instrumentId === s && !h.locked)?.amount ?? 0;
+  const ratio = pool.reserves.quoteAmount / pool.reserves.baseAmount;
+
+  const [baseAmt, setBaseAmt] = useState('');
+  const [quoteAmt, setQuoteAmt] = useState('');
+  const [removePct, setRemovePct] = useState(50);
+
+  const sharePct =
+    pool.totalLpSupply > 0 ? (lpHeld / pool.totalLpSupply) * 100 : 0;
+  const userBaseValue =
+    pool.totalLpSupply > 0
+      ? (lpHeld / pool.totalLpSupply) * pool.reserves.baseAmount
+      : 0;
+  const userQuoteValue =
+    pool.totalLpSupply > 0
+      ? (lpHeld / pool.totalLpSupply) * pool.reserves.quoteAmount
+      : 0;
+
+  const newLpTokens = useMemo(() => {
+    const b = parseFloat(baseAmt) || 0;
+    if (!b || pool.reserves.baseAmount === 0) return 0;
+    return (b / pool.reserves.baseAmount) * pool.totalLpSupply;
+  }, [baseAmt, pool]);
+
+  const onBaseChange = (v: string) => {
+    const cleaned = v.replace(/[^0-9.]/g, '');
+    setBaseAmt(cleaned);
+    const num = parseFloat(cleaned);
+    if (num > 0) {
+      const decimals = ASSETS[pool.quoteInstrumentId]?.decimals ?? 2;
+      setQuoteAmt((num * ratio).toFixed(decimals));
+    } else setQuoteAmt('');
+  };
+  const onQuoteChange = (v: string) => {
+    const cleaned = v.replace(/[^0-9.]/g, '');
+    setQuoteAmt(cleaned);
+    const num = parseFloat(cleaned);
+    if (num > 0) {
+      const decimals = ASSETS[pool.baseInstrumentId]?.decimals ?? 4;
+      setBaseAmt((num / ratio).toFixed(decimals));
+    } else setBaseAmt('');
+  };
+
+  const removeBase =
+    pool.totalLpSupply > 0
+      ? ((lpHeld * removePct) / 100 / pool.totalLpSupply) *
+        pool.reserves.baseAmount
+      : 0;
+  const removeQuote =
+    pool.totalLpSupply > 0
+      ? ((lpHeld * removePct) / 100 / pool.totalLpSupply) *
+        pool.reserves.quoteAmount
+      : 0;
+
+  const canAdd =
+    !!party &&
+    !!context &&
+    parseFloat(baseAmt) > 0 &&
+    parseFloat(baseAmt) <= balanceOf(pool.baseInstrumentId) &&
+    parseFloat(quoteAmt) <= balanceOf(pool.quoteInstrumentId);
+  const canRemove = !!party && lpHeld > 0;
+
+  const onAdd = async () => {
+    if (!context) throw new Error('dApp context not loaded yet');
+    await ledger.addLiquidity({
+      context,
+      poolId: pool.contractId,
+      baseAmount: parseFloat(baseAmt),
+      quoteAmount: parseFloat(quoteAmt),
+      minLpTokens: newLpTokens,
+    });
+    setBaseAmt('');
+    setQuoteAmt('');
+  };
+
+  const onRemove = async () => {
+    if (!party) throw new Error('connect a wallet to remove liquidity');
+    await ledger.removeLiquidity({
+      poolId: pool.contractId,
+      holder: party,
+      lpTokens: (lpHeld * removePct) / 100,
+      knownTotalLpSupply: pool.totalLpSupply,
+      minBaseOut: removeBase,
+      minQuoteOut: removeQuote,
+      lpInstrumentId: pool.lpInstrumentId,
+    });
+  };
+
+  return (
+    <div className="page">
+      <div style={{ marginBottom: 12 }}>
+        <button className="btn ghost tiny" onClick={onBack}>
+          ← All pools
+        </button>
+      </div>
+
+      <div className="page-header">
+        <div className="row">
+          <PairGlyph
+            base={pool.baseInstrumentId}
+            quote={pool.quoteInstrumentId}
+            size={32}
+          />
+          <div>
+            <h1 className="page-title">
+              {pool.baseInstrumentId} / {pool.quoteInstrumentId}
+            </h1>
+            <p className="page-sub">
+              Constant-product pool · Fee {(pool.feeBps / 100).toFixed(2)}% ·{' '}
+              <StatusBadge status={pool.status} />
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid-3" style={{ marginBottom: 20 }}>
+        <div className="stat">
+          <div className="stat-l">TVL</div>
+          <div className="stat-v">
+            {fmtUsdK(
+              pool.reserves.baseAmount *
+                (ASSETS[pool.baseInstrumentId]?.price ?? 0) +
+                pool.reserves.quoteAmount *
+                  (ASSETS[pool.quoteInstrumentId]?.price ?? 0),
+            )}
+          </div>
+          <div className="stat-d">
+            {fmt(pool.reserves.baseAmount, 4)} {pool.baseInstrumentId} ·{' '}
+            {fmt(pool.reserves.quoteAmount, 0)} {pool.quoteInstrumentId}
+          </div>
+        </div>
+        <div className="stat">
+          <div className="stat-l">Mid price</div>
+          <div className="stat-v">
+            {fmt(
+              pool.reserves.quoteAmount / Math.max(pool.reserves.baseAmount, 1),
+              2,
+            )}
+          </div>
+          <div className="stat-d up">+1.24% 24h</div>
+        </div>
+        <div className="stat">
+          <div className="stat-l">k constant</div>
+          <div className="stat-v">
+            {fmt(pool.reserves.baseAmount * pool.reserves.quoteAmount, 0)}
+          </div>
+          <div className="stat-d">x · y = k</div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '460px 1fr',
+          gap: 20,
+          alignItems: 'start',
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Add liquidity */}
+          <div className="card">
+            <div className="card-head">
+              <h3 className="card-title">Add liquidity</h3>
+              <span className="card-sub">Match the pool ratio</span>
+            </div>
+            <div className="card-body">
+              <div className="field">
+                <div className="field-label">
+                  <span>{pool.baseInstrumentId}</span>
+                  <span style={{ color: 'var(--text-2)' }}>
+                    Balance:{' '}
+                    <span className="num">
+                      {fmt(
+                        balanceOf(pool.baseInstrumentId),
+                        ASSETS[pool.baseInstrumentId]?.decimals ?? 4,
+                      )}
+                    </span>
+                  </span>
+                </div>
+                <div className="field-row">
+                  <input
+                    value={baseAmt}
+                    onChange={(e) => onBaseChange(e.target.value)}
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+              <div className="sp-8" />
+              <div className="field">
+                <div className="field-label">
+                  <span>{pool.quoteInstrumentId}</span>
+                  <span style={{ color: 'var(--text-2)' }}>
+                    Balance:{' '}
+                    <span className="num">
+                      {fmt(
+                        balanceOf(pool.quoteInstrumentId),
+                        ASSETS[pool.quoteInstrumentId]?.decimals ?? 2,
+                      )}
+                    </span>
+                  </span>
+                </div>
+                <div className="field-row">
+                  <input
+                    value={quoteAmt}
+                    onChange={(e) => onQuoteChange(e.target.value)}
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+
+              {newLpTokens > 0 && (
+                <>
+                  <div className="sp-16" />
+                  <div
+                    style={{
+                      background: 'var(--bg)',
+                      borderRadius: 8,
+                      border: '1px solid var(--border)',
+                      padding: 12,
+                    }}
+                  >
+                    <div className="kv">
+                      <span className="k">Pool ratio</span>
+                      <span className="v">
+                        1 {pool.baseInstrumentId} ={' '}
+                        <span className="num">{fmt(ratio, 2)}</span>{' '}
+                        {pool.quoteInstrumentId}
+                      </span>
+                    </div>
+                    <div className="kv">
+                      <span className="k">Your share after</span>
+                      <span className="v">
+                        {(
+                          (newLpTokens / (pool.totalLpSupply + newLpTokens)) *
+                          100
+                        ).toFixed(3)}
+                        %
+                      </span>
+                    </div>
+                    <div className="kv">
+                      <span className="k">LP tokens to mint</span>
+                      <span className="v">
+                        <span className="num">{fmt(newLpTokens, 4)}</span>{' '}
+                        {pool.baseInstrumentId}/{pool.quoteInstrumentId} LP
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <div className="sp-16" />
+              <button
+                className="btn primary block"
+                disabled={!canAdd}
+                onClick={onAdd}
+              >
+                {!parseFloat(baseAmt)
+                  ? 'Enter amounts'
+                  : !canAdd
+                    ? 'Insufficient balance'
+                    : 'Add liquidity'}
+              </button>
+            </div>
+          </div>
+
+          {/* Existing position */}
+          {lpHeld > 0 && (
+            <div className="card">
+              <div className="card-head">
+                <h3 className="card-title">Your LP position</h3>
+                <span className="alloc-pill">LPToken#{pool.lpInstrumentId}</span>
+              </div>
+              <div className="card-body">
+                <div className="grid-2">
+                  <div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--text-2)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.06em',
+                      }}
+                    >
+                      LP tokens
+                    </div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 20, fontWeight: 600 }}
+                    >
+                      <span className="num">{fmt(lpHeld, 4)}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--text-2)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.06em',
+                      }}
+                    >
+                      Pool share
+                    </div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 20, fontWeight: 600 }}
+                    >
+                      {sharePct.toFixed(2)}%
+                    </div>
+                  </div>
+                </div>
+                <div className="sp-12" />
+                <div className="kv">
+                  <span className="k">Underlying {pool.baseInstrumentId}</span>
+                  <span className="v">
+                    <span className="num">
+                      {fmt(
+                        userBaseValue,
+                        ASSETS[pool.baseInstrumentId]?.decimals ?? 4,
+                      )}
+                    </span>
+                  </span>
+                </div>
+                <div className="kv">
+                  <span className="k">Underlying {pool.quoteInstrumentId}</span>
+                  <span className="v">
+                    <span className="num">
+                      {fmt(
+                        userQuoteValue,
+                        ASSETS[pool.quoteInstrumentId]?.decimals ?? 2,
+                      )}
+                    </span>
+                  </span>
+                </div>
+                <div className="kv">
+                  <span className="k">Position value</span>
+                  <span className="v">
+                    {fmtUsd(
+                      userBaseValue *
+                        (ASSETS[pool.baseInstrumentId]?.price ?? 0) +
+                        userQuoteValue *
+                          (ASSETS[pool.quoteInstrumentId]?.price ?? 0),
+                    )}
+                  </span>
+                </div>
+
+                <div className="sp-16" />
+                <div className="section-h">Remove liquidity</div>
+                <div className="row" style={{ gap: 6 }}>
+                  {[25, 50, 75, 100].map((p) => (
+                    <button
+                      key={p}
+                      className={`btn tiny ${removePct === p ? 'primary' : ''}`}
+                      onClick={() => setRemovePct(p)}
+                    >
+                      {p}%
+                    </button>
+                  ))}
+                </div>
+                <div className="sp-12" />
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={removePct}
+                  onChange={(e) => setRemovePct(parseInt(e.target.value, 10))}
+                  className="w-full"
+                />
+                <div className="sp-12" />
+                <div
+                  style={{
+                    background: 'var(--bg)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    padding: 10,
+                    fontSize: 12,
+                  }}
+                >
+                  <div className="kv">
+                    <span className="k">Receive {pool.baseInstrumentId}</span>
+                    <span className="v">
+                      <span className="num">
+                        {fmt(
+                          removeBase,
+                          ASSETS[pool.baseInstrumentId]?.decimals ?? 4,
+                        )}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="kv">
+                    <span className="k">Receive {pool.quoteInstrumentId}</span>
+                    <span className="v">
+                      <span className="num">
+                        {fmt(
+                          removeQuote,
+                          ASSETS[pool.quoteInstrumentId]?.decimals ?? 2,
+                        )}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+                <div className="sp-12" />
+                <button
+                  className="btn danger block"
+                  onClick={onRemove}
+                  disabled={!canRemove}
+                  title={
+                    !party
+                      ? 'Connect a wallet to remove liquidity'
+                      : !canRemove
+                        ? 'No LP position to redeem'
+                        : undefined
+                  }
+                >
+                  Remove {removePct}% liquidity
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className="card">
+            <div className="card-head">
+              <h3 className="card-title">Pool depth</h3>
+              <span className="card-sub">x · y = k</span>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              <div
+                style={{
+                  height: 180,
+                  margin: 14,
+                  background:
+                    'linear-gradient(180deg, rgba(63,185,80,0.08), transparent)',
+                  border: '1px dashed var(--border)',
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: 'var(--text-3)',
+                  fontSize: 12,
+                }}
+              >
+                <Spark
+                  data={genSpark(pool.contractId.length, 64)}
+                  width={400}
+                  height={120}
+                  color="#3FB950"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <h3 className="card-title">Pool details</h3>
+            </div>
+            <div className="card-body">
+              <div className="kv">
+                <span className="k">Reserves ({pool.baseInstrumentId})</span>
+                <span className="v">
+                  <span className="num">{fmt(pool.reserves.baseAmount, 4)}</span>
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">Reserves ({pool.quoteInstrumentId})</span>
+                <span className="v">
+                  <span className="num">{fmt(pool.reserves.quoteAmount, 2)}</span>
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">Total LP supply</span>
+                <span className="v">
+                  <span className="num">{fmt(pool.totalLpSupply, 4)}</span>
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">Pool contract</span>
+                <span className="v alloc-pill">
+                  Pool#{pool.contractId.slice(0, 6)}
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">LP token policy</span>
+                <span className="v alloc-pill">
+                  LPToken#{pool.lpInstrumentId}
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">{pool.baseInstrumentId} slices</span>
+                <span className="v">
+                  <span className="alloc-pill">
+                    {pool.baseSlices.length} committed
+                  </span>{' '}
+                  <span className="badge green tiny" style={{ marginLeft: 4 }}>
+                    slice-local
+                  </span>
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">{pool.quoteInstrumentId} slices</span>
+                <span className="v">
+                  <span className="alloc-pill">
+                    {pool.quoteSlices.length} committed
+                  </span>{' '}
+                  <span className="badge green tiny" style={{ marginLeft: 4 }}>
+                    slice-local
+                  </span>
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">Operator</span>
+                <span className="v mono">{pool.operator}</span>
+              </div>
+              <div className="kv">
+                <span className="k">LP registrar</span>
+                <span className="v mono">{pool.lpRegistrar}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

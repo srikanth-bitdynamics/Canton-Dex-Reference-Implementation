@@ -1,0 +1,262 @@
+module CantonDex.Testing.MockRegistry where
+
+-- Minimal V2 token-standard mock for Daml Script tests.
+--
+-- Implements the three interfaces the DEX contracts call into:
+--   - V2.Allocation
+--   - V2.AllocationFactory
+--   - V2.SettlementFactory
+--
+-- Scope and limitations (be honest):
+--
+--   - Holdings are NOT tracked. The mock allocation carries no
+--     `holdingCids` and the mock settle/cancel/withdraw return empty
+--     `authorizerHoldingCids`. The DEX contracts under test don't read
+--     those values during the workflows we care about, so this is enough
+--     for end-to-end script coverage of the DEX flows.
+--
+--   - Authority is simplified. `MockAllocation` is signatory the
+--     `admin` party only. A real V2 allocation has both authorizer.owner
+--     and admin as signatories; the mock accepts whatever the factory
+--     gives it. This makes the mock unsuitable for testing the V2
+--     authorization model itself, only for testing flows that COMPOSE
+--     the V2 calls.
+--
+--   - `Allocation_Settle` archives self and conditionally creates a
+--     next-iteration allocation if the original spec has
+--     `nextIterationFunding`. That is enough to exercise the iterated-
+--     settlement roll-forward in the Pool swap path.
+--
+--   - `Allocation_Adjust` enforces funding conservation in Daml: the
+--     net per-instrument outflow from the authorizer across the
+--     additional transfer legs must be covered by the current
+--     `nextIterationFunding` budget, and the budget is reduced
+--     accordingly on the next-state allocation. This makes a malicious
+--     adjustment (executor trying to spend more funds than the
+--     authorizer granted) require an INVALID Daml transaction, not just
+--     a policy breach. Production registries MUST do the same.
+--
+-- This file lives under `CantonDex/Testing/` to make its scope clear.
+-- Production code MUST NOT import from this module.
+
+import DA.Foldable (forA_)
+import DA.Map qualified as Map
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Pr5333.Utils qualified as Utils
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with
+  context = emptyChoiceContext
+  meta = emptyMetadata
+
+-- | Mock V2.Allocation. Carries the spec verbatim; settlement/cancel/
+-- withdraw archive self; adjust archives + recreates with combined legs;
+-- settle conditionally creates a next-iteration allocation.
+template MockAllocation with
+    admin : Party
+      -- ^ The asset admin / mock registrar. Sole signatory.
+    spec : V2.AllocationSpecification
+  where
+    signatory admin
+    observer Utils.accountParties spec.authorizer ++ spec.settlement.executors
+
+    interface instance V2.Allocation for MockAllocation where
+      view = V2.AllocationView with
+        originalAllocationCid = None
+        allocation = spec
+        holdingCids = []
+        expiresAt = spec.settlement.settlementDeadline
+        availableActions = Map.empty
+        meta = emptyMetadata
+
+      allocation_settleExtraObservers _ = []
+      allocation_adjustExtraObservers _ = []
+      allocation_cancelExtraObservers _ = []
+      allocation_withdrawExtraObservers _ = []
+
+      allocation_settleImpl self _arg = do
+        archive self
+        nextCid <- case spec.nextIterationFunding of
+          None -> pure None
+          Some funding -> do
+            -- Roll forward an empty-legs, same-funding allocation that
+            -- the executor can adjust + settle in the next iteration.
+            let nextSpec = spec with
+                  transferLegs = []
+                  nextIterationFunding = Some funding
+            cid <- create this with spec = nextSpec
+            pure (Some (toInterfaceContractId cid))
+        pure V2.Allocation_SettleResult with
+          authorizerHoldingCids = TextMap.empty
+          nextIterationAllocationCid = nextCid
+          meta = emptyMetadata
+
+      allocation_adjustImpl self arg = do
+        -- Layer C: enforce funding conservation in Daml.
+        --
+        -- The V2 spec requires that "the net amount of the additional
+        -- transfer legs is covered by the current `nextIterationFunding`
+        -- amounts." A registry that fails to enforce this lets the
+        -- executor spend funds the authorizer never granted. Because the
+        -- DEX operator IS the executor, conservation is what prevents a
+        -- malicious operator from misusing iterated-settlement funds.
+        --
+        -- Enforced invariants per call:
+        --   1. spec.nextIterationFunding must be set (otherwise iterated
+        --      adjustment is not authorized at all).
+        --   2. Every additional leg must involve the authorizer as
+        --      sender or receiver (matches the AllocationSpecification
+        --      transferLegs invariant).
+        --   3. For each instrument id, the net outflow from the
+        --      authorizer (sender legs minus receiver legs) must not
+        --      exceed the current per-instrument budget. Self-transfers
+        --      net to zero.
+        --   4. After the adjustment, the per-instrument budget is
+        --      reduced by the net consumed amount, so subsequent
+        --      adjustments cannot double-spend the same funding.
+        oldFunding <- case spec.nextIterationFunding of
+          Some f -> pure f
+          None -> abort "Allocation_Adjust: nextIterationFunding is None; iterated adjustment not authorized"
+        let authorizerOwner = spec.authorizer.owner
+        forA_ arg.additionalTransferLegs $ \leg ->
+          assertMsg
+            ("Allocation_Adjust: additional leg " <> leg.transferLegId <>
+             " does not involve the authorizer")
+            (leg.sender.owner == authorizerOwner || leg.receiver.owner == authorizerOwner)
+        let netDelta : TextMap.TextMap Decimal =
+              foldl
+                (\m leg ->
+                  let signed : Decimal
+                      signed
+                        | leg.sender.owner == authorizerOwner &&
+                          leg.receiver.owner == authorizerOwner = 0.0
+                        | leg.sender.owner == authorizerOwner = leg.amount
+                        | leg.receiver.owner == authorizerOwner = negate leg.amount
+                        | otherwise = 0.0
+                      cur = optional 0.0 identity (TextMap.lookup leg.instrumentId m)
+                  in TextMap.insert leg.instrumentId (cur + signed) m)
+                TextMap.empty
+                arg.additionalTransferLegs
+        forA_ (TextMap.toList netDelta) $ \(iid, consumed) -> do
+          let budget = optional 0.0 identity (TextMap.lookup iid oldFunding)
+          assertMsg
+            ("Allocation_Adjust: instrument " <> iid <>
+             " net consumption " <> show consumed <>
+             " exceeds budget " <> show budget)
+            (consumed <= budget)
+        let updatedFunding =
+              foldl
+                (\acc (iid, consumed) ->
+                  let budget = optional 0.0 identity (TextMap.lookup iid acc)
+                  in TextMap.insert iid (budget - consumed) acc)
+                oldFunding
+                (TextMap.toList netDelta)
+        archive self
+        let combinedLegs = spec.transferLegs ++ arg.additionalTransferLegs
+            -- If the executor opts out of future iterations, drop the
+            -- nextIterationFunding so settle won't roll forward.
+            nextFunding = if arg.allowFutureIterations
+                          then Some updatedFunding
+                          else None
+            newSpec = spec with
+              transferLegs = combinedLegs
+              nextIterationFunding = nextFunding
+        cid <- create this with spec = newSpec
+        pure V2.Allocation_AdjustResult with
+          allocationCid = toInterfaceContractId cid
+          meta = emptyMetadata
+
+      allocation_cancelImpl self _arg = do
+        archive self
+        pure V2.Allocation_CancelResult with
+          authorizerHoldingCids = TextMap.empty
+          meta = emptyMetadata
+
+      allocation_withdrawImpl self _arg = do
+        archive self
+        pure V2.Allocation_WithdrawResult with
+          authorizerHoldingCids = TextMap.empty
+          meta = emptyMetadata
+
+-- | Mock V2.AllocationFactory. Creates a `MockAllocation` and returns
+-- `AllocationInstructionResult_Completed` immediately. Real registries
+-- may take multiple steps via `AllocationInstruction`; the mock skips
+-- that.
+--
+-- `users` is the observer list. In production this would be replaced by
+-- explicit-disclosure on the factory CID; for the mock we just put any
+-- party that needs to exercise on it (operators, traders, LPs) into
+-- `users`.
+template MockAllocationFactory with
+    admin : Party
+    users : [Party]
+  where
+    signatory admin
+    observer users
+
+    interface instance V2.AllocationFactory for MockAllocationFactory where
+      view = V2.AllocationFactoryView with
+        admin
+        meta = emptyMetadata
+
+      allocationFactory_allocateExtraObservers _ = []
+
+      allocationFactory_allocateImpl _self arg = do
+        cid <- create MockAllocation with admin; spec = arg.allocation
+        pure V2.AllocationInstructionResult with
+          output = V2.AllocationInstructionResult_Completed (toInterfaceContractId cid)
+          authorizerChangeCids = TextMap.empty
+          meta = emptyMetadata
+
+      allocationFactory_publicFetchImpl _self _arg =
+        pure V2.AllocationFactoryView with
+          admin
+          meta = emptyMetadata
+
+-- | Mock V2.SettlementFactory. For each allocation in the batch,
+-- exercise its `Allocation_Settle` choice and collect the results.
+template MockSettlementFactory with
+    admin : Party
+    users : [Party]
+  where
+    signatory admin
+    observer users
+
+    interface instance V2.SettlementFactory for MockSettlementFactory where
+      view = V2.SettlementFactoryView with
+        admin
+        meta = emptyMetadata
+
+      settlementFactory_settleBatchExtraObservers _ = []
+
+      settlementFactory_settleBatchImpl _self arg = do
+        results <- forA arg.allocationCids $ \allocCid ->
+          exercise allocCid V2.Allocation_Settle with
+            actors = arg.actors
+            extraArgs = arg.extraArgs
+        pure V2.SettlementFactory_SettleBatchResult with
+          allocationSettleResults = results
+          meta = emptyMetadata
+
+      settlementFactory_publicFetchImpl _self _arg =
+        pure V2.SettlementFactoryView with
+          admin
+          meta = emptyMetadata
+
+-- Convenience factories for tests ------------------------------------------
+
+createMockAllocationFactory : Party -> [Party] -> Update (ContractId V2.AllocationFactory)
+createMockAllocationFactory admin users = do
+  cid <- create MockAllocationFactory with admin; users
+  pure (toInterfaceContractId cid)
+
+createMockSettlementFactory : Party -> [Party] -> Update (ContractId V2.SettlementFactory)
+createMockSettlementFactory admin users = do
+  cid <- create MockSettlementFactory with admin; users
+  pure (toInterfaceContractId cid)

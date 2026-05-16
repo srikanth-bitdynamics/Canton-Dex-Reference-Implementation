@@ -1,0 +1,76 @@
+module CantonDex.Dex.SwapExecution where
+
+-- Swap request lifecycle for pool-based trades.
+--
+-- A swap request is the trader-facing contract that captures swap intent,
+-- validates slippage, and delegates execution to the Pool contract. The
+-- trader pre-funds the swap with a standard V2.Allocation.
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+data SwapDirection
+  = BaseToQuote
+  | QuoteToBase
+  deriving (Eq, Show)
+
+data SwapRequest_CancelResult = SwapRequest_CancelResult with
+    cancelResult : V2.Allocation_CancelResult
+  deriving (Eq, Show)
+
+template SwapRequest with
+    operator : Party
+    trader : Party
+    baseInstrumentId : Text
+    quoteInstrumentId : Text
+    direction : SwapDirection
+    inputAmount : Decimal
+    minOutputAmount : Decimal
+    deadline : Optional Time
+    traderAllocationCid : ContractId V2.Allocation
+  where
+    signatory operator
+    observer trader
+
+    ensure inputAmount > 0.0 && minOutputAmount > 0.0
+
+    choice SwapRequest_Cancel : SwapRequest_CancelResult
+      controller operator
+      do
+        result <- exercise traderAllocationCid V2.Allocation_Cancel with
+          actors = [operator]
+          extraArgs = emptyExtraArgs
+        pure SwapRequest_CancelResult with cancelResult = result
+
+    choice SwapRequest_TraderCancel : SwapRequest_CancelResult
+      controller trader
+      do
+        result <- exercise traderAllocationCid V2.Allocation_Withdraw with
+          actors = [trader]
+          extraArgs = emptyExtraArgs
+        pure SwapRequest_CancelResult with
+          cancelResult = V2.Allocation_CancelResult with
+            authorizerHoldingCids = result.authorizerHoldingCids
+            meta = result.meta
+
+    choice SwapRequest_Expire : SwapRequest_CancelResult
+      with
+        currentTime : Time
+      controller operator
+      do
+        case deadline of
+          Some dl -> assertMsg "Swap has not expired" (currentTime >= dl)
+          None -> abort "Swap has no deadline"
+        result <- exercise traderAllocationCid V2.Allocation_Cancel with
+          actors = [operator]
+          extraArgs = emptyExtraArgs
+        pure SwapRequest_CancelResult with cancelResult = result
+
+    choice SwapRequest_Consume : ContractId V2.Allocation
+      controller operator
+      do pure traderAllocationCid
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with
+  context = emptyChoiceContext
+  meta = emptyMetadata

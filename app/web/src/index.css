@@ -1,0 +1,351 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* === Visual system ports from the cdex-* mockup ============================
+ *
+ * The prototype defines its tokens as raw CSS variables under :root and
+ * uses them through utility classes (.btn, .card, .badge, etc.). We
+ * mirror those names here so the ported components compile against
+ * either the prototype's class system OR Tailwind utilities -- callers
+ * can mix the two.
+ *
+ * Tokens kept in sync with cdex-bundle.jsx + Canton DEX.html.
+ * ============================================================================ */
+
+:root {
+  --bg: #0D1117;
+  --bg-2: #161B22;
+  --bg-3: #1C2128;
+  --text: #E6EDF3;
+  --text-2: #8B949E;
+  --text-3: #484F58;
+  --border: #30363D;
+  --border-soft: rgba(48, 54, 61, 0.5);
+
+  /* Status palette (used by .badge, .status-pill, dot indicators). */
+  --green: #3FB950;
+  --red: #F85149;
+  --blue: #58A6FF;
+  --yellow: #D29922;
+  --amber: #D29922;
+  --orange: #F97316;
+
+  /* Typography. */
+  --font-sans: "IBM Plex Sans", Inter, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "JetBrains Mono", "Fira Code", monospace;
+
+  /* Numerical tabular alignment toggle (Tweaks panel writes this). */
+  --mono-tnum: tabular-nums;
+}
+
+@layer base {
+  body {
+    @apply bg-surface text-text-primary antialiased;
+    font-family: var(--font-sans);
+  }
+
+  .mono,
+  code {
+    font-family: var(--font-mono);
+    font-variant-numeric: var(--mono-tnum);
+  }
+
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+}
+
+/* === Component classes from the mockup =====================================
+ * Components below this point match cdex-primitives.jsx and the static
+ * HTML prototype. They're prefixed with the same names so a port from
+ * those files renders correctly without rewriting className strings.
+ * ============================================================================ */
+
+@layer components {
+  /* Cards */
+  .card {
+    @apply bg-surface-card border border-surface-border rounded-lg overflow-hidden;
+  }
+  .card-head {
+    @apply flex items-center justify-between px-4 py-3 border-b border-surface-border;
+  }
+  .card-title {
+    @apply text-sm font-semibold text-text-primary;
+  }
+  .card-sub {
+    @apply text-xs text-text-secondary;
+  }
+  .card-body {
+    @apply p-4;
+  }
+
+  /* Badges */
+  .badge {
+    @apply inline-block px-2 py-0.5 rounded text-xs font-medium;
+    background: var(--border-soft);
+    color: var(--text-2);
+  }
+  .badge.green { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+  .badge.red   { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+  .badge.blue  { background: rgba(88, 166, 255, 0.15); color: var(--blue); }
+  .badge.amber { background: rgba(210, 153, 34, 0.15); color: var(--amber); }
+  .badge.tiny  { @apply text-[10px] px-1.5 py-px; }
+
+  /* Status pill (topbar / connection state) */
+  .status-pill {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs;
+    background: rgba(63, 185, 80, 0.1);
+    color: var(--green);
+  }
+  .status-pill .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.18);
+  }
+  .status-pill .dot.blue {
+    background: var(--blue);
+    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.18);
+  }
+
+  /* Allocation pill (CIDs, refs, etc.) */
+  .alloc-pill {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    border: 1px solid var(--border);
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors;
+    background: var(--bg-3);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn:hover { background: var(--surface-hover, #2A3138); }
+  .btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.success { background: var(--green); color: #fff; border-color: var(--green); }
+  .btn.danger  { background: var(--red); color: #fff; border-color: var(--red); }
+  .btn.ghost   { background: transparent; }
+  .btn.tiny    { @apply text-xs px-2 py-1; }
+  .btn.block   { @apply w-full; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Tabs (segmented control). */
+  .tabs {
+    @apply inline-flex rounded-md overflow-hidden;
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+  }
+  .tabs button {
+    @apply flex-1 px-3 py-1 text-xs font-medium transition-colors;
+    color: var(--text-2);
+  }
+  .tabs button.active {
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  /* Form fields */
+  .field {
+    @apply flex flex-col gap-1;
+  }
+  .field-label {
+    @apply flex justify-between items-baseline text-xs;
+    color: var(--text-2);
+  }
+  .field-row {
+    @apply flex items-center gap-2 px-3 py-2 rounded-md;
+    background: var(--bg);
+    border: 1px solid var(--border);
+  }
+  .field-row input {
+    @apply flex-1 bg-transparent outline-none text-text-primary;
+    font-family: var(--font-mono);
+  }
+  .field-foot {
+    @apply flex justify-between text-[11px];
+    color: var(--text-3);
+  }
+  .input {
+    @apply px-3 py-1.5 rounded-md text-sm outline-none;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  /* Key-value rows used in stats / details panels */
+  .kv {
+    @apply flex justify-between items-baseline py-1 text-xs;
+  }
+  .kv .k { color: var(--text-2); }
+  .kv .v { color: var(--text); }
+  .num  { font-variant-numeric: var(--mono-tnum); }
+
+  /* Stat block */
+  .stat {
+    @apply flex flex-col gap-1 p-3 rounded-md;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+  }
+  .stat-l {
+    @apply text-[10px] uppercase tracking-wider;
+    color: var(--text-2);
+  }
+  .stat-v {
+    font-family: var(--font-mono);
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .stat-d {
+    @apply text-[11px];
+    color: var(--text-2);
+  }
+  .stat-d.up { color: var(--green); }
+  .stat-d.down { color: var(--red); }
+
+  /* Layout helpers */
+  .grid-2 { @apply grid grid-cols-2 gap-3; }
+  .grid-3 { @apply grid grid-cols-3 gap-3; }
+  .grid-4 { @apply grid grid-cols-4 gap-3; }
+  .row { @apply flex items-center gap-2; }
+  .sp-8  { height: 8px; }
+  .sp-12 { height: 12px; }
+  .sp-16 { height: 16px; }
+  .sp-20 { height: 20px; }
+
+  /* Page header */
+  .page { @apply max-w-7xl mx-auto; }
+  .page-header {
+    @apply flex items-end justify-between mb-5 gap-4;
+  }
+  .page-title { @apply text-xl font-semibold; }
+  .page-sub { @apply text-xs text-text-secondary; }
+
+  /* Section header */
+  .section-h {
+    @apply text-[10px] uppercase tracking-wider mb-2;
+    color: var(--text-2);
+  }
+
+  /* Modals */
+  .modal-backdrop {
+    @apply fixed inset-0 z-50 flex items-center justify-center;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+  }
+  .modal {
+    @apply w-full max-w-lg max-h-[85vh] overflow-auto rounded-lg;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+  }
+
+  /* Toast */
+  .toast {
+    @apply rounded-lg p-3 mb-2 text-xs;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    min-width: 280px;
+    max-width: 360px;
+  }
+  .toast-stack {
+    @apply fixed bottom-4 right-4 z-40 flex flex-col;
+  }
+  .toast-head {
+    @apply flex justify-between items-center mb-2 font-medium;
+  }
+  .toast-close {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .phase {
+    @apply flex items-center gap-2 py-1;
+    color: var(--text-3);
+  }
+  .phase.active { color: var(--text); }
+  .phase.done { color: var(--text-2); }
+  .phase-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--text-3);
+    flex-shrink: 0;
+  }
+  .phase.active .phase-dot { background: var(--blue); }
+  .phase.done .phase-dot   { background: var(--green); }
+
+  /* Activity row used by Portfolio.tsx */
+  .activity-row {
+    @apply grid items-center px-4 py-2 border-b border-surface-border/60 text-xs;
+    grid-template-columns: 60px 80px 1fr 100px 90px;
+    gap: 12px;
+  }
+  .activity-row .time { color: var(--text-2); font-family: var(--font-mono); }
+
+  /* Order book row */
+  .ob-row {
+    @apply relative grid items-center px-3 py-1 text-xs;
+    grid-template-columns: 100px 80px 1fr;
+    gap: 8px;
+  }
+  .ob-row .price.ask { color: var(--red); font-family: var(--font-mono); }
+  .ob-row .price.bid { color: var(--green); font-family: var(--font-mono); }
+  .ob-row .size { color: var(--text-2); font-family: var(--font-mono); }
+  .ob-row .depth-bar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: rgba(248, 81, 73, 0.07);
+    z-index: 0;
+  }
+  .ob-row.bid .depth-bar { background: rgba(63, 185, 80, 0.07); }
+  .ob-row > *:not(.depth-bar) { position: relative; z-index: 1; }
+  .ob-spread {
+    @apply px-3 py-2 text-[10px] uppercase tracking-wider;
+    color: var(--text-2);
+    background: var(--bg);
+  }
+
+  /* Glyph (used by primitives/Glyph.tsx) */
+  .glyph {
+    @apply inline-flex items-center justify-center rounded-full text-white font-semibold;
+  }
+  .glyph.btc  { background: linear-gradient(135deg, #F7931A, #FFB347); color: #fff; }
+  .glyph.eth  { background: linear-gradient(135deg, #627EEA, #8AA7FF); color: #fff; }
+  .glyph.usdc { background: linear-gradient(135deg, #2775CA, #5A99E0); color: #fff; }
+  .glyph.cc   { background: linear-gradient(135deg, #6E47D6, #9D7EF0); color: #fff; }
+
+  /* Asset chip */
+  .asset {
+    @apply inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-sm font-semibold;
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  /* Sparkline */
+  .spark { display: inline-block; vertical-align: middle; }
+
+  /* Swap flip button between Pay/Receive */
+  .swap-flip {
+    @apply mx-auto my-2 flex items-center justify-center w-7 h-7 rounded-full;
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    color: var(--text-2);
+    cursor: pointer;
+  }
+}

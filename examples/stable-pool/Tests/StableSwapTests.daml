@@ -1,0 +1,93 @@
+module Tests.StableSwapTests where
+
+-- Tests proving that this example actually consumes the
+-- canton-dex-pr5333 DAR and the new template + curve compile + run
+-- through Daml Script. The curve math itself is illustrative; a
+-- production fork would tune the Newton iteration tolerances and add
+-- coverage for the edge cases.
+
+import DA.Assert
+import Daml.Script
+
+import CantonDex.StablePool.StableSwap
+
+testCreateAndUpdateAmplification : Script ()
+testCreateAndUpdateAmplification = do
+  operator <- allocateParty "operator"
+  lpReg <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+
+  poolCid <- submit operator $ createCmd StablePool with
+    operator
+    lpRegistrar = lpReg
+    admin
+    baseInstrumentId = "USDC"
+    quoteInstrumentId = "USDT"
+    lpInstrumentId = "USDC-USDT-LP"
+    feeBps = 4
+    amplification = 100.0
+    baseReserve = 100000.0
+    quoteReserve = 100000.0
+    totalLpSupply = 100000.0
+    active = True
+
+  newPool <- submit operator $ exerciseCmd poolCid StablePool_UpdateAmplification with
+    newA = 200.0
+  Some p <- queryContractId operator newPool
+  p.amplification === 200.0
+  pure ()
+
+testComputeSwapOutReturns : Script ()
+testComputeSwapOutReturns = do
+  operator <- allocateParty "operator"
+  lpReg <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+
+  poolCid <- submit operator $ createCmd StablePool with
+    operator
+    lpRegistrar = lpReg
+    admin
+    baseInstrumentId = "USDC"
+    quoteInstrumentId = "USDT"
+    lpInstrumentId = "USDC-USDT-LP"
+    feeBps = 4
+    amplification = 100.0
+    baseReserve = 100000.0
+    quoteReserve = 100000.0
+    totalLpSupply = 100000.0
+    active = True
+
+  -- A balanced pegged pool should produce a positive quote on the
+  -- swap-out side. (Exact slippage characteristics depend on the
+  -- Newton iteration tuning; this test only verifies the choice
+  -- composes correctly with the rest of the DAR.)
+  out <- submit operator $ exerciseCmd poolCid StablePool_ComputeSwapOut with
+    inputInstrumentId = "USDC"
+    inputAmount = 1000.0
+  assertMsg "output non-negative" (out >= 0.0)
+  pure ()
+
+testInactivePoolRejectsSwap : Script ()
+testInactivePoolRejectsSwap = do
+  operator <- allocateParty "operator"
+  lpReg <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+
+  poolCid <- submit operator $ createCmd StablePool with
+    operator
+    lpRegistrar = lpReg
+    admin
+    baseInstrumentId = "USDC"
+    quoteInstrumentId = "USDT"
+    lpInstrumentId = "USDC-USDT-LP"
+    feeBps = 4
+    amplification = 100.0
+    baseReserve = 100000.0
+    quoteReserve = 100000.0
+    totalLpSupply = 100000.0
+    active = False
+
+  submitMustFail operator $ exerciseCmd poolCid StablePool_ComputeSwapOut with
+    inputInstrumentId = "USDC"
+    inputAmount = 1000.0
+  pure ()

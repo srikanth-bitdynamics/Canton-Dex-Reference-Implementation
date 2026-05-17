@@ -118,6 +118,8 @@ async function main(): Promise<void> {
     },
     db,
     adminToken: process.env.OPERATOR_ADMIN_TOKEN,
+    ledgerUrl: baseUrl,
+    ledgerToken: token,
   });
   // eslint-disable-next-line no-console
   console.log(`[testnet-server] listening at ${url}`);

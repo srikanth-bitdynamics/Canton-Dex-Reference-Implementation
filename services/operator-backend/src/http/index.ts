@@ -73,20 +73,64 @@ export interface HttpServerConfig {
   db?: Db;
   /** Shared bearer token required for /v1/admin/* writes. */
   adminToken?: string;
+  /** JSON LAPI base URL — used to poll the real ledger offset for /v1/status. */
+  ledgerUrl?: string;
+  /** JWT used to read the ledger offset. */
+  ledgerToken?: string;
 }
 
 export function startHttpServer(cfg: HttpServerConfig): {
   close: () => Promise<void>;
   url: string;
 } {
-  // Slot starts at the seeded baseline and increments by 1 each second so
-  // the UI's pill moves visibly. Real deployments swap this for the
-  // participant's actual ledger offset.
-  let slot = 4128442;
+  // Slot is the ledger's latest offset (ACS pruning watermark). We poll
+  // the participant every 2s and cache the result. Falls back to a local
+  // counter if the participant query fails so the UI's pill still moves.
+  let slot = 0;
+  let lastPolledOk = false;
+  const slotUrl = (cfg.ledgerUrl ?? "").replace(/\/$/, "");
+  const slotToken = cfg.ledgerToken;
+  async function pollSlot(): Promise<void> {
+    if (!slotUrl || !slotToken) {
+      slot += 1;
+      return;
+    }
+    try {
+      const res = await fetch(
+        `${slotUrl}/v2/state/latest-pruned-offsets`,
+        { headers: { Authorization: `Bearer ${slotToken}` } },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as {
+        participantPrunedUpToInclusive?: number;
+      };
+      const offset = body.participantPrunedUpToInclusive;
+      if (typeof offset === "number" && offset > 0) {
+        slot = offset;
+        lastPolledOk = true;
+      } else {
+        // Pruned offset is 0 (nothing pruned yet) — fall back to ACS end.
+        const ledgerEndRes = await fetch(
+          `${slotUrl}/v2/state/ledger-end`,
+          { headers: { Authorization: `Bearer ${slotToken}` } },
+        );
+        if (ledgerEndRes.ok) {
+          const end = (await ledgerEndRes.json()) as { offset?: number };
+          if (typeof end.offset === "number") {
+            slot = end.offset;
+            lastPolledOk = true;
+          }
+        }
+      }
+    } catch {
+      // Quiet on transient errors; keep the last good value or tick.
+      if (!lastPolledOk) slot += 1;
+    }
+  }
+  void pollSlot();
   const slotTimer = setInterval(() => {
-    slot += 1;
-  }, 1000);
-  // Allow the tick timer to be GC'd if the server is closed.
+    void pollSlot();
+  }, 2000);
   if (typeof slotTimer.unref === "function") slotTimer.unref();
 
   const server = createServer(async (req, res) => {
@@ -190,11 +234,12 @@ async function routeRequest(
       respondJson(res, 400, { error: "missing ?owner=" });
       return;
     }
-    // Holdings are read off the registry-side template; the operator
-    // reads via the ledger driver as observer-of-registrar.
+    // Read holdings as the owner — Holding has `signatory admin, observer
+    // owner`, so the operator party doesn't see them. The JWT carries
+    // ledger-wide rights so we can query as the owner directly.
     const holdings = await backend.ledger.query<{ owner: string }>({
       templateId: "CantonDex.Instrument.Holding:Holding",
-      observingParty: backend.operatorParty,
+      observingParty: owner as never,
     });
     respondJson(
       res,

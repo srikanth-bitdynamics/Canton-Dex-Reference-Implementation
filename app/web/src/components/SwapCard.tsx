@@ -27,6 +27,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
   const [slippagePct, setSlippagePct] = useState(0.5);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const inputInstrumentId = direction === 'base-to-quote' ? pool.baseInstrumentId : pool.quoteInstrumentId;
   const outputInstrumentId = direction === 'base-to-quote' ? pool.quoteInstrumentId : pool.baseInstrumentId;
@@ -42,6 +43,24 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
   const minReceived = outputAmount * (1 - slippagePct / 100);
   const rate = parsedInput > 0 && outputAmount > 0 ? outputAmount / parsedInput : 0;
   const inputBalance = userBalances[inputInstrumentId] ?? 0;
+
+  // Price impact: how far the executed rate is from the pool mid. Constant-
+  // product slippage. Mid = reserveOut / reserveIn at the spot before the trade.
+  const reserveIn =
+    direction === 'base-to-quote' ? pool.reserves.baseAmount : pool.reserves.quoteAmount;
+  const reserveOut =
+    direction === 'base-to-quote' ? pool.reserves.quoteAmount : pool.reserves.baseAmount;
+  const mid = reserveIn > 0 ? reserveOut / reserveIn : 0;
+  const priceImpactPct =
+    mid > 0 && rate > 0 ? Math.abs((rate - mid) / mid) * 100 : 0;
+  const impactLevel: 'ok' | 'warn' | 'high' =
+    priceImpactPct > 5 ? 'high' : priceImpactPct > 2 ? 'warn' : 'ok';
+  const impactColor =
+    impactLevel === 'high'
+      ? 'var(--red)'
+      : impactLevel === 'warn'
+        ? 'var(--yellow)'
+        : 'var(--text-secondary)';
 
   const flipDirection = useCallback(() => {
     setDirection(d => d === 'base-to-quote' ? 'quote-to-base' : 'base-to-quote');
@@ -171,16 +190,38 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
             <span>Fee</span>
             <span className="font-mono">{(pool.feeBps / 100).toFixed(2)}%</span>
           </div>
+          <div className="flex justify-between">
+            <span style={{ color: 'var(--text-secondary)' }}>Price impact</span>
+            <span className="font-mono" style={{ color: impactColor }}>
+              {priceImpactPct.toFixed(2)}%
+              {impactLevel === 'warn' && ' ⚠'}
+              {impactLevel === 'high' && ' ⛔'}
+            </span>
+          </div>
           <div className="flex justify-between text-text-secondary">
             <span>Min received</span>
             <span className="font-mono">{minReceived.toFixed(6)} {outputInstrumentId}</span>
           </div>
+          {impactLevel === 'high' && (
+            <div
+              className="mt-2 rounded border px-3 py-2 text-xs"
+              style={{
+                background: 'rgba(248, 81, 73, 0.08)',
+                border: '1px solid var(--red)',
+                color: 'var(--red)',
+              }}
+            >
+              <strong>High price impact.</strong> Your trade moves the pool price
+              by more than 5%. You may receive significantly less than the mid
+              quote.
+            </div>
+          )}
         </div>
       )}
 
       {/* Submit */}
       <button
-        onClick={handleSwap}
+        onClick={() => setReviewOpen(true)}
         disabled={
           isSubmitting ||
           !party ||
@@ -205,6 +246,178 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                 ? 'Enter amount'
                 : 'Review Swap'}
       </button>
+
+      {/* Review confirmation modal */}
+      {reviewOpen && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setReviewOpen(false)}
+        >
+          <div
+            className="modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 480 }}
+          >
+            <div className="card-head">
+              <h3 className="card-title">Review swap</h3>
+              <button
+                className="toast-close"
+                onClick={() => setReviewOpen(false)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="card-body">
+              <div
+                style={{
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  padding: 14,
+                  marginBottom: 14,
+                }}
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="stat-l">You pay</div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 18, fontWeight: 600 }}
+                    >
+                      {parsedInput.toFixed(6)} {inputInstrumentId}
+                    </div>
+                  </div>
+                  <span style={{ color: 'var(--text-2)' }}>→</span>
+                  <div style={{ textAlign: 'right' }}>
+                    <div className="stat-l">You receive</div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 18, fontWeight: 600 }}
+                    >
+                      ~{outputAmount.toFixed(6)} {outputInstrumentId}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="section-h">On-ledger sequence</div>
+              <div
+                className="mono"
+                style={{
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  padding: 12,
+                  fontSize: 12,
+                  color: 'var(--text-2)',
+                  lineHeight: 1.7,
+                  marginBottom: 14,
+                }}
+              >
+                <div>
+                  ①{' '}
+                  <span style={{ color: 'var(--text)' }}>Lock</span>{' '}
+                  {parsedInput.toFixed(6)} {inputInstrumentId} in trader
+                  Allocation{' '}
+                  <span className="alloc-pill">prefunded</span>
+                </div>
+                <div>
+                  ② Operator:{' '}
+                  <span style={{ color: 'var(--text)' }}>
+                    Allocation_Adjust
+                  </span>{' '}
+                  on pool + trader allocs (PR 5333)
+                </div>
+                <div>
+                  ③{' '}
+                  <span style={{ color: 'var(--text)' }}>SettleBatch</span> on
+                  3 allocations atomically
+                </div>
+                <div>
+                  ④ Pool rolls forward →{' '}
+                  <span style={{ color: 'var(--text)' }}>
+                    nextIterationAllocationCid
+                  </span>
+                </div>
+              </div>
+
+              <div className="kv">
+                <span className="k">Rate</span>
+                <span className="v">
+                  1 {inputInstrumentId} ={' '}
+                  <span className="num">{rate.toFixed(6)}</span>{' '}
+                  {outputInstrumentId}
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">Pool fee ({(pool.feeBps / 100).toFixed(2)}%)</span>
+                <span className="v">
+                  <span className="num">
+                    {(parsedInput * (pool.feeBps / 10000)).toFixed(6)}
+                  </span>{' '}
+                  {inputInstrumentId}
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">Price impact</span>
+                <span className="v" style={{ color: impactColor }}>
+                  {priceImpactPct.toFixed(2)}%
+                </span>
+              </div>
+              <div className="kv">
+                <span className="k">Slippage tolerance</span>
+                <span className="v">{slippagePct}%</span>
+              </div>
+              <div className="kv">
+                <span className="k">Min received</span>
+                <span className="v">
+                  <span className="num">{minReceived.toFixed(6)}</span>{' '}
+                  {outputInstrumentId}
+                </span>
+              </div>
+
+              {impactLevel === 'high' && (
+                <div
+                  className="mt-3 rounded px-3 py-2 text-xs"
+                  style={{
+                    background: 'rgba(248, 81, 73, 0.08)',
+                    border: '1px solid var(--red)',
+                    color: 'var(--red)',
+                  }}
+                >
+                  <strong>High price impact (&gt; 5%).</strong> You may receive
+                  significantly less than the mid quote. Consider reducing the
+                  trade size.
+                </div>
+              )}
+
+              <div className="sp-16"></div>
+              <button
+                className="btn success block"
+                disabled={isSubmitting}
+                onClick={async () => {
+                  setReviewOpen(false);
+                  await handleSwap();
+                }}
+              >
+                {isSubmitting ? 'Submitting…' : 'Approve & Submit'}
+              </button>
+              <div
+                style={{
+                  textAlign: 'center',
+                  fontSize: 11,
+                  color: 'var(--text-3)',
+                  marginTop: 10,
+                }}
+              >
+                By approving, you create a SwapRequest and authorize the
+                operator to execute Pool_Swap.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Pool info */}
       <div className="mt-4 pt-4 border-t border-surface-border text-xs text-text-muted font-sans">

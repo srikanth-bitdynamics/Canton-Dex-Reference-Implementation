@@ -46,6 +46,10 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   const [baseAmt, setBaseAmt] = useState('');
   const [quoteAmt, setQuoteAmt] = useState('');
   const [removePct, setRemovePct] = useState(50);
+  // Slippage tolerance for add/remove liquidity. The pool's ratio can move
+  // between quote and execute; we accept up to this much shortfall in LP
+  // tokens minted (add) or underlying received (remove).
+  const [lpSlippagePct, setLpSlippagePct] = useState(0.5);
 
   const sharePct =
     pool.totalLpSupply > 0 ? (lpHeld / pool.totalLpSupply) * 100 : 0;
@@ -102,6 +106,13 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     parseFloat(quoteAmt) <= balanceOf(pool.quoteInstrumentId);
   const canRemove = !!party && lpHeld > 0;
 
+  // Slippage-adjusted minimums applied to the on-chain choice. The pool's
+  // ratio can shift between quote and execute; the wallet rejects the swap
+  // if the actual return is below these floors.
+  const minLpTokensWithSlippage = newLpTokens * (1 - lpSlippagePct / 100);
+  const minBaseOutWithSlippage = removeBase * (1 - lpSlippagePct / 100);
+  const minQuoteOutWithSlippage = removeQuote * (1 - lpSlippagePct / 100);
+
   const onAdd = async () => {
     if (!context) throw new Error('dApp context not loaded yet');
     toast.push(
@@ -114,7 +125,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       poolId: pool.contractId,
       baseAmount: parseFloat(baseAmt),
       quoteAmount: parseFloat(quoteAmt),
-      minLpTokens: newLpTokens,
+      minLpTokens: minLpTokensWithSlippage,
     });
     setBaseAmt('');
     setQuoteAmt('');
@@ -132,8 +143,8 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       holder: party,
       lpTokens: (lpHeld * removePct) / 100,
       knownTotalLpSupply: pool.totalLpSupply,
-      minBaseOut: removeBase,
-      minQuoteOut: removeQuote,
+      minBaseOut: minBaseOutWithSlippage,
+      minQuoteOut: minQuoteOutWithSlippage,
       lpInstrumentId: pool.lpInstrumentId,
     });
   };
@@ -296,9 +307,31 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                         {pool.baseInstrumentId}/{pool.quoteInstrumentId} LP
                       </span>
                     </div>
+                    <div className="kv">
+                      <span className="k">Min LP tokens (slippage)</span>
+                      <span className="v">
+                        <span className="num">{fmt(minLpTokensWithSlippage, 4)}</span>{' '}
+                        at {lpSlippagePct}%
+                      </span>
+                    </div>
                   </div>
                 </>
               )}
+
+              <div className="sp-12" />
+              <div className="row" style={{ gap: 6, fontSize: 11 }}>
+                <span style={{ color: 'var(--text-2)' }}>LP slippage:</span>
+                {[0.1, 0.5, 1.0, 2.0].map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    className={`btn tiny ${lpSlippagePct === p ? 'primary' : 'ghost'}`}
+                    onClick={() => setLpSlippagePct(p)}
+                  >
+                    {p}%
+                  </button>
+                ))}
+              </div>
 
               <div className="sp-16" />
               <button
@@ -450,6 +483,22 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                       </span>
                     </span>
                   </div>
+                  <div className="kv" style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 6, marginTop: 6 }}>
+                    <span className="k">Min received ({lpSlippagePct}%)</span>
+                    <span className="v" style={{ fontSize: 11, color: 'var(--text-2)' }}>
+                      <span className="num">{fmt(minBaseOutWithSlippage, ASSETS[pool.baseInstrumentId]?.decimals ?? 4)}</span> {pool.baseInstrumentId}{' '}/{' '}
+                      <span className="num">{fmt(minQuoteOutWithSlippage, ASSETS[pool.quoteInstrumentId]?.decimals ?? 2)}</span> {pool.quoteInstrumentId}
+                    </span>
+                  </div>
+                </div>
+                <div className="sp-12" />
+                <div style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.5, padding: '6px 8px', background: 'var(--bg-2)', borderRadius: 6 }}>
+                  Two on-ledger steps:
+                  <span className="mono"> Pool_RemoveLiquidity</span> by the operator
+                  (creates an LPBurnRequest) →{' '}
+                  <span className="mono">LPTokenPolicy_AcceptBurn</span> by your
+                  wallet (archives the locked LP holding). The toast shows both
+                  phases.
                 </div>
                 <div className="sp-12" />
                 <button

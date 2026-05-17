@@ -34,6 +34,25 @@ export function AdminPage() {
       operatorApi.setPairActive(cid, active),
     onSuccess: invalidatePairs,
   });
+  const updateFeeModel = useMutation({
+    mutationFn: ({
+      cid,
+      makerFeeBps,
+      takerFeeBps,
+      poolFeeBps,
+    }: {
+      cid: string;
+      makerFeeBps: number;
+      takerFeeBps: number;
+      poolFeeBps: number;
+    }) =>
+      operatorApi.updatePairFeeModel(cid, {
+        makerFeeBps,
+        takerFeeBps,
+        poolFeeBps,
+      }),
+    onSuccess: invalidatePairs,
+  });
   const createPool = useMutation({
     mutationFn: operatorApi.createPool.bind(operatorApi),
     onSuccess: invalidatePools,
@@ -41,6 +60,14 @@ export function AdminPage() {
 
   const [pairOpen, setPairOpen] = useState(false);
   const [poolOpen, setPoolOpen] = useState(false);
+  // Per-pair fee-editing state. Null means "not editing"; an object means
+  // the row is in inline-edit mode with the form values held here.
+  const [editingFee, setEditingFee] = useState<{
+    cid: string;
+    maker: number;
+    taker: number;
+    pool: number;
+  } | null>(null);
 
   return (
     <div className="space-y-6">
@@ -80,15 +107,61 @@ export function AdminPage() {
                 <td className="py-2 text-text-secondary font-sans">
                   {pair.tradingMode}
                 </td>
-                <td className="py-2 text-right font-mono text-text-primary">
-                  {pair.feeModel.makerFeeBps} bps
-                </td>
-                <td className="py-2 text-right font-mono text-text-primary">
-                  {pair.feeModel.takerFeeBps} bps
-                </td>
-                <td className="py-2 text-right font-mono text-text-primary">
-                  {pair.feeModel.poolFeeBps} bps
-                </td>
+                {editingFee?.cid === pair.contractId ? (
+                  <>
+                    <td className="py-2 text-right">
+                      <input
+                        type="number"
+                        className="w-16 text-right bg-surface border border-surface-border rounded px-1 py-0.5 font-mono text-xs"
+                        value={editingFee.maker}
+                        onChange={(e) =>
+                          setEditingFee({
+                            ...editingFee,
+                            maker: parseInt(e.target.value || '0', 10),
+                          })
+                        }
+                      />
+                    </td>
+                    <td className="py-2 text-right">
+                      <input
+                        type="number"
+                        className="w-16 text-right bg-surface border border-surface-border rounded px-1 py-0.5 font-mono text-xs"
+                        value={editingFee.taker}
+                        onChange={(e) =>
+                          setEditingFee({
+                            ...editingFee,
+                            taker: parseInt(e.target.value || '0', 10),
+                          })
+                        }
+                      />
+                    </td>
+                    <td className="py-2 text-right">
+                      <input
+                        type="number"
+                        className="w-16 text-right bg-surface border border-surface-border rounded px-1 py-0.5 font-mono text-xs"
+                        value={editingFee.pool}
+                        onChange={(e) =>
+                          setEditingFee({
+                            ...editingFee,
+                            pool: parseInt(e.target.value || '0', 10),
+                          })
+                        }
+                      />
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="py-2 text-right font-mono text-text-primary">
+                      {pair.feeModel.makerFeeBps} bps
+                    </td>
+                    <td className="py-2 text-right font-mono text-text-primary">
+                      {pair.feeModel.takerFeeBps} bps
+                    </td>
+                    <td className="py-2 text-right font-mono text-text-primary">
+                      {pair.feeModel.poolFeeBps} bps
+                    </td>
+                  </>
+                )}
                 <td className="py-2 text-center">
                   <span
                     className={`text-xs px-2 py-0.5 rounded ${
@@ -101,18 +174,61 @@ export function AdminPage() {
                   </span>
                 </td>
                 <td className="py-2 text-right">
-                  <button
-                    className="text-xs text-accent-blue hover:underline"
-                    onClick={() =>
-                      setPairActive.mutate({
-                        cid: pair.contractId,
-                        active: !pair.active,
-                      })
-                    }
-                    disabled={setPairActive.isPending}
-                  >
-                    {pair.active ? 'Deactivate' : 'Activate'}
-                  </button>
+                  {editingFee?.cid === pair.contractId ? (
+                    <div className="flex justify-end gap-2 text-xs">
+                      <button
+                        className="text-accent-green hover:underline"
+                        disabled={updateFeeModel.isPending}
+                        onClick={() => {
+                          updateFeeModel.mutate(
+                            {
+                              cid: pair.contractId,
+                              makerFeeBps: editingFee.maker,
+                              takerFeeBps: editingFee.taker,
+                              poolFeeBps: editingFee.pool,
+                            },
+                            { onSuccess: () => setEditingFee(null) },
+                          );
+                        }}
+                      >
+                        Save
+                      </button>
+                      <button
+                        className="text-text-secondary hover:underline"
+                        onClick={() => setEditingFee(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex justify-end gap-2 text-xs">
+                      <button
+                        className="text-text-secondary hover:text-text-primary"
+                        onClick={() =>
+                          setEditingFee({
+                            cid: pair.contractId,
+                            maker: pair.feeModel.makerFeeBps,
+                            taker: pair.feeModel.takerFeeBps,
+                            pool: pair.feeModel.poolFeeBps,
+                          })
+                        }
+                      >
+                        Edit fees
+                      </button>
+                      <button
+                        className="text-accent-blue hover:underline"
+                        onClick={() =>
+                          setPairActive.mutate({
+                            cid: pair.contractId,
+                            active: !pair.active,
+                          })
+                        }
+                        disabled={setPairActive.isPending}
+                      >
+                        {pair.active ? 'Deactivate' : 'Activate'}
+                      </button>
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}

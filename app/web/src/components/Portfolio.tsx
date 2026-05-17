@@ -9,6 +9,7 @@
 //   - activity feed: per-event tx + policy receipt pills
 
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { ASSETS } from '@/primitives/assets';
 import { Glyph, PairGlyph } from '@/primitives/Glyph';
@@ -272,7 +273,16 @@ export function Portfolio({
                           </span>
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--text-2)' }}>
-                          {(r.pct * 100).toFixed(3)}% of pool
+                          {(r.pct * 100).toFixed(3)}% of pool ·{' '}
+                          <span className="mono">
+                            {fmt(r.baseShare, ASSETS[r.pool.baseInstrumentId]?.decimals ?? 4)}{' '}
+                            {r.pool.baseInstrumentId}
+                          </span>{' '}
+                          +{' '}
+                          <span className="mono">
+                            {fmt(r.quoteShare, ASSETS[r.pool.quoteInstrumentId]?.decimals ?? 2)}{' '}
+                            {r.pool.quoteInstrumentId}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -291,6 +301,16 @@ export function Portfolio({
                   </td>
                   <td className="text-right py-2 px-3 mono">
                     {fmtUsd(r.value)}
+                    <div style={{ marginTop: 4 }}>
+                      <Link
+                        to="/pools"
+                        className="btn tiny ghost"
+                        style={{ fontSize: 10, padding: '2px 8px' }}
+                        title={`Manage LP position in ${r.pool.baseInstrumentId}/${r.pool.quoteInstrumentId}`}
+                      >
+                        Manage →
+                      </Link>
+                    </div>
                   </td>
                 </tr>
               ))}

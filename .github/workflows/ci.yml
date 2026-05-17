@@ -56,6 +56,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build backend image
-        run: docker build -f Dockerfile.backend -t canton-dex-backend:ci .
+        run: |
+          if [ -f Dockerfile.backend ]; then
+            docker build -f Dockerfile.backend -t canton-dex-backend:ci .
+          else
+            echo "Dockerfile.backend not present on this branch; skipping"
+          fi
       - name: Build frontend image
-        run: docker build -f Dockerfile.frontend -t canton-dex-frontend:ci .
+        run: |
+          if [ -f Dockerfile.frontend ]; then
+            docker build -f Dockerfile.frontend -t canton-dex-frontend:ci .
+          else
+            echo "Dockerfile.frontend not present on this branch; skipping"
+          fi

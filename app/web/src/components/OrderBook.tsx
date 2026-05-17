@@ -17,6 +17,16 @@ export function OrderBook({ pair, orders, onCancelOrder }: OrderBookProps) {
   const bestAsk = asks[0]?.limitPrice;
   const bestBid = bids[0]?.limitPrice;
   const spread = bestAsk && bestBid ? (bestAsk - bestBid).toFixed(2) : '—';
+  const spreadPct = bestAsk && bestBid
+    ? (((bestAsk - bestBid) / bestAsk) * 100).toFixed(3)
+    : '—';
+
+  // Depth bars: scale by the largest single-order remainingQty so each
+  // row's bar reflects its relative size on the book.
+  const maxQty = Math.max(
+    ...orders.map(o => o.remainingQty),
+    0,
+  ) || 1;
 
   return (
     <div className="bg-surface-card rounded-lg border border-surface-border p-4">
@@ -33,17 +43,29 @@ export function OrderBook({ pair, orders, onCancelOrder }: OrderBookProps) {
 
         {/* Asks (sells) - displayed top to bottom, lowest ask at bottom */}
         {asks.slice(0, 8).reverse().map(order => (
-          <OrderRow key={order.contractId} order={order} color="red" onCancel={onCancelOrder} />
+          <OrderRow
+            key={order.contractId}
+            order={order}
+            color="red"
+            onCancel={onCancelOrder}
+            depthPct={(order.remainingQty / maxQty) * 100}
+          />
         ))}
 
         {/* Spread */}
         <div className="text-center text-xs text-text-muted font-mono py-1 border-y border-surface-border">
-          spread: {spread}
+          spread: {spread} ({spreadPct}%)
         </div>
 
         {/* Bids (buys) - displayed top to bottom, highest bid at top */}
         {bids.slice(0, 8).map(order => (
-          <OrderRow key={order.contractId} order={order} color="green" onCancel={onCancelOrder} />
+          <OrderRow
+            key={order.contractId}
+            order={order}
+            color="green"
+            onCancel={onCancelOrder}
+            depthPct={(order.remainingQty / maxQty) * 100}
+          />
         ))}
       </div>
     </div>
@@ -54,10 +76,12 @@ function OrderRow({
   order,
   color,
   onCancel,
+  depthPct,
 }: {
   order: Order;
   color: 'red' | 'green';
   onCancel: (id: string) => void;
+  depthPct: number;
 }) {
   const statusDot = order.status === 'Funded'
     ? 'bg-accent-green'
@@ -65,14 +89,25 @@ function OrderRow({
       ? 'bg-accent-yellow'
       : 'bg-text-muted';
 
+  const depthBg = color === 'green'
+    ? 'rgba(34, 197, 94, 0.12)'  // semi-transparent accent-green
+    : 'rgba(239, 68, 68, 0.12)'; // semi-transparent accent-red
+
   return (
-    <div className="grid grid-cols-3 text-sm font-mono px-2 py-1 hover:bg-surface-hover rounded group">
-      <span className={color === 'green' ? 'text-accent-green' : 'text-accent-red'}>
+    <div className="relative grid grid-cols-3 text-sm font-mono px-2 py-1 hover:bg-surface-hover rounded group">
+      <div
+        aria-hidden
+        className="absolute inset-y-0 right-0 pointer-events-none"
+        style={{ width: `${Math.max(0, Math.min(100, depthPct))}%`, background: depthBg }}
+      />
+      <span className={`relative ${color === 'green' ? 'text-accent-green' : 'text-accent-red'}`}>
         {order.limitPrice.toFixed(2)}
       </span>
-      <span className="text-right text-text-primary">{order.remainingQty.toFixed(4)}</span>
-      <span className="text-right flex items-center justify-end gap-1">
-        <span className={`w-1.5 h-1.5 rounded-full ${statusDot}`} />
+      <span className="relative text-right text-text-primary">
+        {order.remainingQty.toFixed(4)}
+      </span>
+      <span className="relative text-right flex items-center justify-end gap-1">
+        <span className={`w-1.5 h-1.5 rounded-full ${statusDot}`} title={order.status} />
         <button
           onClick={() => onCancel(order.contractId)}
           className="text-text-muted hover:text-accent-red opacity-0 group-hover:opacity-100 transition-opacity text-xs"

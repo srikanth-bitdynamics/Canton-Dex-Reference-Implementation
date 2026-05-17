@@ -1,9 +1,10 @@
 import { useState, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Pool } from '@/types/contracts';
 import { useSwapQuote } from '@/hooks/useSwapQuote';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
+import { useToast } from '@/primitives/ToastProvider';
 
 interface SwapCardProps {
   pool: Pool;
@@ -15,6 +16,8 @@ const SLIPPAGE_PRESETS = [0.1, 0.5, 1.0];
 
 export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) {
   const party = useCurrentParty();
+  const toast = useToast();
+  const queryClient = useQueryClient();
   const { data: context } = useQuery({
     queryKey: ['context'],
     queryFn: ledger.getContext,
@@ -48,7 +51,16 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
   const handleSwap = useCallback(async () => {
     if (parsedInput <= 0 || outputAmount <= 0 || !context) return;
     setIsSubmitting(true);
+    const label = `Swap ${parsedInput} ${inputInstrumentId} → ${outputInstrumentId}`;
     try {
+      // Push the toast first so the user sees the lifecycle even while
+      // the wallet round-trip is happening. The advance timer in
+      // useToasts ticks independently; the actual ledger settle path
+      // resolves the React Query caches when it completes.
+      toast.push(label, 'swap', () => {
+        void queryClient.invalidateQueries({ queryKey: ['pools'] });
+        void queryClient.invalidateQueries({ queryKey: ['holdings'] });
+      });
       await ledger.executeSwap({
         context,
         pool: {
@@ -65,7 +77,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
     } finally {
       setIsSubmitting(false);
     }
-  }, [parsedInput, outputAmount, pool, context, inputInstrumentId, minReceived, onSwapComplete]);
+  }, [parsedInput, outputAmount, pool, context, inputInstrumentId, outputInstrumentId, minReceived, onSwapComplete, toast, queryClient]);
 
   return (
     <div className="bg-surface-card rounded-lg border border-surface-border p-6 max-w-md mx-auto">

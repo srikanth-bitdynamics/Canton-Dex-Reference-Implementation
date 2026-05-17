@@ -1,0 +1,143 @@
+module CantonDex.Tests.EdgeCaseTests where
+
+-- Edge-case Daml Script tests covering rejection paths that the main
+-- end-to-end tests don't exercise:
+--
+--   1. Mint of zero amount rejected by ensure clause.
+--   2. Mint of negative amount rejected by ensure clause.
+--   3. Burn of zero amount rejected by ensure clause.
+--   4. Mint accept fails if requestor lacks required issuer credentials.
+--   5. Mint accept fails when configCid's instrumentId doesn't match.
+
+import Daml.Script
+
+import CantonDex.Instrument.Burn qualified as Burn
+import CantonDex.Instrument.Credentials qualified as Cred
+import CantonDex.Instrument.Holding qualified as H
+import CantonDex.Instrument.InstrumentConfiguration qualified as IC
+import CantonDex.Instrument.Mint qualified as Mint
+
+-- 1. Mint of zero amount is rejected by `ensure amount > 0.0` -----------
+
+testMintRejectsZeroAmount : Script ()
+testMintRejectsZeroAmount = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+
+  _cfg <- submit registrar $ createCmd IC.InstrumentConfiguration with
+    admin = registrar
+    instrumentId = "BTC"
+    holderRequirements = []
+    issuerRequirements = []
+    isin = None
+    cusip = None
+    description = "test"
+
+  submitMustFail alice $ createCmd Mint.MintRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 0.0
+    reference = "zero"
+  pure ()
+
+-- 2. Mint of negative amount is rejected ---------------------------------
+
+testMintRejectsNegativeAmount : Script ()
+testMintRejectsNegativeAmount = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+
+  submitMustFail alice $ createCmd Mint.MintRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = -10.0
+    reference = "neg"
+  pure ()
+
+-- 3. Burn of zero amount is rejected by `ensure amount > 0.0` -----------
+
+testBurnRejectsZeroAmount : Script ()
+testBurnRejectsZeroAmount = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+
+  -- Create a holding for alice so we have a CID to plausibly reference.
+  holdingCid <- submit registrar $ createCmd H.Holding with
+    admin = registrar
+    owner = alice
+    instrumentId = "BTC"
+    amount = 5.0
+    locked = False
+
+  submitMustFail alice $ createCmd Burn.BurnRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 0.0
+    reference = "zero-burn"
+    lockedHoldingCid = holdingCid
+  pure ()
+
+-- 4. Mint accept fails if instrumentId mismatch between request and config
+
+testMintAcceptRejectsInstrumentIdMismatch : Script ()
+testMintAcceptRejectsInstrumentIdMismatch = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+
+  cfgCid <- submit registrar $ createCmd IC.InstrumentConfiguration with
+    admin = registrar
+    instrumentId = "ETH"
+    holderRequirements = []
+    issuerRequirements = []
+    isin = None
+    cusip = None
+    description = "ether"
+
+  reqCid <- submit alice $ createCmd Mint.MintRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BTC"
+    amount = 100.0
+    reference = "mismatch"
+
+  submitMustFail registrar $ exerciseCmd reqCid Mint.MintRequest_Accept with
+    configCid = cfgCid
+    issuerClaims = []
+  pure ()
+
+-- 5. Mint accept fails if issuer credential requirements not satisfied --
+
+testMintAcceptRejectsMissingCredential : Script ()
+testMintAcceptRejectsMissingCredential = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+  credIssuer <- allocateParty "kyc-issuer"
+
+  cfgCid <- submit registrar $ createCmd IC.InstrumentConfiguration with
+    admin = registrar
+    instrumentId = "BOND"
+    holderRequirements = []
+    issuerRequirements =
+      [ Cred.CredentialRequirement with
+          issuer = credIssuer
+          property = "kyc"
+          value = "tier1"
+      ]
+    isin = None
+    cusip = None
+    description = "regulated bond"
+
+  reqCid <- submit alice $ createCmd Mint.MintRequest with
+    requestor = alice
+    admin = registrar
+    instrumentId = "BOND"
+    amount = 100.0
+    reference = "no-cred"
+
+  submitMustFail registrar $ exerciseCmd reqCid Mint.MintRequest_Accept with
+    configCid = cfgCid
+    issuerClaims = []
+  pure ()

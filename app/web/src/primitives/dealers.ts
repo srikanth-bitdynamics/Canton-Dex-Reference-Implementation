@@ -1,38 +1,71 @@
-// Dealer registry. Direct port of cdex-data.jsx DEALERS_INIT plus the
-// `dealerByParty` resolver from cdex-primitives.jsx.
+// Dealer registry — fetched from the operator backend at runtime.
 //
-// In production this comes from the operator backend (the operator
-// publishes the whitelist + tier metadata as part of its RFQ policy
-// configuration). For the dApp we keep a curated list so the RFQ page
-// renders dealer names instead of raw party ids.
+// No hardcoded list lives in the frontend. The backend's
+// `DealersService` (SQLite-backed) is the single source of truth;
+// admins manage it via `PUT /v1/admin/dealers` and the dApp reads
+// via `GET /v1/dealers`.
+//
+// Consumers should use `useDealers()` (React Query hook) so re-renders
+// stay in sync with admin changes; ad-hoc helpers like
+// `dealerByParty()` take an explicit dealer list so they don't fetch
+// behind the caller's back.
+
+import { useQuery } from '@tanstack/react-query';
 
 export interface Dealer {
   party: string;
   name: string;
   trusted: boolean;
   whitelisted: boolean;
-  ms: number;
-  fillRate: number;
+  /** Round-trip latency in milliseconds. Null until measured. */
+  latencyMs: number | null;
+  /** Observed fill rate 0..1. Null until measured. */
+  fillRate: number | null;
 }
 
-export const DEALERS: Dealer[] = [
-  { party: 'orca-mm::a4f',    name: 'Orca MM',      trusted: true,  whitelisted: true,  ms: 180, fillRate: 0.94 },
-  { party: 'wintermute::3c1', name: 'Wintermute',   trusted: true,  whitelisted: true,  ms: 240, fillRate: 0.91 },
-  { party: 'galaxy-otc::e09', name: 'Galaxy OTC',   trusted: false, whitelisted: true,  ms: 410, fillRate: 0.87 },
-  { party: 'amber-grp::71d',  name: 'Amber Group',  trusted: false, whitelisted: false, ms: 320, fillRate: 0.82 },
-  { party: 'jump-tr::55b',    name: 'Jump Trading', trusted: true,  whitelisted: true,  ms: 95,  fillRate: 0.96 },
-];
+const API_BASE =
+  (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:8080';
 
-export function dealerByParty(party: string | undefined | null): Dealer {
-  const list = DEALERS;
-  return (
-    list.find((d) => d.party === party) ?? {
-      party: party ?? '',
-      name: party ? party.split('::')[0] : '—',
-      trusted: false,
-      whitelisted: false,
-      ms: 0,
-      fillRate: 0,
-    }
-  );
+async function fetchDealers(): Promise<Dealer[]> {
+  const res = await fetch(`${API_BASE}/v1/dealers`);
+  if (!res.ok) {
+    // Surface the failure rather than masking it with stale data.
+    throw new Error(`/v1/dealers returned ${res.status}`);
+  }
+  return (await res.json()) as Dealer[];
+}
+
+/**
+ * React Query hook: returns the live dealer list. Refetches on focus
+ * and every 30s so admin edits propagate without a full reload.
+ */
+export function useDealers() {
+  return useQuery({
+    queryKey: ['dealers'],
+    queryFn: fetchDealers,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+}
+
+/**
+ * Lookup helper. Takes the dealer list explicitly so callers don't
+ * accidentally fan out fetches. Falls back to a stub derived from the
+ * party id when the dealer isn't in the list (e.g., a dealer who
+ * quoted before the operator added them to the registry).
+ */
+export function dealerByParty(
+  party: string | undefined | null,
+  list: Dealer[] | undefined,
+): Dealer {
+  const found = list?.find((d) => d.party === party);
+  if (found) return found;
+  return {
+    party: party ?? '',
+    name: party ? (party.split('::')[0] ?? party) : '—',
+    trusted: false,
+    whitelisted: false,
+    latencyMs: null,
+    fillRate: null,
+  };
 }

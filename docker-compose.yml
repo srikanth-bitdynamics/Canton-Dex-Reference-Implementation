@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      CANTON_LEDGER_URL: "${CANTON_LEDGER_URL}"
+      CANTON_LEDGER_TOKEN: "${CANTON_LEDGER_TOKEN}"
+      CANTON_OPERATOR: "${CANTON_OPERATOR}"
+      CANTON_LP_REGISTRAR: "${CANTON_LP_REGISTRAR}"
+      CANTON_ADMIN: "${CANTON_ADMIN}"
+      CANTON_USER_ID: "${CANTON_USER_ID:-ledger-api-user}"
+      CANTON_NETWORK: "${CANTON_NETWORK:-canton:devnet}"
+      CANTON_SYNCHRONIZER: "${CANTON_SYNCHRONIZER}"
+      CANTON_DEX_PACKAGE_ID: "${CANTON_DEX_PACKAGE_ID}"
+      CANTON_ALLOC_FACTORY_CID: "${CANTON_ALLOC_FACTORY_CID}"
+      CANTON_SETTLE_FACTORY_CID: "${CANTON_SETTLE_FACTORY_CID}"
+      DB_PATH: "/app/data/operator.db"
+      INDEXER_INTERVAL_MS: "${INDEXER_INTERVAL_MS:-5000}"
+      OPERATOR_ADMIN_TOKEN: "${OPERATOR_ADMIN_TOKEN}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:80}"
+    volumes:
+      - backend-data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_BASE: "${VITE_API_BASE:-}"
+        VITE_WC_PROJECT_ID: "${VITE_WC_PROJECT_ID:-}"
+        VITE_CANTON_NETWORK_ID: "${VITE_CANTON_NETWORK_ID:-canton:devnet}"
+        VITE_CANTON_LEDGER_URL: "${VITE_CANTON_LEDGER_URL:-}"
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend-data:

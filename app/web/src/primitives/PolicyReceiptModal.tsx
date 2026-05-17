@@ -9,7 +9,7 @@
 // the same fields verbatim.
 
 import { Modal } from './Modal';
-import { dealerByParty } from './dealers';
+import { dealerByParty, useDealers } from './dealers';
 import type { PolicyReceipt } from '@/types/contracts';
 
 export interface PolicyReceiptTrade {
@@ -31,6 +31,7 @@ interface Props {
 }
 
 export function PolicyReceiptModal({ trade, onClose }: Props) {
+  const { data: dealers } = useDealers();
   if (!trade) return null;
   const r = trade.policyReceipt;
   const policyCid = trade.policyCid ?? r?.signature ?? '—';
@@ -40,7 +41,7 @@ export function PolicyReceiptModal({ trade, onClose }: Props) {
   const rank = trade.rank ?? r?.acceptedRank ?? 0;
   const considered = trade.considered ?? r?.consideredCount ?? 0;
   const settledAt = trade.settledAt ?? r?.signedAt ?? '—';
-  const d = dealerByParty(acceptedDealer);
+  const d = dealerByParty(acceptedDealer, dealers);
 
   return (
     <Modal title="Policy receipt" onClose={onClose} width={580}>
@@ -109,7 +110,7 @@ export function PolicyReceiptModal({ trade, onClose }: Props) {
                 <tr key={rd.party}>
                   <td className="py-1 px-2 mono">{rd.rank}</td>
                   <td className="py-1 px-2">
-                    {dealerByParty(rd.party).name}
+                    {dealerByParty(rd.party, dealers).name}
                   </td>
                   <td className="py-1 px-2 text-right mono">{rd.price}</td>
                   <td className="py-1 px-2 text-right">

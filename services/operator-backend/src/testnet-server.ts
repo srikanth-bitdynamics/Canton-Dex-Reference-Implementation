@@ -29,6 +29,7 @@ import { startHttpServer } from "./http/index.js";
 import { openDb } from "./indexer/db.js";
 import { Indexer } from "./indexer/index.js";
 import { IdempotentLedger } from "./indexer/idempotency.js";
+import { DealersService } from "./dealers/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type { ContractId } from "@canton-dex/registry-client";
 
@@ -96,6 +97,29 @@ async function main(): Promise<void> {
     registry: new FixedRegistry(allocCid, settleCid),
     operatorParty: operator,
   });
+
+  // Seed dealer registry from DEX_INITIAL_DEALERS env if the table is empty.
+  // Format: JSON array of { party, name, trusted?, whitelisted?, latencyMs?, fillRate? }
+  const initialDealersRaw = process.env.DEX_INITIAL_DEALERS;
+  if (initialDealersRaw) {
+    try {
+      const initial = JSON.parse(initialDealersRaw) as Array<{
+        party: string;
+        name?: string;
+        trusted?: boolean;
+        whitelisted?: boolean;
+        latencyMs?: number | null;
+        fillRate?: number | null;
+      }>;
+      new DealersService(db).seedIfEmpty(initial);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[testnet-server] failed to parse DEX_INITIAL_DEALERS:",
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
 
   const indexer = new Indexer(db, ledger, {
     intervalMs: Number(process.env.INDEXER_INTERVAL_MS ?? 5000),

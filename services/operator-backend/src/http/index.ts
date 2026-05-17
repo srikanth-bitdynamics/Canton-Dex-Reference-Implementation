@@ -38,6 +38,7 @@ import type { OperatorBackend } from "../index.js";
 import type { Party, Pool } from "../types.js";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
+import { DealersService } from "../dealers/index.js";
 
 /**
  * Static context the dApp needs to build trader-authority intents. The
@@ -316,6 +317,66 @@ async function routeRequest(
     const pairs = pairsParam.split(",").map((s) => s.trim()).filter(Boolean);
     const prices = await backend.pricing.quoteMany(pairs);
     respondJson(res, 200, { prices });
+    return;
+  }
+
+  // === dealer registry =================================================
+  // GET /v1/dealers     — public list (no auth)
+  // PUT /v1/admin/dealers  — admin upsert
+  // DELETE /v1/admin/dealers/:party — admin remove
+
+  if (method === "GET" && path === "/v1/dealers") {
+    if (!db) {
+      respondJson(res, 503, { error: "dealer registry requires the SQLite indexer" });
+      return;
+    }
+    const dealers = new DealersService(db).list();
+    respondJson(res, 200, dealers);
+    return;
+  }
+
+  if (method === "PUT" && path === "/v1/admin/dealers") {
+    if (!db) {
+      respondJson(res, 503, { error: "dealer registry requires the SQLite indexer" });
+      return;
+    }
+    const auth = req.headers["authorization"];
+    if (!adminToken || auth !== `Bearer ${adminToken}`) {
+      respondJson(res, 401, { error: "missing or invalid admin token" });
+      return;
+    }
+    const body = await readJson<{
+      party?: string;
+      name?: string;
+      trusted?: boolean;
+      whitelisted?: boolean;
+      latencyMs?: number | null;
+      fillRate?: number | null;
+    }>(req);
+    if (!body.party || typeof body.party !== "string") {
+      respondJson(res, 400, { error: "expected { party: string, ... }" });
+      return;
+    }
+    const dealers = new DealersService(db);
+    const dealer = dealers.upsert(body as { party: string });
+    respondJson(res, 200, dealer);
+    return;
+  }
+
+  const dealerMatch = path.match(/^\/v1\/admin\/dealers\/(.+)$/);
+  if (method === "DELETE" && dealerMatch) {
+    if (!db) {
+      respondJson(res, 503, { error: "dealer registry requires the SQLite indexer" });
+      return;
+    }
+    const auth = req.headers["authorization"];
+    if (!adminToken || auth !== `Bearer ${adminToken}`) {
+      respondJson(res, 401, { error: "missing or invalid admin token" });
+      return;
+    }
+    const party = decodeURIComponent(dealerMatch[1]!);
+    const removed = new DealersService(db).remove(party);
+    respondJson(res, removed ? 200 : 404, { removed, party });
     return;
   }
 

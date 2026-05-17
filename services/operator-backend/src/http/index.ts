@@ -34,10 +34,59 @@
 // per docs/wallet-vs-dapp-boundary.md.
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import type { OperatorBackend } from "../index.js";
 import type { Party, Pool } from "../types.js";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
+import { rootLogger } from "../lib/logger.js";
+
+const httpLog = rootLogger.child({ component: "http" });
+
+// Allowed origins for CORS, derived from ALLOWED_ORIGINS env var (csv).
+// Empty list means allow-all (legacy behaviour).
+function parseAllowedOrigins(): string[] {
+  const raw = process.env.ALLOWED_ORIGINS;
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function originAllowed(origin: string | undefined, allowed: string[]): string {
+  if (allowed.length === 0) return "*";
+  if (!origin) return allowed[0]!;
+  return allowed.includes(origin) ? origin : allowed[0]!;
+}
+
+class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string,
+    public readonly details?: unknown,
+  ) {
+    super(message);
+  }
+}
+
+function badRequest(message: string, details?: unknown): never {
+  throw new HttpError(400, "bad_request", message, details);
+}
+
+function expectString(o: unknown, field: string): string {
+  if (typeof o !== "object" || o === null) badRequest("expected JSON object");
+  const v = (o as Record<string, unknown>)[field];
+  if (typeof v !== "string" || v.length === 0) {
+    badRequest(`missing or invalid field: ${field}`, { field, expected: "non-empty string" });
+  }
+  return v as string;
+}
+
+function expectField<T = unknown>(o: unknown, field: string): T {
+  if (typeof o !== "object" || o === null) badRequest("expected JSON object");
+  const v = (o as Record<string, unknown>)[field];
+  if (v === undefined) badRequest(`missing field: ${field}`, { field });
+  return v as T;
+}
 
 /**
  * Static context the dApp needs to build trader-authority intents. The
@@ -89,12 +138,36 @@ export function startHttpServer(cfg: HttpServerConfig): {
   // Allow the tick timer to be GC'd if the server is closed.
   if (typeof slotTimer.unref === "function") slotTimer.unref();
 
+  const allowedOrigins = parseAllowedOrigins();
   const server = createServer(async (req, res) => {
+    const requestId = (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
+    res.setHeader("X-Request-Id", requestId);
+    const reqLog = httpLog.child({ requestId, method: req.method, path: req.url });
+    const started = Date.now();
     try {
-      await routeRequest(cfg.backend, cfg.context, () => slot, cfg.db, cfg.adminToken, req, res);
+      await routeRequest(
+        cfg.backend,
+        cfg.context,
+        () => slot,
+        cfg.db,
+        cfg.adminToken,
+        allowedOrigins,
+        req,
+        res,
+      );
+      reqLog.info("request completed", { status: res.statusCode, durationMs: Date.now() - started });
     } catch (e) {
-      console.error("[operator-backend]", e);
-      respondJson(res, 500, { error: String(e) });
+      if (e instanceof HttpError) {
+        reqLog.warn("request rejected", { status: e.status, code: e.code, error: e.message });
+        respondJson(res, e.status, { error: e.message, code: e.code, details: e.details, requestId });
+        return;
+      }
+      reqLog.error("request failed", { error: e instanceof Error ? e.message : String(e) });
+      respondJson(res, 500, {
+        error: e instanceof Error ? e.message : String(e),
+        code: "internal_error",
+        requestId,
+      });
     }
   });
   server.listen(cfg.port, cfg.host ?? "127.0.0.1");
@@ -115,6 +188,7 @@ async function routeRequest(
   getSlot: () => number,
   db: Db | undefined,
   adminToken: string | undefined,
+  allowedOrigins: string[],
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -122,12 +196,13 @@ async function routeRequest(
   const path = url.pathname;
   const method = req.method ?? "GET";
 
-  // CORS preflight + headers (so the dApp running on a different
-  // origin can call us). Production should narrow `Access-Control-
-  // Allow-Origin` to known dApp hosts.
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  // CORS: narrow to ALLOWED_ORIGINS if set, else allow-all (dev).
+  const origin = req.headers["origin"] as string | undefined;
+  res.setHeader("Access-Control-Allow-Origin", originAllowed(origin, allowedOrigins));
+  if (allowedOrigins.length > 0) res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id");
+  res.setHeader("Access-Control-Expose-Headers", "X-Request-Id");
   if (method === "OPTIONS") {
     res.statusCode = 204;
     res.end();
@@ -172,8 +247,7 @@ async function routeRequest(
   if (method === "GET" && path === "/v1/orders") {
     const trader = url.searchParams.get("trader");
     if (!trader) {
-      respondJson(res, 400, { error: "missing ?trader=" });
-      return;
+      throw new HttpError(400, "bad_request", "missing ?trader= query parameter");
     }
     const all = await backend.order.listOpen();
     respondJson(
@@ -187,8 +261,7 @@ async function routeRequest(
   if (method === "GET" && path === "/v1/holdings") {
     const owner = url.searchParams.get("owner");
     if (!owner) {
-      respondJson(res, 400, { error: "missing ?owner=" });
-      return;
+      throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
     // Holdings are read off the registry-side template; the operator
     // reads via the ledger driver as observer-of-registrar.
@@ -276,8 +349,7 @@ async function routeRequest(
     }
     if (method === "PUT" && path === "/v1/admin/config") {
       if (!okWrite) {
-        respondJson(res, 401, { error: "missing or invalid admin token" });
-        return;
+        throw new HttpError(401, "unauthorized", "missing or invalid admin token");
       }
       const body = await readJson<{ key: string; value: string }>(req);
       if (!body.key || typeof body.value !== "string") {
@@ -290,8 +362,7 @@ async function routeRequest(
     }
     if (method === "DELETE" && path.startsWith("/v1/admin/config/")) {
       if (!okWrite) {
-        respondJson(res, 401, { error: "missing or invalid admin token" });
-        return;
+        throw new HttpError(401, "unauthorized", "missing or invalid admin token");
       }
       const key = decodeURIComponent(path.slice("/v1/admin/config/".length));
       cfg.delete(key);
@@ -324,21 +395,22 @@ async function routeRequest(
   // === quote ============================================================
 
   if (method === "POST" && path === "/v1/swaps/quote") {
-    const body = await readJson<{
-      poolId: string;
-      inputInstrumentId: string;
-      inputAmount: string;
-    }>(req);
+    const raw = await readJson<unknown>(req);
+    const poolId = expectString(raw, "poolId");
+    const inputInstrumentId = expectString(raw, "inputInstrumentId");
+    const inputAmount = expectString(raw, "inputAmount");
+    if (Number.isNaN(parseFloat(inputAmount)) || parseFloat(inputAmount) <= 0) {
+      badRequest("inputAmount must be a positive decimal string", { field: "inputAmount" });
+    }
     const pools = await backend.pool.listActive();
-    const pool = pools.find((p) => p.contractId === (body.poolId as never));
+    const pool = pools.find((p) => p.contractId === (poolId as never));
     if (!pool) {
-      respondJson(res, 404, { error: "pool not found" });
-      return;
+      throw new HttpError(404, "not_found", "pool not found", { poolId });
     }
     const out = backend.pool.computeQuote(
       pool,
-      body.inputInstrumentId,
-      body.inputAmount,
+      inputInstrumentId,
+      inputAmount,
     );
     respondJson(res, 200, { outputAmount: out });
     return;
@@ -481,16 +553,30 @@ async function routeRequest(
     return;
   }
 
-  respondJson(res, 404, { error: `no route: ${method} ${path}` });
+  throw new HttpError(404, "not_found", `no route: ${method} ${path}`);
 }
 
 async function readJson<T>(req: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
+  let total = 0;
+  const MAX_BODY = 1024 * 1024; // 1 MiB — generous for our shaped commands
   for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
+    const buf = chunk as Buffer;
+    total += buf.length;
+    if (total > MAX_BODY) {
+      throw new HttpError(413, "payload_too_large", "request body exceeds 1MiB");
+    }
+    chunks.push(buf);
   }
   if (chunks.length === 0) return {} as T;
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+  const text = Buffer.concat(chunks).toString("utf8");
+  try {
+    return JSON.parse(text) as T;
+  } catch (e) {
+    throw new HttpError(400, "bad_request", "malformed JSON body", {
+      parseError: e instanceof Error ? e.message : String(e),
+    });
+  }
 }
 
 function respondJson(

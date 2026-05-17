@@ -1094,21 +1094,38 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
     whitelistedDealers().map((d) => d.party),
   );
 
+  // Live mid prices from the operator backend. Source order:
+  //   1. /v1/prices (pool-derived first, then PRICES env, then external feed)
+  //   2. zero if no source has the pair
+  // No hardcoded fallbacks — if the backend can't price it, the notional
+  // shows "—" rather than misleading the user.
+  const { data: pricesByPair } = useQuery({
+    queryKey: ['prices', 'BTC/USDC,ETH/USDC,BTC/ETH,CC/USDC'],
+    queryFn: async () => {
+      const api = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
+      const res = await fetch(
+        `${api}/v1/prices?pairs=BTC/USDC,ETH/USDC,BTC/ETH,CC/USDC`,
+      );
+      if (!res.ok) return {} as Record<string, number>;
+      const body = (await res.json()) as {
+        prices: Array<{ pair: string; price: string }>;
+      };
+      return Object.fromEntries(
+        body.prices.map((p) => [p.pair, parseFloat(p.price)]),
+      ) as Record<string, number>;
+    },
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+
   const toggleDealer = (p: string) =>
     setWhitelist((cur) =>
       cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p],
     );
 
   const sz = parseFloat(size) || 0;
-  const refMid =
-    pair === 'BTC/USDC'
-      ? 60480
-      : pair === 'ETH/USDC'
-        ? 2424
-        : pair === 'BTC/ETH'
-          ? 24.7
-          : 0.42;
-  const notional = sz * refMid;
+  const refMid = pricesByPair?.[pair] ?? null;
+  const notional = refMid != null ? sz * refMid : null;
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1211,9 +1228,11 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
               >
                 Notional ≈{' '}
                 <span className="mono" style={{ color: 'var(--text)' }}>
-                  {fmtUsd(notional)}
+                  {notional != null ? fmtUsd(notional) : '—'}
                 </span>{' '}
-                at reference mid
+                {refMid != null
+                  ? 'at live mid'
+                  : 'no price available — pool or feed required'}
               </div>
             )}
           </div>

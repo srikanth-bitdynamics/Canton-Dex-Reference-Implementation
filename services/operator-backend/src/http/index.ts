@@ -135,7 +135,7 @@ export function startHttpServer(cfg: HttpServerConfig): {
 
   const server = createServer(async (req, res) => {
     try {
-      await routeRequest(cfg.backend, cfg.context, () => slot, cfg.db, cfg.adminToken, req, res);
+      await routeRequest(cfg.backend, cfg.context, () => slot, cfg.db, cfg.adminToken, cfg.ledgerUrl, cfg.ledgerToken, req, res);
     } catch (e) {
       console.error("[operator-backend]", e);
       respondJson(res, 500, { error: String(e) });
@@ -159,6 +159,8 @@ async function routeRequest(
   getSlot: () => number,
   db: Db | undefined,
   adminToken: string | undefined,
+  ledgerUrl: string | undefined,
+  ledgerToken: string | undefined,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -246,6 +248,102 @@ async function routeRequest(
       200,
       holdings.filter((h) => h.owner === owner),
     );
+    return;
+  }
+
+  // === wallet pass-through (browsers can't talk to the validator directly
+  // due to CORS). The wallet provider POSTs the Daml command it wants
+  // submitted; we forward to the participant with our JWT and return
+  // the result. In production, replace this with a participant whose
+  // CORS allow-list includes the dApp host. ==============================
+
+  if (method === "GET" && path === "/v1/wallet/whoami") {
+    if (!ledgerUrl || !ledgerToken) {
+      respondJson(res, 503, { error: "ledger not configured" });
+      return;
+    }
+    try {
+      const r = await fetch(`${ledgerUrl.replace(/\/$/, "")}/v2/users/current`, {
+        headers: { Authorization: `Bearer ${ledgerToken}` },
+      });
+      const text = await r.text();
+      res.statusCode = r.status;
+      res.setHeader("Content-Type", "application/json");
+      res.end(text);
+    } catch (e) {
+      respondJson(res, 502, { error: `whoami proxy failed: ${e instanceof Error ? e.message : String(e)}` });
+    }
+    return;
+  }
+
+  if (method === "GET" && path === "/v1/orders/book") {
+    const base = url.searchParams.get("base");
+    const quote = url.searchParams.get("quote");
+    if (!base || !quote) {
+      respondJson(res, 400, { error: "missing ?base= or ?quote=" });
+      return;
+    }
+    const book = await backend.order.book({
+      baseInstrumentId: base,
+      quoteInstrumentId: quote,
+    });
+    respondJson(res, 200, book);
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/orders/match") {
+    const body = await readJson<{ base: string; quote: string }>(req);
+    if (!body.base || !body.quote) {
+      respondJson(res, 400, { error: "expected { base, quote }" });
+      return;
+    }
+    const results = await backend.order.runMatching({
+      baseInstrumentId: body.base,
+      quoteInstrumentId: body.quote,
+      venue: context.operator as Party,
+      admin: context.admin as Party,
+    });
+    respondJson(res, 200, { matches: results });
+    return;
+  }
+
+  if (method === "GET" && path === "/v1/prices") {
+    const pairsParam = url.searchParams.get("pairs");
+    if (!pairsParam) {
+      respondJson(res, 400, { error: "missing ?pairs=BASE/QUOTE,BASE/QUOTE" });
+      return;
+    }
+    const pairs = pairsParam.split(",").map((s) => s.trim()).filter(Boolean);
+    const prices = await backend.pricing.quoteMany(pairs);
+    respondJson(res, 200, { prices });
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/wallet/submit") {
+    if (!ledgerUrl || !ledgerToken) {
+      respondJson(res, 503, { error: "ledger not configured" });
+      return;
+    }
+    const body = await readJson<Record<string, unknown>>(req);
+    try {
+      const r = await fetch(
+        `${ledgerUrl.replace(/\/$/, "")}/v2/commands/submit-and-wait`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${ledgerToken}`,
+          },
+          body: JSON.stringify(body),
+        },
+      );
+      const text = await r.text();
+      res.statusCode = r.status;
+      res.setHeader("Content-Type", "application/json");
+      res.end(text);
+    } catch (e) {
+      respondJson(res, 502, { error: `submit proxy failed: ${e instanceof Error ? e.message : String(e)}` });
+    }
     return;
   }
 

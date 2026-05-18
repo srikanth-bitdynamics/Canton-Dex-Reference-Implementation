@@ -21,7 +21,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
     "dev": "node --import tsx src/dev-server.ts",
-    "testnet": "node --import tsx src/testnet-server.ts"
+    "testnet": "node --import tsx src/testnet-server.ts",
+    "start": "node --import tsx src/testnet-server.ts"
   },
   "dependencies": {
     "@canton-dex/registry-client": "file:../registry-client",

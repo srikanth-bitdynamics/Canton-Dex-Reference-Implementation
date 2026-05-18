@@ -2,12 +2,18 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from '@/components/Layout';
 import { ToastProvider } from '@/primitives/ToastProvider';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { TradePage } from '@/pages/TradePage';
 import { PoolsPage } from '@/pages/PoolsPage';
 import { OrdersPage } from '@/pages/OrdersPage';
 import { RfqPage } from '@/pages/RfqPage';
 import { PortfolioPage } from '@/pages/PortfolioPage';
 import { AdminPage } from '@/pages/AdminPage';
+import type { ReactNode } from 'react';
+
+function withBoundary(label: string, child: ReactNode): ReactNode {
+  return <ErrorBoundary label={label}>{child}</ErrorBoundary>;
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,21 +26,23 @@ const queryClient = new QueryClient({
 
 export function App() {
   return (
+    <ErrorBoundary label="root">
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
       <BrowserRouter>
         <Routes>
           <Route element={<Layout />}>
-            <Route index element={<TradePage />} />
-            <Route path="pools" element={<PoolsPage />} />
-            <Route path="orders" element={<OrdersPage />} />
-            <Route path="rfq" element={<RfqPage />} />
-            <Route path="portfolio" element={<PortfolioPage />} />
-            <Route path="admin" element={<AdminPage />} />
+            <Route index element={withBoundary('trade', <TradePage />)} />
+            <Route path="pools" element={withBoundary('pools', <PoolsPage />)} />
+            <Route path="orders" element={withBoundary('orders', <OrdersPage />)} />
+            <Route path="rfq" element={withBoundary('rfq', <RfqPage />)} />
+            <Route path="portfolio" element={withBoundary('portfolio', <PortfolioPage />)} />
+            <Route path="admin" element={withBoundary('admin', <AdminPage />)} />
           </Route>
         </Routes>
       </BrowserRouter>
       </ToastProvider>
     </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

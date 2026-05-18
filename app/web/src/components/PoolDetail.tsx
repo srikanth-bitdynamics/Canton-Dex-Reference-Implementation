@@ -12,9 +12,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ASSETS } from '@/primitives/assets';
 import { PairGlyph } from '@/primitives/Glyph';
 import { StatusBadge } from '@/primitives/StatusBadge';
-import { Spark, genSpark } from '@/primitives/Spark';
+import { Spark } from '@/primitives/Spark';
 import { fmt, fmtUsd, fmtUsdK } from '@/primitives/format';
 import { useToast } from '@/primitives/ToastProvider';
+import { useAssetPricesUsd } from '@/hooks/usePrices';
+import { usePriceHistory, useStats24h } from '@/hooks/useStats';
 import { ledger } from '@/services/ledger';
 import type { Holding, Pool } from '@/types/contracts';
 import { useCurrentParty } from '@/wallet/hooks';
@@ -35,6 +37,16 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     queryKey: ['context'],
     queryFn: ledger.getContext,
   });
+  // Live mid-price USD for both legs of the pool, and 24h stats / price
+  // history from the indexer. All nullable — when no data is available
+  // the UI renders "—" rather than a hallucinated delta.
+  const { prices: priceUsd } = useAssetPricesUsd([
+    pool.baseInstrumentId,
+    pool.quoteInstrumentId,
+  ]);
+  const pairKey = `${pool.baseInstrumentId}/${pool.quoteInstrumentId}`;
+  const { data: stats24h } = useStats24h(pairKey);
+  const { data: priceHistory } = usePriceHistory(pairKey, 24);
   const refreshOnComplete = () => {
     void queryClient.invalidateQueries({ queryKey: ['pools'] });
     void queryClient.invalidateQueries({ queryKey: ['holdings'] });
@@ -182,9 +194,9 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
           <div className="stat-v">
             {fmtUsdK(
               pool.reserves.baseAmount *
-                (ASSETS[pool.baseInstrumentId]?.price ?? 0) +
+                (priceUsd[pool.baseInstrumentId] ?? 0) +
                 pool.reserves.quoteAmount *
-                  (ASSETS[pool.quoteInstrumentId]?.price ?? 0),
+                  (priceUsd[pool.quoteInstrumentId] ?? 0),
             )}
           </div>
           <div className="stat-d">
@@ -200,7 +212,21 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
               2,
             )}
           </div>
-          <div className="stat-d up">+1.24% 24h</div>
+          <div
+            className={
+              stats24h?.priceChange24h == null
+                ? 'stat-d'
+                : stats24h.priceChange24h >= 0
+                  ? 'stat-d up'
+                  : 'stat-d down'
+            }
+          >
+            {stats24h?.priceChange24h == null
+              ? 'no 24h swaps yet'
+              : `${stats24h.priceChange24h >= 0 ? '+' : ''}${(
+                  stats24h.priceChange24h * 100
+                ).toFixed(2)}% 24h`}
+          </div>
         </div>
         <div className="stat">
           <div className="stat-l">k constant</div>
@@ -420,12 +446,15 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                 <div className="kv">
                   <span className="k">Position value</span>
                   <span className="v">
-                    {fmtUsd(
-                      userBaseValue *
-                        (ASSETS[pool.baseInstrumentId]?.price ?? 0) +
-                        userQuoteValue *
-                          (ASSETS[pool.quoteInstrumentId]?.price ?? 0),
-                    )}
+                    {priceUsd[pool.baseInstrumentId] != null &&
+                    priceUsd[pool.quoteInstrumentId] != null
+                      ? fmtUsd(
+                          userBaseValue *
+                            (priceUsd[pool.baseInstrumentId] as number) +
+                            userQuoteValue *
+                              (priceUsd[pool.quoteInstrumentId] as number),
+                        )
+                      : '—'}
                   </span>
                 </div>
 
@@ -542,12 +571,29 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                   fontSize: 12,
                 }}
               >
-                <Spark
-                  data={genSpark(pool.contractId.length, 64)}
-                  width={400}
-                  height={120}
-                  color="#3FB950"
-                />
+                {priceHistory && priceHistory.length >= 2 ? (
+                  <Spark
+                    data={priceHistory.map((p) => p.price)}
+                    width={400}
+                    height={120}
+                    color={
+                      (stats24h?.priceChange24h ?? 0) >= 0
+                        ? '#3FB950'
+                        : '#F85149'
+                    }
+                  />
+                ) : (
+                  <div
+                    style={{
+                      color: 'var(--text-3)',
+                      fontSize: 12,
+                      textAlign: 'center',
+                      padding: 24,
+                    }}
+                  >
+                    — no swap history yet for this pair
+                  </div>
+                )}
               </div>
             </div>
           </div>

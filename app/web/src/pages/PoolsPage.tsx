@@ -9,9 +9,9 @@ import { useQuery } from '@tanstack/react-query';
 import { PoolCard } from '@/components/PoolCard';
 import { PoolDetail } from '@/components/PoolDetail';
 import { fmtUsdK } from '@/primitives/format';
-import { ASSETS } from '@/primitives/assets';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
+import { useAssetPricesUsd } from '@/hooks/usePrices';
 
 export function PoolsPage() {
   const party = useCurrentParty();
@@ -56,14 +56,20 @@ export function PoolsPage() {
     );
   }
 
-  // Aggregate stats for the strip above the list.
+  // Aggregate TVL across pools, using live mid prices for fiat
+  // estimates. Pools whose base or quote has no live price are
+  // skipped (we don't fabricate dollars).
+  const symbols = pools.flatMap((p) => [p.baseInstrumentId, p.quoteInstrumentId]);
+  const { prices: priceUsd } = useAssetPricesUsd(symbols);
+  let priceableCount = 0;
   const tvl = pools.reduce((s, p) => {
-    const baseUsd =
-      p.reserves.baseAmount * (ASSETS[p.baseInstrumentId]?.price ?? 0);
-    const quoteUsd =
-      p.reserves.quoteAmount * (ASSETS[p.quoteInstrumentId]?.price ?? 0);
-    return s + baseUsd + quoteUsd;
+    const bp = priceUsd[p.baseInstrumentId];
+    const qp = priceUsd[p.quoteInstrumentId];
+    if (bp == null || qp == null) return s;
+    priceableCount += 1;
+    return s + p.reserves.baseAmount * bp + p.reserves.quoteAmount * qp;
   }, 0);
+  const allPriced = priceableCount === pools.length;
 
   return (
     <div className="page">
@@ -80,8 +86,12 @@ export function PoolsPage() {
       <div className="grid-3" style={{ marginBottom: 20 }}>
         <div className="stat">
           <div className="stat-l">Total Value Locked</div>
-          <div className="stat-v">{fmtUsdK(tvl)}</div>
-          <div className="stat-d up">+2.4% 24h</div>
+          <div className="stat-v">{allPriced ? fmtUsdK(tvl) : '—'}</div>
+          <div className="stat-d">
+            {allPriced
+              ? `${priceableCount} pools priced live`
+              : `${priceableCount}/${pools.length} pools have live prices`}
+          </div>
         </div>
         <div className="stat">
           <div className="stat-l">Active pools</div>

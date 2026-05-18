@@ -39,6 +39,7 @@ import type { OperatorBackend } from "../index.js";
 import type { Party, Pool } from "../types.js";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
+import { DealersService } from "../dealers/index.js";
 import { checkAdminAuth } from "./auth.js";
 import { rootLogger } from "../lib/logger.js";
 
@@ -123,20 +124,64 @@ export interface HttpServerConfig {
   db?: Db;
   /** Shared bearer token required for /v1/admin/* writes. */
   adminToken?: string;
+  /** JSON LAPI base URL — used to poll the real ledger offset for /v1/status. */
+  ledgerUrl?: string;
+  /** JWT used to read the ledger offset. */
+  ledgerToken?: string;
 }
 
 export function startHttpServer(cfg: HttpServerConfig): {
   close: () => Promise<void>;
   url: string;
 } {
-  // Slot starts at the seeded baseline and increments by 1 each second so
-  // the UI's pill moves visibly. Real deployments swap this for the
-  // participant's actual ledger offset.
-  let slot = 4128442;
+  // Slot is the ledger's latest offset (ACS pruning watermark). We poll
+  // the participant every 2s and cache the result. Falls back to a local
+  // counter if the participant query fails so the UI's pill still moves.
+  let slot = 0;
+  let lastPolledOk = false;
+  const slotUrl = (cfg.ledgerUrl ?? "").replace(/\/$/, "");
+  const slotToken = cfg.ledgerToken;
+  async function pollSlot(): Promise<void> {
+    if (!slotUrl || !slotToken) {
+      slot += 1;
+      return;
+    }
+    try {
+      const res = await fetch(
+        `${slotUrl}/v2/state/latest-pruned-offsets`,
+        { headers: { Authorization: `Bearer ${slotToken}` } },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as {
+        participantPrunedUpToInclusive?: number;
+      };
+      const offset = body.participantPrunedUpToInclusive;
+      if (typeof offset === "number" && offset > 0) {
+        slot = offset;
+        lastPolledOk = true;
+      } else {
+        // Pruned offset is 0 (nothing pruned yet) — fall back to ACS end.
+        const ledgerEndRes = await fetch(
+          `${slotUrl}/v2/state/ledger-end`,
+          { headers: { Authorization: `Bearer ${slotToken}` } },
+        );
+        if (ledgerEndRes.ok) {
+          const end = (await ledgerEndRes.json()) as { offset?: number };
+          if (typeof end.offset === "number") {
+            slot = end.offset;
+            lastPolledOk = true;
+          }
+        }
+      }
+    } catch {
+      // Quiet on transient errors; keep the last good value or tick.
+      if (!lastPolledOk) slot += 1;
+    }
+  }
+  void pollSlot();
   const slotTimer = setInterval(() => {
-    slot += 1;
-  }, 1000);
-  // Allow the tick timer to be GC'd if the server is closed.
+    void pollSlot();
+  }, 2000);
   if (typeof slotTimer.unref === "function") slotTimer.unref();
 
   const allowedOrigins = parseAllowedOrigins();
@@ -152,6 +197,8 @@ export function startHttpServer(cfg: HttpServerConfig): {
         () => slot,
         cfg.db,
         cfg.adminToken,
+        cfg.ledgerUrl,
+        cfg.ledgerToken,
         allowedOrigins,
         req,
         res,
@@ -189,6 +236,8 @@ async function routeRequest(
   getSlot: () => number,
   db: Db | undefined,
   adminToken: string | undefined,
+  ledgerUrl: string | undefined,
+  ledgerToken: string | undefined,
   allowedOrigins: string[],
   req: IncomingMessage,
   res: ServerResponse,
@@ -242,7 +291,7 @@ async function routeRequest(
   }
 
   if (method === "GET" && path === "/v1/pairs") {
-    // The DexPair contract template lives in pr5333/CantonDex/Dex/DexPair.daml.
+    // The DexPair contract template lives in trading/CantonDex/Dex/DexPair.daml.
     // The operator queries the ACS via the ledger driver.
     const pairs = await backend.ledger.query<unknown>({
       templateId: "CantonDex.Dex.DexPair:DexPair",
@@ -337,17 +386,296 @@ async function routeRequest(
     if (!owner) {
       throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
-    // Holdings are read off the registry-side template; the operator
-    // reads via the ledger driver as observer-of-registrar.
+    // Read holdings as the owner — Holding has `signatory admin, observer
+    // owner`, so the operator party doesn't see them. The JWT carries
+    // ledger-wide rights so we can query as the owner directly.
     const holdings = await backend.ledger.query<{ owner: string }>({
       templateId: "CantonDex.Instrument.Holding:Holding",
-      observingParty: backend.operatorParty,
+      observingParty: owner as never,
     });
     respondJson(
       res,
       200,
       holdings.filter((h) => h.owner === owner),
     );
+    return;
+  }
+
+  // === wallet pass-through (browsers can't talk to the validator directly
+  // due to CORS). The wallet provider POSTs the Daml command it wants
+  // submitted; we forward to the participant with our JWT and return
+  // the result. In production, replace this with a participant whose
+  // CORS allow-list includes the dApp host. ==============================
+
+  if (method === "GET" && path === "/v1/wallet/whoami") {
+    if (!ledgerUrl || !ledgerToken) {
+      respondJson(res, 503, { error: "ledger not configured" });
+      return;
+    }
+    try {
+      const r = await fetch(`${ledgerUrl.replace(/\/$/, "")}/v2/users/current`, {
+        headers: { Authorization: `Bearer ${ledgerToken}` },
+      });
+      const text = await r.text();
+      res.statusCode = r.status;
+      res.setHeader("Content-Type", "application/json");
+      res.end(text);
+    } catch (e) {
+      respondJson(res, 502, { error: `whoami proxy failed: ${e instanceof Error ? e.message : String(e)}` });
+    }
+    return;
+  }
+
+  if (method === "GET" && path === "/v1/orders/book") {
+    const base = url.searchParams.get("base");
+    const quote = url.searchParams.get("quote");
+    if (!base || !quote) {
+      respondJson(res, 400, { error: "missing ?base= or ?quote=" });
+      return;
+    }
+    const book = await backend.order.book({
+      baseInstrumentId: base,
+      quoteInstrumentId: quote,
+    });
+    respondJson(res, 200, book);
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/orders/match") {
+    const body = await readJson<{ base: string; quote: string }>(req);
+    if (!body.base || !body.quote) {
+      respondJson(res, 400, { error: "expected { base, quote }" });
+      return;
+    }
+    const results = await backend.order.runMatching({
+      baseInstrumentId: body.base,
+      quoteInstrumentId: body.quote,
+      venue: context.operator as Party,
+      admin: context.admin as Party,
+    });
+    respondJson(res, 200, { matches: results });
+    return;
+  }
+
+  if (method === "GET" && path === "/v1/prices") {
+    const pairsParam = url.searchParams.get("pairs");
+    if (!pairsParam) {
+      respondJson(res, 400, { error: "missing ?pairs=BASE/QUOTE,BASE/QUOTE" });
+      return;
+    }
+    const pairs = pairsParam.split(",").map((s) => s.trim()).filter(Boolean);
+    const prices = await backend.pricing.quoteMany(pairs);
+    respondJson(res, 200, { prices });
+    return;
+  }
+
+  // GET /v1/price-history?pair=BTC/USDC&hours=24 — price points from
+  // the swaps indexer. Empty array if no swaps yet for the pair.
+  if (method === "GET" && path === "/v1/price-history") {
+    if (!db) {
+      respondJson(res, 503, { error: "indexer disabled" });
+      return;
+    }
+    const pair = url.searchParams.get("pair");
+    if (!pair) {
+      respondJson(res, 400, { error: "missing ?pair=BASE/QUOTE" });
+      return;
+    }
+    const hours = Math.max(
+      1,
+      Math.min(24 * 30, parseInt(url.searchParams.get("hours") ?? "24", 10)),
+    );
+    const since = Math.floor(Date.now() / 1000) - hours * 3600;
+    const rows = db
+      .prepare(
+        `SELECT ts, priceAfter FROM swaps
+         WHERE pair = ? AND ts >= ?
+         ORDER BY ts ASC LIMIT 500`,
+      )
+      .all(pair, since) as Array<{ ts: number; priceAfter: string }>;
+    respondJson(res, 200, {
+      pair,
+      hours,
+      points: rows.map((r) => ({ ts: r.ts, price: parseFloat(r.priceAfter) })),
+    });
+    return;
+  }
+
+  // GET /v1/stats/24h?pair=BTC/USDC — derived stats over the last 24h
+  // window from the indexer:
+  //   - priceChange24h: (latest - earliest) / earliest (null if <2 points)
+  //   - volume24h: sum of |baseDelta| across swaps in the window
+  //   - swapCount24h
+  // Empty / null when the indexer has no data yet for the pair.
+  if (method === "GET" && path === "/v1/stats/24h") {
+    if (!db) {
+      respondJson(res, 503, { error: "indexer disabled" });
+      return;
+    }
+    const pair = url.searchParams.get("pair");
+    if (!pair) {
+      respondJson(res, 400, { error: "missing ?pair=BASE/QUOTE" });
+      return;
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const since = now - 24 * 3600;
+    const rows = db
+      .prepare(
+        `SELECT ts, priceAfter, baseDelta FROM swaps
+         WHERE pair = ? AND ts >= ?
+         ORDER BY ts ASC`,
+      )
+      .all(pair, since) as Array<{
+        ts: number;
+        priceAfter: string;
+        baseDelta: string;
+      }>;
+    const first = rows[0];
+    const last = rows[rows.length - 1];
+    const priceChange =
+      rows.length >= 2 && first && last
+        ? (parseFloat(last.priceAfter) - parseFloat(first.priceAfter)) /
+          parseFloat(first.priceAfter)
+        : null;
+    const volume = rows.reduce(
+      (s, r) => s + Math.abs(parseFloat(r.baseDelta)),
+      0,
+    );
+    respondJson(res, 200, {
+      pair,
+      priceChange24h: priceChange,
+      volume24h: rows.length > 0 ? volume : null,
+      swapCount24h: rows.length,
+    });
+    return;
+  }
+
+  // GET /v1/stats/tvl-24h — pool TVL delta over the last 24h.
+  // Compares earliest pool_states snapshot in the window to the most
+  // recent for each pool. Returns null change when no historical row
+  // exists yet.
+  if (method === "GET" && path === "/v1/stats/tvl-24h") {
+    if (!db) {
+      respondJson(res, 503, { error: "indexer disabled" });
+      return;
+    }
+    const since = Math.floor(Date.now() / 1000) - 24 * 3600;
+    const rows = db
+      .prepare(
+        `SELECT poolCid, MIN(ts) as firstTs, MAX(ts) as lastTs FROM pool_states
+         WHERE ts >= ? GROUP BY poolCid`,
+      )
+      .all(since) as Array<{ poolCid: string; firstTs: number; lastTs: number }>;
+    if (rows.length === 0) {
+      respondJson(res, 200, { tvlChange24h: null, pools: [] });
+      return;
+    }
+    // For each pool, fetch first and last reserve states.
+    type Row = { poolCid: string; baseAmount: string; quoteAmount: string };
+    const firstStmt = db.prepare(
+      `SELECT poolCid, baseAmount, quoteAmount FROM pool_states
+       WHERE poolCid = ? AND ts = ?`,
+    );
+    const pools = rows.map((r) => {
+      const a = firstStmt.get(r.poolCid, r.firstTs) as Row | undefined;
+      const b = firstStmt.get(r.poolCid, r.lastTs) as Row | undefined;
+      return {
+        poolCid: r.poolCid,
+        firstBase: a ? parseFloat(a.baseAmount) : null,
+        firstQuote: a ? parseFloat(a.quoteAmount) : null,
+        lastBase: b ? parseFloat(b.baseAmount) : null,
+        lastQuote: b ? parseFloat(b.quoteAmount) : null,
+      };
+    });
+    respondJson(res, 200, { pools });
+    return;
+  }
+
+  // === dealer registry =================================================
+  // GET /v1/dealers     — public list (no auth)
+  // PUT /v1/admin/dealers  — admin upsert
+  // DELETE /v1/admin/dealers/:party — admin remove
+
+  if (method === "GET" && path === "/v1/dealers") {
+    if (!db) {
+      respondJson(res, 503, { error: "dealer registry requires the SQLite indexer" });
+      return;
+    }
+    const dealers = new DealersService(db).list();
+    respondJson(res, 200, dealers);
+    return;
+  }
+
+  if (method === "PUT" && path === "/v1/admin/dealers") {
+    if (!db) {
+      respondJson(res, 503, { error: "dealer registry requires the SQLite indexer" });
+      return;
+    }
+    const auth = req.headers["authorization"];
+    if (!adminToken || auth !== `Bearer ${adminToken}`) {
+      respondJson(res, 401, { error: "missing or invalid admin token" });
+      return;
+    }
+    const body = await readJson<{
+      party?: string;
+      name?: string;
+      trusted?: boolean;
+      whitelisted?: boolean;
+      latencyMs?: number | null;
+      fillRate?: number | null;
+    }>(req);
+    if (!body.party || typeof body.party !== "string") {
+      respondJson(res, 400, { error: "expected { party: string, ... }" });
+      return;
+    }
+    const dealers = new DealersService(db);
+    const dealer = dealers.upsert(body as { party: string });
+    respondJson(res, 200, dealer);
+    return;
+  }
+
+  const dealerMatch = path.match(/^\/v1\/admin\/dealers\/(.+)$/);
+  if (method === "DELETE" && dealerMatch) {
+    if (!db) {
+      respondJson(res, 503, { error: "dealer registry requires the SQLite indexer" });
+      return;
+    }
+    const auth = req.headers["authorization"];
+    if (!adminToken || auth !== `Bearer ${adminToken}`) {
+      respondJson(res, 401, { error: "missing or invalid admin token" });
+      return;
+    }
+    const party = decodeURIComponent(dealerMatch[1]!);
+    const removed = new DealersService(db).remove(party);
+    respondJson(res, removed ? 200 : 404, { removed, party });
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/wallet/submit") {
+    if (!ledgerUrl || !ledgerToken) {
+      respondJson(res, 503, { error: "ledger not configured" });
+      return;
+    }
+    const body = await readJson<Record<string, unknown>>(req);
+    try {
+      const r = await fetch(
+        `${ledgerUrl.replace(/\/$/, "")}/v2/commands/submit-and-wait`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${ledgerToken}`,
+          },
+          body: JSON.stringify(body),
+        },
+      );
+      const text = await r.text();
+      res.statusCode = r.status;
+      res.setHeader("Content-Type", "application/json");
+      res.end(text);
+    } catch (e) {
+      respondJson(res, 502, { error: `submit proxy failed: ${e instanceof Error ? e.message : String(e)}` });
+    }
     return;
   }
 

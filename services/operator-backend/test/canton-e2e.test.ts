@@ -10,11 +10,11 @@
 // How to run:
 //
 //   1. Boot a sandbox with the DEX DARs:
-//      $ cd pr5333 && daml build
+//      $ cd trading && daml build
 //      $ cd .. && daml sandbox \
 //          --port 6865 \
 //          --json-api-port 7575 \
-//          --dar pr5333/.daml/dist/canton-dex-pr5333-0.0.1.dar
+//          --dar trading/.daml/dist/canton-dex-trading-0.0.1.dar
 //
 //      OR use `daml start` from a project that depends on the DAR.
 //

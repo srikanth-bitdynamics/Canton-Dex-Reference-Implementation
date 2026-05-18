@@ -48,7 +48,7 @@ In rough order of dependency:
    are active, traders may submit `OrderFundingRequest`, `LiquidityDeposit
    Request`, `Rfq`, etc.
 
-The dev / testnet path in `pr5333-tests/CantonDex/Tests/EndToEndTests.daml`
+The dev / testnet path in `trading-tests/CantonDex/Tests/EndToEndTests.daml`
 walks every step above against the mock registry. Treat it as the canonical
 bring-up script.
 
@@ -190,7 +190,7 @@ Either:
 - Revert the offending change (add removed choices back as deprecated
   stubs, make new fields Optional, move new fields to the end of the
   record).
-- Rename the package (e.g. `canton-dex-pr5333` to `canton-dex`). All
+- Rename the package (e.g. `canton-dex-trading` to `canton-dex`). All
   existing contracts from the old name remain queryable but cannot be
   upgraded.
 
@@ -236,7 +236,7 @@ runtime knobs that are not encoded on-ledger.
 ## Single-operator dev shortcut
 
 For local exploration, collapse `operator` / `lpRegistrar` / `admin` into one
-party. Tests under `pr5333-tests/` show the multi-party shape, but the same
+party. Tests under `trading-tests/` show the multi-party shape, but the same
 contracts compile and run with one party signing everything. Production
 should keep the parties distinct so audit-trail and key-management
 responsibilities stay decoupled.

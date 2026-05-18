@@ -12,7 +12,7 @@
 //   CANTON_USER_ID       JSON Ledger API user id (default: ledger-api-user).
 //   CANTON_NETWORK       Display label, e.g. canton:devnet.
 //   CANTON_SYNCHRONIZER  Synchronizer id, e.g. global-domain::1220...
-//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex-pr5333`) for template ids.
+//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex-trading`) for template ids.
 //
 // Optional:
 //   CANTON_ALLOC_FACTORY_CID  AllocationFactory contract id.
@@ -29,6 +29,7 @@ import { startHttpServer } from "./http/index.js";
 import { openDb } from "./indexer/db.js";
 import { Indexer } from "./indexer/index.js";
 import { IdempotentLedger } from "./indexer/idempotency.js";
+import { DealersService } from "./dealers/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type { ContractId } from "@canton-dex/registry-client";
 import { rootLogger } from "./lib/logger.js";
@@ -99,6 +100,29 @@ async function main(): Promise<void> {
     operatorParty: operator,
   });
 
+  // Seed dealer registry from DEX_INITIAL_DEALERS env if the table is empty.
+  // Format: JSON array of { party, name, trusted?, whitelisted?, latencyMs?, fillRate? }
+  const initialDealersRaw = process.env.DEX_INITIAL_DEALERS;
+  if (initialDealersRaw) {
+    try {
+      const initial = JSON.parse(initialDealersRaw) as Array<{
+        party: string;
+        name?: string;
+        trusted?: boolean;
+        whitelisted?: boolean;
+        latencyMs?: number | null;
+        fillRate?: number | null;
+      }>;
+      new DealersService(db).seedIfEmpty(initial);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[testnet-server] failed to parse DEX_INITIAL_DEALERS:",
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+
   const indexer = new Indexer(db, ledger, {
     intervalMs: Number(process.env.INDEXER_INTERVAL_MS ?? 5000),
     observingParty: operator,
@@ -121,6 +145,8 @@ async function main(): Promise<void> {
     },
     db,
     adminToken: process.env.OPERATOR_ADMIN_TOKEN,
+    ledgerUrl: baseUrl,
+    ledgerToken: token,
   });
   log.info("server started", {
     url,

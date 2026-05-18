@@ -42,7 +42,7 @@ PolicyReceipt            on-chain record of operator ranking policy at accept ti
 Registry.V2.*            full CIP-0056 stack
 ```
 
-The Daml package is `canton-dex-pr5333`. Current vetted version on the
+The Daml package is `canton-dex-trading`. Current vetted version on the
 public testnet: `v0.0.7`.
 
 ## Off-chain layout
@@ -135,7 +135,7 @@ queryable but cannot be upgraded.
 ## Testing
 
 ```bash
-cd pr5333-tests
+cd trading-tests
 daml test            # 26 in-script tests
 ```
 

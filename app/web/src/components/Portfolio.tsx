@@ -9,12 +9,14 @@
 //   - activity feed: per-event tx + policy receipt pills
 
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { ASSETS } from '@/primitives/assets';
 import { Glyph, PairGlyph } from '@/primitives/Glyph';
 import { StatusBadge } from '@/primitives/StatusBadge';
 import { fmt, fmtUsd } from '@/primitives/format';
 import { PolicyReceiptModal } from '@/primitives/PolicyReceiptModal';
+import { useAssetPricesUsd } from '@/hooks/usePrices';
 import type {
   Holding,
   Order,
@@ -62,6 +64,26 @@ export function Portfolio({
     return acc;
   }, {});
 
+  // Live USD prices for every symbol we display. `null` for any symbol
+  // the backend has no source for — callers render "—" instead of $0.
+  const heldSymbols = Object.keys(grouped);
+  const poolSymbols = pools.flatMap((p) => [
+    p.baseInstrumentId,
+    p.quoteInstrumentId,
+  ]);
+  const { prices: priceUsd } = useAssetPricesUsd([
+    ...heldSymbols,
+    ...poolSymbols,
+  ]);
+  const priceOr0 = (sym: string) => priceUsd[sym] ?? 0;
+  const someUnknownPrice =
+    heldSymbols.some((s) => priceUsd[s] == null) ||
+    pools.some(
+      (p) =>
+        priceUsd[p.baseInstrumentId] == null ||
+        priceUsd[p.quoteInstrumentId] == null,
+    );
+
   // Synthesize LP rows from holdings whose instrumentId matches a
   // pool's lpInstrumentId.
   const lpRows = holdings
@@ -75,8 +97,8 @@ export function Portfolio({
       const baseShare = pct * pool.reserves.baseAmount;
       const quoteShare = pct * pool.reserves.quoteAmount;
       const value =
-        baseShare * (ASSETS[pool.baseInstrumentId]?.price ?? 0) +
-        quoteShare * (ASSETS[pool.quoteInstrumentId]?.price ?? 0);
+        baseShare * priceOr0(pool.baseInstrumentId) +
+        quoteShare * priceOr0(pool.quoteInstrumentId);
       return {
         holding: h,
         pool,
@@ -126,14 +148,15 @@ export function Portfolio({
     ...lpAllocations,
   ];
 
-  const totalValue = Object.entries(grouped).reduce((s, [sym, v]) => {
-    const price = ASSETS[sym]?.price ?? 0;
-    return s + (v.available + v.locked) * price;
-  }, 0);
+  const totalValue = Object.entries(grouped).reduce(
+    (s, [sym, v]) => s + (v.available + v.locked) * priceOr0(sym),
+    0,
+  );
   const lpValue = lpRows.reduce((s, r) => s + r.value, 0);
-  const lockedValue = Object.entries(grouped).reduce((s, [sym, v]) => {
-    return s + v.locked * (ASSETS[sym]?.price ?? 0);
-  }, 0);
+  const lockedValue = Object.entries(grouped).reduce(
+    (s, [sym, v]) => s + v.locked * priceOr0(sym),
+    0,
+  );
 
   const receiptTrade = recentActivity.find((a) => a.id === receiptOpenFor);
 
@@ -156,18 +179,26 @@ export function Portfolio({
         <div className="stat">
           <div className="stat-l">Total portfolio value</div>
           <div className="stat-v" style={{ fontSize: 26 }}>
-            {fmtUsd(totalValue + lpValue)}
+            {someUnknownPrice ? '—' : fmtUsd(totalValue + lpValue)}
           </div>
-          <div className="stat-d up">+$284.12 (+1.2%) today</div>
+          <div className="stat-d">
+            {someUnknownPrice
+              ? 'no live price for some instruments'
+              : 'live mid prices'}
+          </div>
         </div>
         <div className="stat">
           <div className="stat-l">Available</div>
-          <div className="stat-v">{fmtUsd(totalValue - lockedValue)}</div>
+          <div className="stat-v">
+            {someUnknownPrice ? '—' : fmtUsd(totalValue - lockedValue)}
+          </div>
           <div className="stat-d">Free for new operations</div>
         </div>
         <div className="stat">
           <div className="stat-l">Locked in allocations</div>
-          <div className="stat-v">{fmtUsd(lockedValue)}</div>
+          <div className="stat-v">
+            {someUnknownPrice ? '—' : fmtUsd(lockedValue)}
+          </div>
           <div className="stat-d">Funding open orders &amp; swaps</div>
         </div>
       </div>
@@ -242,7 +273,9 @@ export function Portfolio({
                       {fmt(total, a?.decimals ?? 4)}
                     </td>
                     <td className="text-right py-2 px-3 mono">
-                      {fmtUsd(total * (a?.price ?? 0))}
+                      {priceUsd[sym] != null
+                        ? fmtUsd(total * (priceUsd[sym] as number))
+                        : '—'}
                     </td>
                   </tr>
                 );
@@ -272,7 +305,16 @@ export function Portfolio({
                           </span>
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--text-2)' }}>
-                          {(r.pct * 100).toFixed(3)}% of pool
+                          {(r.pct * 100).toFixed(3)}% of pool ·{' '}
+                          <span className="mono">
+                            {fmt(r.baseShare, ASSETS[r.pool.baseInstrumentId]?.decimals ?? 4)}{' '}
+                            {r.pool.baseInstrumentId}
+                          </span>{' '}
+                          +{' '}
+                          <span className="mono">
+                            {fmt(r.quoteShare, ASSETS[r.pool.quoteInstrumentId]?.decimals ?? 2)}{' '}
+                            {r.pool.quoteInstrumentId}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -290,7 +332,20 @@ export function Portfolio({
                     {fmt(r.holding.amount, 4)}
                   </td>
                   <td className="text-right py-2 px-3 mono">
-                    {fmtUsd(r.value)}
+                    {priceUsd[r.pool.baseInstrumentId] != null &&
+                    priceUsd[r.pool.quoteInstrumentId] != null
+                      ? fmtUsd(r.value)
+                      : '—'}
+                    <div style={{ marginTop: 4 }}>
+                      <Link
+                        to="/pools"
+                        className="btn tiny ghost"
+                        style={{ fontSize: 10, padding: '2px 8px' }}
+                        title={`Manage LP position in ${r.pool.baseInstrumentId}/${r.pool.quoteInstrumentId}`}
+                      >
+                        Manage →
+                      </Link>
+                    </div>
                   </td>
                 </tr>
               ))}

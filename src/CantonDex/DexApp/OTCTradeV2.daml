@@ -58,7 +58,7 @@ legsToSidesForAccount authorizer = foldr go []
 -- share a single admin (passed on the OTCTrade template), so
 -- `splitLegsByAdminSingle` returns one entry keyed by the supplied
 -- admin. `splitLegsByAuthorizerLocal` is the in-DEX shape used by
--- `MatchedTrade.daml` and `Pr5333.Utils`, repeated here.
+-- `MatchedTrade.daml` and `Trading.Utils`, repeated here.
 splitLegsByAdminSingle : Party -> [V2.TransferLeg] -> Map.Map Party [V2.TransferLeg]
 splitLegsByAdminSingle admin legs
   | null legs = Map.empty

@@ -320,6 +320,128 @@ async function routeRequest(
     return;
   }
 
+  // GET /v1/price-history?pair=BTC/USDC&hours=24 — price points from
+  // the swaps indexer. Empty array if no swaps yet for the pair.
+  if (method === "GET" && path === "/v1/price-history") {
+    if (!db) {
+      respondJson(res, 503, { error: "indexer disabled" });
+      return;
+    }
+    const pair = url.searchParams.get("pair");
+    if (!pair) {
+      respondJson(res, 400, { error: "missing ?pair=BASE/QUOTE" });
+      return;
+    }
+    const hours = Math.max(
+      1,
+      Math.min(24 * 30, parseInt(url.searchParams.get("hours") ?? "24", 10)),
+    );
+    const since = Math.floor(Date.now() / 1000) - hours * 3600;
+    const rows = db
+      .prepare(
+        `SELECT ts, priceAfter FROM swaps
+         WHERE pair = ? AND ts >= ?
+         ORDER BY ts ASC LIMIT 500`,
+      )
+      .all(pair, since) as Array<{ ts: number; priceAfter: string }>;
+    respondJson(res, 200, {
+      pair,
+      hours,
+      points: rows.map((r) => ({ ts: r.ts, price: parseFloat(r.priceAfter) })),
+    });
+    return;
+  }
+
+  // GET /v1/stats/24h?pair=BTC/USDC — derived stats over the last 24h
+  // window from the indexer:
+  //   - priceChange24h: (latest - earliest) / earliest (null if <2 points)
+  //   - volume24h: sum of |baseDelta| across swaps in the window
+  //   - swapCount24h
+  // Empty / null when the indexer has no data yet for the pair.
+  if (method === "GET" && path === "/v1/stats/24h") {
+    if (!db) {
+      respondJson(res, 503, { error: "indexer disabled" });
+      return;
+    }
+    const pair = url.searchParams.get("pair");
+    if (!pair) {
+      respondJson(res, 400, { error: "missing ?pair=BASE/QUOTE" });
+      return;
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const since = now - 24 * 3600;
+    const rows = db
+      .prepare(
+        `SELECT ts, priceAfter, baseDelta FROM swaps
+         WHERE pair = ? AND ts >= ?
+         ORDER BY ts ASC`,
+      )
+      .all(pair, since) as Array<{
+        ts: number;
+        priceAfter: string;
+        baseDelta: string;
+      }>;
+    const first = rows[0];
+    const last = rows[rows.length - 1];
+    const priceChange =
+      rows.length >= 2 && first && last
+        ? (parseFloat(last.priceAfter) - parseFloat(first.priceAfter)) /
+          parseFloat(first.priceAfter)
+        : null;
+    const volume = rows.reduce(
+      (s, r) => s + Math.abs(parseFloat(r.baseDelta)),
+      0,
+    );
+    respondJson(res, 200, {
+      pair,
+      priceChange24h: priceChange,
+      volume24h: rows.length > 0 ? volume : null,
+      swapCount24h: rows.length,
+    });
+    return;
+  }
+
+  // GET /v1/stats/tvl-24h — pool TVL delta over the last 24h.
+  // Compares earliest pool_states snapshot in the window to the most
+  // recent for each pool. Returns null change when no historical row
+  // exists yet.
+  if (method === "GET" && path === "/v1/stats/tvl-24h") {
+    if (!db) {
+      respondJson(res, 503, { error: "indexer disabled" });
+      return;
+    }
+    const since = Math.floor(Date.now() / 1000) - 24 * 3600;
+    const rows = db
+      .prepare(
+        `SELECT poolCid, MIN(ts) as firstTs, MAX(ts) as lastTs FROM pool_states
+         WHERE ts >= ? GROUP BY poolCid`,
+      )
+      .all(since) as Array<{ poolCid: string; firstTs: number; lastTs: number }>;
+    if (rows.length === 0) {
+      respondJson(res, 200, { tvlChange24h: null, pools: [] });
+      return;
+    }
+    // For each pool, fetch first and last reserve states.
+    type Row = { poolCid: string; baseAmount: string; quoteAmount: string };
+    const firstStmt = db.prepare(
+      `SELECT poolCid, baseAmount, quoteAmount FROM pool_states
+       WHERE poolCid = ? AND ts = ?`,
+    );
+    const pools = rows.map((r) => {
+      const a = firstStmt.get(r.poolCid, r.firstTs) as Row | undefined;
+      const b = firstStmt.get(r.poolCid, r.lastTs) as Row | undefined;
+      return {
+        poolCid: r.poolCid,
+        firstBase: a ? parseFloat(a.baseAmount) : null,
+        firstQuote: a ? parseFloat(a.quoteAmount) : null,
+        lastBase: b ? parseFloat(b.baseAmount) : null,
+        lastQuote: b ? parseFloat(b.quoteAmount) : null,
+      };
+    });
+    respondJson(res, 200, { pools });
+    return;
+  }
+
   // === dealer registry =================================================
   // GET /v1/dealers     — public list (no auth)
   // PUT /v1/admin/dealers  — admin upsert

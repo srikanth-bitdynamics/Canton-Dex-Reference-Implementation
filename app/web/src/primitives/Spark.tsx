@@ -50,6 +50,12 @@ export function Spark({
   );
 }
 
+/**
+ * @deprecated Synthetic random-walk generator. Use `usePriceHistory`
+ * from `@/hooks/useStats` to feed Spark from the live `/v1/price-history`
+ * indexer endpoint instead. Kept temporarily for any callers that need
+ * a placeholder during loading; new code should NOT use this.
+ */
 export function genSpark(seed = 1, len = 24, vol = 0.06): number[] {
   const out: number[] = [];
   let v = 100;

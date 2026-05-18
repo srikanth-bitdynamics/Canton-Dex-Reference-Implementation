@@ -9,23 +9,11 @@ import { useQuery } from '@tanstack/react-query';
 import { SwapCard } from '@/components/SwapCard';
 import { PairGlyph } from '@/primitives/Glyph';
 import { Spark } from '@/primitives/Spark';
-import { ASSETS } from '@/primitives/assets';
 import { fmt, fmtUsd, fmtUsdK } from '@/primitives/format';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
-
-// Deterministic spark generator so the rendering is stable across reloads.
-function genSpark(seed: number, len = 32, vol = 0.06): number[] {
-  const out: number[] = [];
-  let v = 100;
-  let s = seed * 9301 + 49297;
-  for (let i = 0; i < len; i++) {
-    s = (s * 9301 + 49297) % 233280;
-    v += v * vol * (s / 233280 - 0.5);
-    out.push(v);
-  }
-  return out;
-}
+import { useAssetPricesUsd } from '@/hooks/usePrices';
+import { usePriceHistory } from '@/hooks/useStats';
 
 export function TradePage() {
   const party = useCurrentParty();
@@ -102,9 +90,19 @@ export function TradePage() {
   const mid = pool.reserves.baseAmount > 0
     ? pool.reserves.quoteAmount / pool.reserves.baseAmount
     : 0;
+  const pairKey = `${pool.baseInstrumentId}/${pool.quoteInstrumentId}`;
+  const { prices: priceUsd } = useAssetPricesUsd([
+    pool.baseInstrumentId,
+    pool.quoteInstrumentId,
+  ]);
+  const { data: priceHistory } = usePriceHistory(pairKey, 24);
+  const basePrice = priceUsd[pool.baseInstrumentId];
+  const quotePrice = priceUsd[pool.quoteInstrumentId];
   const tvl =
-    pool.reserves.baseAmount * (ASSETS[pool.baseInstrumentId]?.price ?? 0) +
-    pool.reserves.quoteAmount * (ASSETS[pool.quoteInstrumentId]?.price ?? 0);
+    basePrice != null && quotePrice != null
+      ? pool.reserves.baseAmount * basePrice +
+        pool.reserves.quoteAmount * quotePrice
+      : null;
 
   const recentSwapsForPair = (swaps ?? []).filter(
     (s) => s.pair === `${pool.baseInstrumentId}/${pool.quoteInstrumentId}`,
@@ -176,19 +174,28 @@ export function TradePage() {
                   <span className="num">{fmt(mid, 2)}</span>
                 </div>
               </div>
-              <Spark
-                data={genSpark(pool.contractId.length, 32)}
-                color="#3FB950"
-                width={120}
-                height={28}
-              />
+              {priceHistory && priceHistory.length >= 2 ? (
+                <Spark
+                  data={priceHistory.map((p) => p.price)}
+                  color="#3FB950"
+                  width={120}
+                  height={28}
+                />
+              ) : (
+                <span
+                  className="mono"
+                  style={{ fontSize: 11, color: 'var(--text-3)' }}
+                >
+                  no history
+                </span>
+              )}
             </div>
           </div>
 
           <div className="grid-3">
             <div className="stat">
               <div className="stat-l">Pool TVL</div>
-              <div className="stat-v">{fmtUsdK(tvl)}</div>
+              <div className="stat-v">{tvl != null ? fmtUsdK(tvl) : '—'}</div>
               <div className="stat-d">
                 {fmt(pool.reserves.baseAmount, 4)} {pool.baseInstrumentId} ·{' '}
                 {fmt(pool.reserves.quoteAmount, 0)} {pool.quoteInstrumentId}

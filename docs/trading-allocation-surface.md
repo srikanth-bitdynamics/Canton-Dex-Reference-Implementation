@@ -12,7 +12,7 @@ Source base:
 - stable branch:
   `vendor/splice/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml`
 - PR 5333 branch:
-  `vendor/splice-pr5333/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml`
+  `vendor/splice/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml`
 
 ## Exact Source Delta
 
@@ -47,11 +47,11 @@ the following ways:
 
 ## Local Build Status
 
-Current local status on the parallel `vendor/splice-pr5333` worktree:
+Current local status on the parallel `vendor/splice` worktree:
 
 - the PR-5333 API package set builds through
   `splice-api-token-transfer-events-v2`
-- the local branch package under `pr5333/` now includes a dedicated helper
+- the local branch package under `trading/` now includes a dedicated helper
   layer for:
   - account helpers
   - authorizer grouping
@@ -80,7 +80,7 @@ layer can be reused unchanged.
 
 Repeatable local probe:
 
-- `bash scripts/probe-pr5333-tradingappv2-build.sh`
+- `bash scripts/probe-trading-tradingappv2-build.sh`
   - first checks that the upstream `TradingAppV2` source is unchanged on
     PR 5333
   - then probes whether the upstream utility layer and example package build

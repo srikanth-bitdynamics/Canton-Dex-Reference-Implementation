@@ -10,7 +10,7 @@ at `5.75.216.246:7575`, with the DEX DARs uploaded and an initial
 | --- | --- |
 | Validator | `http://5.75.216.246:7575` (Canton 3.4.12-SNAPSHOT, plain HTTP) |
 | Synchronizer | `global-domain::1220f22a8b8f2d813c25b9a684dc4dd52b532a0174d8e73a13cdf2baabfff7518337` |
-| `canton-dex-pr5333` package id (v0.0.6 — current) | `7d66ae82d6de725fda3a12cb4e2e9704a51a4d36f43e426a1ef3fb2573c17fe8` |
+| `canton-dex-trading` package id (v0.0.6 — current) | `7d66ae82d6de725fda3a12cb4e2e9704a51a4d36f43e426a1ef3fb2573c17fe8` |
 | metadata-v1 (testnet-vetted) | `4ded6b668cb3b64f7a88a30874cd41c75829f5e064b3fbbadf41ec7e8363354f` |
 | Operator party | `bitdynamicsab-testnet-1::1220ed51edaa87ffb050d0533224995ff9e8c211e513bf94b867670d19b909112f6f` |
 | LP registrar party | `amm-dex-testnet-1::1220ed51edaa87ffb050d0533224995ff9e8c211e513bf94b867670d19b909112f6f` |
@@ -28,7 +28,7 @@ allocation-request-v2       6912769cdaef394ba7d5b8b6771000a882ef7dc283c96ad5364d
 allocation-instruction-v2   24d26b2de29f3d15fd4832fa5bfabcac331638f4b8aa91e6c37125a70fe7f676
 transfer-events-v2          eef21cbd76e205fcd6a5a928332dbb2bc5a80c6eb294ed30b6eeddbc9c2d73c1
 transfer-instruction-v2     202b778de9b527c24d0d205b8b3743d1dbfdb2340455ff81542d11814143f5f4
-canton-dex-pr5333 v0.0.6    7d66ae82d6de725fda3a12cb4e2e9704a51a4d36f43e426a1ef3fb2573c17fe8
+canton-dex-trading v0.0.6    7d66ae82d6de725fda3a12cb4e2e9704a51a4d36f43e426a1ef3fb2573c17fe8
 ```
 
 These were built against the testnet-vetted `metadata-v1` (`4ded6b66…`)
@@ -103,11 +103,11 @@ Fix: built our V2 chain against the testnet-vetted `4ded6b66` metadata
 DAR (found at `~/CantonAMM/Canton-AMM/lib/splice-api-token-metadata-v1-1.0.0.dar`
 on the EC2). Step-by-step:
 
-1. `cp $THAT_DAR vendor/splice-pr5333/.../splice-api-token-metadata-v1/.daml/dist/splice-api-token-metadata-v1-current.dar`
+1. `cp $THAT_DAR vendor/splice/.../splice-api-token-metadata-v1/.daml/dist/splice-api-token-metadata-v1-current.dar`
 2. Skip rebuilding `metadata-v1` itself; rebuild every other V2
-   package via `(cd vendor/splice-pr5333/token-standard/$pkg && daml build)`.
-3. Rebuild `canton-dex-pr5333` (`cd pr5333 && daml build`).
-4. All 25 pr5333-tests still pass against the new metadata hash.
+   package via `(cd vendor/splice/token-standard/$pkg && daml build)`.
+3. Rebuild `canton-dex-trading` (`cd trading && daml build`).
+4. All 25 trading-tests still pass against the new metadata hash.
 
 ## Token-standard harness against the live testnet
 
@@ -170,7 +170,7 @@ Lessons baked into the runner (worth knowing if you extend it):
 
 `scripts/testnet-real-trade-harness.ts` actually moves an on-ledger
 asset across parties through our `MatchedTrade` flow. The asset side
-is `CantonDex.Testing.RealRegistry` (canton-dex-pr5333 v0.0.2, hash
+is `CantonDex.Testing.RealRegistry` (canton-dex-trading v0.0.2, hash
 `8cc67d715575e0de1f222e2f7de567d8860e0e27eacb034d56c00fc643df9c5c`),
 which implements the real V2 `AllocationFactory` + `SettlementFactory`
 + `RealHolding` + `RealAllocation` templates. Tested run:
@@ -247,7 +247,7 @@ Tested run:
 ```
 
 Configure with `CANTON_DEX_PACKAGE_ID=518e614a12a08c594c385da32cb49b6d24ca6a8653eea982047670066579bf64`
-(canton-dex-pr5333 v0.0.5, the full-V2 build).
+(canton-dex-trading v0.0.5, the full-V2 build).
 
 ### V2-spec design choices baked into Registry.V2
 

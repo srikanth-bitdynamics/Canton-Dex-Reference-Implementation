@@ -1,7 +1,7 @@
 # V2 MainNet Migration Plan
 
 The DEX currently consumes the Token Standard V2 surface via the
-vendored PR-5333 DARs under `vendor/splice-pr5333/`. When V2 lands on
+vendored PR-5333 DARs under `vendor/splice/`. When V2 lands on
 MainNet (target: EOM July 2026 per proposal [M7][proposal-m7], confirmed
 by Simon Meier @ DA on 2026-05-18), we switch to the upstream packages.
 
@@ -48,9 +48,9 @@ Current state (2026-05-18):
 
 - `vendor/splice/` — baseline V2 snapshot of `token-standard-v2-upcoming`
   (does NOT include PR-5333's allocation extensions).
-- `vendor/splice-pr5333/` — PR-5333-augmented snapshot with
+- `vendor/splice/` — PR-5333-augmented snapshot with
   `Allocation_Adjust`, `nextIterationFunding`, `committed`, and the
-  per-side `transferLegs` field. Our `pr5333/` surface package
+  per-side `transferLegs` field. Our `trading/` surface package
   depends on this.
 
 Branch-tip refresh experiment on 2026-05-18 surfaced that the upstream
@@ -78,14 +78,14 @@ not a moving branch tip).
    - Subscribe to the canton-network announcements channel.
 
 2. **Replace vendored DARs.**
-   - Delete `vendor/splice-pr5333/` and replace with the upstream
+   - Delete `vendor/splice/` and replace with the upstream
      `splice/token-standard/*` packages at the stable release tag.
    - Update `daml.yaml` `data-dependencies:` to reference the new paths.
-   - Update `pr5333-tests/daml.yaml` similarly (or rename to
-     `tests/daml.yaml` once we drop the pr5333 prefix).
+   - Update `trading-tests/daml.yaml` similarly (or rename to
+     `tests/daml.yaml` once we drop the trading prefix).
 
 3. **Update Daml imports.**
-   - Run `grep -rn "splice-pr5333\|Splice.Api.Token..*V2\|pr5333"` and
+   - Run `grep -rn "splice\|Splice.Api.Token..*V2\|trading"` and
      fix-up any qualified module names that changed.
    - The vendored modules use `V2` suffixes (e.g.,
      `AllocationFactoryV2`). Upstream may drop the suffix once V1 is
@@ -93,7 +93,7 @@ not a moving branch tip).
 
 4. **Re-run Daml build and tests.**
    - `daml build` for the root package.
-   - `daml test` from `pr5333-tests/`.
+   - `daml test` from `trading-tests/`.
    - `scripts/run-local-daml-tests.sh` should pass end-to-end.
 
 5. **Update TS package hash references.**
@@ -116,7 +116,7 @@ not a moving branch tip).
 8. **Cut a release.**
    - Tag `v0.1.0-mainnet` (or similar) once tests pass.
    - Update README's Daml SDK and V2 references.
-   - Archive the `vendor/splice-pr5333/` notes in
+   - Archive the `vendor/splice/` notes in
      `docs/source-dependency-status.md`.
 
 ## Risk areas
@@ -140,7 +140,7 @@ not a moving branch tip).
 ## Backout plan
 
 If the upstream V2 release has a regression that blocks us, we keep
-`vendor/splice-pr5333/` in a sibling branch. The migration is
+`vendor/splice/` in a sibling branch. The migration is
 mechanical (paths + hashes), so reverting is a single `git revert`
 plus a fresh `daml build`.
 

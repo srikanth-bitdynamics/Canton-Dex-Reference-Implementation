@@ -134,7 +134,7 @@ async function queryHoldings(party: string, instrumentId: string) {
 
 async function main() {
   console.log(`run id: ${RUN_ID}`);
-  console.log(`registry package: canton-dex-pr5333 v0.0.3 (${cfg.pkgDex.slice(0, 12)}…)`);
+  console.log(`registry package: canton-dex-trading v0.0.3 (${cfg.pkgDex.slice(0, 12)}…)`);
   console.log(`venue:  ${cfg.venue}`);
   console.log(`admin:  ${cfg.admin}  (instrument issuer)`);
   console.log(`alice:  ${cfg.alice}  (sender)`);

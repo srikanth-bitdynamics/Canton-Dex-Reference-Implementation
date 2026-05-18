@@ -1,4 +1,4 @@
-module CantonDex.Pr5333.WorkflowConstructors where
+module CantonDex.Trading.WorkflowConstructors where
 
 -- Workflow-step constructors over the upstream AllocationV2 surface
 -- (token-standard-v2-upcoming branch tip; post-PR-5333 refactor).
@@ -13,7 +13,7 @@ module CantonDex.Pr5333.WorkflowConstructors where
 
 import DA.TextMap qualified as TextMap
 
-import CantonDex.Pr5333.Utils qualified as Utils
+import CantonDex.Trading.Utils qualified as Utils
 
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.AllocationV2 qualified as V2

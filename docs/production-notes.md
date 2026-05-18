@@ -172,7 +172,7 @@ Per-environment we ship:
 
 | Artifact | Where | Notes |
 |---|---|---|
-| `canton-dex-pr5333-0.0.1.dar` | Canton participant | Uploaded once per release |
+| `canton-dex-trading-0.0.1.dar` | Canton participant | Uploaded once per release |
 | `services/operator-backend` (Docker image) | Operator's infra | Stateless; horizontal scaling by sharding hot pools |
 | `services/registry-client` (library) | Embedded in operator backend | Not a standalone service |
 | `app/web/dist` (static bundle) | CDN | Wired to a backend URL via env |

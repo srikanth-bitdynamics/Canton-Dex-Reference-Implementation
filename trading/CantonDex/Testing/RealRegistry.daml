@@ -7,9 +7,9 @@
 -- DEX moves real on-ledger assets through the V2 surface, not just
 -- protocol-shape stubs.
 --
--- Why this lives in `pr5333/CantonDex/Testing/` and not in a separate
+-- Why this lives in `trading/CantonDex/Testing/` and not in a separate
 -- package: it depends only on the V2 surface and our existing
--- `Pr5333.Utils`, both already in canton-dex-pr5333. Putting it here
+-- `Pr5333.Utils`, both already in canton-dex-trading. Putting it here
 -- means we ship one DAR for the demo and the existing 26-test suite
 -- against `MockRegistry` is untouched.
 --
@@ -44,7 +44,7 @@ import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
-import CantonDex.Pr5333.Utils qualified as Utils
+import CantonDex.Trading.Utils qualified as Utils
 
 -- | A real on-ledger asset position. Signatory is the admin (registry);
 -- observer is the owner. Locking simply re-creates with `locked=True`.

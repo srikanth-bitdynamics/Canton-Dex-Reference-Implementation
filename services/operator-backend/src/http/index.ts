@@ -206,7 +206,7 @@ async function routeRequest(
   }
 
   if (method === "GET" && path === "/v1/pairs") {
-    // The DexPair contract template lives in pr5333/CantonDex/Dex/DexPair.daml.
+    // The DexPair contract template lives in trading/CantonDex/Dex/DexPair.daml.
     // The operator queries the ACS via the ledger driver.
     const pairs = await backend.ledger.query<unknown>({
       templateId: "CantonDex.Dex.DexPair:DexPair",

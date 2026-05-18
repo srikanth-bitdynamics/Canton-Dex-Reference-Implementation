@@ -1,5 +1,5 @@
 // Shapes that mirror the on-ledger registry contracts. Fields come
-// straight from the Daml templates in pr5333/CantonDex/Instrument/.
+// straight from the Daml templates in trading/CantonDex/Instrument/.
 // JSON form follows daml-lf JSON serialization (Decimal as string).
 
 export type Party = string;

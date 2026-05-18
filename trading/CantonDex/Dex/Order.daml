@@ -21,8 +21,8 @@ import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
-import CantonDex.Pr5333.Utils qualified as Utils
-import CantonDex.Pr5333.WorkflowConstructors qualified as WC
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.WorkflowConstructors qualified as WC
 
 data Side = Bid | Ask
   deriving (Eq, Show)

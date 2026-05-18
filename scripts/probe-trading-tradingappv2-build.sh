@@ -4,9 +4,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STABLE_TRADING_APP="$ROOT_DIR/vendor/splice/token-standard/examples/splice-token-test-trading-app-v2/daml/Splice/Testing/Apps/TradingAppV2.daml"
-PR_TRADING_APP="$ROOT_DIR/vendor/splice-pr5333/token-standard/examples/splice-token-test-trading-app-v2/daml/Splice/Testing/Apps/TradingAppV2.daml"
-UTILS_DIR="$ROOT_DIR/vendor/splice-pr5333/token-standard/splice-token-standard-utils"
-TRADING_APP_DIR="$ROOT_DIR/vendor/splice-pr5333/token-standard/examples/splice-token-test-trading-app-v2"
+PR_TRADING_APP="$ROOT_DIR/vendor/splice/token-standard/examples/splice-token-test-trading-app-v2/daml/Splice/Testing/Apps/TradingAppV2.daml"
+UTILS_DIR="$ROOT_DIR/vendor/splice/token-standard/splice-token-standard-utils"
+TRADING_APP_DIR="$ROOT_DIR/vendor/splice/token-standard/examples/splice-token-test-trading-app-v2"
 
 utils_log="$(mktemp)"
 app_log="$(mktemp)"
@@ -19,7 +19,7 @@ else
   exit 1
 fi
 
-bash "$ROOT_DIR/scripts/build-vendored-token-standard-pr5333.sh"
+bash "$ROOT_DIR/scripts/build-vendored-token-standard.sh"
 
 echo "==> Probing upstream PR-5333 utility layer"
 if (

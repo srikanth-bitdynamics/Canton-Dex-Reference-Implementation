@@ -5,15 +5,15 @@ surface from Splice PR 5333.
 
 Current scope:
 
-- import the PR-5333 API DARs built from `vendor/splice-pr5333`
+- import the PR-5333 API DARs built from `vendor/splice`
 - anchor the new `SettlementInfo`, `Allocation_Adjust`,
   `nextIterationFunding`, `committed`, and `nextIterationAllocationCid`
   surface
 - keep a branch-native helper layer for funding deltas and iterated-allocation
-  construction under `CantonDex.Pr5333.Utils`
+  construction under `CantonDex.Trading.Utils`
 - expose source-derived builders for prefunded allocation requests, committed
   pool-fund allocation requests, batch settlement, and rolled-forward
-  allocation cancellation under `CantonDex.Pr5333.WorkflowConstructors`
+  allocation cancellation under `CantonDex.Trading.WorkflowConstructors`
 - keep branch-only work isolated from the stable local V2 package
 
 ## DEX Reference Implementation

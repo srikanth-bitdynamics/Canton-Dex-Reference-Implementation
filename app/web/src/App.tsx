@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from '@/components/Layout';
+import { ToastProvider } from '@/primitives/ToastProvider';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { TradePage } from '@/pages/TradePage';
 import { PoolsPage } from '@/pages/PoolsPage';
@@ -27,6 +28,7 @@ export function App() {
   return (
     <ErrorBoundary label="root">
     <QueryClientProvider client={queryClient}>
+      <ToastProvider>
       <BrowserRouter>
         <Routes>
           <Route element={<Layout />}>
@@ -39,6 +41,7 @@ export function App() {
           </Route>
         </Routes>
       </BrowserRouter>
+      </ToastProvider>
     </QueryClientProvider>
     </ErrorBoundary>
   );

@@ -3,10 +3,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { OrderBook } from '@/components/OrderBook';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
+import { useToast } from '@/primitives/ToastProvider';
 
 export function OrdersPage() {
   const queryClient = useQueryClient();
   const party = useCurrentParty();
+  const toast = useToast();
   const [side, setSide] = useState<'Bid' | 'Ask'>('Bid');
   const [limitPrice, setLimitPrice] = useState('');
   const [quantity, setQuantity] = useState('');
@@ -27,12 +29,24 @@ export function OrdersPage() {
   });
 
   const cancelMutation = useMutation({
-    mutationFn: ledger.cancelOrder,
+    mutationFn: async (id: string) => {
+      toast.push(`Cancel order ${id.slice(0, 10)}…`, 'cancelOrder', () =>
+        queryClient.invalidateQueries({ queryKey: ['orders'] }),
+      );
+      return ledger.cancelOrder(id);
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
   });
 
   const placeMutation = useMutation({
-    mutationFn: ledger.placeOrder,
+    mutationFn: async (params: Parameters<typeof ledger.placeOrder>[0]) => {
+      toast.push(
+        `${params.side === 'Bid' ? 'BUY' : 'SELL'} ${params.quantity} ${params.pairBase} @ ${params.limitPrice}`,
+        'placeOrder',
+        () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
+      );
+      return ledger.placeOrder(params);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['orders'] });
       setLimitPrice('');

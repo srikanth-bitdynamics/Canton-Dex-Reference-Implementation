@@ -7,13 +7,14 @@
 // trader-authority allocation creation).
 
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { ASSETS } from '@/primitives/assets';
 import { PairGlyph } from '@/primitives/Glyph';
 import { StatusBadge } from '@/primitives/StatusBadge';
 import { Spark, genSpark } from '@/primitives/Spark';
 import { fmt, fmtUsd, fmtUsdK } from '@/primitives/format';
+import { useToast } from '@/primitives/ToastProvider';
 import { ledger } from '@/services/ledger';
 import type { Holding, Pool } from '@/types/contracts';
 import { useCurrentParty } from '@/wallet/hooks';
@@ -28,10 +29,16 @@ interface Props {
 
 export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   const party = useCurrentParty();
+  const toast = useToast();
+  const queryClient = useQueryClient();
   const { data: context } = useQuery({
     queryKey: ['context'],
     queryFn: ledger.getContext,
   });
+  const refreshOnComplete = () => {
+    void queryClient.invalidateQueries({ queryKey: ['pools'] });
+    void queryClient.invalidateQueries({ queryKey: ['holdings'] });
+  };
   const balanceOf = (s: string) =>
     holdings.find((h) => h.instrumentId === s && !h.locked)?.amount ?? 0;
   const ratio = pool.reserves.quoteAmount / pool.reserves.baseAmount;
@@ -97,6 +104,11 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
 
   const onAdd = async () => {
     if (!context) throw new Error('dApp context not loaded yet');
+    toast.push(
+      `Add liquidity: ${fmt(parseFloat(baseAmt), 4)} ${pool.baseInstrumentId} + ${fmt(parseFloat(quoteAmt), 2)} ${pool.quoteInstrumentId}`,
+      'addLp',
+      refreshOnComplete,
+    );
     await ledger.addLiquidity({
       context,
       poolId: pool.contractId,
@@ -110,6 +122,11 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
 
   const onRemove = async () => {
     if (!party) throw new Error('connect a wallet to remove liquidity');
+    toast.push(
+      `Remove ${removePct}% LP from ${pool.baseInstrumentId}/${pool.quoteInstrumentId}`,
+      'removeLp',
+      refreshOnComplete,
+    );
     await ledger.removeLiquidity({
       poolId: pool.contractId,
       holder: party,

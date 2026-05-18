@@ -64,6 +64,39 @@ export class RfqService {
   }
 
   /**
+   * Find RFQs whose expiresAt has passed but are still open. The operator
+   * (or a periodic task) can iterate these and call cancel() to keep the
+   * ACS clean and prevent stale quotes from being accepted.
+   */
+  async listExpired(now: Time): Promise<Rfq[]> {
+    const rfqs = await this.ledger.query<Rfq>({
+      templateId: "CantonDex.Dex.Rfq:Rfq",
+      observingParty: this.operatorParty,
+    });
+    return rfqs.filter((r) => r.expiresAt <= now);
+  }
+
+  /**
+   * Sweep expired RFQs by cancelling them on the trader's behalf. Returns
+   * the list of RFQ ids that were cancelled. Errors per RFQ are logged
+   * and swallowed so one stale row does not block the sweep.
+   */
+  async sweepExpired(now: Time): Promise<string[]> {
+    const expired = await this.listExpired(now);
+    const cancelled: string[] = [];
+    for (const r of expired) {
+      try {
+        await this.cancel({ rfqCid: r.contractId });
+        cancelled.push(r.rfqId);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(`[rfq] failed to cancel expired ${r.rfqId}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return cancelled;
+  }
+
+  /**
    * Create an RFQ on the trader's behalf. The Rfq template is signatory
    * trader, so this submission carries the trader's authority — in
    * production the trader's wallet does this, but the operator backend

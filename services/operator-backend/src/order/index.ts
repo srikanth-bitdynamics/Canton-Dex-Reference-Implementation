@@ -6,6 +6,9 @@ import { RegistryClient } from "@canton-dex/registry-client";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import type { Order, Party, V2TransferLeg } from "../types.js";
+import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
+
+export type { Match, BookLevel };
 
 export interface OrderBindInput {
   fundingRequestCid: ContractId<"OrderFundingRequest">;
@@ -112,5 +115,37 @@ export class OrderService {
       templateId: "CantonDex.Dex.Order:Order",
       observingParty: this.operatorParty,
     });
+  }
+
+  /**
+   * Discover crossing orders for the given pair. Pure read; the operator
+   * is responsible for taking the returned matches and driving them
+   * through the TradingAppV2 settlement pattern.
+   */
+  async findMatches(input: {
+    baseInstrumentId: string;
+    quoteInstrumentId: string;
+  }): Promise<Match[]> {
+    const orders = await this.listOpen();
+    return matchOrdersForPair(orders, {
+      base: input.baseInstrumentId,
+      quote: input.quoteInstrumentId,
+    });
+  }
+
+  /**
+   * Aggregated order-book depth ladders for the given pair.
+   */
+  async book(input: {
+    baseInstrumentId: string;
+    quoteInstrumentId: string;
+  }): Promise<{ bids: BookLevel[]; asks: BookLevel[] }> {
+    const orders = await this.listOpen();
+    const forPair = orders.filter(
+      (o) =>
+        o.baseInstrumentId === input.baseInstrumentId &&
+        o.quoteInstrumentId === input.quoteInstrumentId,
+    );
+    return aggregateBook(forPair);
   }
 }

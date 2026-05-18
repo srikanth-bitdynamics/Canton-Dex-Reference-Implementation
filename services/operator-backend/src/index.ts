@@ -32,6 +32,11 @@ import { OrderService } from "./order/index.js";
 import { MatchedTradeService } from "./matched-trade/index.js";
 import { PoolService } from "./pool/index.js";
 import { RfqService } from "./rfq/index.js";
+import {
+  PoolPriceSource,
+  PriceService,
+  StaticPriceSource,
+} from "./pricing/index.js";
 
 import type { Party } from "./types.js";
 
@@ -47,6 +52,7 @@ export class OperatorBackend {
   readonly pool: PoolService;
   readonly matchedTrade: MatchedTradeService;
   readonly admin: AdminService;
+  readonly pricing: PriceService;
   // Exposed for the HTTP shim (read-only routes) and integration tests
   // that need to drive raw ledger commands. Production callers should
   // prefer the typed flow modules.
@@ -65,6 +71,10 @@ export class OperatorBackend {
       cfg.operatorParty,
     );
     this.admin = new AdminService(cfg.ledger, cfg.registry, cfg.operatorParty);
+    this.pricing = new PriceService([
+      new PoolPriceSource(() => this.pool.listActive()),
+      new StaticPriceSource(process.env.PRICES),
+    ]);
   }
 }
 

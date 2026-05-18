@@ -110,6 +110,84 @@ attaching them to the choice context.
 See [choice-context-spec.md](./choice-context-spec.md) for the exact
 inputs each registry choice expects.
 
+## Force-upgrade for passive holders
+
+Registry issuers reserve the right to force-upgrade holdings to a new
+instrument version. Per Simon Meier (DA) on 2026-05-18:
+
+> I'd expect that the issuer reserves the right to force-upgrade; and
+> they would do so for passive holders. Issuers might not want to
+> actively force-upgrade, as that impacts ongoing trading flows, and
+> costs extra traffic for the issuer.
+
+What this means in practice for a DEX integrator:
+
+- **Active holders upgrade themselves.** The recommended pattern is
+  *upgrade-on-use* — the registry's transfer/allocation factories
+  rewrite the holding to the current version on any operation that
+  touches it. A holder who is actively trading or otherwise moving
+  their position pays for the upgrade implicitly as part of that
+  operation. The DEX-side commands (allocate, transfer, settle) sit
+  squarely inside this path, so any DEX-touched holding stays current
+  automatically.
+
+- **Passive holders get force-upgraded by the issuer.** A holder who
+  never moves their position cannot upgrade-on-use. The issuer
+  exercises a force-upgrade choice on those holdings — typically gated
+  by an off-ledger event the issuer needs to crystallize (coupon
+  payment, regulatory event, security-fix migration). This is an
+  issuer-side action, not a DEX one.
+
+- **Issuers do this sparingly.** Force-upgrades cost the issuer traffic
+  and may disrupt active trades that touch a holding mid-upgrade.
+  Issuers will batch them and choose moments when on-chain activity is
+  low.
+
+### DEX exposure model
+
+The DEX has three classes of holdings to think about:
+
+1. **Trader holdings used in active flows** (incoming for swaps,
+   add-liquidity legs, order funding). These traverse the registry's
+   transfer/allocation factories on every interaction and are
+   upgrade-on-use covered.
+
+2. **Pool reserves.** Reserves are held by the pool contract under the
+   operator's authority. They are *not* passive — every swap rotates a
+   slice of reserves through the factory paths. The pool is therefore
+   effectively self-maintaining against issuer upgrades, with the one
+   edge case that a pool sitting completely idle for a long stretch
+   could fall behind. The pool's reserves are instrument-id-keyed, not
+   holding-version-keyed, so a forced re-versioning of a reserve
+   holding is mechanically transparent to the pool's accounting; the
+   next swap that touches the reserve re-fetches the now-upgraded
+   holding.
+
+3. **LP holdings.** Issued by the pool itself. The AMM is the issuer
+   and has no off-ledger events to crystallize. There is no
+   force-upgrade event for LP tokens — see
+   [docs/lp-token-versioning.md](lp-token-versioning.md).
+
+### What DEX integrators should do
+
+- Don't bake the holding contract id or the instrument version into UI
+  state. Re-query holdings on the wallet provider's natural cadence
+  (post-allocation, post-settlement, on focus).
+- When a wallet command returns a "holding not found" or "holding
+  version mismatch" error after a forced upgrade, re-fetch the holding
+  list and retry rather than surfacing the error to the user.
+- Treat instrument *id* (e.g., `BTC`) as the stable join key; treat the
+  per-holding contract id and package hash as ephemeral.
+
+The DEX's allocation flow already re-queries holdings on each user
+action (pre-allocation greedy selection, post-settlement refresh), so
+incidental force-upgrade exposure is minimal. Where it could bite is
+manual replay tooling that caches a stale holding cid — the operator
+backend's command path does not cache cids across requests.
+
+See [docs/v2-migration.md](v2-migration.md) for how this connects to
+the broader V1→V2 dual-implementation strategy.
+
 ## What the DEX does NOT assume
 
 - It does not assume the registry is a single party. Multiple registrars

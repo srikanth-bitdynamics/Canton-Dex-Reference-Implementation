@@ -11,7 +11,8 @@ import CantonDex.Testing.OTCTradeV2Backend
 -- remains aligned with the exact workflow surfaces from:
 --   * TradingAppV2
 --   * the registry workflow documentation
---   * PR 5333 allocation extensions
+--   * the V2 allocation extensions (splice#5333, now merged into
+--     `token-standard-v2-upcoming`)
 
 sourceAlignmentAnchors =
   ( sourceAllocationExtensionAnchor

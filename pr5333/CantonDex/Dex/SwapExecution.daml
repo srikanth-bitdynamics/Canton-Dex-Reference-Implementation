@@ -15,7 +15,7 @@ data SwapDirection
   deriving (Eq, Show)
 
 data SwapRequest_CancelResult = SwapRequest_CancelResult with
-    cancelResult : V2.Allocation_CancelResult
+    cancelResult : V2.AllocationResult
   deriving (Eq, Show)
 
 template SwapRequest with
@@ -49,9 +49,7 @@ template SwapRequest with
           actors = [trader]
           extraArgs = emptyExtraArgs
         pure SwapRequest_CancelResult with
-          cancelResult = V2.Allocation_CancelResult with
-            authorizerHoldingCids = result.authorizerHoldingCids
-            meta = result.meta
+          cancelResult = result
 
     choice SwapRequest_Expire : SwapRequest_CancelResult
       with

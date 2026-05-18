@@ -48,7 +48,7 @@ data Order_SettleResult = Order_SettleResult with
   deriving (Eq, Show)
 
 data Order_CancelResult = Order_CancelResult with
-    cancelResult : Optional V2.Allocation_CancelResult
+    cancelResult : Optional V2.AllocationResult
     releasedHoldings : TextMap.TextMap [ContractId V2.Holding]
   deriving (Eq, Show)
 
@@ -117,13 +117,23 @@ template Order with
         allowFutureIterations : Bool
       controller operator
       do
+        -- Post-PR-5333 (token-standard-v2-upcoming): there is no
+        -- separate Allocation_Adjust step. The match's transfer legs
+        -- are carried through to SettlementFactory_SettleBatch via
+        -- FinalizedAllocation.extraTransferLegSides at the settlement
+        -- call site (MatchedTrade_Settle or OrderMatchExecution_Execute).
+        -- This choice now just validates state and returns the
+        -- existing allocation cid unchanged; the legs travel with the
+        -- match flow rather than being committed onto the allocation
+        -- in a separate step.
         assertMsg "Order must be Funded or PartiallyFilled to match" $
           status == OS_Funded || status == OS_PartiallyFilled
         let allocCid = fromSomeNote "Order has no allocation to adjust" allocationCid
-            adjustArg = WC.mkAllocationAdjust [operator] matchTransferLegs allowFutureIterations
-        adjustResult <- exercise allocCid adjustArg
+        let _ = (matchTransferLegs, allowFutureIterations)
+              -- Reserved for future use: passed through to the caller
+              -- to thread into the SettleBatch FinalizedAllocation.
         pure Order_MatchResult with
-          adjustedAllocationCid = adjustResult.allocationCid
+          adjustedAllocationCid = allocCid
 
     choice Order_Cancel : Order_CancelResult
       controller operator
@@ -197,6 +207,7 @@ template OrderAllocationRequest with
     lockInstrumentId : Text
     lockAmount : Decimal
     expiry : Optional Time
+    requestedAt : Time
   where
     signatory operator
     observer trader
@@ -204,17 +215,30 @@ template OrderAllocationRequest with
     interface instance V2.AllocationRequest for OrderAllocationRequest where
       view = V2.AllocationRequestView with
         originalRequestCid = None
+        authorizer = Utils.basicAccount trader
         settlement = V2.SettlementInfo with
           executors = [operator]
           settlementRef = orderRef
           settlementDeadline = expiry
           meta = emptyMetadata
-        transferLegs = []
-          -- Prefunded order allocation: no transfer legs at request time.
-          -- Concrete legs come from Order_Adjust when a match is found.
-        authorizer = Utils.basicAccount trader
+        allocations =
+          -- Prefunded order: no transfer legs at request time; the
+          -- trader locks `lockAmount` of `lockInstrumentId` as
+          -- next-iteration funding. Concrete legs travel with the
+          -- match flow into SettleBatch.extraTransferLegSides.
+          [ V2.RequestedAllocation with
+              admin
+              transferLegSides = []
+              nextIterationFunding = Some (TextMap.fromList [(lockInstrumentId, lockAmount)])
+              committed = True
+              meta = emptyMetadata
+          ]
+        requestedAt
+        settleAt = expiry
         availableActions = Map.fromList
-          [ ([trader], [V2.ARA_Accept, V2.ARA_Reject]) ]
+          [ (V2.ARA_Accept, [[trader]])
+          , (V2.ARA_Reject, [[trader]])
+          ]
         meta = emptyMetadata
 
       allocationRequest_acceptExtraObservers = \_ -> []

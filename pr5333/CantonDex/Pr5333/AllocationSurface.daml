@@ -1,8 +1,18 @@
 module CantonDex.Pr5333.AllocationSurface where
 
--- Source-derived anchor module for the branch-only `AllocationV2` surface from
--- Splice PR 5333.
+-- Anchor module that names the upstream AllocationV2 / AllocationRequestV2
+-- / AllocationInstructionV2 / TransferEventsV2 surface symbols our local
+-- DEX consumes. Kept as a thin reference layer so the build fails fast
+-- if a vendored package drifts away from the symbols we depend on.
+--
+-- Vendored from splice@token-standard-v2-upcoming tip `a5b54c9`:
+--   - `AllocationAction.AA_Adjust` retired; iterated-settlement now
+--     flows through `Allocation_Settle` / `SettlementFactory_SettleBatch`
+--     with `FinalizedAllocation.extraTransferLegSides` + `nextIterationFunding`.
+--   - `Allocation_SettleResult` / `Allocation_CancelResult` / `Allocation_AdjustResult`
+--     folded into unified `AllocationResult { output, authorizerHoldingCids, meta }`.
 
+import DA.Map qualified as Map
 import DA.TextMap qualified as TextMap
 
 import CantonDex.Pr5333.Utils qualified as Utils
@@ -22,23 +32,30 @@ mkPr5333SettlementInfo executors settlementRef settlementDeadline =
     settlementDeadline
     meta = emptyMetadata
 
-pr5333AdjustActionAnchor : V2.AllocationAction
-pr5333AdjustActionAnchor = V2.AA_Adjust
+pr5333SettleActionAnchor : V2.AllocationAction
+pr5333SettleActionAnchor = V2.AA_Settle
 
-pr5333AdjustArgAnchor : [Party] -> [V2.TransferLeg] -> Bool -> V2.Allocation_Adjust
-pr5333AdjustArgAnchor = Utils.mkAllocationAdjust
+pr5333CancelActionAnchor : V2.AllocationAction
+pr5333CancelActionAnchor = V2.AA_Cancel
 
-pr5333SettleResultAnchor
-  : Optional (ContractId V2.Allocation)
-  -> V2.Allocation_SettleResult
-pr5333SettleResultAnchor nextIterationAllocationCid =
-  V2.Allocation_SettleResult with
+pr5333FinalizedAllocationAnchor
+  : ContractId V2.Allocation
+  -> [V2.TransferLegSide]
+  -> Optional (TextMap.TextMap Decimal)
+  -> V2.FinalizedAllocation
+pr5333FinalizedAllocationAnchor = Utils.mkFinalizedAllocation
+
+pr5333AllocationResultAnchor
+  : V2.AllocationResult_Output
+  -> V2.AllocationResult
+pr5333AllocationResultAnchor output =
+  V2.AllocationResult with
+    output
     authorizerHoldingCids = TextMap.empty
-    nextIterationAllocationCid
     meta = emptyMetadata
 
 pr5333SettleBatchResultAnchor
-  : [V2.Allocation_SettleResult]
+  : [V2.AllocationResult]
   -> V2.SettlementFactory_SettleBatchResult
 pr5333SettleBatchResultAnchor allocationSettleResults =
   V2.SettlementFactory_SettleBatchResult with
@@ -48,14 +65,29 @@ pr5333SettleBatchResultAnchor allocationSettleResults =
 pr5333AllocationRequestViewAnchor
   : HoldingV2.Account
   -> V2.SettlementInfo
+  -> Time
   -> AllocationRequestV2.AllocationRequestView
-pr5333AllocationRequestViewAnchor authorizer settlement =
+pr5333AllocationRequestViewAnchor authorizer settlement requestedAt =
   AllocationRequestV2.AllocationRequestView with
     originalRequestCid = None
-    settlement
-    transferLegs = []
     authorizer
-    availableActions = mempty
+    settlement
+    allocations = []
+    requestedAt
+    settleAt = None
+    availableActions = Map.empty
+    meta = emptyMetadata
+
+pr5333RequestedAllocationAnchor
+  : Party
+  -> [V2.TransferLegSide]
+  -> AllocationRequestV2.RequestedAllocation
+pr5333RequestedAllocationAnchor admin transferLegSides =
+  AllocationRequestV2.RequestedAllocation with
+    admin
+    transferLegSides
+    nextIterationFunding = None
+    committed = False
     meta = emptyMetadata
 
 pr5333AllocationInstructionResultAnchor
@@ -67,16 +99,15 @@ pr5333AllocationInstructionResultAnchor output =
     authorizerChangeCids = TextMap.empty
     meta = emptyMetadata
 
-pr5333TransferEventLegAnchor
+pr5333TransferEventLegSideAnchor
   : HoldingV2.Account
-  -> HoldingV2.Account
-  -> HoldingV2.InstrumentId
-  -> TransferEventsV2.TransferLeg
-pr5333TransferEventLegAnchor sender receiver instrumentId =
-  TransferEventsV2.TransferLeg with
+  -> Text
+  -> TransferEventsV2.TransferLegSide
+pr5333TransferEventLegSideAnchor otherside instrumentId =
+  TransferEventsV2.TransferLegSide with
     transferLegId = "anchor"
-    sender
-    receiver
+    side = TransferEventsV2.SenderSide
+    otherside
     instrumentId
     amount = 1.0
     meta = emptyMetadata

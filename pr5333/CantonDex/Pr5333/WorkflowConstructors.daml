@@ -1,14 +1,15 @@
 module CantonDex.Pr5333.WorkflowConstructors where
 
--- Constructors for the exact workflow steps described in the PR 5333
--- `AllocationV2` design notes:
---   1. request a prefunded allocation
---   2. adjust it with matched transfer legs
---   3. settle the adjusted allocations in a batch
---   4. cancel rolled-forward allocations to release unused remainder
+-- Workflow-step constructors over the upstream AllocationV2 surface
+-- (token-standard-v2-upcoming branch tip; post-PR-5333 refactor).
 --
--- This module only builds existing token-standard choice arguments and result
--- projections. It does not introduce new settlement flows.
+-- Migration note: the original PR-5333 surface offered an
+-- `Allocation_Adjust` choice on `V2.Allocation` that callers used to
+-- attach additional transfer legs to an open allocation between
+-- creation and settlement. The branch-tip refactor folded that step
+-- into `SettlementFactory_SettleBatch`: extra legs are now carried on
+-- `FinalizedAllocation.extraTransferLegSides`, and any residual
+-- next-iteration funding is carried on `FinalizedAllocation.nextIterationFunding`.
 
 import DA.TextMap qualified as TextMap
 
@@ -73,36 +74,44 @@ mkCommittedPoolAllocationFactoryAllocate admin authorizer settlement nextIterati
     actors
     emptyExtraArgs
 
-mkAllocationAdjust
-  : [Party]
+-- Construct the FinalizedAllocation that carries the extra transfer-leg
+-- sides authorized by the given authorizer (projecting legs into sides
+-- via Utils.legsToSides), plus next-iteration funding if any.
+mkFinalizedAllocationFromLegs
+  : ContractId V2.Allocation
+  -> HoldingV2.Account
   -> [V2.TransferLeg]
-  -> Bool
-  -> V2.Allocation_Adjust
-mkAllocationAdjust = Utils.mkAllocationAdjust
+  -> Optional Utils.Funding
+  -> V2.FinalizedAllocation
+mkFinalizedAllocationFromLegs allocationCid authorizer transferLegs nextIterationFunding =
+  Utils.mkFinalizedAllocation
+    allocationCid
+    (Utils.legsToSides authorizer transferLegs)
+    nextIterationFunding
 
 mkBatchSettlement
   : V2.SettlementInfo
   -> [V2.TransferLeg]
-  -> [ContractId V2.Allocation]
+  -> [V2.FinalizedAllocation]
   -> [Party]
   -> ExtraArgs
   -> V2.SettlementFactory_SettleBatch
-mkBatchSettlement settlement transferLegs allocationCids actors extraArgs =
+mkBatchSettlement settlement transferLegs allocations actors extraArgs =
   V2.SettlementFactory_SettleBatch with
     settlement
     transferLegs
-    allocationCids
+    allocations
     actors
     extraArgs
 
 mkDefaultBatchSettlement
   : V2.SettlementInfo
   -> [V2.TransferLeg]
-  -> [ContractId V2.Allocation]
+  -> [V2.FinalizedAllocation]
   -> [Party]
   -> V2.SettlementFactory_SettleBatch
-mkDefaultBatchSettlement settlement transferLegs allocationCids actors =
-  mkBatchSettlement settlement transferLegs allocationCids actors emptyExtraArgs
+mkDefaultBatchSettlement settlement transferLegs allocations actors =
+  mkBatchSettlement settlement transferLegs allocations actors emptyExtraArgs
 
 mkAllocationCancel : [Party] -> ExtraArgs -> V2.Allocation_Cancel
 mkAllocationCancel actors extraArgs = V2.Allocation_Cancel with
@@ -123,16 +132,17 @@ extractCompletedAllocationCid result = case result.output of
   AllocationInstructionV2.AllocationInstructionResult_Failed ->
     None
 
+-- Next-iteration allocation cids from a batch settle, filtered to just
+-- the `Some` entries. Useful when callers know each allocation
+-- produced a next iteration. For per-allocation pairing use
+-- `Utils.nextIterationAllocationCids` which preserves order with Optionals.
 extractNextIterationAllocationCids
   : V2.SettlementFactory_SettleBatchResult
   -> [ContractId V2.Allocation]
 extractNextIterationAllocationCids result =
-  [ cid
-  | settleResult <- result.allocationSettleResults
-  , Some cid <- [settleResult.nextIterationAllocationCid]
-  ]
+  [ cid | Some cid <- Utils.nextIterationAllocationCids result ]
 
 extractReturnedHoldings
-  : V2.Allocation_CancelResult
+  : V2.AllocationResult
   -> TextMap.TextMap [ContractId HoldingV2.Holding]
 extractReturnedHoldings result = result.authorizerHoldingCids

@@ -30,8 +30,10 @@ data TradeAllocationRequestView = TradeAllocationRequestView with
 
 template TradeAllocationRequest with
     authorizer : V2.Account
+    admin : Party
     settlement : V2.SettlementInfo
     transferLegs : [V2.TransferLeg]
+    requestedAt : Time
   where
     signatory settlement.executors
     observer Utils.accountParties authorizer
@@ -39,11 +41,22 @@ template TradeAllocationRequest with
     interface instance V2.AllocationRequest for TradeAllocationRequest where
       view = V2.AllocationRequestView with
         originalRequestCid = None
-        settlement
-        transferLegs
         authorizer
+        settlement
+        allocations =
+          [ V2.RequestedAllocation with
+              admin
+              transferLegSides = Utils.legsToSides authorizer transferLegs
+              nextIterationFunding = None
+              committed = False
+              meta = emptyMetadata
+          ]
+        requestedAt
+        settleAt = settlement.settlementDeadline
         availableActions = Map.fromList
-          [ ([p], [V2.ARA_Accept, V2.ARA_Reject]) | p <- Utils.accountParties authorizer ]
+          [ (V2.ARA_Accept, [[p] | p <- Utils.accountParties authorizer])
+          , (V2.ARA_Reject, [[p] | p <- Utils.accountParties authorizer])
+          ]
         meta = emptyMetadata
 
       allocationRequest_acceptExtraObservers = \_ -> []
@@ -71,7 +84,7 @@ template TradeAllocationRequest with
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
 
 data SettlementBatchV2 = SettlementBatchV2 with
-    allocationCids : [ContractId V2.Allocation]
+    allocations : [V2.FinalizedAllocation]
     factoryCid : ContractId V2.SettlementFactory
     extraArgs : ExtraArgs
   deriving (Eq, Show)
@@ -81,7 +94,7 @@ data MatchedTrade_SettleResult = MatchedTrade_SettleResult with
   deriving (Eq, Show)
 
 data MatchedTrade_CancelResult = MatchedTrade_CancelResult with
-    cancelResults : [(V2.Account, V2.Allocation_CancelResult)]
+    cancelResults : [(V2.Account, V2.AllocationResult)]
   deriving (Eq, Show)
 
 makeTradeRef : ContractId MatchedTrade -> V2.Reference
@@ -141,11 +154,14 @@ template MatchedTrade with
       controller venue
       do
         let settlement = mkTradeSettlementInfo self this
+        now <- getTime
         forA (Map.toList $ Utils.splitLegsByAuthorizer transferLegs) $ \(authorizer, legs) -> do
           create TradeAllocationRequest with
             authorizer
+            admin
             settlement
             transferLegs = legs
+            requestedAt = now
 
     choice MatchedTrade_Settle : MatchedTrade_SettleResult
       with
@@ -168,7 +184,7 @@ template MatchedTrade with
           result <- exercise batch.factoryCid V2.SettlementFactory_SettleBatch with
             settlement
             transferLegs
-            allocationCids = batch.allocationCids
+            allocations = batch.allocations
             actors = [venue]
             extraArgs = batch.extraArgs
           pure (batchAdmin, result)

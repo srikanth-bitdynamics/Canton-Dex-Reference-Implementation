@@ -23,6 +23,7 @@ module Splice.TokenStandard.Utils.Internal.Choices (
   isGreaterR,
   isLessR,
   isLessOrEqualR,
+  expectOneElement,
 
   -- * Choice implementations
   publicFetchDefaultImpl,
@@ -110,7 +111,7 @@ isSubsetOfR = ("is not a subset of", \x y -> Set.fromList x `Set.isSubsetOf` Set
 isEqualSetR : Ord a => (Text, [a] -> [a] -> Bool)
 isEqualSetR = ("does not have the same elements as", \x y -> Set.fromList x == Set.fromList y)
 
--- | Predicte combinator that requires the given predicate to be true for one of
+-- | Predicate combinator that requires the given predicate to be true for one of
 -- the elements on the RHS.
 oneOfR : (Text, a -> b -> Bool) -> (Text, a -> [b] -> Bool)
 oneOfR (descFailure, predicate) = (descFailure <> " one of", \x ys -> any (predicate x) ys)
@@ -136,6 +137,12 @@ requireUnique description xs
    groups = Map.fromListWithR (++) [(x, [x]) | x <- xs]
    duplicates = [x | (x, occurrences) <- Map.toList groups, length occurrences > 1]
 
+expectOneElement : (ActionFail m) => Text -> (a -> Text) -> [a] -> m a
+expectOneElement description pretty xs =
+  case xs of
+    [x] -> pure x
+    [] -> fail $ "Expected exactly one " <> description <> ", but got none."
+    xs -> fail $ T.unlines $ "Expected exactly one " <> description <> ", but got: " :: map pretty xs
 
 -- Actors pattern
 -----------------

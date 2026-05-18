@@ -152,7 +152,7 @@ emptyExtraArgs = ExtraArgs with
 
 extractCompleted : V2.AllocationInstructionResult -> Update (ContractId V2.Allocation)
 extractCompleted result = case result.output of
-  V2.AllocationInstructionResult_Completed cid -> pure cid
+  V2.AllocationInstructionResult_Completed allocCid -> pure allocCid
   _ -> abort "Pool allocation requires immediate completion"
 
 newtonSqrt : Decimal -> Decimal -> Int -> Decimal
@@ -567,25 +567,41 @@ template Pool with
               instrumentId = outputInstrumentId
               meta = emptyMetadata
 
-        poolInputAdjust <- exercise poolInputSlice.allocationCid
-          (WC.mkAllocationAdjust [operator] [swapperToPoolLeg] True)
-        poolOutputAdjust <- exercise poolOutputSlice.allocationCid
-          (WC.mkAllocationAdjust [operator] [poolToSwapperLeg] True)
-
-        let allAllocationCids =
-              [ swapperAllocationCid
-              , poolInputAdjust.allocationCid
-              , poolOutputAdjust.allocationCid
-              ]
+        -- Post-PR-5333: no separate Allocation_Adjust step. The
+        -- extra transfer-leg sides + residual next-iteration funding
+        -- flow through FinalizedAllocation entries on the SettleBatch.
+        --
+        --   - swapper: provides the input leg; allocation is fully
+        --     consumed (no next iteration funding).
+        --   - pool input side: receives inputAmount; new funding is
+        --     prior slice amount + inputAmount.
+        --   - pool output side: sends amountOut; new funding is
+        --     prior slice amount - amountOut.
+        let swapperFinalized = Utils.mkFinalizedAllocation
+              swapperAllocationCid
+              (Utils.legsToSides swapperAccount [swapperToPoolLeg])
+              None
+            poolInputFinalized = Utils.mkFinalizedAllocation
+              poolInputSlice.allocationCid
+              (Utils.legsToSides poolAccount [swapperToPoolLeg])
+              (Some (TextMap.fromList
+                [(inputInstrumentId, poolInputSlice.amount + inputAmount)]))
+            poolOutputFinalized = Utils.mkFinalizedAllocation
+              poolOutputSlice.allocationCid
+              (Utils.legsToSides poolAccount [poolToSwapperLeg])
+              (Some (TextMap.fromList
+                [(outputInstrumentId, poolOutputSlice.amount - amountOut)]))
 
         settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
           settlement
           transferLegs = [swapperToPoolLeg, poolToSwapperLeg]
-          allocationCids = allAllocationCids
+          allocations = [swapperFinalized, poolInputFinalized, poolOutputFinalized]
           actors = [operator]
           extraArgs = emptyExtraArgs
 
-        let nextIterCids = WC.extractNextIterationAllocationCids settleResult
+        -- Per-allocation next-iteration cids, in the same order as
+        -- the allocations passed to SettleBatch.
+        let nextIterCids = Utils.nextIterationAllocationCids settleResult
 
         let (newBaseReserve, newQuoteReserve) =
               if inputInstrumentId == baseInstrumentId
@@ -594,11 +610,11 @@ template Pool with
 
         let (nextBaseAllocCid, nextQuoteAllocCid) =
               case nextIterCids of
-                [_swapperNext, poolInNext, poolOutNext] ->
+                [_swapperNext, Some poolInNext, Some poolOutNext] ->
                   if inputInstrumentId == baseInstrumentId
                   then (poolInNext, poolOutNext)
                   else (poolOutNext, poolInNext)
-                _ -> error "Expected 3 next-iteration allocations from swap settlement"
+                _ -> error "Expected pool input and output allocations to produce next-iteration cids from swap settlement"
 
         -- Head slice on input side grows by inputAmount (pool received);
         -- head slice on output side shrinks by amountOut (pool sent).

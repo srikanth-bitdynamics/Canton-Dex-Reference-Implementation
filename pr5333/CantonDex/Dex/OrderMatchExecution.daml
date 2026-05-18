@@ -2,18 +2,26 @@ module CantonDex.Dex.OrderMatchExecution where
 
 -- Order matching and settlement execution.
 --
--- Implements the PR 5333 prefunded trade pattern:
---   1. both orders already have prefunded allocations (no transfer legs,
---      just nextIterationFunding)
---   2. the matcher adjusts both allocations with the concrete transfer legs
---   3. the adjusted allocations are settled in a batch
---   4. next-iteration allocations are either stored on partially-filled
---      orders or cancelled to release unused funds
+-- Implements the post-PR-5333 prefunded trade pattern (against
+-- token-standard-v2-upcoming):
+--   1. both orders already have prefunded allocations (no transfer
+--      legs, just nextIterationFunding)
+--   2. the matcher builds FinalizedAllocation entries carrying the
+--      concrete transfer leg sides + residual next-iteration funding
+--   3. the settle batch consumes the allocations in one call
+--   4. next-iteration allocations are either stored on
+--      partially-filled orders or cancelled to release unused funds
+--
+-- The retired Allocation_Adjust step (PR-5333 pre-refactor) collapses
+-- into the SettleBatch call via FinalizedAllocation.extraTransferLegSides.
+
+import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
+import CantonDex.Pr5333.Utils qualified as Utils
 import CantonDex.Pr5333.WorkflowConstructors qualified as WC
 
 data MatchedOrderPair = MatchedOrderPair with
@@ -83,24 +91,38 @@ template OrderMatchExecution with
               settlementDeadline = None
               meta = emptyMetadata
 
-        buyerAdjust <- exercise buyerAllocationCid
-          (WC.mkAllocationAdjust [operator] transferLegs buyerHasRemainder)
-        sellerAdjust <- exercise sellerAllocationCid
-          (WC.mkAllocationAdjust [operator] transferLegs sellerHasRemainder)
+        -- Build per-allocation FinalizedAllocations. Each side
+        -- authorizes both legs (buyer is receiver of base + sender of
+        -- quote; seller is sender of base + receiver of quote). The
+        -- side projection in Utils.legsToSides filters legs each
+        -- account participates in. nextIterationFunding is left to the
+        -- registry-side accounting layer (the registry rebuilds the
+        -- next iteration allocation when `*HasRemainder` is True; we
+        -- signal this by passing `Some empty` vs `None`).
+        let buyerFunding = if buyerHasRemainder then Some TextMap.empty else None
+            sellerFunding = if sellerHasRemainder then Some TextMap.empty else None
+            buyerFinalized = Utils.mkFinalizedAllocation
+              buyerAllocationCid
+              (Utils.legsToSides match.buyerAccount transferLegs)
+              buyerFunding
+            sellerFinalized = Utils.mkFinalizedAllocation
+              sellerAllocationCid
+              (Utils.legsToSides match.sellerAccount transferLegs)
+              sellerFunding
 
         settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
           settlement
           transferLegs
-          allocationCids = [buyerAdjust.allocationCid, sellerAdjust.allocationCid]
+          allocations = [buyerFinalized, sellerFinalized]
           actors = [operator]
           extraArgs = emptyExtraArgs
 
-        let nextIterCids = WC.extractNextIterationAllocationCids settleResult
+        let nextIterCids = Utils.nextIterationAllocationCids settleResult
             buyerNext = case nextIterCids of
-              (cid :: _) | buyerHasRemainder -> Some cid
+              (cid :: _) -> cid
               _ -> None
             sellerNext = case nextIterCids of
-              (_ :: cid :: _) | sellerHasRemainder -> Some cid
+              (_ :: cid :: _) -> cid
               _ -> None
 
         pure OrderMatch_ExecuteResult with

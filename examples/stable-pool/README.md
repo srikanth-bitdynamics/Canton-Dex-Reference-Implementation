@@ -1,7 +1,7 @@
 # Stable Pool — Canton-Dex reuse proof point
 
 This is a separate Daml project that **consumes the
-`canton-dex-pr5333` DAR as a data-dependency** and builds a different
+`canton-dex-trading` DAR as a data-dependency** and builds a different
 DEX surface — a StableSwap pool — on top.
 
 It's the reference's reuse demonstration: an external builder can
@@ -17,7 +17,7 @@ different DEX without forking the core templates.
    Swap a different invariant in and the rest of the stack works.
 
 2. **DAR consumption.** `daml.yaml` lists
-   `canton-dex-pr5333-0.0.7.dar` as a data-dependency. The example
+   `canton-dex-trading-0.1.0.dar` as a data-dependency. The example
    compiles against that binary artefact; it does not edit any of
    the base templates.
 
@@ -40,8 +40,8 @@ fork would copy that wiring (10–15 lines) into `StablePool_Swap`.
 From the repo root:
 
 ```bash
-# Make sure canton-dex-pr5333-0.0.7.dar exists first
-bash scripts/build-pr5333-surface.sh
+# Make sure canton-dex-trading-0.1.0.dar exists first
+bash scripts/build-trading-surface.sh
 
 # Then build + test the example
 cd examples/stable-pool

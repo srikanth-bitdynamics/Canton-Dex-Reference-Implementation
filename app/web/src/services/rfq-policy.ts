@@ -1,6 +1,6 @@
 // Client-side replay of the operator's RFQ ranking policy v2.0.
 //
-// Sort chain (mirrors `applyPolicy` in `pr5333/CantonDex/Dex/Rfq.daml`):
+// Sort chain (mirrors `applyPolicy` in `trading/CantonDex/Dex/Rfq.daml`):
 //   1. whitelist-preference: trusted-tier dealers rank above
 //      whitelist-tier (filter-then-rank — only whitelisted dealers
 //      can post on an RFQ in the first place).

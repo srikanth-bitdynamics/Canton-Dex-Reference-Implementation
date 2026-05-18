@@ -325,9 +325,9 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                 <div>
                   ② Operator:{' '}
                   <span style={{ color: 'var(--text)' }}>
-                    Allocation_Adjust
+                    SettleBatch
                   </span>{' '}
-                  on pool + trader allocs (PR 5333)
+                  with extra leg sides on pool + trader allocs
                 </div>
                 <div>
                   ③{' '}

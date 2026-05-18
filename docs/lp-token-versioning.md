@@ -47,7 +47,7 @@ Concretely:
 
 ## What about settlement iterations?
 
-PR-5333 introduces `nextIterationAllocationCid` so the pool can hand pool-
+The V2 allocation API introduces `nextIterationAllocationCid` so the pool can hand pool-
 side allocations forward across settlement batches without users re-allocating.
 This is an **allocation lifecycle** concern, not an instrument-versioning
 concern. The LP holdings users hold are unaffected by allocation iteration.

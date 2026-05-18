@@ -106,7 +106,7 @@ There are two distinct workflow families.
 - matched trade settlement
 - trade cancellation
 
-### Workflows that depend on the PR 5333 allocation shape
+### Workflows that depend on the V2 allocation shape
 
 - resting orders backed by prefunded allocations
 - pool reserves represented by committed allocations
@@ -188,7 +188,7 @@ Primary contracts:
 
 Required upstream dependency:
 
-- PR 5333 style iterated allocation support
+- V2-style iterated allocation support
 
 Reason:
 
@@ -228,7 +228,7 @@ Primary contracts:
 
 Required upstream dependency:
 
-- PR 5333 style adjustable allocations
+- V2-style adjustable allocations
 
 On-ledger flow:
 
@@ -355,7 +355,7 @@ Primary contracts:
 
 Required upstream dependency:
 
-- PR 5333 style committed and iterated allocations
+- V2-style committed and iterated allocations
 
 On-ledger flow:
 
@@ -412,7 +412,7 @@ Important boundary:
 ## Recommended First Production Scope
 
 If the goal is a reference DEX plus a production instance, the first release
-should target the following on a PR-5333-compatible branch:
+should target the following on a V2-compatible branch:
 
 1. pair listing
 2. OTC / RFQ trade settlement

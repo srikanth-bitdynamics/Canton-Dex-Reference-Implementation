@@ -6,8 +6,8 @@ notes what the DEX writes and the V2 surface it consumes.
 
 ## Reference
 
-- TradingAppV2: `vendor/splice-pr5333/token-standard/examples/splice-token-test-trading-app-v2/`
-- PR-5333 allocation extensions: `vendor/splice-pr5333/token-standard/splice-api-token-allocation-v2/`
+- TradingAppV2: `vendor/splice/token-standard/examples/splice-token-test-trading-app-v2/`
+- PR-5333 allocation extensions: `vendor/splice/token-standard/splice-api-token-allocation-v2/`
 - BatchingUtilityV2: `vendor/splice/daml/splice-util-token-standard-wallet/`
 
 ## Order flow
@@ -72,7 +72,7 @@ notes what the DEX writes and the V2 surface it consumes.
 - [x] Daml: every `Pool_*` / `Order_*` / `Rfq_*` choice that touches
       assets ultimately calls into a `V2.AllocationFactory` or
       `V2.SettlementFactory` choice (verified by reading
-      `pr5333/CantonDex/Dex/*.daml`).
+      `trading/CantonDex/Dex/*.daml`).
 - [x] Frontend: every trader-authority intent in
       `app/web/src/wallet/types.ts` corresponds to a V2 choice the
       wallet provider composes (see DEX-4 Token Standard provider).
@@ -80,7 +80,7 @@ notes what the DEX writes and the V2 surface it consumes.
       `rfq/` services build the V2 batch shapes and pass through to
       the ledger. The DEX never constructs raw Daml commands for
       registry templates.
-- [x] Tests: `pr5333-tests/CantonDex/Tests/EndToEndTests.daml`
+- [x] Tests: `trading-tests/CantonDex/Tests/EndToEndTests.daml`
       exercises the full V2 path end-to-end against the MockRegistry.
 
 ## Open items tracked separately

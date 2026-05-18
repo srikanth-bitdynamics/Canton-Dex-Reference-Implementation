@@ -2,7 +2,7 @@ module CantonDex.StablePool.StableSwap where
 
 -- Reuse-proof-point example.
 --
--- Demonstrates that canton-dex-pr5333 is genuinely extensible: this
+-- Demonstrates that canton-dex-trading is genuinely extensible: this
 -- module consumes the published DAR as a data-dependency and builds a
 -- DIFFERENT pricing curve (StableSwap / constant-sum bias) on top of
 -- the same V2-standard substrate.

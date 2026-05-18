@@ -43,7 +43,7 @@ const SYNCHRONIZER_ID =
     (import.meta.env.VITE_CANTON_SYNCHRONIZER as string | undefined)) ?? "";
 const PACKAGE_PREFIX =
   (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID as string | undefined) ??
-  "#canton-dex-pr5333";
+  "#canton-dex-trading";
 
 interface PersistedSession {
   ledgerUrl: string;

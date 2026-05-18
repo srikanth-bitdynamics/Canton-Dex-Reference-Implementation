@@ -1,5 +1,5 @@
 // RFQ-specific types. Mirror the Daml templates in
-// pr5333/CantonDex/Dex/Rfq.daml so JSON wire decoding is identity.
+// trading/CantonDex/Dex/Rfq.daml so JSON wire decoding is identity.
 
 import type { PolicyReceipt } from './contracts';
 

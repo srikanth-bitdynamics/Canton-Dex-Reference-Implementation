@@ -46,7 +46,7 @@ if [[ "${DEPLOY_SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> Building DARs"
   (cd "$ROOT_DIR" && daml build)
   echo "==> Building edge-case test DARs"
-  (cd "$ROOT_DIR/pr5333-tests" && daml build) || true
+  (cd "$ROOT_DIR/trading-tests" && daml build) || true
 else
   echo "==> Skipping DAR build (DEPLOY_SKIP_BUILD=1)"
 fi

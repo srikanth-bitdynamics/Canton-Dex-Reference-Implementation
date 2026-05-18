@@ -20,7 +20,7 @@ import Splice.Api.Token.MetadataV1
 
 import CantonDex.Dex.DexPair qualified as DexPair
 import CantonDex.Dex.PolicyReceipt qualified as PR
-import CantonDex.Pr5333.Utils qualified as Utils
+import CantonDex.Trading.Utils qualified as Utils
 
 data TradeAllocationRequestView = TradeAllocationRequestView with
     authorizer : V2.Account

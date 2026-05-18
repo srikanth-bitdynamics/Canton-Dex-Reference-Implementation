@@ -4,7 +4,7 @@ What the DEX assumes from the asset registry, distilled from the
 Registry Utility user guide
 (https://docs.digitalasset.com/utilities/devnet/overview/registry-user-guide/workflows.html)
 and the local mirror of those workflows in
-`pr5333/CantonDex/Instrument/`.
+`trading/CantonDex/Instrument/`.
 
 ## What the registry guarantees
 
@@ -92,10 +92,10 @@ spend funds the authorizer never granted has to submit an **invalid
 Daml transaction**, which the engine rejects regardless of operator
 intent.
 
-The mock at [MockRegistry.daml](../pr5333/CantonDex/Testing/MockRegistry.daml)
+The mock at [MockRegistry.daml](../trading/CantonDex/Testing/MockRegistry.daml)
 implements all five rules and is covered by
 `testAllocationAdjustConservation` in
-[EndToEndTests.daml](../pr5333-tests/CantonDex/Tests/EndToEndTests.daml).
+[EndToEndTests.daml](../trading-tests/CantonDex/Tests/EndToEndTests.daml).
 Production registries are expected to do at least the same.
 
 ## Choice-context retrieval the DEX needs

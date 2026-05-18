@@ -20,7 +20,7 @@ Vendored source (single source of truth):
 Per [Simon Meier (DA)][simon-slack] on 2026-05-18, we track the branch
 tip rather than a specific PR commit so we pick up subsequent V2 work
 beyond what PR-5333 introduced. PR-5333's content has been merged into
-this branch upstream; the previously-parallel `vendor/splice-pr5333/`
+this branch upstream; the previously-parallel `vendor/splice/`
 tree was retired (DEX-31 / DEX-35).
 
 [simon-slack]: https://linear.app/bitdynamics/issue/DEX-31
@@ -40,10 +40,10 @@ shape (DEX-35 ticket has the full delta):
 - `Splice.TokenStandard.Utils.splitLegsByAdmin` / `splitLegsByAuthorizer` retired;
   `accountParties` now takes admin Party as a first argument.
 
-The DEX's `pr5333/` surface, `pr5333-tests/`, `src/` reference stack
+The DEX's `trading/` surface, `trading-tests/`, `src/` reference stack
 and `tests/` Script suite are all migrated to the new API. The
 operator backend's TypeScript surface continues to consume
-`canton-dex-pr5333` and required no schema-level changes for this
+`canton-dex-trading` and required no schema-level changes for this
 migration.
 
 Primary source workflows consumed from the subtree:
@@ -78,8 +78,8 @@ Local packages consuming the built DARs:
 
 - `daml.yaml` + `src/CantonDex/...` — V1 reference stack
 - `tests/daml.yaml` + `tests/CantonDex/...` — V1-bridge Daml Script tests
-- `pr5333/daml.yaml` + `pr5333/CantonDex/...` — the V2 surface package (production); name retained for git history continuity
-- `pr5333-tests/daml.yaml` + `pr5333-tests/CantonDex/...` — V2-side Daml Script tests
+- `trading/daml.yaml` + `trading/CantonDex/...` — the V2 surface package (production); name retained for git history continuity
+- `trading-tests/daml.yaml` + `trading-tests/CantonDex/...` — V2-side Daml Script tests
 
 All four packages build clean against the refreshed vendored DARs
 (verified 2026-05-18 after the DEX-35 migration).
@@ -87,17 +87,17 @@ All four packages build clean against the refreshed vendored DARs
 Notes:
 
 - the production package consumes the token-standard DARs directly
-- executable Daml Script validation lives in `tests/` and `pr5333-tests/`
+- executable Daml Script validation lives in `tests/` and `trading-tests/`
 - the upstream `splice-token-test-trading-app-v2` DAR is built as a source
   validation artifact; the local matched-trade flow is implemented in
-  `src/CantonDex/DexApp/OTCTradeV2.daml` and `pr5333/CantonDex/Dex/MatchedTrade.daml`
+  `src/CantonDex/DexApp/OTCTradeV2.daml` and `trading/CantonDex/Dex/MatchedTrade.daml`
 - the V2 surface (PR-5333 allocation extensions, plus the
   subsequent refactor towards V2 release) is upstream in
   `token-standard-v2-upcoming`, so no parallel vendor tree is needed
-- the `pr5333/` package now includes:
-  - `CantonDex.Pr5333.Utils`
-  - `CantonDex.Pr5333.AllocationSurface`
-  - `CantonDex.Pr5333.WorkflowConstructors`
+- the `trading/` package now includes:
+  - `CantonDex.Trading.Utils`
+  - `CantonDex.Trading.AllocationSurface`
+  - `CantonDex.Trading.WorkflowConstructors`
   - `CantonDex.Dex.DexPair`
   - `CantonDex.Dex.MatchedTrade`
   - `CantonDex.Dex.Order`
@@ -128,15 +128,15 @@ The local build scripts therefore:
 Scripts:
 
 - `scripts/build-vendored-token-standard.sh` — builds the V2 surface from `vendor/splice/`
-- `scripts/build-pr5333-surface.sh` — chains to the above, then `daml build` in `pr5333/`
+- `scripts/build-trading-surface.sh` — chains to the above, then `daml build` in `trading/`
 - `scripts/build-source-stack.sh` — V1 reference stack (`src/`)
-- `scripts/probe-pr5333-tradingappv2-build.sh` — sanity check against the upstream TradingAppV2 example
+- `scripts/probe-trading-tradingappv2-build.sh` — sanity check against the upstream TradingAppV2 example
 - `scripts/run-local-daml-tests.sh` — runs all local Daml Script tests
 - `scripts/check-tradingappv2-alignment.sh` — verifies local `OTCTradeV2` stays aligned with upstream `TradingAppV2`
 - `scripts/check-tradingappv2-backend-alignment.sh` — same for the backend slice
 
-(`scripts/build-vendored-token-standard-pr5333.sh` was removed when
-`vendor/splice-pr5333/` was retired in DEX-31 / DEX-35.)
+(`scripts/build-vendored-token-standard.sh` was removed when
+`vendor/splice/` was retired in DEX-31 / DEX-35.)
 
 ## Next Integration Step
 

@@ -1,5 +1,5 @@
 // Operator policy module. Mirrors the on-ledger ranking applied by
-// Rfq_Accept in pr5333/CantonDex/Dex/Rfq.daml. The two MUST agree.
+// Rfq_Accept in trading/CantonDex/Dex/Rfq.daml. The two MUST agree.
 
 import { createHash } from "node:crypto";
 

@@ -48,7 +48,7 @@ import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
-import CantonDex.Pr5333.Utils qualified as Utils
+import CantonDex.Trading.Utils qualified as Utils
 
 emptyExtraArgs : ExtraArgs
 emptyExtraArgs = ExtraArgs with

@@ -34,8 +34,8 @@ separation of concerns. For local dev they can be the same party.
 ### 1. Build the DARs
 
 ```bash
-bash scripts/build-vendored-token-standard-pr5333.sh
-bash scripts/build-pr5333-surface.sh
+bash scripts/build-vendored-token-standard.sh
+bash scripts/build-trading-surface.sh
 ```
 
 Outputs `.daml/dist/canton-dex-*.dar`.

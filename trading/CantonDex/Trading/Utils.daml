@@ -1,4 +1,4 @@
-module CantonDex.Pr5333.Utils where
+module CantonDex.Trading.Utils where
 
 -- Helper layer over the token-standard-v2-upcoming AllocationV2 API
 -- (post-PR-5333 refactor; vendored from splice@a5b54c9).

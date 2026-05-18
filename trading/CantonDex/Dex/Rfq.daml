@@ -45,7 +45,7 @@ import Splice.Api.Token.MetadataV1
 
 import CantonDex.Dex.MatchedTrade qualified as MT
 import CantonDex.Dex.PolicyReceipt qualified as PR
-import CantonDex.Pr5333.Utils qualified as Utils
+import CantonDex.Trading.Utils qualified as Utils
 
 data RfqSide = RFQ_Buy | RFQ_Sell
   deriving (Eq, Show)

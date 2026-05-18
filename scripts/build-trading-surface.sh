@@ -6,10 +6,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 bash "$ROOT_DIR/scripts/build-vendored-token-standard.sh"
 
-echo "==> Building local PR-5333 surface package"
+echo "==> Building local canton-dex-trading surface package"
 (
-  cd "$ROOT_DIR/pr5333"
+  cd "$ROOT_DIR/trading"
   daml build
 )
 
-echo "PR-5333 surface package built successfully."
+echo "canton-dex-trading surface package built successfully."

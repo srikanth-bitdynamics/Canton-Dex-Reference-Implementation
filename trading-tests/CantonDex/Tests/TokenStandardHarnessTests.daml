@@ -51,8 +51,8 @@ import Splice.Testing.TokenStandard.RegistryApiV2
   )
 
 import CantonDex.Dex.MatchedTrade qualified as MT
-import CantonDex.Pr5333.Utils qualified as Utils
-import CantonDex.Pr5333.WorkflowConstructors qualified as WC
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.WorkflowConstructors qualified as WC
 import CantonDex.TokenStandardHarness.DexRegistry qualified as DexReg
 
 testMatchedTradeViaTokenStandardRegistry : Script ()

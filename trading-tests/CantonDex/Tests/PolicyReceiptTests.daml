@@ -5,7 +5,7 @@ module CantonDex.Tests.PolicyReceiptTests where
 -- Scope: focused on the contract-shape invariants we own. We do NOT ride
 -- the upstream splice-token-standard-test-v2 WalletClient/MultiRegistry
 -- harness here because its utility layer is blocked on the PR 5333 admin
--- field move (see docs/pr5333-allocation-surface.md). End-to-end DvP
+-- field move (see docs/trading-allocation-surface.md). End-to-end DvP
 -- testing waits on that unblocked.
 --
 -- What we verify:

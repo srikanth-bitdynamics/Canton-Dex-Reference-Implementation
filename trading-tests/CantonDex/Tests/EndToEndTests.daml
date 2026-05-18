@@ -43,8 +43,8 @@ import CantonDex.Dex.OrderFundingRequest qualified as OFR
 import CantonDex.Dex.Pool qualified as Pool
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Dex.Rfq qualified as Rfq
-import CantonDex.Pr5333.Utils qualified as Utils
-import CantonDex.Pr5333.WorkflowConstructors qualified as WC
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.WorkflowConstructors qualified as WC
 import CantonDex.Testing.MockRegistry qualified as Mock
 
 -- Shared fixtures --------------------------------------------------------

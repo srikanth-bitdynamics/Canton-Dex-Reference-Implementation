@@ -1,4 +1,4 @@
-module CantonDex.Pr5333.AllocationSurface where
+module CantonDex.Trading.AllocationSurface where
 
 -- Anchor module that names the upstream AllocationV2 / AllocationRequestV2
 -- / AllocationInstructionV2 / TransferEventsV2 surface symbols our local
@@ -15,7 +15,7 @@ module CantonDex.Pr5333.AllocationSurface where
 import DA.Map qualified as Map
 import DA.TextMap qualified as TextMap
 
-import CantonDex.Pr5333.Utils qualified as Utils
+import CantonDex.Trading.Utils qualified as Utils
 
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.AllocationRequestV2 qualified as AllocationRequestV2
@@ -24,50 +24,50 @@ import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 
-mkPr5333SettlementInfo : [Party] -> V2.Reference -> Optional Time -> V2.SettlementInfo
-mkPr5333SettlementInfo executors settlementRef settlementDeadline =
+mkTradingSettlementInfo : [Party] -> V2.Reference -> Optional Time -> V2.SettlementInfo
+mkTradingSettlementInfo executors settlementRef settlementDeadline =
   V2.SettlementInfo with
     executors
     settlementRef
     settlementDeadline
     meta = emptyMetadata
 
-pr5333SettleActionAnchor : V2.AllocationAction
-pr5333SettleActionAnchor = V2.AA_Settle
+tradingSettleActionAnchor : V2.AllocationAction
+tradingSettleActionAnchor = V2.AA_Settle
 
-pr5333CancelActionAnchor : V2.AllocationAction
-pr5333CancelActionAnchor = V2.AA_Cancel
+tradingCancelActionAnchor : V2.AllocationAction
+tradingCancelActionAnchor = V2.AA_Cancel
 
-pr5333FinalizedAllocationAnchor
+tradingFinalizedAllocationAnchor
   : ContractId V2.Allocation
   -> [V2.TransferLegSide]
   -> Optional (TextMap.TextMap Decimal)
   -> V2.FinalizedAllocation
-pr5333FinalizedAllocationAnchor = Utils.mkFinalizedAllocation
+tradingFinalizedAllocationAnchor = Utils.mkFinalizedAllocation
 
-pr5333AllocationResultAnchor
+tradingAllocationResultAnchor
   : V2.AllocationResult_Output
   -> V2.AllocationResult
-pr5333AllocationResultAnchor output =
+tradingAllocationResultAnchor output =
   V2.AllocationResult with
     output
     authorizerHoldingCids = TextMap.empty
     meta = emptyMetadata
 
-pr5333SettleBatchResultAnchor
+tradingSettleBatchResultAnchor
   : [V2.AllocationResult]
   -> V2.SettlementFactory_SettleBatchResult
-pr5333SettleBatchResultAnchor allocationSettleResults =
+tradingSettleBatchResultAnchor allocationSettleResults =
   V2.SettlementFactory_SettleBatchResult with
     allocationSettleResults
     meta = emptyMetadata
 
-pr5333AllocationRequestViewAnchor
+tradingAllocationRequestViewAnchor
   : HoldingV2.Account
   -> V2.SettlementInfo
   -> Time
   -> AllocationRequestV2.AllocationRequestView
-pr5333AllocationRequestViewAnchor authorizer settlement requestedAt =
+tradingAllocationRequestViewAnchor authorizer settlement requestedAt =
   AllocationRequestV2.AllocationRequestView with
     originalRequestCid = None
     authorizer
@@ -78,11 +78,11 @@ pr5333AllocationRequestViewAnchor authorizer settlement requestedAt =
     availableActions = Map.empty
     meta = emptyMetadata
 
-pr5333RequestedAllocationAnchor
+tradingRequestedAllocationAnchor
   : Party
   -> [V2.TransferLegSide]
   -> AllocationRequestV2.RequestedAllocation
-pr5333RequestedAllocationAnchor admin transferLegSides =
+tradingRequestedAllocationAnchor admin transferLegSides =
   AllocationRequestV2.RequestedAllocation with
     admin
     transferLegSides
@@ -90,20 +90,20 @@ pr5333RequestedAllocationAnchor admin transferLegSides =
     committed = False
     meta = emptyMetadata
 
-pr5333AllocationInstructionResultAnchor
+tradingAllocationInstructionResultAnchor
   : AllocationInstructionV2.AllocationInstructionResult_Output
   -> AllocationInstructionV2.AllocationInstructionResult
-pr5333AllocationInstructionResultAnchor output =
+tradingAllocationInstructionResultAnchor output =
   AllocationInstructionV2.AllocationInstructionResult with
     output
     authorizerChangeCids = TextMap.empty
     meta = emptyMetadata
 
-pr5333TransferEventLegSideAnchor
+tradingTransferEventLegSideAnchor
   : HoldingV2.Account
   -> Text
   -> TransferEventsV2.TransferLegSide
-pr5333TransferEventLegSideAnchor otherside instrumentId =
+tradingTransferEventLegSideAnchor otherside instrumentId =
   TransferEventsV2.TransferLegSide with
     transferLegId = "anchor"
     side = TransferEventsV2.SenderSide
@@ -112,37 +112,37 @@ pr5333TransferEventLegSideAnchor otherside instrumentId =
     amount = 1.0
     meta = emptyMetadata
 
-pr5333FundingDeltaAnchor
+tradingFundingDeltaAnchor
   : HoldingV2.Account
   -> [V2.TransferLeg]
   -> TextMap.TextMap Decimal
-pr5333FundingDeltaAnchor = Utils.netFundingDelta
+tradingFundingDeltaAnchor = Utils.netFundingDelta
 
-pr5333AdjustedFundingAnchor
+tradingAdjustedFundingAnchor
   : HoldingV2.Account
   -> TextMap.TextMap Decimal
   -> [V2.TransferLeg]
   -> Optional (TextMap.TextMap Decimal)
-pr5333AdjustedFundingAnchor = Utils.adjustedNextIterationFunding
+tradingAdjustedFundingAnchor = Utils.adjustedNextIterationFunding
 
-pr5333PrefundedAllocationAnchor
+tradingPrefundedAllocationAnchor
   : Party
   -> HoldingV2.Account
   -> V2.SettlementInfo
   -> V2.AllocationSpecification
-pr5333PrefundedAllocationAnchor admin authorizer settlement =
+tradingPrefundedAllocationAnchor admin authorizer settlement =
   Utils.mkPrefundedAllocationSpecification
     admin
     authorizer
     settlement
     (TextMap.fromList [("anchor", 1.0)])
 
-pr5333CommittedAllocationAnchor
+tradingCommittedAllocationAnchor
   : Party
   -> HoldingV2.Account
   -> V2.SettlementInfo
   -> V2.AllocationSpecification
-pr5333CommittedAllocationAnchor admin authorizer settlement =
+tradingCommittedAllocationAnchor admin authorizer settlement =
   Utils.mkCommittedPoolAllocationSpecification
     admin
     authorizer

@@ -12,7 +12,7 @@
 //   CANTON_USER_ID       JSON Ledger API user id (default: ledger-api-user).
 //   CANTON_NETWORK       Display label, e.g. canton:devnet.
 //   CANTON_SYNCHRONIZER  Synchronizer id, e.g. global-domain::1220...
-//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex-pr5333`) for template ids.
+//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex-trading`) for template ids.
 //
 // Optional:
 //   CANTON_ALLOC_FACTORY_CID  AllocationFactory contract id.

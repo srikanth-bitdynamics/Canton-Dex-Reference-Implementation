@@ -103,6 +103,19 @@ const MIGRATIONS: string[] = [
     updatedAt INTEGER NOT NULL
   );
   `,
+  // v4: dealer registry (RFQ counterparties)
+  `
+  CREATE TABLE IF NOT EXISTS dealers (
+    party TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    trusted INTEGER NOT NULL DEFAULT 0,
+    whitelisted INTEGER NOT NULL DEFAULT 1,
+    latencyMs INTEGER,
+    fillRate REAL,
+    createdAt INTEGER NOT NULL,
+    updatedAt INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function openDb(path: string): Db {

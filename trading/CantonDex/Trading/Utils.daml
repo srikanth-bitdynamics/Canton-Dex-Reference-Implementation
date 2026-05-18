@@ -1,0 +1,216 @@
+module CantonDex.Trading.Utils where
+
+-- Helper layer over the token-standard-v2-upcoming AllocationV2 API
+-- (post-PR-5333 refactor; vendored from splice@a5b54c9).
+--
+-- Key API deltas absorbed here:
+--   - `HoldingV2.Account.owner : Optional Party` (was `Party`). Special
+--     accounts (mint source, burn target) can have `None`. DEX flows
+--     never authorize against special accounts, so we expose
+--     `accountOwner` that panics on `None`.
+--   - `AllocationSpecification.transferLegs : [TransferLeg]`
+--       → `transferLegSides : [TransferLegSide]`. We project legs to
+--     sides at the construction boundary via `legToSide` / `legsToSides`.
+--   - `Allocation_Adjust` choice removed. Its semantics (attach extra
+--     transfer legs to an open allocation) now flow through
+--     `SettlementFactory_SettleBatch.allocations :
+--     [FinalizedAllocation { allocationCid, extraTransferLegSides,
+--     nextIterationFunding }]`.
+--   - `Allocation_*Result` types unified into
+--     `AllocationResult { output, authorizerHoldingCids, meta }` with
+--     `AllocationResult_Output` as a sum
+--     (Pending / Settled / Cancelled / Withdrawn).
+
+import DA.Map qualified as Map
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+
+type Funding = TextMap.TextMap Decimal
+
+-- Account.owner shim ----------------------------------------------------
+
+-- Force-unwrap an Account.owner; panics on `None` (a special account
+-- managed by an instrument admin, e.g. the source of a mint). DEX
+-- flows never authorize against special accounts, so any caller path
+-- that hits `None` is a programming error.
+accountOwner : HoldingV2.Account -> Party
+accountOwner account = case account.owner of
+  Some owner -> owner
+  None -> error "accountOwner: special account (None owner) not supported in DEX flows"
+
+basicAccount : Party -> HoldingV2.Account
+basicAccount owner = HoldingV2.Account (Some owner) None ""
+
+accountParties : HoldingV2.Account -> [Party]
+accountParties account =
+  let ownerParty = accountOwner account
+  in case account.provider of
+    Some provider | provider /= ownerParty -> [ownerParty, provider]
+    _ -> [ownerParty]
+
+-- Allocation helpers ---------------------------------------------------
+
+allocationAdmin : V2.AllocationSpecification -> Party
+allocationAdmin allocation = allocation.admin
+
+filterLegsForAccount : HoldingV2.Account -> [V2.TransferLeg] -> [V2.TransferLeg]
+filterLegsForAccount account =
+  filter (\leg -> leg.sender == account || leg.receiver == account)
+
+splitLegsByAuthorizer : [V2.TransferLeg] -> Map.Map HoldingV2.Account [V2.TransferLeg]
+splitLegsByAuthorizer legs = Map.fromListWithR (++) $ do
+  leg <- legs
+  if leg.sender == leg.receiver
+    then [(leg.sender, [leg])]
+    else [(leg.sender, [leg]), (leg.receiver, [leg])]
+
+textMapUnionWith : (a -> a -> a) -> TextMap.TextMap a -> TextMap.TextMap a -> TextMap.TextMap a
+textMapUnionWith f =
+  TextMap.merge
+    (\_ v1 -> Some v1)
+    (\_ v2 -> Some v2)
+    (\_ v1 v2 -> Some (f v1 v2))
+
+netFundingDelta : HoldingV2.Account -> [V2.TransferLeg] -> Funding
+netFundingDelta authorizer transferLegs =
+  TextMap.fromListWithR (+) $ map legAmount transferLegs
+  where
+    legAmount leg =
+      ( leg.instrumentId
+      , (if leg.sender == authorizer then negate leg.amount else 0.0) +
+        (if leg.receiver == authorizer then leg.amount else 0.0)
+      )
+
+normalizeFunding : Funding -> Optional Funding
+normalizeFunding funding
+  | any (\(_, amount) -> amount < 0.0) entries = None
+  | otherwise = Some $ TextMap.fromList
+      [ (instrumentId, amount)
+      | (instrumentId, amount) <- entries
+      , amount > 0.0
+      ]
+  where
+    entries = TextMap.toList funding
+
+adjustedNextIterationFunding
+  : HoldingV2.Account
+  -> Funding
+  -> [V2.TransferLeg]
+  -> Optional Funding
+adjustedNextIterationFunding authorizer currentFunding additionalTransferLegs =
+  normalizeFunding $
+    textMapUnionWith (+)
+      currentFunding
+      (netFundingDelta authorizer additionalTransferLegs)
+
+-- Project a leg into the leg-side relevant to the given authorizer
+-- account. Returns `None` when the authorizer is neither sender nor
+-- receiver of the leg.
+legToSide : HoldingV2.Account -> V2.TransferLeg -> Optional V2.TransferLegSide
+legToSide authorizer leg
+  | leg.sender == authorizer = Some V2.TransferLegSide with
+      transferLegId = leg.transferLegId
+      side = V2.SenderSide
+      otherside = leg.receiver
+      amount = leg.amount
+      instrumentId = leg.instrumentId
+      meta = leg.meta
+  | leg.receiver == authorizer = Some V2.TransferLegSide with
+      transferLegId = leg.transferLegId
+      side = V2.ReceiverSide
+      otherside = leg.sender
+      amount = leg.amount
+      instrumentId = leg.instrumentId
+      meta = leg.meta
+  | otherwise = None
+
+-- Project a list of legs into the leg-sides authorized by an account
+-- (dropping any leg the account is not part of).
+legsToSides : HoldingV2.Account -> [V2.TransferLeg] -> [V2.TransferLegSide]
+legsToSides authorizer = mapOptional (legToSide authorizer)
+  where
+    mapOptional f = foldr (\a acc -> case f a of Some b -> b :: acc; None -> acc) []
+
+mkIteratedAllocationSpecification
+  : Party
+  -> HoldingV2.Account
+  -> V2.SettlementInfo
+  -> [V2.TransferLeg]
+  -> Optional Funding
+  -> Bool
+  -> V2.AllocationSpecification
+mkIteratedAllocationSpecification admin authorizer settlement transferLegs nextIterationFunding committed =
+  V2.AllocationSpecification with
+    settlement
+    admin
+    authorizer
+    transferLegSides = legsToSides authorizer transferLegs
+    nextIterationFunding
+    committed
+    meta = emptyMetadata
+
+-- Prefunded allocation: no transfer legs, only next-iteration funding.
+mkPrefundedAllocationSpecification
+  : Party
+  -> HoldingV2.Account
+  -> V2.SettlementInfo
+  -> Funding
+  -> V2.AllocationSpecification
+mkPrefundedAllocationSpecification admin authorizer settlement nextIterationFunding =
+  mkIteratedAllocationSpecification
+    admin
+    authorizer
+    settlement
+    []
+    (Some nextIterationFunding)
+    False
+
+mkCommittedPoolAllocationSpecification
+  : Party
+  -> HoldingV2.Account
+  -> V2.SettlementInfo
+  -> Funding
+  -> V2.AllocationSpecification
+mkCommittedPoolAllocationSpecification admin authorizer settlement nextIterationFunding =
+  mkIteratedAllocationSpecification
+    admin
+    authorizer
+    settlement
+    []
+    (Some nextIterationFunding)
+    True
+
+-- Construct a FinalizedAllocation for SettlementFactory_SettleBatch
+-- that adds extra transfer-leg sides (the iterated-settlement
+-- equivalent of the retired Allocation_Adjust choice) and optionally
+-- reserves funding for the next iteration.
+mkFinalizedAllocation
+  : ContractId V2.Allocation
+  -> [V2.TransferLegSide]
+  -> Optional Funding
+  -> V2.FinalizedAllocation
+mkFinalizedAllocation allocationCid extraTransferLegSides nextIterationFunding =
+  V2.FinalizedAllocation with
+    allocationCid
+    extraTransferLegSides
+    nextIterationFunding
+
+-- Bare FinalizedAllocation: settle as-is, no extra legs, no next iter.
+finalAllocation : ContractId V2.Allocation -> V2.FinalizedAllocation
+finalAllocation allocationCid =
+  mkFinalizedAllocation allocationCid [] None
+
+-- Extract the next-iteration allocation cids from a batch settle
+-- result, paired with the allocations passed in (same order). Returns
+-- `Some cid` for allocations that produced a next iteration; `None`
+-- for fully-settled allocations.
+nextIterationAllocationCids : V2.SettlementFactory_SettleBatchResult -> [Optional (ContractId V2.Allocation)]
+nextIterationAllocationCids result =
+  map nextIterFromResult result.allocationSettleResults
+  where
+    nextIterFromResult r = case r.output of
+      V2.AllocationResult_Settled cidOpt -> cidOpt
+      _ -> None

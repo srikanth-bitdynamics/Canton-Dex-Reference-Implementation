@@ -1,0 +1,717 @@
+module CantonDex.Dex.Pool where
+
+-- Constant-product liquidity pool backed by committed V2.Allocations.
+--
+-- Uses the PR 5333 committed + iterated settlement pattern:
+--   - pool reserves are committed allocations (cannot be withdrawn by LP
+--     until the operator settles or cancels)
+--   - each swap adjusts ONE of the pool's allocations with swap legs,
+--     settles, and rolls forward to a next-iteration allocation
+--   - add/remove liquidity create or adjust the pool allocations
+--
+-- IMPORTANT: `reserves : PoolReserves` is DERIVED STATE for pricing math,
+-- not a competing balance source. The committed allocation amounts are the
+-- single source of truth for funds. We track reserves on the contract only
+-- so that swap pricing can be computed in a single transaction without
+-- having to fetch the allocations and inspect their funding maps. The
+-- aggregate of `amount` across `baseSlices` (resp. `quoteSlices`) MUST
+-- equal `reserves.baseAmount` (resp. `quoteAmount`). If they ever
+-- diverge, the allocations win.
+--
+-- Slice model:
+--
+--   Each `PoolSlice` is one committed allocation backing the pool, paired
+--   with the funding amount it currently represents. Slices are the unit
+--   of locality:
+--
+--   - `Pool_Initialize` creates exactly one slice per side.
+--   - `Pool_AddLiquidity` APPENDS a new slice per side.
+--   - `Pool_Swap` adjusts the FIRST slice on each side, settles it, and
+--     replaces it in place with its next-iteration roll-forward. The
+--     slice's `amount` is updated by the net delta of the swap legs.
+--     Slices beyond the head are untouched.
+--   - `Pool_RemoveLiquidity` walks the slice list from the front and
+--     touches only the slices needed to cover the redemption. Fully-
+--     consumed slices are cancelled; if the redemption ends inside a
+--     slice (boundary slice), that slice is cancelled and a new slice is
+--     allocated for the leftover. Slices beyond the boundary are
+--     untouched. The operator pays for at most ONE re-allocation per
+--     side, not for the full pool.
+--
+-- Why per-slice `amount` lives on the Pool: the Daml `ContractId V2.Allocation`
+-- handle does not carry the funding amount on its own; the amount lives
+-- inside the AllocationSpecification's `nextIterationFunding`. Walking
+-- slices on Remove would otherwise require a `fetch` per slice. Storing
+-- the amount alongside the CID makes the choice's transaction shape
+-- shard-local without fetching every slice. The slice's `amount` is
+-- always reconciled against the underlying allocation's funding: on
+-- `Pool_Swap` the head slice's amount changes by the net leg delta; on
+-- `Pool_AddLiquidity` and `Pool_Initialize` the new slice's amount is
+-- the deposit amount.
+
+import DA.Foldable (forA_)
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Dex.LPToken qualified as LP
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.WorkflowConstructors qualified as WC
+
+data PoolStatus
+  = PS_Unfunded
+  | PS_Active
+  | PS_Paused
+  deriving (Eq, Show)
+
+data PoolReserves = PoolReserves with
+    baseAmount : Decimal
+    quoteAmount : Decimal
+  deriving (Eq, Show)
+
+-- | One committed allocation backing a side of the pool, paired with the
+-- funding amount it currently represents. The pair is the unit the
+-- swap and remove-liquidity workflows operate on; see the module header.
+data PoolSlice = PoolSlice with
+    allocationCid : ContractId V2.Allocation
+    amount : Decimal
+  deriving (Eq, Show)
+
+sumSlices : [PoolSlice] -> Decimal
+sumSlices = foldl (\acc s -> acc + s.amount) 0.0
+
+makePoolRef : ContractId Pool -> V2.Reference
+makePoolRef poolCid = V2.Reference with
+  id = "DexPool"
+  cid = Some (coerceContractId poolCid)
+
+poolSettlementInfo : ContractId Pool -> Pool -> V2.SettlementInfo
+poolSettlementInfo poolCid pool = V2.SettlementInfo with
+  executors = [pool.operator]
+  settlementRef = makePoolRef poolCid
+  settlementDeadline = None
+  meta = emptyMetadata
+
+data Pool_InitializeResult = Pool_InitializeResult with
+    poolCid : ContractId Pool
+    baseAllocationCid : ContractId V2.Allocation
+    quoteAllocationCid : ContractId V2.Allocation
+    lpMintRequestCid : ContractId LP.LPMintRequest
+    lpTokensMinted : Decimal
+  deriving (Eq, Show)
+
+data Pool_AddLiquidityResult = Pool_AddLiquidityResult with
+    poolCid : ContractId Pool
+    baseAllocationCid : ContractId V2.Allocation
+    quoteAllocationCid : ContractId V2.Allocation
+    lpMintRequestCid : ContractId LP.LPMintRequest
+    lpTokensMinted : Decimal
+  deriving (Eq, Show)
+
+-- | Result of a slice-local redemption. `boundary*AllocationCid` is the
+-- new slice created for the leftover when the redemption ends inside a
+-- slice; `None` when the redemption fell exactly on a slice boundary
+-- (no re-allocation needed) or the pool became Unfunded.
+data Pool_RemoveLiquidityResult = Pool_RemoveLiquidityResult with
+    poolCid : ContractId Pool
+    boundaryBaseAllocationCid : Optional (ContractId V2.Allocation)
+    boundaryQuoteAllocationCid : Optional (ContractId V2.Allocation)
+    lpBurnRequestCid : ContractId LP.LPBurnRequest
+    baseReturned : Decimal
+    quoteReturned : Decimal
+    baseSlicesConsumed : Int
+      -- ^ Number of slices fully consumed on the base side. The boundary
+      --   slice, if any, is counted as one of these.
+    quoteSlicesConsumed : Int
+  deriving (Eq, Show)
+
+data Pool_SwapResult = Pool_SwapResult with
+    poolCid : ContractId Pool
+    nextBaseAllocationCid : ContractId V2.Allocation
+    nextQuoteAllocationCid : ContractId V2.Allocation
+    settleResult : V2.SettlementFactory_SettleBatchResult
+    amountOut : Decimal
+  deriving (Eq, Show)
+
+data Pool_CollectOperatorFeesResult = Pool_CollectOperatorFeesResult with
+    poolCid : ContractId Pool
+    collectedFees : TextMap.TextMap Decimal
+      -- ^ Per-instrument total of operator-fees claimed by this call.
+      --   The pool contract now has zero accrued; the operator's
+      --   accounting holder records this as a claim against the
+      --   pool's reserves until asset emission is wired.
+  deriving (Eq, Show)
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with
+  context = emptyChoiceContext
+  meta = emptyMetadata
+
+extractCompleted : V2.AllocationInstructionResult -> Update (ContractId V2.Allocation)
+extractCompleted result = case result.output of
+  V2.AllocationInstructionResult_Completed allocCid -> pure allocCid
+  _ -> abort "Pool allocation requires immediate completion"
+
+newtonSqrt : Decimal -> Decimal -> Int -> Decimal
+newtonSqrt target guess iteration
+  | iteration >= 50 = guess
+  | abs (guess * guess - target) < 0.0000000001 = guess
+  | otherwise = newtonSqrt target ((guess + target / guess) / 2.0) (iteration + 1)
+
+sqrtDecimal : Decimal -> Decimal
+sqrtDecimal x
+  | x <= 0.0 = 0.0
+  | otherwise = newtonSqrt x (x / 2.0) 0
+
+-- | Walk a slice list from the front, consuming amounts until the
+-- cumulative consumed reaches `target`. Returns:
+--   - the consumed slices (in original order), each with the amount
+--     actually drawn from them (the last one may be partial)
+--   - the untouched tail (preserved as-is)
+--   - the leftover amount the last consumed slice retains (0.0 when
+--     consumption fell exactly on a slice boundary)
+--
+-- Aborts when `target` exceeds the slice list's total.
+consumeSlices : Decimal -> [PoolSlice] -> ([(PoolSlice, Decimal)], [PoolSlice], Decimal)
+consumeSlices target slices =
+  let (consumedRev, tail, leftover) = consumeSlicesAcc target slices []
+  in  (reverse consumedRev, tail, leftover)
+
+consumeSlicesAcc
+  : Decimal
+  -> [PoolSlice]
+  -> [(PoolSlice, Decimal)]
+  -> ([(PoolSlice, Decimal)], [PoolSlice], Decimal)
+consumeSlicesAcc remaining slices acc
+  | remaining <= 0.0 = (acc, slices, 0.0)
+  | otherwise = case slices of
+      [] -> error "consumeSlices: target exceeds slice total"
+      s :: rest
+        | remaining >= s.amount ->
+            consumeSlicesAcc (remaining - s.amount) rest ((s, s.amount) :: acc)
+        | otherwise ->
+            ((s, remaining) :: acc, rest, s.amount - remaining)
+
+template Pool with
+    operator : Party
+    lpRegistrar : Party
+      -- ^ Party that owns the LP instrument's InstrumentConfiguration and
+      --   accepts mint/burn requests. Logically separate from `operator`.
+    admin : Party
+      -- ^ Asset admin (registrar) for the base+quote instruments.
+    baseInstrumentId : Text
+    quoteInstrumentId : Text
+    lpInstrumentId : Text
+    feeBps : Int
+      -- ^ Total swap fee in basis points. The operator's share is
+      --   `operatorFeeBps`; LPs receive the rest (`feeBps - operatorFeeBps`).
+    status : PoolStatus
+    reserves : PoolReserves
+    totalLpSupply : Decimal
+    baseSlices : [PoolSlice]
+      -- ^ Full set of committed allocations backing the base reserve.
+      --   The sum of slice amounts equals `reserves.baseAmount`.
+    quoteSlices : [PoolSlice]
+    -- New in v0.0.6: Optional for Daml smart-upgrade compatibility with
+    -- the v0.0.5-vetted Pool template on the testnet synchronizer.
+    -- Defaults (None) preserve legacy behavior: 0 operator-fee share,
+    -- empty accrual book, no extra observers.
+    operatorFeeBps : Optional Int
+      -- ^ Operator's share of the swap fee in basis points. Must be
+      --   `<= feeBps`. None / 0 = LPs get all fees (legacy behavior).
+    accumulatedOperatorFees : Optional (TextMap.TextMap Decimal)
+      -- ^ Running per-instrument total of operator-fee accrual. Bumped
+      --   on every `Pool_Swap`. Cleared by `Pool_CollectOperatorFees`.
+    publicReaders : Optional [Party]
+      -- ^ Parties allowed to observe the pool on-ledger (indexers,
+      --   off-chain pricers, public dashboards). None / [] = pool
+      --   stays operator + lpRegistrar private.
+  where
+    signatory operator
+    observer (lpRegistrar :: optional [] identity publicReaders)
+      -- ^ The LP registrar needs to see Pool state so it can correlate
+      --   LPMintRequest/LPBurnRequest events against the pool that
+      --   produced them, and to verify proportional accounting.
+
+    choice Pool_Initialize : Pool_InitializeResult
+      with
+        recipient : Party
+        baseFactoryCid : ContractId V2.AllocationFactory
+        quoteFactoryCid : ContractId V2.AllocationFactory
+        baseHoldingCids : [ContractId V2.Holding]
+        quoteHoldingCids : [ContractId V2.Holding]
+        baseAmount : Decimal
+        quoteAmount : Decimal
+        requestedAt : Time
+        lpPolicyCid : Optional (ContractId LP.LPTokenPolicy)
+          -- ^ V0.0.7 (new field at end for smart-upgrade compat).
+      controller operator
+      do
+        assertMsg "Pool must be Unfunded to initialize" (status == PS_Unfunded)
+        assertMsg "Base amount must be positive" (baseAmount > 0.0)
+        assertMsg "Quote amount must be positive" (quoteAmount > 0.0)
+
+        let poolAccount = Utils.basicAccount operator
+            settlement = poolSettlementInfo self this
+            baseFunding = TextMap.fromList [(baseInstrumentId, baseAmount)]
+            quoteFunding = TextMap.fromList [(quoteInstrumentId, quoteAmount)]
+            baseAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
+              admin poolAccount settlement baseFunding requestedAt baseHoldingCids [operator]
+            quoteAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
+              admin poolAccount settlement quoteFunding requestedAt quoteHoldingCids [operator]
+
+        baseResult <- exercise baseFactoryCid baseAllocArg
+        baseAllocCid <- extractCompleted baseResult
+        quoteResult <- exercise quoteFactoryCid quoteAllocArg
+        quoteAllocCid <- extractCompleted quoteResult
+
+        let initialLp = sqrtDecimal (baseAmount * quoteAmount)
+
+        lpMintRequestCid <- create LP.LPMintRequest with
+          operator
+          lpRegistrar
+          lpInstrumentId
+          recipient
+          amount = initialLp
+          policyCid = lpPolicyCid
+
+        poolCid <- create this with
+          status = PS_Active
+          reserves = PoolReserves with baseAmount; quoteAmount
+          baseSlices = [PoolSlice with allocationCid = baseAllocCid; amount = baseAmount]
+          quoteSlices = [PoolSlice with allocationCid = quoteAllocCid; amount = quoteAmount]
+          totalLpSupply = 0.0
+            -- LP supply is owned by the registrar; updated via Pool_RecordLPSupply.
+
+        pure Pool_InitializeResult with
+          poolCid
+          baseAllocationCid = baseAllocCid
+          quoteAllocationCid = quoteAllocCid
+          lpMintRequestCid
+          lpTokensMinted = initialLp
+
+    choice Pool_AddLiquidity : Pool_AddLiquidityResult
+      with
+        recipient : Party
+        baseFactoryCid : ContractId V2.AllocationFactory
+        quoteFactoryCid : ContractId V2.AllocationFactory
+        baseHoldingCids : [ContractId V2.Holding]
+        quoteHoldingCids : [ContractId V2.Holding]
+        baseAmount : Decimal
+        quoteAmount : Decimal
+        minLpTokens : Decimal
+        knownTotalLpSupply : Decimal
+          -- ^ The supply observed by the operator at quote time. The pool
+          --   itself doesn't see post-mint supply (the registrar owns it),
+          --   so the operator passes it in. Sanity-checked downstream by
+          --   the registrar against the policy ledger.
+        requestedAt : Time
+        lpPolicyCid : Optional (ContractId LP.LPTokenPolicy)
+          -- ^ V0.0.7 (new field at end for smart-upgrade compat).
+      controller operator
+      do
+        assertMsg "Pool must be Active" (status == PS_Active)
+        assertMsg "Base amount must be positive" (baseAmount > 0.0)
+        assertMsg "Quote amount must be positive" (quoteAmount > 0.0)
+        assertMsg "Known LP supply must be positive" (knownTotalLpSupply > 0.0)
+
+        let lpByBase = (baseAmount * knownTotalLpSupply) / reserves.baseAmount
+            lpByQuote = (quoteAmount * knownTotalLpSupply) / reserves.quoteAmount
+            lpToMint = min lpByBase lpByQuote
+        assertMsg "LP tokens below minimum" (lpToMint >= minLpTokens)
+
+        let poolAccount = Utils.basicAccount operator
+            settlement = poolSettlementInfo self this
+            baseFunding = TextMap.fromList [(baseInstrumentId, baseAmount)]
+            quoteFunding = TextMap.fromList [(quoteInstrumentId, quoteAmount)]
+            baseAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
+              admin poolAccount settlement baseFunding requestedAt baseHoldingCids [operator]
+            quoteAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
+              admin poolAccount settlement quoteFunding requestedAt quoteHoldingCids [operator]
+
+        baseResult <- exercise baseFactoryCid baseAllocArg
+        newBaseAllocCid <- extractCompleted baseResult
+        quoteResult <- exercise quoteFactoryCid quoteAllocArg
+        newQuoteAllocCid <- extractCompleted quoteResult
+
+        lpMintRequestCid <- create LP.LPMintRequest with
+          operator
+          lpRegistrar
+          lpInstrumentId
+          recipient
+          amount = lpToMint
+          policyCid = lpPolicyCid
+
+        poolCid <- create this with
+          reserves = PoolReserves with
+            baseAmount = reserves.baseAmount + baseAmount
+            quoteAmount = reserves.quoteAmount + quoteAmount
+          baseSlices = baseSlices ++
+            [PoolSlice with allocationCid = newBaseAllocCid; amount = baseAmount]
+          quoteSlices = quoteSlices ++
+            [PoolSlice with allocationCid = newQuoteAllocCid; amount = quoteAmount]
+
+        pure Pool_AddLiquidityResult with
+          poolCid
+          baseAllocationCid = newBaseAllocCid
+          quoteAllocationCid = newQuoteAllocCid
+          lpMintRequestCid
+          lpTokensMinted = lpToMint
+
+    -- Slice-local redemption.
+    --
+    -- Walks `baseSlices` (resp. quote) from the front, cancelling each
+    -- fully-consumed slice and, if the redemption ends inside a slice,
+    -- re-allocating only the leftover of that boundary slice. Slices
+    -- beyond the boundary are not touched at all -- the choice does not
+    -- exercise any choice on them.
+    --
+    -- Inputs the operator supplies:
+    --   - `boundaryBaseHoldingCids` / `boundaryQuoteHoldingCids`: holdings
+    --     to use for the boundary-slice re-allocation. May be empty when
+    --     the redemption falls exactly on a slice boundary (no leftover)
+    --     or when the side ends with zero reserve.
+    --
+    -- Traffic-cost story (matches workflows.md / architecture.md):
+    --   - the operator performs at most ONE re-allocation per side; not
+    --     one per existing slice as the prior implementation did.
+    choice Pool_RemoveLiquidity : Pool_RemoveLiquidityResult
+      with
+        holder : Party
+        lpTokensToRedeem : Decimal
+        knownTotalLpSupply : Decimal
+        minBaseOut : Decimal
+        minQuoteOut : Decimal
+        baseFactoryCid : ContractId V2.AllocationFactory
+        quoteFactoryCid : ContractId V2.AllocationFactory
+        boundaryBaseHoldingCids : [ContractId V2.Holding]
+          -- ^ Holdings used to fund the leftover allocation of the
+          --   boundary slice on the base side, when redemption ends
+          --   inside a slice. Empty when redemption falls on a slice
+          --   boundary or the side ends empty.
+        boundaryQuoteHoldingCids : [ContractId V2.Holding]
+        requestedAt : Time
+        lpPolicyCid : Optional (ContractId LP.LPTokenPolicy)
+          -- ^ V0.0.7 (new field at end for smart-upgrade compat).
+      controller operator
+      do
+        assertMsg "Pool must be Active" (status == PS_Active)
+        assertMsg "LP tokens must be positive" (lpTokensToRedeem > 0.0)
+        assertMsg "Cannot redeem more LP tokens than supply" (lpTokensToRedeem <= knownTotalLpSupply)
+
+        let shareRatio = lpTokensToRedeem / knownTotalLpSupply
+            baseOut = reserves.baseAmount * shareRatio
+            quoteOut = reserves.quoteAmount * shareRatio
+        assertMsg "Base output below minimum" (baseOut >= minBaseOut)
+        assertMsg "Quote output below minimum" (quoteOut >= minQuoteOut)
+        assertMsg "Base out exceeds reserve" (baseOut <= reserves.baseAmount)
+        assertMsg "Quote out exceeds reserve" (quoteOut <= reserves.quoteAmount)
+
+        let (consumedBase, untouchedBase, leftoverBase) = consumeSlices baseOut baseSlices
+            (consumedQuote, untouchedQuote, leftoverQuote) = consumeSlices quoteOut quoteSlices
+
+        -- Cancel each fully-or-partially consumed slice. The boundary
+        -- slice is cancelled too; its leftover is re-allocated below.
+        forA_ consumedBase $ \(slice, _) ->
+          exercise slice.allocationCid V2.Allocation_Cancel with
+            actors = [operator]
+            extraArgs = emptyExtraArgs
+        forA_ consumedQuote $ \(slice, _) ->
+          exercise slice.allocationCid V2.Allocation_Cancel with
+            actors = [operator]
+            extraArgs = emptyExtraArgs
+
+        let poolAccount = Utils.basicAccount operator
+            settlement = poolSettlementInfo self this
+            newBaseReserve = reserves.baseAmount - baseOut
+            newQuoteReserve = reserves.quoteAmount - quoteOut
+
+        -- Re-allocate the boundary leftover, if any. When leftover is
+        -- 0.0 the redemption fell exactly on a slice boundary and no new
+        -- allocation is needed.
+        boundaryBaseSlice <- if leftoverBase > 0.0
+          then do
+            let arg = WC.mkCommittedPoolAllocationFactoryAllocate
+                        admin poolAccount settlement
+                        (TextMap.fromList [(baseInstrumentId, leftoverBase)])
+                        requestedAt boundaryBaseHoldingCids [operator]
+            result <- exercise baseFactoryCid arg
+            cid <- extractCompleted result
+            pure (Some PoolSlice with allocationCid = cid; amount = leftoverBase)
+          else pure None
+        boundaryQuoteSlice <- if leftoverQuote > 0.0
+          then do
+            let arg = WC.mkCommittedPoolAllocationFactoryAllocate
+                        admin poolAccount settlement
+                        (TextMap.fromList [(quoteInstrumentId, leftoverQuote)])
+                        requestedAt boundaryQuoteHoldingCids [operator]
+            result <- exercise quoteFactoryCid arg
+            cid <- extractCompleted result
+            pure (Some PoolSlice with allocationCid = cid; amount = leftoverQuote)
+          else pure None
+
+        let newBaseSlices = case boundaryBaseSlice of
+              Some s -> s :: untouchedBase
+              None -> untouchedBase
+            newQuoteSlices = case boundaryQuoteSlice of
+              Some s -> s :: untouchedQuote
+              None -> untouchedQuote
+
+        lpBurnRequestCid <- create LP.LPBurnRequest with
+          operator
+          lpRegistrar
+          lpInstrumentId
+          holder
+          amount = lpTokensToRedeem
+          policyCid = lpPolicyCid
+
+        let newStatus = if newBaseReserve == 0.0 && newQuoteReserve == 0.0
+                        then PS_Unfunded
+                        else PS_Active
+
+        poolCid <- create this with
+          status = newStatus
+          reserves = PoolReserves with
+            baseAmount = newBaseReserve
+            quoteAmount = newQuoteReserve
+          baseSlices = newBaseSlices
+          quoteSlices = newQuoteSlices
+
+        pure Pool_RemoveLiquidityResult with
+          poolCid
+          boundaryBaseAllocationCid = fmap (.allocationCid) boundaryBaseSlice
+          boundaryQuoteAllocationCid = fmap (.allocationCid) boundaryQuoteSlice
+          lpBurnRequestCid
+          baseReturned = baseOut
+          quoteReturned = quoteOut
+          baseSlicesConsumed = length consumedBase
+          quoteSlicesConsumed = length consumedQuote
+
+    nonconsuming choice Pool_ComputeSwapOut : Decimal
+      with
+        inputInstrumentId : Text
+        inputAmount : Decimal
+      controller operator
+      do
+        assertMsg "Pool must be Active" (status == PS_Active)
+        let (reserveIn, reserveOut) =
+              if inputInstrumentId == baseInstrumentId
+              then (reserves.baseAmount, reserves.quoteAmount)
+              else (reserves.quoteAmount, reserves.baseAmount)
+            feeBpsDecimal : Decimal = intToDecimal feeBps
+            feeMultiplier : Decimal = (10000.0 - feeBpsDecimal) / 10000.0
+            amountInAfterFee = inputAmount * feeMultiplier
+            numerator = amountInAfterFee * reserveOut
+            denominator = reserveIn + amountInAfterFee
+        pure (numerator / denominator)
+
+    choice Pool_Swap : Pool_SwapResult
+      with
+        swapperAccount : V2.Account
+        inputInstrumentId : Text
+        inputAmount : Decimal
+        minOutputAmount : Decimal
+        swapperAllocationCid : ContractId V2.Allocation
+        factoryCid : ContractId V2.SettlementFactory
+      controller operator
+      do
+        assertMsg "Pool must be Active" (status == PS_Active)
+        assertMsg "Pool has no base slices" (not (null baseSlices))
+        assertMsg "Pool has no quote slices" (not (null quoteSlices))
+
+        let outputInstrumentId =
+              if inputInstrumentId == baseInstrumentId
+              then quoteInstrumentId
+              else baseInstrumentId
+            (reserveIn, reserveOut) =
+              if inputInstrumentId == baseInstrumentId
+              then (reserves.baseAmount, reserves.quoteAmount)
+              else (reserves.quoteAmount, reserves.baseAmount)
+            feeBpsDecimal : Decimal = intToDecimal feeBps
+            feeMultiplier : Decimal = (10000.0 - feeBpsDecimal) / 10000.0
+            amountInAfterFee = inputAmount * feeMultiplier
+            numerator = amountInAfterFee * reserveOut
+            denominator = reserveIn + amountInAfterFee
+            amountOut = numerator / denominator
+        assertMsg "Output below slippage minimum" (amountOut >= minOutputAmount)
+
+        let poolAccount = Utils.basicAccount operator
+            settlement = poolSettlementInfo self this
+
+        -- Pick the FIRST slice on each side. Operator service can choose
+        -- smarter (largest, oldest, etc.); for the contract the choice
+        -- is deterministic and the other slices are untouched.
+        let (poolInputSlice :: restInputSlices, poolOutputSlice :: restOutputSlices) =
+              if inputInstrumentId == baseInstrumentId
+              then (baseSlices, quoteSlices)
+              else (quoteSlices, baseSlices)
+
+        assertMsg "Head output slice cannot cover swap"
+          (poolOutputSlice.amount >= amountOut)
+
+        let swapperToPoolLeg = V2.TransferLeg with
+              transferLegId = "swap-in"
+              sender = swapperAccount
+              receiver = poolAccount
+              amount = inputAmount
+              instrumentId = inputInstrumentId
+              meta = emptyMetadata
+            poolToSwapperLeg = V2.TransferLeg with
+              transferLegId = "swap-out"
+              sender = poolAccount
+              receiver = swapperAccount
+              amount = amountOut
+              instrumentId = outputInstrumentId
+              meta = emptyMetadata
+
+        -- Post-PR-5333: no separate Allocation_Adjust step. The
+        -- extra transfer-leg sides + residual next-iteration funding
+        -- flow through FinalizedAllocation entries on the SettleBatch.
+        --
+        --   - swapper: provides the input leg; allocation is fully
+        --     consumed (no next iteration funding).
+        --   - pool input side: receives inputAmount; new funding is
+        --     prior slice amount + inputAmount.
+        --   - pool output side: sends amountOut; new funding is
+        --     prior slice amount - amountOut.
+        let swapperFinalized = Utils.mkFinalizedAllocation
+              swapperAllocationCid
+              (Utils.legsToSides swapperAccount [swapperToPoolLeg])
+              None
+            poolInputFinalized = Utils.mkFinalizedAllocation
+              poolInputSlice.allocationCid
+              (Utils.legsToSides poolAccount [swapperToPoolLeg])
+              (Some (TextMap.fromList
+                [(inputInstrumentId, poolInputSlice.amount + inputAmount)]))
+            poolOutputFinalized = Utils.mkFinalizedAllocation
+              poolOutputSlice.allocationCid
+              (Utils.legsToSides poolAccount [poolToSwapperLeg])
+              (Some (TextMap.fromList
+                [(outputInstrumentId, poolOutputSlice.amount - amountOut)]))
+
+        settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
+          settlement
+          transferLegs = [swapperToPoolLeg, poolToSwapperLeg]
+          allocations = [swapperFinalized, poolInputFinalized, poolOutputFinalized]
+          actors = [operator]
+          extraArgs = emptyExtraArgs
+
+        -- Per-allocation next-iteration cids, in the same order as
+        -- the allocations passed to SettleBatch.
+        let nextIterCids = Utils.nextIterationAllocationCids settleResult
+
+        let (newBaseReserve, newQuoteReserve) =
+              if inputInstrumentId == baseInstrumentId
+              then (reserves.baseAmount + inputAmount, reserves.quoteAmount - amountOut)
+              else (reserves.baseAmount - amountOut, reserves.quoteAmount + inputAmount)
+
+        let (nextBaseAllocCid, nextQuoteAllocCid) =
+              case nextIterCids of
+                [_swapperNext, Some poolInNext, Some poolOutNext] ->
+                  if inputInstrumentId == baseInstrumentId
+                  then (poolInNext, poolOutNext)
+                  else (poolOutNext, poolInNext)
+                _ -> error "Expected pool input and output allocations to produce next-iteration cids from swap settlement"
+
+        -- Head slice on input side grows by inputAmount (pool received);
+        -- head slice on output side shrinks by amountOut (pool sent).
+        let nextBaseHeadAmount =
+              if inputInstrumentId == baseInstrumentId
+              then poolInputSlice.amount + inputAmount
+              else poolOutputSlice.amount - amountOut
+            nextQuoteHeadAmount =
+              if inputInstrumentId == baseInstrumentId
+              then poolOutputSlice.amount - amountOut
+              else poolInputSlice.amount + inputAmount
+
+        let nextBaseHead = PoolSlice with
+              allocationCid = nextBaseAllocCid
+              amount = nextBaseHeadAmount
+            nextQuoteHead = PoolSlice with
+              allocationCid = nextQuoteAllocCid
+              amount = nextQuoteHeadAmount
+
+        let (newBaseSlices, newQuoteSlices) =
+              if inputInstrumentId == baseInstrumentId
+              then (nextBaseHead :: restInputSlices, nextQuoteHead :: restOutputSlices)
+              else (nextBaseHead :: restOutputSlices, nextQuoteHead :: restInputSlices)
+
+        -- Operator-fee accrual: a slice of the swap input is the
+        -- operator's claim. We don't move the asset here; the fee
+        -- value stays in the pool's reserves (LPs and operator are
+        -- jointly liable). `Pool_CollectOperatorFees` later separates
+        -- the operator's claim into a distinct allocation.
+        let opFeeBps = optional 0 identity operatorFeeBps
+            curAccr = optional TextMap.empty identity accumulatedOperatorFees
+            operatorFee =
+              if opFeeBps > 0
+                then inputAmount * intToDecimal opFeeBps / 10000.0
+                else 0.0
+            bumpedOperatorFees = if operatorFee > 0.0
+              then
+                let cur = optional 0.0 identity
+                            (TextMap.lookup inputInstrumentId curAccr)
+                in TextMap.insert inputInstrumentId (cur + operatorFee) curAccr
+              else curAccr
+
+        poolCid <- create this with
+          reserves = PoolReserves with
+            baseAmount = newBaseReserve
+            quoteAmount = newQuoteReserve
+          baseSlices = newBaseSlices
+          quoteSlices = newQuoteSlices
+          accumulatedOperatorFees = Some bumpedOperatorFees
+
+        pure Pool_SwapResult with
+          poolCid
+          nextBaseAllocationCid = nextBaseAllocCid
+          nextQuoteAllocationCid = nextQuoteAllocCid
+          settleResult
+          amountOut
+
+    choice Pool_UpdatePublicReaders : ContractId Pool
+      with
+        newReaders : [Party]
+      controller operator
+      do create this with publicReaders = Some newReaders
+
+    -- Operator's "collect" workflow. STUB: zeroes out the accrual
+    -- counter and returns the cleared totals. Asset emission (the
+    -- registry-side allocation that actually transfers fees out of
+    -- the pool's reserves into an operator-treasury holding) is the
+    -- next-level workstream — would need a new `AllocationFactory_
+    -- Allocate` call against the operator-treasury account and a
+    -- corresponding `SettlementFactory_SettleBatch` that drains the
+    -- claimed amount from the pool's slices.
+    choice Pool_CollectOperatorFees : Pool_CollectOperatorFeesResult
+      controller operator
+      do
+        let cleared = optional TextMap.empty identity accumulatedOperatorFees
+        cid <- create this with
+          accumulatedOperatorFees = Some TextMap.empty
+        pure Pool_CollectOperatorFeesResult with
+          poolCid = cid
+          collectedFees = cleared
+
+    choice Pool_RecordLPSupply : ContractId Pool
+      with
+        newSupply : Decimal
+      controller lpRegistrar
+      do
+        assertMsg "Supply must be non-negative" (newSupply >= 0.0)
+        create this with totalLpSupply = newSupply
+
+    choice Pool_Pause : ContractId Pool
+      controller operator
+      do
+        assertMsg "Pool must be Active to pause" (status == PS_Active)
+        create this with status = PS_Paused
+
+    choice Pool_Resume : ContractId Pool
+      controller operator
+      do
+        assertMsg "Pool must be Paused to resume" (status == PS_Paused)
+        create this with status = PS_Active

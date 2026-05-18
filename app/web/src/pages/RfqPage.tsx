@@ -21,7 +21,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { Modal } from '@/primitives/Modal';
 import { PolicyReceiptModal } from '@/primitives/PolicyReceiptModal';
-import { dealerByParty, DEALERS } from '@/primitives/dealers';
+import { dealerByParty, useDealers } from '@/primitives/dealers';
 import { fmt, fmtUsd, fmtUsdK, formatExpiresIn } from '@/primitives/format';
 import { OperatorApi } from '@/services/operator-api';
 import { adaptRfqs } from '@/services/rfq-adapter';
@@ -46,6 +46,7 @@ type SortMode = 'policy' | 'price' | 'earliest' | 'trusted';
 
 export function RfqPage() {
   const party = useCurrentParty();
+  const { data: dealers } = useDealers();
   const { data: context } = useQuery({
     queryKey: ['context'],
     queryFn: ledger.getContext,
@@ -336,14 +337,27 @@ export function RfqPage() {
         <div className="stat">
           <div className="stat-l">Whitelisted dealers</div>
           <div className="stat-v">
-            {DEALERS.filter((d) => d.whitelisted).length}
+            {dealers ? dealers.filter((d) => d.whitelisted).length : '—'}
           </div>
-          <div className="stat-d">of {DEALERS.length} known</div>
+          <div className="stat-d">
+            of {dealers ? dealers.length : '—'} known
+          </div>
         </div>
         <div className="stat">
           <div className="stat-l">Avg fill rate</div>
-          <div className="stat-v">94%</div>
-          <div className="stat-d up">+2.1% vs last week</div>
+          <div className="stat-v">
+            {(() => {
+              const measured = (dealers ?? []).filter(
+                (d) => d.fillRate != null,
+              );
+              if (measured.length === 0) return '—';
+              const avg =
+                measured.reduce((s, d) => s + (d.fillRate ?? 0), 0) /
+                measured.length;
+              return Math.round(avg * 100) + '%';
+            })()}
+          </div>
+          <div className="stat-d">live, across whitelisted dealers</div>
         </div>
       </div>
 
@@ -513,6 +527,7 @@ function RfqRow({
   onCancelRfq,
   onPolicyOpen,
 }: RfqRowProps) {
+  const { data: dealers } = useDealers();
   const lifecycle =
     r.status === 'RFQ_Open'
       ? 0
@@ -742,7 +757,7 @@ function RfqRow({
             </thead>
             <tbody>
               {ranked.map((q, i) => {
-                const dealer = dealerByParty(q.dealer);
+                const dealer = dealerByParty(q.dealer, dealers);
                 const notional = q.price * r.size;
                 const isBest = i === 0;
                 const accepted = r.acceptedDealer === q.dealer;
@@ -922,6 +937,7 @@ interface SettledTabProps {
 }
 
 function SettledTab({ settled, onReceiptOpen }: SettledTabProps) {
+  const { data: dealers } = useDealers();
   return (
     <table className="w-full text-xs">
       <thead>
@@ -967,7 +983,7 @@ function SettledTab({ settled, onReceiptOpen }: SettledTabProps) {
               {fmtUsd(t.price * t.size)}
             </td>
             <td className="py-2 px-3">
-              <div style={{ fontSize: 12 }}>{dealerByParty(t.dealer).name}</div>
+              <div style={{ fontSize: 12 }}>{dealerByParty(t.dealer, dealers).name}</div>
               <div
                 className="mono"
                 style={{ fontSize: 10, color: 'var(--text-2)' }}
@@ -1086,13 +1102,45 @@ interface ComposeProps {
 }
 
 function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) {
+  const { data: dealers } = useDealers();
   const [pair, setPair] = useState('BTC/USDC');
   const [side, setSide] = useState<RfqSide>('RFQ_Buy');
   const [size, setSize] = useState('');
   const [expiry, setExpiry] = useState(60);
-  const [whitelist, setWhitelist] = useState<string[]>(
-    whitelistedDealers().map((d) => d.party),
-  );
+  const [whitelist, setWhitelist] = useState<string[]>([]);
+  // Seed whitelist from the live dealer registry once it loads. Users
+  // can deselect; the registry doesn't override their choice on refetch.
+  const [seeded, setSeeded] = useState(false);
+  useEffect(() => {
+    if (!seeded && dealers) {
+      setWhitelist(whitelistedDealers(dealers).map((d) => d.party));
+      setSeeded(true);
+    }
+  }, [dealers, seeded]);
+
+  // Live mid prices from the operator backend. Source order:
+  //   1. /v1/prices (pool-derived first, then PRICES env, then external feed)
+  //   2. zero if no source has the pair
+  // No hardcoded fallbacks — if the backend can't price it, the notional
+  // shows "—" rather than misleading the user.
+  const { data: pricesByPair } = useQuery({
+    queryKey: ['prices', 'BTC/USDC,ETH/USDC,BTC/ETH,CC/USDC'],
+    queryFn: async () => {
+      const api = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
+      const res = await fetch(
+        `${api}/v1/prices?pairs=BTC/USDC,ETH/USDC,BTC/ETH,CC/USDC`,
+      );
+      if (!res.ok) return {} as Record<string, number>;
+      const body = (await res.json()) as {
+        prices: Array<{ pair: string; price: string }>;
+      };
+      return Object.fromEntries(
+        body.prices.map((p) => [p.pair, parseFloat(p.price)]),
+      ) as Record<string, number>;
+    },
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
 
   const toggleDealer = (p: string) =>
     setWhitelist((cur) =>
@@ -1100,15 +1148,8 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
     );
 
   const sz = parseFloat(size) || 0;
-  const refMid =
-    pair === 'BTC/USDC'
-      ? 60480
-      : pair === 'ETH/USDC'
-        ? 2424
-        : pair === 'BTC/ETH'
-          ? 24.7
-          : 0.42;
-  const notional = sz * refMid;
+  const refMid = pricesByPair?.[pair] ?? null;
+  const notional = refMid != null ? sz * refMid : null;
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1211,9 +1252,11 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
               >
                 Notional ≈{' '}
                 <span className="mono" style={{ color: 'var(--text)' }}>
-                  {fmtUsd(notional)}
+                  {notional != null ? fmtUsd(notional) : '—'}
                 </span>{' '}
-                at reference mid
+                {refMid != null
+                  ? 'at live mid'
+                  : 'no price available — pool or feed required'}
               </div>
             )}
           </div>
@@ -1266,7 +1309,32 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
               overflow: 'auto',
             }}
           >
-            {DEALERS.map((d) => {
+            {!dealers && (
+              <div
+                style={{
+                  padding: 20,
+                  textAlign: 'center',
+                  fontSize: 12,
+                  color: 'var(--text-2)',
+                }}
+              >
+                Loading dealer registry…
+              </div>
+            )}
+            {dealers && dealers.length === 0 && (
+              <div
+                style={{
+                  padding: 20,
+                  textAlign: 'center',
+                  fontSize: 12,
+                  color: 'var(--text-2)',
+                }}
+              >
+                No dealers configured. The operator can add dealers via{' '}
+                <span className="mono">PUT /v1/admin/dealers</span>.
+              </div>
+            )}
+            {(dealers ?? []).map((d) => {
               const checked = whitelist.includes(d.party);
               return (
                 <label
@@ -1305,10 +1373,12 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div className="mono" style={{ fontSize: 11 }}>
-                      {d.ms}ms
+                      {d.latencyMs != null ? `${d.latencyMs}ms` : '—'}
                     </div>
                     <div style={{ fontSize: 10, color: 'var(--text-2)' }}>
-                      {Math.round(d.fillRate * 100)}% fill
+                      {d.fillRate != null
+                        ? `${Math.round(d.fillRate * 100)}% fill`
+                        : 'no data'}
                     </div>
                   </div>
                 </label>
@@ -1394,6 +1464,7 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
 // === Operator policy modal =================================================
 
 function PolicyModal({ rfq, onClose }: { rfq: Rfq; onClose: () => void }) {
+  const { data: dealers } = useDealers();
   const ranked = rankQuotes(rfq.side, rfq.quotes, 'policy');
   return (
     <Modal title={`Operator policy · ${rfq.contractId}`} onClose={onClose} width={620}>
@@ -1447,7 +1518,7 @@ function PolicyModal({ rfq, onClose }: { rfq: Rfq; onClose: () => void }) {
         </thead>
         <tbody>
           {ranked.map((q, i) => {
-            const d = dealerByParty(q.dealer);
+            const d = dealerByParty(q.dealer, dealers);
             return (
               <tr key={q.dealer}>
                 <td className="py-1 px-2 mono">{i + 1}</td>

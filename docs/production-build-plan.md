@@ -120,9 +120,9 @@ Completed today:
 - mapped the exact `AllocationV2` delta between stable local V2 and PR 5333
 - added a dedicated local script for building the PR-5333 token-standard core
   package set
-- added a separate `pr5333-tests/` Daml Script package for PR-side DEX
+- added a separate `trading-tests/` Daml Script package for PR-side DEX
   workflow coverage
-- added a separate local `pr5333/` Daml package that compiles directly against
+- added a separate local `trading/` Daml package that compiles directly against
   the branch-only `AllocationV2` surface
 - added a branch-native PR-5333 helper layer for moved admin and
   next-iteration funding semantics
@@ -164,18 +164,18 @@ Notes:
 - the snapshot SDK mismatch in `splice-api-token-transfer-events-v2` has been
   handled locally as a build-metadata patch
 - PR 5333 semantics are still pending as the next distinct wiring tranche
-- the PR branch is now locally available under `vendor/splice-pr5333`
+- the PR branch is now locally available under `vendor/splice`
 - the exact branch-only API delta is recorded in
-  `docs/pr5333-allocation-surface.md`
-- a separate local branch package now exists under `pr5333/` to compile
+  `docs/trading-allocation-surface.md`
+- a separate local branch package now exists under `trading/` to compile
   directly against the PR-5333 API DARs
-- the branch package now includes `CantonDex.Pr5333.Utils`, which intentionally
+- the branch package now includes `CantonDex.Trading.Utils`, which intentionally
   replaces only the helper slice invalidated by the moved admin and
   next-iteration funding semantics
-- the branch package now also includes `CantonDex.Pr5333.WorkflowConstructors`
+- the branch package now also includes `CantonDex.Trading.WorkflowConstructors`
   so local PR-side order and pool preparation can stay on existing token
   standard choice arguments
-- `bash scripts/probe-pr5333-tradingappv2-build.sh` now gives a repeatable
+- `bash scripts/probe-trading-tradingappv2-build.sh` now gives a repeatable
   answer on whether the unchanged upstream example can build unchanged
 
 ### 2. TradingAppV2 baseline
@@ -212,7 +212,7 @@ Status: done
 Tasks:
 
 - [x] integrate `InstrumentConfiguration` assumptions into the local model
-      ([CantonDex/Instrument/](../pr5333/CantonDex/Instrument/))
+      ([CantonDex/Instrument/](../trading/CantonDex/Instrument/))
 - [x] document mint, burn, and transfer prerequisites from the registry docs
       ([registry-prerequisites.md](./registry-prerequisites.md))
 - [x] wire choice-context and disclosure retrieval requirements into the service
@@ -226,7 +226,7 @@ Status: in progress
 Tasks:
 
 - [x] build the PR-5333 core token-standard stack locally
-- [x] verify the local `pr5333/` package against the built PR-5333 API DARs
+- [x] verify the local `trading/` package against the built PR-5333 API DARs
 - [x] prove that the upstream `TradingAppV2` source itself is unchanged on the
       PR branch
 - [x] add constructor support for iterated settlement semantics on the PR
@@ -259,18 +259,18 @@ Tasks:
 - [x] make the executor-control constraint explicit in the Daml state model:
       iterated / committed funds may only be used through app-validated
       workflows
-      ([MockRegistry.daml](../pr5333/CantonDex/Testing/MockRegistry.daml)
+      ([MockRegistry.daml](../trading/CantonDex/Testing/MockRegistry.daml)
       `allocation_adjustImpl` enforces funding conservation in Daml; see
       `testAllocationAdjustConservation` in
-      [EndToEndTests.daml](../pr5333-tests/CantonDex/Tests/EndToEndTests.daml)
+      [EndToEndTests.daml](../trading-tests/CantonDex/Tests/EndToEndTests.daml)
       and the "What the registry MUST enforce in `Allocation_Adjust`"
       section of [registry-prerequisites.md](./registry-prerequisites.md))
 
 Notes:
 
 - the dedicated PR-side executable test package now lives under
-  `pr5333-tests/`
-- `daml test` passes in `pr5333-tests/` (21 tests) and in `tests/` (3 tests)
+  `trading-tests/`
+- `daml test` passes in `trading-tests/` (21 tests) and in `tests/` (3 tests)
 - verified PR-side passing tests currently include:
   - `testOrderFundingFlow`
   - `testPoolFullLifecycle`
@@ -459,19 +459,19 @@ Next tranche tasks:
 - Added a standalone local test runner for the executable Daml Script tranche.
 - Split production and test packages so the main `canton-dex` DAR builds
   without a direct `daml-script` dependency.
-- Fetched Splice PR 5333 into `vendor/splice-pr5333` as a parallel source base
+- Fetched Splice PR 5333 into `vendor/splice` as a parallel source base
   so the stable local V2 path remains intact.
 - Recorded the exact `AllocationV2` API delta for PR 5333 and added a
   dedicated build script for the PR-5333 core token-standard package set.
-- Added a separate local branch package under `pr5333/` for compiling against
+- Added a separate local branch package under `trading/` for compiling against
   the branch-only `AllocationV2` API surface.
-- Added a branch-native helper module under `pr5333/` for PR-5333 funding
+- Added a branch-native helper module under `trading/` for PR-5333 funding
   deltas and prefunded/committed allocation construction.
-- Added `CantonDex.Pr5333.WorkflowConstructors` so the exact PR-5333 prefunding
+- Added `CantonDex.Trading.WorkflowConstructors` so the exact PR-5333 prefunding
   flow steps can be assembled from existing token-standard choice arguments.
 - Added a repeatable local probe for the unchanged upstream PR-5333
   `TradingAppV2` example and the current utility-layer blocker.
-- Verified that the PR-5333 core API build and the local `pr5333/` package both
+- Verified that the PR-5333 core API build and the local `trading/` package both
   build successfully after the helper-layer additions.
 - Built the full DEX reference implementation on the PR 5333 surface:
   - `CantonDex.Dex.DexPair` for trading pair listing
@@ -484,9 +484,9 @@ Next tranche tasks:
   - `CantonDex.Dex.SwapExecution` for trader swap request lifecycle
   - `CantonDex.Dex.OrderMatchExecution` for atomic order matching
 - Verified the full PR 5333 package builds with all DEX modules.
-- Added a separate `pr5333-tests/` Daml Script package for PR-side executable
+- Added a separate `trading-tests/` Daml Script package for PR-side executable
   workflow coverage.
-- Verified `daml test` passes in `pr5333-tests/`.
+- Verified `daml test` passes in `trading-tests/`.
 - Confirmed executable PR-side coverage for:
   - prefunded-order funding
   - RFQ accept -> MatchedTrade -> PolicyReceipt

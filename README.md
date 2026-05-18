@@ -20,8 +20,8 @@ Canton-Net teams will use in production.
 
 | Layer | What | Where |
 |---|---|---|
-| **Daml templates** | DexPair, Pool, Order, Rfq, MatchedTrade, LPToken, V2 Registry | [`pr5333/CantonDex/`](pr5333/CantonDex/) |
-| **Daml tests** | 26+ multi-party Daml-Script tests + token-standard harness | [`pr5333-tests/`](pr5333-tests/) |
+| **Daml templates** | DexPair, Pool, Order, Rfq, MatchedTrade, LPToken, V2 Registry | [`trading/CantonDex/`](trading/CantonDex/) |
+| **Daml tests** | 26+ multi-party Daml-Script tests + token-standard harness | [`trading-tests/`](trading-tests/) |
 | **Operator backend** | Node + TypeScript, JSON Ledger API, SQLite indexer, idempotency | [`services/operator-backend/`](services/operator-backend/) |
 | **React frontend** | Vite, TanStack Query, WalletConnect + Token Standard wallet | [`app/web/`](app/web/) |
 | **Testnet harnesses** | Real-asset matched-trade + V2-registry trade smoke tests | [`scripts/testnet-*.ts`](scripts/) |
@@ -106,7 +106,7 @@ For Docker Compose deployment, see [`docs/deployment.md`](docs/deployment.md).
                 │                                         │
                 │  ┌────────────────┐  ┌───────────────┐  │
                 │  │  DEX templates │  │  V2 Registry  │  │
-                │  │  (pr5333/)     │  │  workflows    │  │
+                │  │  (trading/)     │  │  workflows    │  │
                 │  └────────────────┘  └───────────────┘  │
                 └─────────────────────────────────────────┘
 ```
@@ -175,7 +175,7 @@ These three upstream sources define the design surface:
   return rolled-forward allocation state.
 
 The repo ships the PR-5333 DARs under
-[`vendor/splice-pr5333/`](vendor/splice-pr5333/). When upstream V2
+[`vendor/splice/`](vendor/splice/). When upstream V2
 stable lands on MainNet (target EOM July 2026 per the canton-foundation
 team), we cut over to upstream — the migration plan is in
 [`docs/v2-migration.md`](docs/v2-migration.md).
@@ -205,7 +205,7 @@ Operations:
 
 Internals:
 - [`docs/choice-context-spec.md`](docs/choice-context-spec.md)
-- [`docs/pr5333-allocation-surface.md`](docs/pr5333-allocation-surface.md)
+- [`docs/trading-allocation-surface.md`](docs/trading-allocation-surface.md)
 - [`docs/v2-alignment-audit.md`](docs/v2-alignment-audit.md)
 - [`docs/v2-migration.md`](docs/v2-migration.md)
 - [`docs/lp-token-versioning.md`](docs/lp-token-versioning.md)
@@ -218,9 +218,9 @@ Internals:
 
 ```bash
 # Daml stack
-bash scripts/build-vendored-token-standard-pr5333.sh   # vendored V2 DARs
-bash scripts/build-pr5333-surface.sh                   # canton-dex DAR
-cd pr5333-tests && daml test                           # 26+ tests
+bash scripts/build-vendored-token-standard.sh   # vendored V2 DARs
+bash scripts/build-trading-surface.sh                   # canton-dex DAR
+cd trading-tests && daml test                           # 26+ tests
 
 # Operator backend
 cd services/operator-backend

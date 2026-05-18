@@ -1,0 +1,227 @@
+module CantonDex.Dex.MatchedTrade where
+
+-- PR-5333-native matched trade settlement.
+--
+-- Adapted from the upstream TradingAppV2 pattern but simplified to V2-only
+-- and using the PR 5333 allocation surface:
+--   - SettlementInfo without requestedAt/settleAt
+--   - TransferLeg.instrumentId as Text
+--   - AllocationSpecification with top-level admin
+--   - SettlementFactory_SettleBatchResult with allocationSettleResults
+
+import DA.Foldable (forA_)
+import DA.Map qualified as Map
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationRequestV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Dex.DexPair qualified as DexPair
+import CantonDex.Dex.PolicyReceipt qualified as PR
+import CantonDex.Trading.Utils qualified as Utils
+
+data TradeAllocationRequestView = TradeAllocationRequestView with
+    authorizer : V2.Account
+    settlement : V2.SettlementInfo
+    transferLegs : [V2.TransferLeg]
+  deriving (Eq, Show)
+
+template TradeAllocationRequest with
+    authorizer : V2.Account
+    admin : Party
+    settlement : V2.SettlementInfo
+    transferLegs : [V2.TransferLeg]
+    requestedAt : Time
+  where
+    signatory settlement.executors
+    observer Utils.accountParties authorizer
+
+    interface instance V2.AllocationRequest for TradeAllocationRequest where
+      view = V2.AllocationRequestView with
+        originalRequestCid = None
+        authorizer
+        settlement
+        allocations =
+          [ V2.RequestedAllocation with
+              admin
+              transferLegSides = Utils.legsToSides authorizer transferLegs
+              nextIterationFunding = None
+              committed = False
+              meta = emptyMetadata
+          ]
+        requestedAt
+        settleAt = settlement.settlementDeadline
+        availableActions = Map.fromList
+          [ (V2.ARA_Accept, [[p] | p <- Utils.accountParties authorizer])
+          , (V2.ARA_Reject, [[p] | p <- Utils.accountParties authorizer])
+          ]
+        meta = emptyMetadata
+
+      allocationRequest_acceptExtraObservers = \_ -> []
+      allocationRequest_rejectExtraObservers = \_ -> []
+      allocationRequest_withdrawExtraObservers = \_ -> []
+
+      allocationRequest_acceptImpl = \self _arg -> do
+        -- Per the V2.AllocationRequest interface contract, Accept signals
+        -- the trader's intent to create the allocation; the wallet composes
+        -- this choice with the corresponding AllocationFactory_Allocate call
+        -- in the same transaction. The interface comment is explicit:
+        --   "Wallets SHOULD call this choice in the same transaction as the
+        --    creation of the requested allocation to protect from creating
+        --    the same allocation multiple times."
+        -- and:
+        --   "implementations MUST ensure that the allocation request is
+        --    consumed by the body of this choice."
+        archive self
+        pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
+      allocationRequest_rejectImpl = \self arg -> do
+        archive self
+        pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
+      allocationRequest_withdrawImpl = \self arg -> do
+        archive self
+        pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
+
+data SettlementBatchV2 = SettlementBatchV2 with
+    allocations : [V2.FinalizedAllocation]
+    factoryCid : ContractId V2.SettlementFactory
+    extraArgs : ExtraArgs
+  deriving (Eq, Show)
+
+data MatchedTrade_SettleResult = MatchedTrade_SettleResult with
+    resultsByAdmin : Map.Map Party V2.SettlementFactory_SettleBatchResult
+  deriving (Eq, Show)
+
+data MatchedTrade_CancelResult = MatchedTrade_CancelResult with
+    cancelResults : [(V2.Account, V2.AllocationResult)]
+  deriving (Eq, Show)
+
+makeTradeRef : ContractId MatchedTrade -> V2.Reference
+makeTradeRef tradeCid = V2.Reference with
+  id = "MatchedTrade"
+  cid = Some (coerceContractId tradeCid)
+
+mkTradeSettlementInfo : ContractId MatchedTrade -> MatchedTrade -> V2.SettlementInfo
+mkTradeSettlementInfo tradeCid trade = V2.SettlementInfo with
+  executors = [trade.venue]
+  settlementRef = makeTradeRef tradeCid
+  settlementDeadline = trade.settlementDeadline
+  meta = PR.foldPolicyReceiptIntoMetadata trade.policyReceipt emptyMetadata
+
+-- | Collect every account party that appears as sender or receiver across
+-- the trade's transfer legs. These parties become observers on the
+-- MatchedTrade so a counterparty can see the trade they're a party to
+-- without having to wait for an AllocationRequest to be issued. Without
+-- this, the trade is operator-private and only becomes visible to a
+-- counterparty when the corresponding TradeAllocationRequest reaches them.
+legParties : [V2.TransferLeg] -> [Party]
+legParties legs = dedupParties $ do
+  leg <- legs
+  Utils.accountParties leg.sender ++ Utils.accountParties leg.receiver
+  where
+    dedupParties xs = foldl (\acc p -> if p `elem` acc then acc else acc ++ [p]) [] xs
+
+template MatchedTrade with
+    venue : Party
+    admin : Party
+    transferLegs : [V2.TransferLeg]
+    settlementDeadline : Optional Time
+    policyReceipt : Optional PR.PolicyReceipt
+      -- ^ Optional operator-signed RFQ-policy attestation. When present,
+      --   it is folded into `SettlementInfo.meta` so it travels on-ledger
+      --   with every allocation request and settlement keyed off this
+      --   trade. See `CantonDex.Dex.PolicyReceipt` for the shape.
+  where
+    signatory venue
+    observer legParties transferLegs
+      -- ^ Counterparties on the trade's legs see the trade directly.
+      --   Without this they would only learn of the trade via the
+      --   downstream AllocationRequest disclosure, which delays
+      --   visibility and breaks the audit story when a counterparty
+      --   wants to confirm trade existence before accepting.
+
+    ensure
+      -- Receipt's claimed signer must equal the contract's signatory.
+      -- Without this, an operator could attach a receipt that names a
+      -- different party as the policy authority.
+      case policyReceipt of
+        None -> True
+        Some r -> r.signedBy == venue && PR.isWellFormed r
+
+    nonconsuming choice MatchedTrade_RequestAllocations : [ContractId TradeAllocationRequest]
+      with
+      controller venue
+      do
+        let settlement = mkTradeSettlementInfo self this
+        now <- getTime
+        forA (Map.toList $ Utils.splitLegsByAuthorizer transferLegs) $ \(authorizer, legs) -> do
+          create TradeAllocationRequest with
+            authorizer
+            admin
+            settlement
+            transferLegs = legs
+            requestedAt = now
+
+    choice MatchedTrade_Settle : MatchedTrade_SettleResult
+      with
+        batchesByAdmin : Map.Map Party SettlementBatchV2
+        allocationRequests : [ContractId TradeAllocationRequest]
+        dexPairCid : Optional (ContractId DexPair.DexPair)
+          -- ^ When provided, this trade's fees accrue against the pair.
+          --   When None, no fee accrual (e.g. fee-free dev mode).
+          --   The choice is forward-compatible: existing callers can
+          --   pass None and get the prior behavior.
+      controller venue
+      do
+        let settlement = mkTradeSettlementInfo self this
+
+        forA_ allocationRequests $ \reqCid -> do
+          req <- fetch reqCid
+          archive reqCid
+
+        results <- forA (Map.toList batchesByAdmin) $ \(batchAdmin, batch) -> do
+          result <- exercise batch.factoryCid V2.SettlementFactory_SettleBatch with
+            settlement
+            transferLegs
+            allocations = batch.allocations
+            actors = [venue]
+            extraArgs = batch.extraArgs
+          pure (batchAdmin, result)
+
+        -- Accrue fees against the DexPair if one was supplied.
+        forA_ dexPairCid $ \pairCid -> do
+          let legNotionals : TextMap.TextMap Decimal =
+                foldl
+                  (\m leg ->
+                    let cur = optional 0.0 identity (TextMap.lookup leg.instrumentId m)
+                    in TextMap.insert leg.instrumentId (cur + leg.amount) m)
+                  TextMap.empty
+                  transferLegs
+          _ <- exercise pairCid DexPair.DexPair_RecordMatchedTrade with legNotionals
+          pure ()
+
+        pure MatchedTrade_SettleResult with
+          resultsByAdmin = Map.fromList results
+
+    choice MatchedTrade_Cancel : MatchedTrade_CancelResult
+      with
+        allocationsToCancel : [(ContractId V2.Allocation, ExtraArgs)]
+        allocationRequestCids : [ContractId TradeAllocationRequest]
+      controller venue
+      do
+        let settlement = mkTradeSettlementInfo self this
+
+        forA_ allocationRequestCids $ \reqCid -> do
+          fetch reqCid
+          archive reqCid
+
+        cancelResults <- forA allocationsToCancel $ \(allocCid, extraArgs) -> do
+          alloc <- fetch allocCid
+          let allocView = view alloc
+          result <- exercise allocCid V2.Allocation_Cancel with
+            actors = [venue]
+            extraArgs
+          pure (allocView.allocation.authorizer, result)
+
+        pure MatchedTrade_CancelResult with cancelResults

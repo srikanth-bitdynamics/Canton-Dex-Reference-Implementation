@@ -1,6 +1,6 @@
 # Source Dependency Status
 
-Last updated: 2026-05-05
+Last updated: 2026-05-18
 
 ## Purpose
 
@@ -9,14 +9,44 @@ implementation.
 
 ## Upstream Source Base
 
-Vendored source:
+Vendored source (single source of truth):
 
 - `vendor/splice/token-standard`
+- `vendor/splice/daml/` (subset: `splice-amulet`, `splice-util`, `splice-util-token-standard-wallet`)
+- upstream: <https://github.com/canton-network/splice/tree/token-standard-v2-upcoming>
 - branch: `token-standard-v2-upcoming`
-- `vendor/splice-pr5333/token-standard`
-- branch: `pr-5333`
+- last refresh: 2026-05-18 (branch tip `a5b54c9`)
 
-Primary source workflows consumed from that subtree:
+Per [Simon Meier (DA)][simon-slack] on 2026-05-18, we track the branch
+tip rather than a specific PR commit so we pick up subsequent V2 work
+beyond what PR-5333 introduced. PR-5333's content has been merged into
+this branch upstream; the previously-parallel `vendor/splice/`
+tree was retired (DEX-31 / DEX-35).
+
+[simon-slack]: https://linear.app/bitdynamics/issue/DEX-31
+
+The branch tip carries non-trivial API changes vs. the original PR-5333
+shape (DEX-35 ticket has the full delta):
+
+- `AllocationSpecification.transferLegs : [TransferLeg]` → `transferLegSides : [TransferLegSide]`
+- `Allocation_Adjust` choice retired; iterated-settlement now flows through
+  `SettlementFactory_SettleBatch` via `FinalizedAllocation.extraTransferLegSides`
+  + `nextIterationFunding`.
+- `Allocation_*Result` types unified into `AllocationResult { output, authorizerHoldingCids, meta }`.
+- `HoldingV2.Account.owner : Party` → `Optional Party`.
+- `AllocationView` gained `createdAt` + `numIterations`.
+- `AllocationRequestView` reshaped: `transferLegs` → `allocations : [RequestedAllocation]` plus `requestedAt` + `settleAt`.
+- `TransferEventsV2.TransferLeg` retired; `TransferLegSide` exported instead.
+- `Splice.TokenStandard.Utils.splitLegsByAdmin` / `splitLegsByAuthorizer` retired;
+  `accountParties` now takes admin Party as a first argument.
+
+The DEX's `trading/` surface, `trading-tests/`, `src/` reference stack
+and `tests/` Script suite are all migrated to the new API. The
+operator backend's TypeScript surface continues to consume
+`canton-dex-trading` and required no schema-level changes for this
+migration.
+
+Primary source workflows consumed from the subtree:
 
 - `examples/splice-token-test-trading-app-v2`
 - `splice-api-token-holding-v2`
@@ -44,44 +74,30 @@ Built successfully from vendored source:
 - `splice-token-standard-utils`
 - `examples/splice-token-test-trading-app-v2`
 
-Built successfully from the parallel PR-5333 source base:
+Local packages consuming the built DARs:
 
-- `splice-api-token-metadata-v1`
-- `splice-api-token-holding-v1`
-- `splice-api-token-holding-v2`
-- `splice-api-token-allocation-v1`
-- `splice-api-token-allocation-v2`
-- `splice-api-token-allocation-request-v1`
-- `splice-api-token-allocation-request-v2`
-- `splice-api-token-allocation-instruction-v1`
-- `splice-api-token-allocation-instruction-v2`
-- `splice-api-token-transfer-instruction-v1`
-- `splice-api-token-transfer-instruction-v2`
-- `splice-api-token-transfer-events-v2`
+- `daml.yaml` + `src/CantonDex/...` — V1 reference stack
+- `tests/daml.yaml` + `tests/CantonDex/...` — V1-bridge Daml Script tests
+- `trading/daml.yaml` + `trading/CantonDex/...` — the V2 surface package (production); name retained for git history continuity
+- `trading-tests/daml.yaml` + `trading-tests/CantonDex/...` — V2-side Daml Script tests
 
-Local package consuming the built DARs:
-
-- `daml.yaml`
-- `src/CantonDex/...`
-- `tests/daml.yaml`
-- `tests/CantonDex/...`
-- `pr5333/daml.yaml`
-- `pr5333/CantonDex/...`
+All four packages build clean against the refreshed vendored DARs
+(verified 2026-05-18 after the DEX-35 migration).
 
 Notes:
 
 - the production package consumes the token-standard DARs directly
-- executable Daml Script validation now lives in a separate test package under
-  `tests/`
+- executable Daml Script validation lives in `tests/` and `trading-tests/`
 - the upstream `splice-token-test-trading-app-v2` DAR is built as a source
-  validation artifact, but the local matched-trade flow is now implemented in
-  `src/CantonDex/DexApp/OTCTradeV2.daml`
-- PR 5333 is tracked as a parallel vendored worktree so branch-only allocation
-  semantics can be wired without destabilizing the stable local V2 baseline
-- the PR local package now includes:
-  - `CantonDex.Pr5333.Utils`
-  - `CantonDex.Pr5333.AllocationSurface`
-  - `CantonDex.Pr5333.WorkflowConstructors`
+  validation artifact; the local matched-trade flow is implemented in
+  `src/CantonDex/DexApp/OTCTradeV2.daml` and `trading/CantonDex/Dex/MatchedTrade.daml`
+- the V2 surface (PR-5333 allocation extensions, plus the
+  subsequent refactor towards V2 release) is upstream in
+  `token-standard-v2-upcoming`, so no parallel vendor tree is needed
+- the `trading/` package now includes:
+  - `CantonDex.Trading.Utils`
+  - `CantonDex.Trading.AllocationSurface`
+  - `CantonDex.Trading.WorkflowConstructors`
   - `CantonDex.Dex.DexPair`
   - `CantonDex.Dex.MatchedTrade`
   - `CantonDex.Dex.Order`
@@ -95,20 +111,10 @@ Notes:
 One build-metadata compatibility patch is currently applied locally:
 
 - `vendor/splice/token-standard/splice-api-token-transfer-events-v2/daml.yaml`
-  - `sdk-version` changed from
-    `3.3.0-snapshot.20250502.13767.0.v2fc6c7e2`
-  - to `3.4.11`
-- `vendor/splice-pr5333/token-standard/splice-api-token-transfer-events-v2/daml.yaml`
-  - `sdk-version` changed from
-    `3.3.0-snapshot.20250502.13767.0.v2fc6c7e2`
-  - to `3.4.11`
+  - `sdk-version` pinned to `3.4.11` (matches our toolchain).
 
-Reason:
-
-- the snapshot SDK is not available locally
-- the package source itself builds cleanly on `3.4.11`
-
-This is a local compatibility patch, not a workflow change.
+The package source itself builds cleanly on `3.4.11`. Re-applied on
+every `vendor/splice/` refresh.
 
 ## Current Conventions
 
@@ -121,30 +127,41 @@ The local build scripts therefore:
 
 Scripts:
 
-- [build-vendored-token-standard.sh](/Users/srikanth/Downloads/Canton-Dev-Implementations/Canton-Dex/scripts/build-vendored-token-standard.sh)
-- [build-vendored-token-standard-pr5333.sh](/Users/srikanth/Downloads/Canton-Dev-Implementations/Canton-Dex/scripts/build-vendored-token-standard-pr5333.sh)
-- [build-pr5333-surface.sh](/Users/srikanth/Downloads/Canton-Dev-Implementations/Canton-Dex/scripts/build-pr5333-surface.sh)
-- [probe-pr5333-tradingappv2-build.sh](/Users/srikanth/Downloads/Canton-Dev-Implementations/Canton-Dex/scripts/probe-pr5333-tradingappv2-build.sh)
-- [build-source-stack.sh](/Users/srikanth/Downloads/Canton-Dev-Implementations/Canton-Dex/scripts/build-source-stack.sh)
-- [run-local-daml-tests.sh](/Users/srikanth/Downloads/Canton-Dev-Implementations/Canton-Dex/scripts/run-local-daml-tests.sh)
-- [check-tradingappv2-alignment.sh](/Users/srikanth/Downloads/Canton-Dev-Implementations/Canton-Dex/scripts/check-tradingappv2-alignment.sh)
-- [check-tradingappv2-backend-alignment.sh](/Users/srikanth/Downloads/Canton-Dev-Implementations/Canton-Dex/scripts/check-tradingappv2-backend-alignment.sh)
+- `scripts/build-vendored-token-standard.sh` — builds the V2 surface from `vendor/splice/`
+- `scripts/build-trading-surface.sh` — chains to the above, then `daml build` in `trading/`
+- `scripts/build-source-stack.sh` — V1 reference stack (`src/`)
+- `scripts/probe-trading-tradingappv2-build.sh` — sanity check against the upstream TradingAppV2 example
+- `scripts/run-local-daml-tests.sh` — runs all local Daml Script tests
+- `scripts/check-tradingappv2-alignment.sh` — verifies local `OTCTradeV2` stays aligned with upstream `TradingAppV2`
+- `scripts/check-tradingappv2-backend-alignment.sh` — same for the backend slice
+
+(`scripts/build-vendored-token-standard.sh` was removed when
+`vendor/splice/` was retired in DEX-31 / DEX-35.)
 
 ## Next Integration Step
 
-The next source-aligned implementation step is:
+Major migrations queued:
+
+- **V2 MainNet release (EOM July 2026 per [proposal M7][proposal-m7])**: once the
+  V2 release artifacts ship on `splice/main`, drop the branch-tip dependency
+  and point at release tags. Tracked in DEX-26.
+- **V1 → V2 dual-implementation per CIP-0112 §5**: when Canton Coin and USDCx
+  implement V2 interfaces alongside V1, our DEX can trade those assets natively.
+  No DEX code change required at that point.
+
+[proposal-m7]: https://github.com/canton-foundation/canton-dev-fund/blob/main/proposals/proposal-token-standard-v2.md#milestones-and-deliverables
+
+Ongoing alignment work:
 
 - keep the remaining settlement-batch backend slice aligned with
-  `TradingAppV2_Backend` as wider registry test dependencies are made locally
-  available
-- keep the parallel PR-5333 allocation work on the branch-native helper layer,
-  then wire pool and prefunding work to that exact allocation surface
-- keep composing PR-side order and pool preparation from the local workflow
-  constructor layer instead of inventing new settlement steps
-- keep the PR-side helper layer narrow and source-derived instead of assuming
-  the stable token-standard utility layer carries over
+  `TradingAppV2_Backend` as wider registry test dependencies are made
+  locally available
+- keep composing PR-side order and pool preparation from the local
+  workflow constructor layer instead of inventing new settlement steps
 - keep registry integration constrained to the documented workflow surface
-- add Daml Script tests for the DEX modules where the PR 5333 test
-  infrastructure supports it
+- add Daml Script tests for the DEX modules as the test infrastructure
+  upstream stabilizes
 - wire the DEX frontend to the on-ledger contract workflows via a JSON API
   or gRPC service layer
+- rewrite `testAllocationAdjustConservation` against the iterated
+  SettleBatch path (current stub; tracked on DEX-35 follow-up)

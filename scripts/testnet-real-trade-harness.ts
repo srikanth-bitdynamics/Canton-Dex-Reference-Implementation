@@ -2,7 +2,7 @@
 //
 // Unlike `testnet-matched-trade-harness.ts` (which uses MockRegistry —
 // no actual asset movement), this runner uses our `RealRegistry`
-// templates in `canton-dex-pr5333` v0.0.2. A RealHolding is minted to
+// templates in `canton-dex-trading` v0.0.2. A RealHolding is minted to
 // alice, locked into an allocation, and at settlement the receiver
 // (bob) gets a brand-new RealHolding while alice's is archived. The
 // post-state assertions check holding ownership actually changed.

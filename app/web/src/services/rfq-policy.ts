@@ -16,7 +16,7 @@
 // `policyHash` is "sha256:rfq-policy-v2.0" matching the Daml.
 
 import type { RfqQuote, RfqSide } from '@/types/rfq';
-import { DEALERS } from '@/primitives/dealers';
+import type { Dealer } from '@/primitives/dealers';
 
 export const POLICY_VERSION = 'v2.0';
 export const POLICY_HASH = 'sha256:rfq-policy-v2.0';
@@ -56,7 +56,9 @@ export function rankQuotes(
   });
 }
 
-/** Whitelisted dealers, used by the compose form. */
-export function whitelistedDealers() {
-  return DEALERS.filter((d) => d.whitelisted);
+/** Whitelisted dealers, used by the compose form. Takes the live
+ * dealer list explicitly so this function doesn't depend on a global
+ * fetch — callers thread `useDealers().data` in. */
+export function whitelistedDealers(all: Dealer[] | undefined) {
+  return (all ?? []).filter((d) => d.whitelisted);
 }

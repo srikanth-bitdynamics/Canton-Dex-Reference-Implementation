@@ -1,0 +1,108 @@
+module CantonDex.Dex.OrderFundingRequest where
+
+-- Trader-initiated order placement request.
+--
+-- Traffic-cost split:
+--   - trader pays for creating this request (their own intent)
+--   - trader pays for accepting the downstream allocation request
+--     (their own funding action)
+--   - operator pays for binding the request into Order state and
+--     orchestrating subsequent matching/settlement
+--
+-- Lifecycle:
+--   1. Trader creates an OrderFundingRequest with their order parameters.
+--   2. Operator's automation observes it, validates pair/limits, and exercises
+--      OrderFundingRequest_Bind. Binding archives this contract and creates
+--      both an Order in Pending status and a TradeAllocationRequest the
+--      trader can accept.
+--   3. Trader exercises Accept on the resulting allocation request. The
+--      trader's submitting authority drives the allocation factory call,
+--      so the funding holdings come from the trader's wallet.
+--   4. Operator observes the new allocation and exercises Order_Fund on
+--      the Pending order to bind the allocation reference.
+--   5. The Order is now Funded and live in the book.
+--
+-- Cancellation:
+--   - Trader can OrderFundingRequest_Cancel before the operator binds.
+--   - After binding but before allocation accept, the trader rejects the
+--     allocation request through the standard token-standard reject flow.
+--   - After funding, cancellation flows through Order_Cancel.
+
+import CantonDex.Dex.Order qualified as Order
+
+template OrderFundingRequest with
+    operator : Party
+    trader : Party
+    admin : Party
+    baseInstrumentId : Text
+    quoteInstrumentId : Text
+    side : Order.Side
+    limitPrice : Decimal
+    quantity : Decimal
+    expiry : Optional Time
+  where
+    signatory trader
+    observer operator
+
+    ensure quantity > 0.0 && limitPrice > 0.0
+
+    choice OrderFundingRequest_Cancel : ()
+      controller trader
+      do pure ()
+
+    choice OrderFundingRequest_Reject : ()
+      with
+        reason : Text
+      controller operator
+      do
+        debug $ "OrderFundingRequest rejected: " <> reason
+        pure ()
+
+    choice OrderFundingRequest_Bind : OrderFundingRequest_BindResult
+      with
+        settlementRef : Text
+          -- ^ Operator-chosen unique reference. Becomes the V2.Reference id.
+      controller operator
+      do
+        -- Create both the Order (Pending) AND the OrderAllocationRequest
+        -- the trader will accept. Comment in the module header described
+        -- this; previously only the Order was created. The downstream
+        -- accept flow lives on OrderAllocationRequest.
+        now <- getTime
+        let orderRef = Order.makeOrderRefFromText settlementRef
+            lockInstrumentId = case side of
+              Order.Bid -> quoteInstrumentId
+              Order.Ask -> baseInstrumentId
+            lockAmount = case side of
+              Order.Bid -> quantity * limitPrice
+              Order.Ask -> quantity
+        orderCid <- create Order.Order with
+          operator
+          trader
+          admin
+          baseInstrumentId
+          quoteInstrumentId
+          side
+          limitPrice
+          remainingQty = quantity
+          expiry
+          status = Order.OS_Pending
+          allocationCid = None
+          settlementRef = orderRef
+        allocReqCid <- create Order.OrderAllocationRequest with
+          operator
+          trader
+          admin
+          orderRef
+          lockInstrumentId
+          lockAmount
+          expiry
+          requestedAt = now
+        pure OrderFundingRequest_BindResult with
+          orderCid
+          allocationRequestCid = allocReqCid
+
+data OrderFundingRequest_BindResult = OrderFundingRequest_BindResult with
+    orderCid : ContractId Order.Order
+    allocationRequestCid : ContractId Order.OrderAllocationRequest
+  deriving (Eq, Show)

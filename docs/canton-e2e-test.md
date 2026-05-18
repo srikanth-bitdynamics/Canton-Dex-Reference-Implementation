@@ -28,7 +28,7 @@ boot.
 ## Prerequisites
 
 - `daml` CLI ≥ 3.4 on `$PATH`.
-- The `canton-dex-pr5333-0.0.1.dar` built (`cd pr5333 && daml build`).
+- The `canton-dex-trading-0.0.1.dar` built (`cd trading && daml build`).
 
 ## Run
 
@@ -38,12 +38,12 @@ boot.
 daml sandbox \
   --port 6865 \
   --json-api-port 7575 \
-  --dar pr5333/.daml/dist/canton-dex-pr5333-0.0.1.dar \
-  --dar pr5333/.daml/dist/splice-api-token-allocation-v2-current.dar \
-  --dar pr5333/.daml/dist/splice-api-token-allocation-instruction-v2-current.dar \
-  --dar pr5333/.daml/dist/splice-api-token-allocation-request-v2-current.dar \
-  --dar pr5333/.daml/dist/splice-api-token-holding-v2-current.dar \
-  --dar pr5333/.daml/dist/splice-api-token-metadata-v1-current.dar
+  --dar trading/.daml/dist/canton-dex-trading-0.0.1.dar \
+  --dar trading/.daml/dist/splice-api-token-allocation-v2-current.dar \
+  --dar trading/.daml/dist/splice-api-token-allocation-instruction-v2-current.dar \
+  --dar trading/.daml/dist/splice-api-token-allocation-request-v2-current.dar \
+  --dar trading/.daml/dist/splice-api-token-holding-v2-current.dar \
+  --dar trading/.daml/dist/splice-api-token-metadata-v1-current.dar
 ```
 
 (In practice the DAR depends on the others; uploading the top one
@@ -122,7 +122,7 @@ retryable so `retryOnContention` recovers automatically.
 
 - Pool initialization + add liquidity + swap end-to-end on a live
   ledger. The `testPoolFullLifecycle` and `testPoolSwapEndToEnd`
-  Daml Script tests (`pr5333-tests/`) cover the same ground at the
+  Daml Script tests (`trading-tests/`) cover the same ground at the
   on-chain level; replicating them through `JsonApiLedger` is the
   next slice.
 - Order placement through the `OrderFundingRequest` →

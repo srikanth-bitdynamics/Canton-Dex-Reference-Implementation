@@ -1,6 +1,6 @@
 // Live-testnet runner for the token-standard harness test.
 //
-// Mirrors `pr5333-tests/CantonDex/Tests/TokenStandardHarnessTests.daml`
+// Mirrors `trading-tests/CantonDex/Tests/TokenStandardHarnessTests.daml`
 // (testMatchedTradeViaTokenStandardRegistry) but submits each step to
 // the real Canton participant via JSON Ledger API instead of running
 // inside Daml Script. Exits 0 on full success, non-zero on any

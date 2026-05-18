@@ -1,0 +1,177 @@
+-- Token-standard-style end-to-end test of the DEX matched-trade flow.
+--
+-- This mirrors the pattern used by `splice-token-standard-test-v2` to
+-- exercise `TradingAppV2`:
+--
+--   1. Initialize a `RegistryApi`-implementing registry. Upstream uses
+--      `AmuletRegistryV2`; we use the smaller `CantonDex.TokenStandardHarness.DexRegistry`
+--      backed by our `MockRegistry`. The interface (RegistryApi) is the
+--      same in both cases.
+--
+--   2. Have the venue create a `MatchedTrade` and request per-authorizer
+--      allocations.
+--
+--   3. Each trader accepts their `TradeAllocationRequest` via the
+--      `V2.AllocationRequest` interface and then composes the matching
+--      `V2.AllocationFactory_Allocate` call to back the allocation with
+--      their holdings — driven through `getAllocationFactory` on the
+--      registry, the same way upstream's `WalletClientV2.acceptAllocationRequestV2`
+--      drives it.
+--
+--   4. Venue groups allocations by admin and calls
+--      `MatchedTrade_Settle`, which delegates to
+--      `SettlementFactory_SettleBatch` obtained via the registry's
+--      `getSettlementFactory`.
+--
+-- Verifies:
+--   - the registry is exercised exactly through the upstream interface
+--   - the venue's settlement batch settles successfully and returns
+--     a `SettlementFactory_SettleBatchResult` for the admin
+--   - the `MatchedTrade` and `TradeAllocationRequest` contracts are
+--     archived after settlement
+
+module CantonDex.Tests.TokenStandardHarnessTests where
+
+import DA.Assert
+import DA.List (head)
+import DA.Map qualified as Map
+import DA.TextMap qualified as TextMap
+
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.AllocationRequestV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import Splice.Testing.Utils (emptyExtraArgs, EnrichedFactoryChoice(..))
+import Splice.Testing.TokenStandard.RegistryApiV2
+  ( getAllocationFactory
+  , getSettlementFactory
+  )
+
+import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.WorkflowConstructors qualified as WC
+import CantonDex.TokenStandardHarness.DexRegistry qualified as DexReg
+
+testMatchedTradeViaTokenStandardRegistry : Script ()
+testMatchedTradeViaTokenStandardRegistry = do
+  venue <- allocateParty "venue-ts"
+  admin <- allocateParty "admin-ts"
+  alice <- allocateParty "alice-ts"
+  bob <- allocateParty "bob-ts"
+  now <- getTime
+
+  -- Bring up the registry through the upstream `RegistryApi` interface.
+  -- This is the exact same first step `splice-token-standard-test-v2`
+  -- uses for AmuletRegistryV2.
+  registry <- DexReg.initialize admin [venue, alice, bob]
+
+  -- Build a one-leg trade: alice → bob, 10 BTC, settled by venue.
+  let aliceAccount = Utils.basicAccount alice
+      bobAccount = Utils.basicAccount bob
+      leg = V2.TransferLeg with
+        transferLegId = "leg-1"
+        sender = aliceAccount
+        receiver = bobAccount
+        amount = 10.0
+        instrumentId = "BTC"
+        meta = emptyMetadata
+
+  let trade = MT.MatchedTrade with
+        venue
+        admin
+        transferLegs = [leg]
+        settlementDeadline = None
+        policyReceipt = None
+  tradeCid <- submit venue $ createCmd trade
+
+  reqCids <- submit venue $
+    exerciseCmd tradeCid MT.MatchedTrade_RequestAllocations
+
+  -- Both authorizers (alice as sender, bob as receiver) see a
+  -- TradeAllocationRequest — that's how V2 batch settlement works:
+  -- sender and receiver each post an allocation, the SettlementFactory
+  -- matches them. We mirror the upstream pattern via
+  -- `getAllocationFactory`.
+  let acceptOne trader cid = do
+        Some req <- queryContractId trader cid
+        let traderAccount = Utils.basicAccount trader
+            alloc = V2.AllocationSpecification with
+              settlement = req.settlement
+              admin
+              authorizer = traderAccount
+              transferLegSides = Utils.legsToSides traderAccount req.transferLegs
+              nextIterationFunding = None
+              committed = False
+              meta = emptyMetadata
+        EnrichedFactoryChoice {factoryCid, arg} <-
+          getAllocationFactory registry V2.AllocationFactory_Allocate with
+            allocation = alloc
+            requestedAt = now
+            inputHoldingCids = []
+            extraArgs = emptyExtraArgs
+            actors = [trader]
+        let reqIface : ContractId V2.AllocationRequest =
+              toInterfaceContractId cid
+        _ <- submit trader $ exerciseCmd reqIface V2.AllocationRequest_Accept with
+          actors = [trader]
+          extraArgs = emptyExtraArgs
+        result <- submit trader $ exerciseCmd factoryCid arg
+        case result.output of
+          V2.AllocationInstructionResult_Completed allocCid -> pure allocCid
+          _ -> abort "AllocationFactory should complete immediately"
+
+  aliceReqs <- query @MT.TradeAllocationRequest alice
+  bobReqs <- query @MT.TradeAllocationRequest bob
+  length aliceReqs === 1
+  length bobReqs === 1
+
+  let (aliceReqCid, _) = head aliceReqs
+      (bobReqCid, _) = head bobReqs
+  aliceAllocCid <- acceptOne alice aliceReqCid
+  bobAllocCid <- acceptOne bob bobReqCid
+
+  -- Venue groups allocations by admin and settles via the registry's
+  -- SettlementFactory. Post-PR-5333: SettleBatch takes [FinalizedAllocation],
+  -- not [ContractId Allocation].
+  let allocations = [Utils.finalAllocation aliceAllocCid, Utils.finalAllocation bobAllocCid]
+      settlementInfo = MT.mkTradeSettlementInfo tradeCid trade
+      settleBatchArg = V2.SettlementFactory_SettleBatch with
+        settlement = settlementInfo
+        transferLegs = [leg]
+        allocations
+        actors = [venue]
+        extraArgs = emptyExtraArgs
+  EnrichedFactoryChoice {factoryCid = settleFactoryCid} <-
+    getSettlementFactory registry settleBatchArg
+
+  let batch = MT.SettlementBatchV2 with
+        allocations
+        factoryCid = settleFactoryCid
+        extraArgs = emptyExtraArgs
+
+  -- Acceptance already archived the trader requests (V2 interface
+  -- contract: `acceptImpl` consumes the request). Pass [] for
+  -- `allocationRequests` so settlement does not double-archive. This is
+  -- the same posture upstream TradingAppV2 documents ("requests that
+  -- got rejected but the allocation still got created" — the venue
+  -- only includes requests it expects to still be live).
+  settleRes <- submit venue $ exerciseCmd tradeCid MT.MatchedTrade_Settle with
+    batchesByAdmin = Map.fromList [(admin, batch)]
+    allocationRequests = []
+    dexPairCid = None
+
+  -- Verify settlement happened for our admin via the V2 batch path —
+  -- two allocations (sender + receiver) settled in one batch.
+  let resultsByAdmin = settleRes.resultsByAdmin
+  Map.size resultsByAdmin === 1
+  case Map.lookup admin resultsByAdmin of
+    Some r -> length r.allocationSettleResults === 2
+    None -> abort "Expected settle result for admin"
+
+  -- Trade contract is archived.
+  None <- queryContractId venue tradeCid
+
+  pure ()

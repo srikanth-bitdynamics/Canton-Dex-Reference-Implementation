@@ -205,9 +205,9 @@ The reference doesn't ship either; build them in your fork.
 
 ## Where to look in this repo
 
-- `pr5333/CantonDex/Registry/V2.daml`: full CIP-0056 surface
-- `pr5333/CantonDex/Instrument/Credentials.daml`: credential primitive
-- `pr5333/CantonDex/Dex/LPToken.daml`: example of an LP wrapper
+- `trading/CantonDex/Registry/V2.daml`: full CIP-0056 surface
+- `trading/CantonDex/Instrument/Credentials.daml`: credential primitive
+- `trading/CantonDex/Dex/LPToken.daml`: example of an LP wrapper
   driving V2 mints/burns
-- `pr5333-tests/CantonDex/Tests/InstrumentTests.daml`: registration,
+- `trading-tests/CantonDex/Tests/InstrumentTests.daml`: registration,
   mint, transfer, burn flows in Daml Script

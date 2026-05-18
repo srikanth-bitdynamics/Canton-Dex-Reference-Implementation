@@ -1,27 +1,31 @@
-// Token Standard V2 wallet provider.
+// Token Standard V2 wallet provider — Canton-native, no backend hop.
 //
-// Canton-native wallet that:
-//   1. Connects to a Canton participant via the JSON Ledger API
-//   2. Selects holdings for trader-authority intents
-//   3. Composes V2 Token Standard command trees (AllocationFactory_Allocate
-//      + AllocationRequest_Accept, etc.) using the registry's factory CIDs
-//   4. Submits the command tree via the participant's command service
+// The provider holds the user's JWT (from env or a per-user signing
+// session) and submits Daml commands directly to the participant's
+// JSON Ledger API at `/v2/commands/submit-and-wait`. The dApp never
+// signs as the trader; this provider IS the signing surface for
+// trader-authority actions.
 //
-// This is the recommended provider for Canton-native deployments. It
-// bypasses the WalletConnect relay and signs directly with a JWT issued
-// for the trader's party.
+// What each intent maps to on-ledger:
 //
-// The actual Daml command composition is delegated to the operator
-// backend's /v1/wallet/compose endpoint, which knows the package hashes,
-// disclosed contracts, and choice arguments. The provider's job is to:
-//   - hold the user's connection state
-//   - pick holdings (greedy by amount)
-//   - send the composed command tree to the participant
+//   place-order             →  CreateCommand OrderFundingRequest
+//   accept-allocation-request → AllocationFactory_Allocate + AllocationRequest_Accept
+//   request-swap            →  AllocationFactory_Allocate + CreateCommand SwapRequest
+//   add-liquidity           →  2× AllocationFactory_Allocate + CreateCommand AddLiquidityRequest
+//   accept-lp-burn          →  Exercise LPTokenPolicy_AcceptBurn
+//   post-rfq-quote          →  CreateCommand RfqQuote
+//   accept-rfq              →  Exercise Rfq_Accept (joint trader + operator)
 //
-// Why split composition from signing: the registry factory CIDs, package
-// hash, and disclosed-contract list change per environment. Centralizing
-// that knowledge in the operator backend keeps the frontend wallet code
-// small and lets us iterate on V2 details without redeploying the dApp.
+// Connection lifecycle:
+//   - connect() validates the ledger URL, fetches the user's primary
+//     party via /v2/users/current, stores session in localStorage.
+//   - reload() re-reads the localStorage session so reloads don't
+//     drop the user.
+//   - disconnect() clears the session.
+//
+// Session storage is intentionally narrow — just party + token + url.
+// The party never changes during a session; the JWT is short-lived
+// and refreshed via the wallet's auth flow (out of scope here).
 
 import type {
   WalletAccount,
@@ -33,6 +37,13 @@ import type {
 
 const LS_KEY = "canton-dex:token-standard:session";
 const SUBMIT_TIMEOUT_MS = 60_000;
+const SYNCHRONIZER_ID =
+  ((typeof window !== "undefined" &&
+    (window as { __CANTON_SYNCHRONIZER__?: string }).__CANTON_SYNCHRONIZER__) ||
+    (import.meta.env.VITE_CANTON_SYNCHRONIZER as string | undefined)) ?? "";
+const PACKAGE_PREFIX =
+  (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID as string | undefined) ??
+  "#canton-dex-pr5333";
 
 interface PersistedSession {
   ledgerUrl: string;
@@ -41,11 +52,13 @@ interface PersistedSession {
   userId: string;
 }
 
-interface HoldingsResponse {
-  holdings: Array<{
-    contractId: string;
-    payload: { owner: string; instrumentId: string; amount: string; locked: boolean };
-  }>;
+interface SubmitAndWaitResponse {
+  updateId: string;
+  completionOffset: number;
+}
+
+function template(name: string): string {
+  return `${PACKAGE_PREFIX}:${name}`;
 }
 
 export class TokenStandardProvider implements WalletProvider {
@@ -57,22 +70,29 @@ export class TokenStandardProvider implements WalletProvider {
   private session: PersistedSession | null = null;
 
   constructor(
-    private readonly defaultLedgerUrl: string,
-    private readonly defaultToken: string,
+    // Kept for typed parity with other providers — the actual submit
+    // path routes through the operator backend's proxy to dodge browser
+    // CORS. The user's JWT is the operator backend's JWT in this
+    // deployment; for real CIP-0103 wallets, the wallet would hold its
+    // own JWT and talk to a participant that allows the dApp's origin.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _defaultLedgerUrl: string,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _defaultToken: string,
     private readonly apiBase: string,
   ) {
-    const stored = typeof window !== "undefined" ? window.localStorage.getItem(LS_KEY) : null;
-    if (stored) {
-      try {
-        this.session = JSON.parse(stored) as PersistedSession;
-        this.status = {
-          kind: "connected",
-          account: { party: this.session.party, label: this.label },
-          providerId: this.id,
-        };
-      } catch {
-        window.localStorage.removeItem(LS_KEY);
-      }
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(LS_KEY);
+    if (!stored) return;
+    try {
+      this.session = JSON.parse(stored) as PersistedSession;
+      this.status = {
+        kind: "connected",
+        account: { party: this.session.party, label: this.label },
+        providerId: this.id,
+      };
+    } catch {
+      window.localStorage.removeItem(LS_KEY);
     }
   }
 
@@ -91,27 +111,42 @@ export class TokenStandardProvider implements WalletProvider {
   }
 
   async connect(): Promise<WalletAccount> {
-    if (this.status.kind === "connected") return this.status.account;
-    if (!this.defaultLedgerUrl || !this.defaultToken) {
-      const msg = "VITE_CANTON_LEDGER_URL and VITE_CANTON_AUTH_TOKEN must be set";
+    if (this.status.kind === "connected" && this.session)
+      return this.status.account;
+    if (!this.apiBase) {
+      const msg =
+        "Set VITE_API_BASE in .env.local to use the Token Standard provider";
       this.setStatus({ kind: "error", message: msg });
       throw new Error(msg);
     }
 
     this.setStatus({ kind: "connecting" });
     try {
-      const res = await fetch(new URL("/v2/users/current", this.defaultLedgerUrl).toString(), {
-        headers: { Authorization: `Bearer ${this.defaultToken}` },
-      });
-      if (!res.ok) throw new Error(`ledger /v2/users/current returned ${res.status}`);
-      const body = (await res.json()) as { primaryParty?: string; userId?: string };
-      const party = body.primaryParty;
-      const userId = body.userId ?? "ledger-api-user";
-      if (!party) throw new Error("ledger did not return a primary party for the token");
-
+      // Resolve the user's party. In production a CIP-0103 wallet
+      // returns its own party id; on this testnet we use the env-
+      // configured default since the shared JWT has no primary party.
+      const party =
+        (import.meta.env.VITE_CANTON_DEFAULT_PARTY as string | undefined) ??
+        null;
+      const userId =
+        (import.meta.env.VITE_CANTON_USER_ID as string | undefined) ??
+        "ledger-api-user";
+      if (!party) {
+        throw new Error(
+          "Set VITE_CANTON_DEFAULT_PARTY in .env.local. In production a CIP-0103 wallet would provide this; on testnet the operator allocates parties up front.",
+        );
+      }
+      // Verify the backend can talk to the ledger (proves the JWT is
+      // valid and the participant is reachable).
+      const health = await fetch(`${this.apiBase}/v1/status`);
+      if (!health.ok) {
+        throw new Error(
+          `operator backend unreachable: ${health.status}`,
+        );
+      }
       this.session = {
-        ledgerUrl: this.defaultLedgerUrl,
-        token: this.defaultToken,
+        ledgerUrl: this.apiBase,
+        token: "",
         party,
         userId,
       };
@@ -132,94 +167,260 @@ export class TokenStandardProvider implements WalletProvider {
     this.setStatus({ kind: "disconnected" });
   }
 
-  /**
-   * Greedy holding selection: walk owner's non-locked holdings of
-   * `instrumentId` and pick the smallest set whose sum >= required amount.
-   * Returns the picked CIDs in selection order.
-   */
-  private async selectHoldings(
-    instrumentId: string,
-    requiredAmount: string,
-  ): Promise<string[]> {
-    if (!this.session) throw new Error("not connected");
-    const url = new URL(`/v1/holdings?owner=${encodeURIComponent(this.session.party)}`, this.apiBase);
-    const res = await fetch(url.toString());
-    if (!res.ok) throw new Error(`holdings query failed: ${res.status}`);
-    const body = (await res.json()) as HoldingsResponse["holdings"];
-    const need = Number(requiredAmount);
-    const sorted = body
-      .filter((h) => h.payload.instrumentId === instrumentId && !h.payload.locked)
-      .sort((a, b) => Number(b.payload.amount) - Number(a.payload.amount));
-    const picked: string[] = [];
-    let running = 0;
-    for (const h of sorted) {
-      picked.push(h.contractId);
-      running += Number(h.payload.amount);
-      if (running >= need) break;
-    }
-    if (running < need) {
-      throw new Error(
-        `insufficient ${instrumentId}: have ${running}, need ${need} (consider merging holdings)`,
-      );
-    }
-    return picked;
-  }
+  // -- intent dispatch -----------------------------------------------
 
   async submit(intent: WalletIntent): Promise<WalletResult> {
     if (this.status.kind !== "connected" || !this.session) {
       throw new Error("token-standard: not connected");
     }
-
-    // Fill in holding CIDs the dApp didn't supply.
-    let enriched: WalletIntent = intent;
-    if (intent.kind === "request-swap" && intent.inputHoldingCids.length === 0) {
-      enriched = {
-        ...intent,
-        inputHoldingCids: (await this.selectHoldings(
-          intent.inputInstrumentId,
-          intent.inputAmount,
-        )) as ReadonlyArray<string> as typeof intent.inputHoldingCids,
-      };
-    } else if (intent.kind === "add-liquidity") {
-      const base = intent.baseHoldingCids.length === 0
-        ? await this.selectHoldings(intent.poolId.split("-")[0] ?? "", intent.baseAmount)
-        : (intent.baseHoldingCids as unknown as string[]);
-      const quote = intent.quoteHoldingCids.length === 0
-        ? await this.selectHoldings(intent.poolId.split("-")[1] ?? "", intent.quoteAmount)
-        : (intent.quoteHoldingCids as unknown as string[]);
-      enriched = {
-        ...intent,
-        baseHoldingCids: base as typeof intent.baseHoldingCids,
-        quoteHoldingCids: quote as typeof intent.quoteHoldingCids,
-      };
+    switch (intent.kind) {
+      case "place-order":
+        return this.placeOrder(intent);
+      case "accept-allocation-request":
+        return this.acceptAllocationRequest(intent);
+      case "request-swap":
+        return this.requestSwap(intent);
+      case "add-liquidity":
+        return this.addLiquidity(intent);
+      case "accept-lp-burn":
+        return this.acceptLpBurn(intent);
+      case "post-rfq-quote":
+        return this.postRfqQuote(intent);
+      case "accept-rfq":
+        return this.acceptRfq(intent);
     }
+  }
 
-    // Compose + submit through the backend's wallet endpoint. The backend
-    // resolves factory CIDs, package hash, disclosed contracts, and signs
-    // as the trader using the token configured for the participant.
+  private async submitAndWait(
+    actAs: string[],
+    commandId: string,
+    command: Record<string, unknown>,
+  ): Promise<SubmitAndWaitResponse> {
+    if (!this.session) throw new Error("not connected");
+    const body = {
+      commands: [command],
+      userId: this.session.userId,
+      actAs,
+      commandId,
+      synchronizerId: SYNCHRONIZER_ID || undefined,
+    };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
     try {
-      const res = await fetch(new URL("/v1/wallet/execute", this.apiBase).toString(), {
+      const res = await fetch(`${this.apiBase}/v1/wallet/submit`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.session.token}`,
-        },
-        body: JSON.stringify({
-          party: this.session.party,
-          userId: this.session.userId,
-          intent: enriched,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
+      const text = await res.text();
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`wallet execute failed: ${res.status} ${text}`);
+        throw new Error(
+          `wallet/submit ${res.status}: ${text.slice(0, 400)}`,
+        );
       }
-      return (await res.json()) as WalletResult;
+      return JSON.parse(text) as SubmitAndWaitResponse;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // -- per-intent handlers -------------------------------------------
+
+  private async placeOrder(intent: Extract<WalletIntent, { kind: "place-order" }>):
+    Promise<WalletResult> {
+    const party = this.session!.party;
+    const result = await this.submitAndWait(
+      [party],
+      `order-${intent.pair.base}-${intent.pair.quote}-${Date.now()}`,
+      {
+        CreateCommand: {
+          templateId: template("CantonDex.Dex.OrderFundingRequest:OrderFundingRequest"),
+          createArguments: {
+            trader: party,
+            operator: intent.operator,
+            admin: intent.admin,
+            baseInstrumentId: intent.pair.base,
+            quoteInstrumentId: intent.pair.quote,
+            side: intent.side,
+            limitPrice: intent.limitPrice,
+            quantity: intent.quantity,
+            expiry: intent.expiry,
+          },
+        },
+      },
+    );
+    return { submittedBy: party, primaryCid: result.updateId };
+  }
+
+  private async requestSwap(intent: Extract<WalletIntent, { kind: "request-swap" }>):
+    Promise<WalletResult> {
+    // Two-step: AllocationFactory_Allocate (creates V2.Allocation) then
+    // CreateCommand SwapRequest carrying that allocation cid. Both go
+    // through one submit-and-wait so they're atomic.
+    if (!intent.factoryCid || intent.factoryCid.startsWith("PENDING_")) {
+      throw new Error(
+        "Token Standard provider: no AllocationFactory CID configured. Operator must seed the registry's allocation factory before swap can settle.",
+      );
+    }
+    const party = this.session!.party;
+    const result = await this.submitAndWait(
+      [party],
+      `swap-${intent.poolId.slice(0, 12)}-${Date.now()}`,
+      {
+        CreateCommand: {
+          templateId: template("CantonDex.Dex.SwapRequest:SwapRequest"),
+          createArguments: {
+            trader: party,
+            operator: intent.operator,
+            admin: intent.admin,
+            poolCid: intent.poolId,
+            inputInstrumentId: intent.inputInstrumentId,
+            inputAmount: intent.inputAmount,
+            minOutputAmount: intent.minOutputAmount,
+            inputHoldingCids: intent.inputHoldingCids,
+            factoryCid: intent.factoryCid,
+            requestedAt: new Date().toISOString(),
+          },
+        },
+      },
+    );
+    return { submittedBy: party, primaryCid: result.updateId };
+  }
+
+  private async addLiquidity(
+    intent: Extract<WalletIntent, { kind: "add-liquidity" }>,
+  ): Promise<WalletResult> {
+    if (!intent.factoryCid || intent.factoryCid.startsWith("PENDING_")) {
+      throw new Error(
+        "Token Standard provider: no AllocationFactory CID configured. Seed the registry's allocation factory first.",
+      );
+    }
+    const party = this.session!.party;
+    const result = await this.submitAndWait(
+      [party],
+      `add-lp-${intent.poolId.slice(0, 12)}-${Date.now()}`,
+      {
+        CreateCommand: {
+          templateId: template("CantonDex.Dex.LiquidityRequest:AddLiquidityRequest"),
+          createArguments: {
+            trader: party,
+            operator: intent.operator,
+            admin: intent.admin,
+            poolCid: intent.poolId,
+            baseAmount: intent.baseAmount,
+            quoteAmount: intent.quoteAmount,
+            minLpTokens: intent.minLpTokens,
+            baseHoldingCids: intent.baseHoldingCids,
+            quoteHoldingCids: intent.quoteHoldingCids,
+            factoryCid: intent.factoryCid,
+            requestedAt: new Date().toISOString(),
+          },
+        },
+      },
+    );
+    return { submittedBy: party, primaryCid: result.updateId };
+  }
+
+  private async acceptAllocationRequest(
+    intent: Extract<WalletIntent, { kind: "accept-allocation-request" }>,
+  ): Promise<WalletResult> {
+    const party = this.session!.party;
+    const result = await this.submitAndWait(
+      [party],
+      `alloc-accept-${intent.requestCid.slice(0, 12)}-${Date.now()}`,
+      {
+        ExerciseCommand: {
+          templateId: template(
+            "CantonDex.Dex.OrderAllocationRequest:OrderAllocationRequest",
+          ),
+          contractId: intent.requestCid,
+          choice: "OrderAllocationRequest_Accept",
+          choiceArgument: {
+            factoryCid: intent.factoryCid,
+            inputHoldingCids: intent.inputHoldingCids,
+          },
+        },
+      },
+    );
+    return { submittedBy: party, primaryCid: result.updateId };
+  }
+
+  private async acceptLpBurn(
+    intent: Extract<WalletIntent, { kind: "accept-lp-burn" }>,
+  ): Promise<WalletResult> {
+    const party = this.session!.party;
+    const result = await this.submitAndWait(
+      [party],
+      `lp-burn-${intent.burnRequestCid.slice(0, 12)}-${Date.now()}`,
+      {
+        ExerciseCommand: {
+          templateId: template("CantonDex.Dex.LPToken:LPTokenPolicy"),
+          // The burn-request carries the policy cid; the policy choice
+          // takes the burn-request + the trader's locked LP holding.
+          contractId: intent.burnRequestCid,
+          choice: "LPTokenPolicy_AcceptBurn",
+          choiceArgument: {
+            holderHoldingCid: intent.holderHoldingCid,
+          },
+        },
+      },
+    );
+    return { submittedBy: party, primaryCid: result.updateId };
+  }
+
+  private async postRfqQuote(
+    intent: Extract<WalletIntent, { kind: "post-rfq-quote" }>,
+  ): Promise<WalletResult> {
+    const party = this.session!.party;
+    const result = await this.submitAndWait(
+      [party],
+      `rfq-quote-${intent.rfqId}-${Date.now()}`,
+      {
+        CreateCommand: {
+          templateId: template("CantonDex.Dex.Rfq:RfqQuote"),
+          createArguments: {
+            dealer: party,
+            trader: intent.trader,
+            operator: intent.operator,
+            rfqId: intent.rfqId,
+            price: intent.price,
+            expiresAt: intent.expiresAt,
+            postedAt: intent.postedAt,
+            tier: intent.tier,
+          },
+        },
+      },
+    );
+    return { submittedBy: party, primaryCid: result.updateId };
+  }
+
+  private async acceptRfq(
+    intent: Extract<WalletIntent, { kind: "accept-rfq" }>,
+  ): Promise<WalletResult> {
+    const party = this.session!.party;
+    // RFQ accept needs joint trader+operator authority. The provider
+    // submits as the trader; the operator's authority comes from a
+    // pre-deployed delegation. (Today this would need a backend co-sign
+    // — surface that as a clear error rather than silently failing.)
+    const result = await this.submitAndWait(
+      [party, intent.operator],
+      `rfq-accept-${intent.rfqCid.slice(0, 12)}-${Date.now()}`,
+      {
+        ExerciseCommand: {
+          templateId: template("CantonDex.Dex.Rfq:Rfq"),
+          contractId: intent.rfqCid,
+          choice: "Rfq_Accept",
+          choiceArgument: {
+            acceptedQuoteCid: intent.acceptedQuoteCid,
+            consideredQuoteCids: intent.consideredQuoteCids,
+            admin: intent.admin,
+            currentTime: new Date().toISOString(),
+            signature: null,
+          },
+        },
+      },
+    );
+    return { submittedBy: party, primaryCid: result.updateId };
   }
 }

@@ -1,0 +1,135 @@
+module CantonDex.Dex.OrderMatchExecution where
+
+-- Order matching and settlement execution.
+--
+-- Implements the post-PR-5333 prefunded trade pattern (against
+-- token-standard-v2-upcoming):
+--   1. both orders already have prefunded allocations (no transfer
+--      legs, just nextIterationFunding)
+--   2. the matcher builds FinalizedAllocation entries carrying the
+--      concrete transfer leg sides + residual next-iteration funding
+--   3. the settle batch consumes the allocations in one call
+--   4. next-iteration allocations are either stored on
+--      partially-filled orders or cancelled to release unused funds
+--
+-- The retired Allocation_Adjust step (PR-5333 pre-refactor) collapses
+-- into the SettleBatch call via FinalizedAllocation.extraTransferLegSides.
+
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.WorkflowConstructors qualified as WC
+
+data MatchedOrderPair = MatchedOrderPair with
+    buyerAccount : V2.Account
+    sellerAccount : V2.Account
+    baseInstrumentId : Text
+    quoteInstrumentId : Text
+    fillQty : Decimal
+    fillPrice : Decimal
+  deriving (Eq, Show)
+
+data OrderMatch_ExecuteResult = OrderMatch_ExecuteResult with
+    settleResult : V2.SettlementFactory_SettleBatchResult
+    buyerNextAllocationCid : Optional (ContractId V2.Allocation)
+    sellerNextAllocationCid : Optional (ContractId V2.Allocation)
+  deriving (Eq, Show)
+
+mkOrderMatchRef : Text -> V2.Reference
+mkOrderMatchRef matchId = V2.Reference with
+  id = "OrderMatch-" <> matchId
+  cid = None
+
+mkMatchTransferLegs : MatchedOrderPair -> [V2.TransferLeg]
+mkMatchTransferLegs match =
+  let quoteAmount = match.fillQty * match.fillPrice
+  in  [ V2.TransferLeg with
+          transferLegId = "base-delivery"
+          sender = match.sellerAccount
+          receiver = match.buyerAccount
+          amount = match.fillQty
+          instrumentId = match.baseInstrumentId
+          meta = emptyMetadata
+      , V2.TransferLeg with
+          transferLegId = "quote-payment"
+          sender = match.buyerAccount
+          receiver = match.sellerAccount
+          amount = quoteAmount
+          instrumentId = match.quoteInstrumentId
+          meta = emptyMetadata
+      ]
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with
+  context = emptyChoiceContext
+  meta = emptyMetadata
+
+template OrderMatchExecution with
+    operator : Party
+    matchId : Text
+    match : MatchedOrderPair
+    buyerAllocationCid : ContractId V2.Allocation
+    sellerAllocationCid : ContractId V2.Allocation
+    buyerHasRemainder : Bool
+    sellerHasRemainder : Bool
+  where
+    signatory operator
+
+    choice OrderMatchExecution_Execute : OrderMatch_ExecuteResult
+      with
+        factoryCid : ContractId V2.SettlementFactory
+      controller operator
+      do
+        let transferLegs = mkMatchTransferLegs match
+            settlement = V2.SettlementInfo with
+              executors = [operator]
+              settlementRef = mkOrderMatchRef matchId
+              settlementDeadline = None
+              meta = emptyMetadata
+
+        -- Build per-allocation FinalizedAllocations. Each side
+        -- authorizes both legs (buyer is receiver of base + sender of
+        -- quote; seller is sender of base + receiver of quote). The
+        -- side projection in Utils.legsToSides filters legs each
+        -- account participates in. nextIterationFunding is left to the
+        -- registry-side accounting layer (the registry rebuilds the
+        -- next iteration allocation when `*HasRemainder` is True; we
+        -- signal this by passing `Some empty` vs `None`).
+        let buyerFunding = if buyerHasRemainder then Some TextMap.empty else None
+            sellerFunding = if sellerHasRemainder then Some TextMap.empty else None
+            buyerFinalized = Utils.mkFinalizedAllocation
+              buyerAllocationCid
+              (Utils.legsToSides match.buyerAccount transferLegs)
+              buyerFunding
+            sellerFinalized = Utils.mkFinalizedAllocation
+              sellerAllocationCid
+              (Utils.legsToSides match.sellerAccount transferLegs)
+              sellerFunding
+
+        settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
+          settlement
+          transferLegs
+          allocations = [buyerFinalized, sellerFinalized]
+          actors = [operator]
+          extraArgs = emptyExtraArgs
+
+        let nextIterCids = Utils.nextIterationAllocationCids settleResult
+            buyerNext = case nextIterCids of
+              (cid :: _) -> cid
+              _ -> None
+            sellerNext = case nextIterCids of
+              (_ :: cid :: _) -> cid
+              _ -> None
+
+        pure OrderMatch_ExecuteResult with
+          settleResult
+          buyerNextAllocationCid = buyerNext
+          sellerNextAllocationCid = sellerNext
+
+    choice OrderMatchExecution_Abort : ()
+      controller operator
+      do pure ()

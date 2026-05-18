@@ -194,7 +194,7 @@ registry-issued asset can be traded by this DEX** and the project has
 no usable settlement path. We are tracking the PR-5333 discussion and
 expect iterated settlement to be incorporated into the standard.
 Until then the reference builds against a vendored PR-5333 source
-checkout under `vendor/splice-pr5333/`; the dependency is documented
+checkout under `vendor/splice/`; the dependency is documented
 explicitly in the repository and the milestone acceptance criteria
 (see Section 11) tie completion to the standard's resolution rather
 than to a long-term fork.

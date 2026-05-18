@@ -31,7 +31,7 @@ substitutes a price.
   policy or reference-price guard on the operator side beyond the
   fee-model the pair config encodes.
 - RFQ prices are whatever dealers quote. The
-  [PolicyReceipt](../pr5333/CantonDex/Dex/PolicyReceipt.daml) records
+  [PolicyReceipt](../trading/CantonDex/Dex/PolicyReceipt.daml) records
   *which* quote ranked where under which policy version, but does not
   certify that the chosen price is "good" — only that the policy was
   applied honestly.

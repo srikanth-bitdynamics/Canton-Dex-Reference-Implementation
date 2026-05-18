@@ -32,12 +32,14 @@ import { IdempotentLedger } from "./indexer/idempotency.js";
 import { DealersService } from "./dealers/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type { ContractId } from "@canton-dex/registry-client";
+import { rootLogger } from "./lib/logger.js";
+
+const log = rootLogger.child({ component: "testnet-server" });
 
 function required(name: string): string {
   const v = process.env[name];
   if (!v) {
-    // eslint-disable-next-line no-console
-    console.error(`[testnet-server] missing required env var: ${name}`);
+    log.error("missing required env var", { var: name });
     process.exit(1);
   }
   return v;
@@ -128,10 +130,11 @@ async function main(): Promise<void> {
   indexer.start();
 
   const port = Number(process.env.PORT ?? 8080);
-  const { url } = startHttpServer({
+  const host = process.env.HOST ?? "127.0.0.1";
+  const { url, close } = startHttpServer({
     backend,
     port,
-    host: "127.0.0.1",
+    host,
     context: {
       operator,
       lpRegistrar,
@@ -145,18 +148,47 @@ async function main(): Promise<void> {
     ledgerUrl: baseUrl,
     ledgerToken: token,
   });
-  // eslint-disable-next-line no-console
-  console.log(`[testnet-server] listening at ${url}`);
-  console.log(`[testnet-server] ledger: ${baseUrl}`);
-  console.log(`[testnet-server] operator: ${operator}`);
-  console.log(`[testnet-server] lpRegistrar: ${lpRegistrar}`);
-  console.log(`[testnet-server] admin: ${admin}`);
-  console.log(`[testnet-server] network: ${network}`);
-  console.log(`[testnet-server] indexer: db=${dbPath}, interval=${process.env.INDEXER_INTERVAL_MS ?? 5000}ms`);
+  log.info("server started", {
+    url,
+    ledger: baseUrl,
+    operator,
+    lpRegistrar,
+    admin,
+    network,
+    db: dbPath,
+    indexerIntervalMs: Number(process.env.INDEXER_INTERVAL_MS ?? 5000),
+  });
+
+  // Graceful shutdown: drain HTTP requests, stop indexer, flush DB.
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log.info("shutdown signal received", { signal });
+    clearInterval(sweepTimer);
+    try {
+      indexer.stop();
+    } catch (e) {
+      log.warn("indexer stop failed", { error: String(e) });
+    }
+    try {
+      await close();
+    } catch (e) {
+      log.warn("http close failed", { error: String(e) });
+    }
+    try {
+      db.close();
+    } catch (e) {
+      log.warn("db close failed", { error: String(e) });
+    }
+    log.info("shutdown complete");
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
 main().catch((e) => {
-  // eslint-disable-next-line no-console
-  console.error("[testnet-server] fatal:", e);
+  log.error("fatal", { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined });
   process.exit(1);
 });

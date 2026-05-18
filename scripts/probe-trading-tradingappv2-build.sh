@@ -13,15 +13,15 @@ app_log="$(mktemp)"
 trap 'rm -f "$utils_log" "$app_log"' EXIT
 
 if diff -u "$STABLE_TRADING_APP" "$PR_TRADING_APP" > /dev/null; then
-  echo "Upstream TradingAppV2 example is unchanged on PR 5333."
+  echo "Upstream TradingAppV2 example is unchanged against the V2 release surface."
 else
-  echo "Upstream TradingAppV2 example diverged on PR 5333." >&2
+  echo "Upstream TradingAppV2 example diverged against the V2 release surface." >&2
   exit 1
 fi
 
 bash "$ROOT_DIR/scripts/build-vendored-token-standard.sh"
 
-echo "==> Probing upstream PR-5333 utility layer"
+echo "==> Probing upstream V2 utility layer"
 if (
   cd "$UTILS_DIR"
   daml build
@@ -39,24 +39,24 @@ if (
 
   cp "$versioned_dar" "$dist_dir/splice-token-standard-utils-current.dar"
 
-  echo "==> Probing upstream PR-5333 TradingAppV2 example package"
+  echo "==> Probing upstream V2 TradingAppV2 example package"
   if (
     cd "$TRADING_APP_DIR"
     daml build
   ) >"$app_log" 2>&1; then
-    echo "Upstream PR-5333 TradingAppV2 example builds unchanged."
+    echo "Upstream V2 TradingAppV2 example builds unchanged."
   else
     cat "$app_log" >&2
-    echo "Upstream PR-5333 TradingAppV2 example does not build unchanged." >&2
+    echo "Upstream V2 TradingAppV2 example does not build unchanged." >&2
     exit 1
   fi
 else
   if rg -n "instrumentId\\.admin|nonexistent field .admin.|newHoldingCids" "$utils_log" > /dev/null; then
-    echo "Upstream PR-5333 utility layer is still blocked by stable-field assumptions."
+    echo "Upstream V2 utility layer is still blocked by stable-field assumptions."
     rg -n "instrumentId\\.admin|nonexistent field .admin.|newHoldingCids" "$utils_log"
   else
     cat "$utils_log" >&2
-    echo "Unexpected PR-5333 utility-layer failure." >&2
+    echo "Unexpected V2 utility-layer failure." >&2
     exit 1
   fi
 fi

@@ -24,10 +24,10 @@ snapshots:
 | Path        | Daml package           | Token-standard surface                | What it proves                                                                  |
 | ----------- | ---------------------- | ------------------------------------- | ------------------------------------------------------------------------------- |
 | `src/`      | `canton-dex`           | current upstream (`vendor/splice`)    | OTC / RFQ matched-trade settlement using the `TradingAppV2` pattern             |
-| `trading/`   | `canton-dex-trading`    | PR-5333 branch (`vendor/splice`) | Resting orders, RFQ with policy receipts, pools, swaps, LP token, registry flows |
+| `trading/`   | `canton-dex-trading`    | V2 standard (`vendor/splice/token-standard/`) | Resting orders, RFQ with policy receipts, pools, swaps, LP token, registry flows |
 
 The split is intentional. PR 108 explicitly distinguishes "what is possible
-today" from "what depends on PR 5333 landing". Builders evaluating only the
+today" from "what depends on the V2 allocation extensions". Builders evaluating only the
 OTC settlement substrate can ignore `trading/` entirely.
 
 ## One-command build + test
@@ -86,7 +86,7 @@ optional `src/`-stack analog.
   request AND compose `AllocationFactory_Allocate` in the same submission, so
   the trader's authority drives the holding movement (the operator cannot move
   trader holdings on their own).
-- `trading/CantonDex/Dex/OrderMatchExecution.daml` — applies the PR 5333
+- `trading/CantonDex/Dex/OrderMatchExecution.daml` — applies the V2
   prefunded-trade pattern: both prefunded allocations get `Allocation_Adjust`-ed
   with the concrete match legs, then batch-settled; next-iteration CIDs roll
   forward onto partial fills.
@@ -115,7 +115,7 @@ Approach the repo in this order; each layer references only the four pinned
 upstream sources:
 
 1. `docs/architecture.md` — system model and the four-layer separation.
-2. `docs/workflows.md` — the ten workflows, with which ones run today vs. need PR 5333.
+2. `docs/workflows.md` — the ten workflows, with which ones run today vs. need V2 surface support.
 3. `trading/CantonDex/Dex/Pool.daml` — read top-to-bottom to see the
    slice-local invariant and the iterated-settlement pattern in one place.
 4. `trading-tests/CantonDex/Tests/EndToEndTests.daml` — the same workflows
@@ -145,5 +145,5 @@ duplicated state or authority confusion in the workflows.
 ## Where to ask for help
 
 - File issues against this repo.
-- For upstream questions on the token-standard or PR 5333 semantics, follow
+- For upstream questions on the token-standard or V2 semantics, follow
   the canonical references linked at the top of [README.md](../README.md).

@@ -9,7 +9,7 @@
 --
 -- Why this lives in `trading/CantonDex/Testing/` and not in a separate
 -- package: it depends only on the V2 surface and our existing
--- `Pr5333.Utils`, both already in canton-dex-trading. Putting it here
+-- `Trading.Utils`, both already in canton-dex-trading. Putting it here
 -- means we ship one DAR for the demo and the existing 26-test suite
 -- against `MockRegistry` is untouched.
 --

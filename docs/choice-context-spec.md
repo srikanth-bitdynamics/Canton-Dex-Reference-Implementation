@@ -75,9 +75,12 @@ Required inputs:
 - `actors : [Party]` — `[venue/operator]`.
 - `extraArgs.context` — empty.
 
-### Allocation adjustment (PR 5333 only)
+### Allocation adjustment (draft V2 only; retired in the released V2 API)
 
-`V2.Allocation.Allocation_Adjust`
+`V2.Allocation.Allocation_Adjust` (no longer present in the released
+`token-standard-v2-upcoming` API; replaced by
+`FinalizedAllocation.extraTransferLegSides` on
+`SettlementFactory_SettleBatch`).
 
 Required inputs:
 - `actors : [Party]` — `[operator]`.

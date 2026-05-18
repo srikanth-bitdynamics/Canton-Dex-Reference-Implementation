@@ -1,23 +1,22 @@
-# PR 5333 Allocation Surface
+# V2 Allocation Surface (post-PR-5333)
 
-Last updated: 2026-05-05
+Last updated: 2026-05-18
 
 ## Purpose
 
-Record the exact branch-only allocation surface needed for prefunded orders and
- allocation-backed pool funds.
+Record the exact V2 allocation surface our DEX consumes — the
+extensions originally proposed as splice#5333 and now released in
+the `token-standard-v2-upcoming` branch — covering prefunded orders
+and allocation-backed pool funds.
 
-Source base:
+Source base (single tree after the upstream merge):
 
-- stable branch:
-  `vendor/splice/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml`
-- PR 5333 branch:
-  `vendor/splice/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml`
+- `vendor/splice/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml`
 
-## Exact Source Delta
+## Exact Source Delta vs. the pre-PR-5333 V2 draft
 
-Compared with the stable local V2 surface, PR 5333 changes `AllocationV2` in
-the following ways:
+The V2 allocation extensions (introduced in splice#5333, since
+merged) changed `AllocationV2` in the following ways:
 
 - `SettlementInfo`
   - removes `requestedAt`
@@ -49,7 +48,7 @@ the following ways:
 
 Current local status on the parallel `vendor/splice` worktree:
 
-- the PR-5333 API package set builds through
+- the V2 API package set builds through
   `splice-api-token-transfer-events-v2`
 - the local branch package under `trading/` now includes a dedicated helper
   layer for:
@@ -63,7 +62,7 @@ Current local status on the parallel `vendor/splice` worktree:
   - batch settlement choice arguments
   - rolled-forward allocation cancellation arguments
 - the repeatable probe confirms that the upstream `TradingAppV2` source is
-  unchanged on PR 5333
+  unchanged on the released V2 API
 - the existing upstream utility layer does not yet build unchanged on that
   surface
 
@@ -81,14 +80,14 @@ layer can be reused unchanged.
 Repeatable local probe:
 
 - `bash scripts/probe-trading-tradingappv2-build.sh`
-  - first checks that the upstream `TradingAppV2` source is unchanged on
-    PR 5333
+  - first checks that the upstream `TradingAppV2` source is unchanged
+    against the released V2 surface
   - then probes whether the upstream utility layer and example package build
     unchanged
 
-## Design Notes Present in PR 5333 Source
+## Design Notes Present in the V2 Source
 
-The PR source file explicitly describes the intended use for:
+The V2 source file explicitly describes the intended use for:
 
 - prefunded trades
   - request an allocation with funding for the next iteration
@@ -115,7 +114,7 @@ The current local stable implementation in
 
 ## Recommended Branch-Specific Build Order
 
-1. Build the PR 5333 token-standard core packages.
+1. Build the V2 token-standard core packages.
 2. Probe which upstream example packages still compile unchanged.
 3. Add a branch-specific local matched-trade module only where the source
    surface requires adaptation.

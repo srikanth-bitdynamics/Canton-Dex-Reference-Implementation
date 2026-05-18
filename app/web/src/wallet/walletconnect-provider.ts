@@ -53,6 +53,47 @@ type AppKitUniversalConnector = {
   off(event: string, cb: (...args: unknown[]) => void): void;
 };
 
+const LS_LAST_PARTY = "canton-dex:wc:last-party";
+const CONNECT_TIMEOUT_MS = 60_000;
+const SUBMIT_TIMEOUT_MS = 30_000;
+const SUBMIT_RETRIES = 2;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
+async function withRetry<T>(fn: () => Promise<T>, attempts: number, label: string): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      // Only retry transient errors (network, relay). Reject user-cancel.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.toLowerCase().includes("rejected") || msg.toLowerCase().includes("cancel")) {
+        throw e;
+      }
+      // eslint-disable-next-line no-console
+      console.warn(`[wc] ${label} attempt ${i + 1}/${attempts} failed:`, msg);
+      await new Promise((r) => setTimeout(r, 250 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 export class WalletConnectProvider implements WalletProvider {
   readonly id = "walletconnect";
   readonly label = "WalletConnect";
@@ -104,7 +145,7 @@ export class WalletConnectProvider implements WalletProvider {
         nativeCurrency: { name: "Canton Coin", symbol: "CC", decimals: 10 },
         rpcUrls: { default: { http: [] as string[] } },
       };
-      this.connector = (await mod.UniversalConnector.init({
+      this.connector = (await withTimeout(mod.UniversalConnector.init({
         projectId: this.projectId,
         metadata: APP_METADATA,
         networks: [
@@ -117,13 +158,15 @@ export class WalletConnectProvider implements WalletProvider {
           },
         ],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any)) as unknown as AppKitUniversalConnector;
+      } as any), CONNECT_TIMEOUT_MS, "UniversalConnector.init")) as unknown as AppKitUniversalConnector;
 
-      await this.connector.connect();
+      await withTimeout(this.connector.connect(), CONNECT_TIMEOUT_MS, "wc connect");
 
-      const accounts = await this.connector.request<{ party: string }[]>({
-        method: "canton_listAccounts",
-      });
+      const accounts = await withTimeout(
+        this.connector.request<{ party: string }[]>({ method: "canton_listAccounts" }),
+        CONNECT_TIMEOUT_MS,
+        "canton_listAccounts",
+      );
       const primary = accounts[0];
       if (!primary) {
         throw new Error("wallet returned no accounts");
@@ -132,6 +175,9 @@ export class WalletConnectProvider implements WalletProvider {
         party: primary.party,
         label: this.label,
       };
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(LS_LAST_PARTY, primary.party);
+      }
       this.setStatus({
         kind: "connected",
         account,
@@ -159,20 +205,22 @@ export class WalletConnectProvider implements WalletProvider {
     if (this.status.kind !== "connected" || !this.connector) {
       throw new Error("wallet not connected");
     }
+    const conn = this.connector;
     // The dApp does NOT construct Daml command trees here. CIP-0103's
-    // canton_prepareExecute takes the dApp's intent (verb + params) and
-    // the wallet builds the correct Daml commands. This keeps the
-    // contract knowledge on the wallet/registry side and the dApp
-    // boundary minimal.
-    //
-    // For wallets that require a fully-formed Daml command tree, we
-    // would translate `intent` into commands here. Today we forward the
-    // intent verbatim under a Canton-namespaced method and let the
-    // wallet's CIP-0103 implementation handle translation.
-    const result = await this.connector.request<WalletResult>({
-      method: "canton_prepareExecute",
-      params: [intent],
-    });
-    return result;
+    // canton_prepareExecute takes the dApp's intent and the wallet
+    // builds the correct Daml commands.
+    return withRetry(
+      () =>
+        withTimeout(
+          conn.request<WalletResult>({
+            method: "canton_prepareExecute",
+            params: [intent],
+          }),
+          SUBMIT_TIMEOUT_MS,
+          "canton_prepareExecute",
+        ),
+      SUBMIT_RETRIES,
+      "submit",
+    );
   }
 }

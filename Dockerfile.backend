@@ -1,0 +1,35 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY services/registry-client/package.json services/registry-client/
+COPY services/operator-backend/package.json services/operator-backend/package-lock.json services/operator-backend/
+
+WORKDIR /app/services/registry-client
+RUN npm install --ignore-scripts
+
+WORKDIR /app/services/operator-backend
+RUN npm install --ignore-scripts
+
+COPY services/registry-client/ /app/services/registry-client/
+COPY services/operator-backend/ /app/services/operator-backend/
+
+RUN npx tsc --noEmit
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+RUN mkdir -p /app/data
+
+COPY --from=builder /app/services/registry-client /app/services/registry-client
+COPY --from=builder /app/services/operator-backend /app/services/operator-backend
+
+WORKDIR /app/services/operator-backend
+
+ENV NODE_ENV=production
+ENV PORT=8080
+
+EXPOSE 8080
+
+CMD ["node", "--import", "tsx", "src/testnet-server.ts"]

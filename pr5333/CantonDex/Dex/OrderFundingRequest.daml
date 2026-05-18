@@ -68,6 +68,7 @@ template OrderFundingRequest with
         -- the trader will accept. Comment in the module header described
         -- this; previously only the Order was created. The downstream
         -- accept flow lives on OrderAllocationRequest.
+        now <- getTime
         let orderRef = Order.makeOrderRefFromText settlementRef
             lockInstrumentId = case side of
               Order.Bid -> quoteInstrumentId
@@ -96,6 +97,7 @@ template OrderFundingRequest with
           lockInstrumentId
           lockAmount
           expiry
+          requestedAt = now
         pure OrderFundingRequest_BindResult with
           orderCid
           allocationRequestCid = allocReqCid

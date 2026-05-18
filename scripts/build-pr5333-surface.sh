@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-bash "$ROOT_DIR/scripts/build-vendored-token-standard-pr5333.sh"
+bash "$ROOT_DIR/scripts/build-vendored-token-standard.sh"
 
 echo "==> Building local PR-5333 surface package"
 (

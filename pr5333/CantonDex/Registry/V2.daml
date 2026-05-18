@@ -201,8 +201,10 @@ template Allocation with
     admin : Party
     spec : V2.AllocationSpecification
     lockedHoldings : [ContractId Holding]
+    createdAt : Time
+    numIterations : Int
   where
-    signatory admin, spec.authorizer.owner
+    signatory admin, Utils.accountOwner spec.authorizer
     observer spec.settlement.executors
 
     interface instance V2.Allocation for Allocation where
@@ -210,12 +212,13 @@ template Allocation with
         originalAllocationCid = None
         allocation = spec
         holdingCids = map toInterfaceContractId lockedHoldings
+        createdAt
+        numIterations
         expiresAt = spec.settlement.settlementDeadline
         availableActions = Map.empty
         meta = emptyMetadata
 
       allocation_settleExtraObservers _ = []
-      allocation_adjustExtraObservers _ = []
       allocation_cancelExtraObservers _ = []
       allocation_withdrawExtraObservers _ = []
 
@@ -229,93 +232,55 @@ template Allocation with
       --
       -- This is the V2-standard pattern: per-side authority via the
       -- allocation each side signed, not a single multi-party settle.
+      -- Settle: each allocation's settle mints the receiver-side
+      -- holdings for legs where THIS allocation's authorizer is the
+      -- RECEIVER. That works because the allocation is signed by
+      -- admin + authorizer, so creating a new Holding owned by the
+      -- authorizer (admin + owner signatories) inherits the right
+      -- authority. Sender-side legs simply archive the locked holdings
+      -- (the receiver-side allocation will mint the new ones).
+      --
+      -- In the post-PR-5333 API the choice arg carries
+      -- `extraTransferLegSides` (additional sides settled this
+      -- iteration) and `nextIterationFunding` (residual reserved for
+      -- the next iteration). We honor both: process settle for the
+      -- spec's existing legs + arg's extras, then roll forward.
       allocation_settleImpl self arg = do
         let expectedActors = spec.settlement.executors ++ [admin]
         unless (all (\p -> p `elem` arg.actors) expectedActors) $
           abort "Allocation_Settle: missing required actor (executors + admin)"
-        let authorizerOwner = spec.authorizer.owner
-        -- For receiver-side legs (this authorizer is receiver,
-        -- sender is someone else), mint a holding for this authorizer.
-        forA_ spec.transferLegs $ \leg ->
-          when (leg.receiver.owner == authorizerOwner && leg.sender.owner /= authorizerOwner) $ do
+        let authorizerOwner = Utils.accountOwner spec.authorizer
+        -- For receiver-side legs (this authorizer is receiver),
+        -- mint a holding for this authorizer. Combine spec's existing
+        -- transferLegSides with arg's extraTransferLegSides.
+        let allSides = spec.transferLegSides ++ arg.extraTransferLegSides
+        forA_ allSides $ \side ->
+          when (side.side == V2.ReceiverSide) $ do
             _ <- create Holding with
               admin
               owner = authorizerOwner
-              instrumentId = leg.instrumentId
-              amount = leg.amount
+              instrumentId = side.instrumentId
+              amount = side.amount
               locked = False
             pure ()
         archive self
         forA_ lockedHoldings $ \cid -> archive cid
-        -- Roll-forward for iterated settlement: if the spec has
-        -- nextIterationFunding, create a fresh allocation carrying it.
-        next <- case spec.nextIterationFunding of
+        -- Roll-forward: when nextIterationFunding is set, create a
+        -- fresh allocation carrying just the residual funding.
+        next <- case arg.nextIterationFunding of
           None -> pure None
           Some funding -> do
             let nextSpec = spec with
-                  transferLegs = []
+                  transferLegSides = []
                   nextIterationFunding = Some funding
             cid <- create this with
               spec = nextSpec
               lockedHoldings = []
+              numIterations = numIterations + 1
             pure (Some (toInterfaceContractId cid))
-        pure V2.Allocation_SettleResult with
+        pure V2.AllocationResult with
+          output = V2.AllocationResult_Settled next
           authorizerHoldingCids = TextMap.empty
-          nextIterationAllocationCid = next
-          meta = emptyMetadata
-
-      -- Adjust (used by Pool_Swap + Order_Adjust). Validates funding
-      -- conservation: every additional leg's net outflow must be
-      -- covered by current nextIterationFunding. Reduces funding by
-      -- the consumed amount.
-      allocation_adjustImpl self arg = do
-        oldFunding <- case spec.nextIterationFunding of
-          Some f -> pure f
-          None -> abort "Allocation_Adjust: nextIterationFunding is None — iterated adjustment not authorized"
-        let authorizerOwner = spec.authorizer.owner
-        forA_ arg.additionalTransferLegs $ \leg ->
-          assertMsg
-            ("Allocation_Adjust: leg " <> leg.transferLegId <> " does not involve the authorizer")
-            (leg.sender.owner == authorizerOwner || leg.receiver.owner == authorizerOwner)
-        let netDelta : TextMap.TextMap Decimal =
-              foldl
-                (\m leg ->
-                  let signed : Decimal
-                      signed
-                        | leg.sender.owner == authorizerOwner &&
-                          leg.receiver.owner == authorizerOwner = 0.0
-                        | leg.sender.owner == authorizerOwner = leg.amount
-                        | leg.receiver.owner == authorizerOwner = negate leg.amount
-                        | otherwise = 0.0
-                      cur = optional 0.0 identity (TextMap.lookup leg.instrumentId m)
-                  in TextMap.insert leg.instrumentId (cur + signed) m)
-                TextMap.empty
-                arg.additionalTransferLegs
-        forA_ (TextMap.toList netDelta) $ \(iid, consumed) -> do
-          let budget = optional 0.0 identity (TextMap.lookup iid oldFunding)
-          assertMsg
-            ("Allocation_Adjust: instrument " <> iid <>
-             " net consumption " <> show consumed <>
-             " exceeds budget " <> show budget)
-            (consumed <= budget)
-        let updatedFunding =
-              foldl
-                (\acc (iid, consumed) ->
-                  let budget = optional 0.0 identity (TextMap.lookup iid acc)
-                  in TextMap.insert iid (budget - consumed) acc)
-                oldFunding
-                (TextMap.toList netDelta)
-        archive self
-        let combinedLegs = spec.transferLegs ++ arg.additionalTransferLegs
-            nextFunding = if arg.allowFutureIterations
-                          then Some updatedFunding
-                          else None
-            newSpec = spec with
-              transferLegs = combinedLegs
-              nextIterationFunding = nextFunding
-        cid <- create this with spec = newSpec
-        pure V2.Allocation_AdjustResult with
-          allocationCid = toInterfaceContractId cid
           meta = emptyMetadata
 
       -- Cancel returns locked holdings to the authorizer (unlocked).
@@ -325,7 +290,8 @@ template Allocation with
           archive cid
           create h with locked = False
         archive self
-        pure V2.Allocation_CancelResult with
+        pure V2.AllocationResult with
+          output = V2.AllocationResult_Cancelled
           authorizerHoldingCids =
             if null released
               then TextMap.empty
@@ -340,7 +306,8 @@ template Allocation with
           archive cid
           create h with locked = False
         archive self
-        pure V2.Allocation_WithdrawResult with
+        pure V2.AllocationResult with
+          output = V2.AllocationResult_Withdrawn
           authorizerHoldingCids =
             if null released
               then TextMap.empty
@@ -387,10 +354,11 @@ template TransferInstruction with
           executeBefore
           inputHoldingCids = [toInterfaceContractId lockedHoldingCid]
           meta = emptyMetadata
+        expiresAt = Some executeBefore
         availableActions = Map.fromList
-          [ ([receiver, admin], [V2.TIA_Accept])
-          , ([sender, admin], [V2.TIA_Withdraw])
-          , ([receiver], [V2.TIA_Reject])
+          [ (V2.TIA_Accept, [[receiver, admin]])
+          , (V2.TIA_Withdraw, [[sender, admin]])
+          , (V2.TIA_Reject, [[receiver]])
           ]
         meta = emptyMetadata
 
@@ -561,8 +529,8 @@ template Registry with
 
       transferFactory_transferImpl _self arg = do
         let transfer = arg.transfer
-        let senderOwner = transfer.sender.owner
-        let receiverOwner = transfer.receiver.owner
+        let senderOwner = Utils.accountOwner transfer.sender
+        let receiverOwner = Utils.accountOwner transfer.receiver
         assertMsg "TransferFactory: instrument admin must match registry"
           (transfer.instrumentId.admin == admin)
         -- For this minimal implementation we lock the FIRST input holding
@@ -616,20 +584,21 @@ template Registry with
         let spec = arg.allocation
         assertMsg "AllocationFactory: spec admin must match registry"
           (spec.admin == admin)
-        let authorizerOwner = spec.authorizer.owner
-        -- Sender legs this authorizer must fund.
+        let authorizerOwner = Utils.accountOwner spec.authorizer
+        -- SenderSide legs this authorizer must fund.
         let sentByAuth =
-              filter
-                (\leg -> leg.sender.owner == authorizerOwner && leg.receiver.owner /= authorizerOwner)
-                spec.transferLegs
-        -- Required outflow per instrument id.
-        let required : TextMap.TextMap Decimal =
+              filter (\side -> side.side == V2.SenderSide) spec.transferLegSides
+        -- Required outflow per instrument id: senderSide amounts +
+        -- nextIterationFunding (prefunded amounts reserved on-allocation).
+        let sideRequired : TextMap.TextMap Decimal =
               foldl
-                (\m leg ->
-                  let cur = optional 0.0 identity (TextMap.lookup leg.instrumentId m)
-                  in TextMap.insert leg.instrumentId (cur + leg.amount) m)
+                (\m side ->
+                  let cur = optional 0.0 identity (TextMap.lookup side.instrumentId m)
+                  in TextMap.insert side.instrumentId (cur + side.amount) m)
                 TextMap.empty
                 sentByAuth
+            funding = optional TextMap.empty identity spec.nextIterationFunding
+            required = Utils.textMapUnionWith (+) sideRequired funding
         -- Lock all input holdings owned by the authorizer.
         lockedCids <- forA arg.inputHoldingCids $ \ifaceCid -> do
           let cid : ContractId Holding = coerceContractId ifaceCid
@@ -658,10 +627,13 @@ template Registry with
             ("AllocationFactory: insufficient holdings for " <> iid <>
              " (need " <> show needed <> ", have " <> show have <> ")")
             (have >= needed)
+        now <- getTime
         allocationCid <- create Allocation with
           admin
           spec
           lockedHoldings = lockedCids
+          createdAt = now
+          numIterations = 0
         pure V2.AllocationInstructionResult with
           output = V2.AllocationInstructionResult_Completed with
             allocationCid = toInterfaceContractId allocationCid
@@ -695,9 +667,13 @@ template Registry with
                 else admin :: arg.actors
         -- Each allocation's settle mints receiver-side holdings under
         -- its OWN authority (admin + that allocation's authorizer).
-        results <- forA arg.allocationCids $ \cid ->
-          exercise cid V2.Allocation_Settle with
+        -- Post-PR-5333: each FinalizedAllocation carries its extra
+        -- transfer-leg sides + next-iteration funding to use.
+        results <- forA arg.allocations $ \finalized ->
+          exercise finalized.allocationCid V2.Allocation_Settle with
             actors = expandedActors
+            extraTransferLegSides = finalized.extraTransferLegSides
+            nextIterationFunding = finalized.nextIterationFunding
             extraArgs = arg.extraArgs
         pure V2.SettlementFactory_SettleBatchResult with
           allocationSettleResults = results

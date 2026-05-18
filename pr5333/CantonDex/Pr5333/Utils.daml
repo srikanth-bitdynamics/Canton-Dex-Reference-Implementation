@@ -1,30 +1,57 @@
 module CantonDex.Pr5333.Utils where
 
--- Branch-specific helper subset derived from the PR 5333 `AllocationV2`
--- design notes.
+-- Helper layer over the token-standard-v2-upcoming AllocationV2 API
+-- (post-PR-5333 refactor; vendored from splice@a5b54c9).
 --
--- Unlike the stable `Splice.TokenStandard.Utils` surface, this module
--- intentionally does not provide `splitLegsByAdmin`. On PR 5333 the
--- transfer-leg `instrumentId` is plain `Text`, so callers must keep the admin
--- in workflow context via the allocation specification or settlement-factory
--- context instead of deriving it from the leg.
+-- Key API deltas absorbed here:
+--   - `HoldingV2.Account.owner : Optional Party` (was `Party`). Special
+--     accounts (mint source, burn target) can have `None`. DEX flows
+--     never authorize against special accounts, so we expose
+--     `accountOwner` that panics on `None`.
+--   - `AllocationSpecification.transferLegs : [TransferLeg]`
+--       → `transferLegSides : [TransferLegSide]`. We project legs to
+--     sides at the construction boundary via `legToSide` / `legsToSides`.
+--   - `Allocation_Adjust` choice removed. Its semantics (attach extra
+--     transfer legs to an open allocation) now flow through
+--     `SettlementFactory_SettleBatch.allocations :
+--     [FinalizedAllocation { allocationCid, extraTransferLegSides,
+--     nextIterationFunding }]`.
+--   - `Allocation_*Result` types unified into
+--     `AllocationResult { output, authorizerHoldingCids, meta }` with
+--     `AllocationResult_Output` as a sum
+--     (Pending / Settled / Cancelled / Withdrawn).
 
 import DA.Map qualified as Map
-import DA.Optional (fromOptional)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
 
 type Funding = TextMap.TextMap Decimal
 
+-- Account.owner shim ----------------------------------------------------
+
+-- Force-unwrap an Account.owner; panics on `None` (a special account
+-- managed by an instrument admin, e.g. the source of a mint). DEX
+-- flows never authorize against special accounts, so any caller path
+-- that hits `None` is a programming error.
+accountOwner : HoldingV2.Account -> Party
+accountOwner account = case account.owner of
+  Some owner -> owner
+  None -> error "accountOwner: special account (None owner) not supported in DEX flows"
+
 basicAccount : Party -> HoldingV2.Account
-basicAccount owner = HoldingV2.Account owner None ""
+basicAccount owner = HoldingV2.Account (Some owner) None ""
 
 accountParties : HoldingV2.Account -> [Party]
-accountParties account = case account.provider of
-  Some provider | provider /= account.owner -> [account.owner, provider]
-  _ -> [account.owner]
+accountParties account =
+  let ownerParty = accountOwner account
+  in case account.provider of
+    Some provider | provider /= ownerParty -> [ownerParty, provider]
+    _ -> [ownerParty]
+
+-- Allocation helpers ---------------------------------------------------
 
 allocationAdmin : V2.AllocationSpecification -> Party
 allocationAdmin allocation = allocation.admin
@@ -79,19 +106,33 @@ adjustedNextIterationFunding authorizer currentFunding additionalTransferLegs =
       currentFunding
       (netFundingDelta authorizer additionalTransferLegs)
 
-nextIterationFundingAfterAdjustment
-  : Bool
-  -> HoldingV2.Account
-  -> Optional Funding
-  -> [V2.TransferLeg]
-  -> Optional Funding
-nextIterationFundingAfterAdjustment allowFutureIterations authorizer currentFunding additionalTransferLegs
-  | allowFutureIterations =
-      adjustedNextIterationFunding
-        authorizer
-        (fromOptional TextMap.empty currentFunding)
-        additionalTransferLegs
+-- Project a leg into the leg-side relevant to the given authorizer
+-- account. Returns `None` when the authorizer is neither sender nor
+-- receiver of the leg.
+legToSide : HoldingV2.Account -> V2.TransferLeg -> Optional V2.TransferLegSide
+legToSide authorizer leg
+  | leg.sender == authorizer = Some V2.TransferLegSide with
+      transferLegId = leg.transferLegId
+      side = V2.SenderSide
+      otherside = leg.receiver
+      amount = leg.amount
+      instrumentId = leg.instrumentId
+      meta = leg.meta
+  | leg.receiver == authorizer = Some V2.TransferLegSide with
+      transferLegId = leg.transferLegId
+      side = V2.ReceiverSide
+      otherside = leg.sender
+      amount = leg.amount
+      instrumentId = leg.instrumentId
+      meta = leg.meta
   | otherwise = None
+
+-- Project a list of legs into the leg-sides authorized by an account
+-- (dropping any leg the account is not part of).
+legsToSides : HoldingV2.Account -> [V2.TransferLeg] -> [V2.TransferLegSide]
+legsToSides authorizer = mapOptional (legToSide authorizer)
+  where
+    mapOptional f = foldr (\a acc -> case f a of Some b -> b :: acc; None -> acc) []
 
 mkIteratedAllocationSpecification
   : Party
@@ -105,13 +146,13 @@ mkIteratedAllocationSpecification admin authorizer settlement transferLegs nextI
   V2.AllocationSpecification with
     settlement
     admin
-    transferLegs
+    authorizer
+    transferLegSides = legsToSides authorizer transferLegs
     nextIterationFunding
     committed
-    authorizer
+    meta = emptyMetadata
 
--- The PR 5333 source comments explicitly describe prefunded allocations with
--- no transfer legs and only next-iteration funding.
+-- Prefunded allocation: no transfer legs, only next-iteration funding.
 mkPrefundedAllocationSpecification
   : Party
   -> HoldingV2.Account
@@ -142,9 +183,34 @@ mkCommittedPoolAllocationSpecification admin authorizer settlement nextIteration
     (Some nextIterationFunding)
     True
 
-mkAllocationAdjust : [Party] -> [V2.TransferLeg] -> Bool -> V2.Allocation_Adjust
-mkAllocationAdjust actors additionalTransferLegs allowFutureIterations =
-  V2.Allocation_Adjust with
-    actors
-    additionalTransferLegs
-    allowFutureIterations
+-- Construct a FinalizedAllocation for SettlementFactory_SettleBatch
+-- that adds extra transfer-leg sides (the iterated-settlement
+-- equivalent of the retired Allocation_Adjust choice) and optionally
+-- reserves funding for the next iteration.
+mkFinalizedAllocation
+  : ContractId V2.Allocation
+  -> [V2.TransferLegSide]
+  -> Optional Funding
+  -> V2.FinalizedAllocation
+mkFinalizedAllocation allocationCid extraTransferLegSides nextIterationFunding =
+  V2.FinalizedAllocation with
+    allocationCid
+    extraTransferLegSides
+    nextIterationFunding
+
+-- Bare FinalizedAllocation: settle as-is, no extra legs, no next iter.
+finalAllocation : ContractId V2.Allocation -> V2.FinalizedAllocation
+finalAllocation allocationCid =
+  mkFinalizedAllocation allocationCid [] None
+
+-- Extract the next-iteration allocation cids from a batch settle
+-- result, paired with the allocations passed in (same order). Returns
+-- `Some cid` for allocations that produced a next iteration; `None`
+-- for fully-settled allocations.
+nextIterationAllocationCids : V2.SettlementFactory_SettleBatchResult -> [Optional (ContractId V2.Allocation)]
+nextIterationAllocationCids result =
+  map nextIterFromResult result.allocationSettleResults
+  where
+    nextIterFromResult r = case r.output of
+      V2.AllocationResult_Settled cidOpt -> cidOpt
+      _ -> None

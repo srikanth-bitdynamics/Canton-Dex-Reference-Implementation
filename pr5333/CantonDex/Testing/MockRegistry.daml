@@ -62,6 +62,8 @@ template MockAllocation with
     admin : Party
       -- ^ The asset admin / mock registrar. Sole signatory.
     spec : V2.AllocationSpecification
+    createdAt : Time
+    numIterations : Int
   where
     signatory admin
     observer Utils.accountParties spec.authorizer ++ spec.settlement.executors
@@ -71,116 +73,47 @@ template MockAllocation with
         originalAllocationCid = None
         allocation = spec
         holdingCids = []
+        createdAt
+        numIterations
         expiresAt = spec.settlement.settlementDeadline
         availableActions = Map.empty
         meta = emptyMetadata
 
       allocation_settleExtraObservers _ = []
-      allocation_adjustExtraObservers _ = []
       allocation_cancelExtraObservers _ = []
       allocation_withdrawExtraObservers _ = []
 
-      allocation_settleImpl self _arg = do
+      -- Post-PR-5333: the arg now carries extraTransferLegSides +
+      -- nextIterationFunding. The retired Allocation_Adjust step is
+      -- folded in here.
+      allocation_settleImpl self arg = do
         archive self
-        nextCid <- case spec.nextIterationFunding of
+        nextCid <- case arg.nextIterationFunding of
           None -> pure None
           Some funding -> do
-            -- Roll forward an empty-legs, same-funding allocation that
-            -- the executor can adjust + settle in the next iteration.
             let nextSpec = spec with
-                  transferLegs = []
+                  transferLegSides = []
                   nextIterationFunding = Some funding
-            cid <- create this with spec = nextSpec
+            cid <- create this with
+              spec = nextSpec
+              numIterations = numIterations + 1
             pure (Some (toInterfaceContractId cid))
-        pure V2.Allocation_SettleResult with
+        pure V2.AllocationResult with
+          output = V2.AllocationResult_Settled nextCid
           authorizerHoldingCids = TextMap.empty
-          nextIterationAllocationCid = nextCid
-          meta = emptyMetadata
-
-      allocation_adjustImpl self arg = do
-        -- Layer C: enforce funding conservation in Daml.
-        --
-        -- The V2 spec requires that "the net amount of the additional
-        -- transfer legs is covered by the current `nextIterationFunding`
-        -- amounts." A registry that fails to enforce this lets the
-        -- executor spend funds the authorizer never granted. Because the
-        -- DEX operator IS the executor, conservation is what prevents a
-        -- malicious operator from misusing iterated-settlement funds.
-        --
-        -- Enforced invariants per call:
-        --   1. spec.nextIterationFunding must be set (otherwise iterated
-        --      adjustment is not authorized at all).
-        --   2. Every additional leg must involve the authorizer as
-        --      sender or receiver (matches the AllocationSpecification
-        --      transferLegs invariant).
-        --   3. For each instrument id, the net outflow from the
-        --      authorizer (sender legs minus receiver legs) must not
-        --      exceed the current per-instrument budget. Self-transfers
-        --      net to zero.
-        --   4. After the adjustment, the per-instrument budget is
-        --      reduced by the net consumed amount, so subsequent
-        --      adjustments cannot double-spend the same funding.
-        oldFunding <- case spec.nextIterationFunding of
-          Some f -> pure f
-          None -> abort "Allocation_Adjust: nextIterationFunding is None; iterated adjustment not authorized"
-        let authorizerOwner = spec.authorizer.owner
-        forA_ arg.additionalTransferLegs $ \leg ->
-          assertMsg
-            ("Allocation_Adjust: additional leg " <> leg.transferLegId <>
-             " does not involve the authorizer")
-            (leg.sender.owner == authorizerOwner || leg.receiver.owner == authorizerOwner)
-        let netDelta : TextMap.TextMap Decimal =
-              foldl
-                (\m leg ->
-                  let signed : Decimal
-                      signed
-                        | leg.sender.owner == authorizerOwner &&
-                          leg.receiver.owner == authorizerOwner = 0.0
-                        | leg.sender.owner == authorizerOwner = leg.amount
-                        | leg.receiver.owner == authorizerOwner = negate leg.amount
-                        | otherwise = 0.0
-                      cur = optional 0.0 identity (TextMap.lookup leg.instrumentId m)
-                  in TextMap.insert leg.instrumentId (cur + signed) m)
-                TextMap.empty
-                arg.additionalTransferLegs
-        forA_ (TextMap.toList netDelta) $ \(iid, consumed) -> do
-          let budget = optional 0.0 identity (TextMap.lookup iid oldFunding)
-          assertMsg
-            ("Allocation_Adjust: instrument " <> iid <>
-             " net consumption " <> show consumed <>
-             " exceeds budget " <> show budget)
-            (consumed <= budget)
-        let updatedFunding =
-              foldl
-                (\acc (iid, consumed) ->
-                  let budget = optional 0.0 identity (TextMap.lookup iid acc)
-                  in TextMap.insert iid (budget - consumed) acc)
-                oldFunding
-                (TextMap.toList netDelta)
-        archive self
-        let combinedLegs = spec.transferLegs ++ arg.additionalTransferLegs
-            -- If the executor opts out of future iterations, drop the
-            -- nextIterationFunding so settle won't roll forward.
-            nextFunding = if arg.allowFutureIterations
-                          then Some updatedFunding
-                          else None
-            newSpec = spec with
-              transferLegs = combinedLegs
-              nextIterationFunding = nextFunding
-        cid <- create this with spec = newSpec
-        pure V2.Allocation_AdjustResult with
-          allocationCid = toInterfaceContractId cid
           meta = emptyMetadata
 
       allocation_cancelImpl self _arg = do
         archive self
-        pure V2.Allocation_CancelResult with
+        pure V2.AllocationResult with
+          output = V2.AllocationResult_Cancelled
           authorizerHoldingCids = TextMap.empty
           meta = emptyMetadata
 
       allocation_withdrawImpl self _arg = do
         archive self
-        pure V2.Allocation_WithdrawResult with
+        pure V2.AllocationResult with
+          output = V2.AllocationResult_Withdrawn
           authorizerHoldingCids = TextMap.empty
           meta = emptyMetadata
 
@@ -208,7 +141,12 @@ template MockAllocationFactory with
       allocationFactory_allocateExtraObservers _ = []
 
       allocationFactory_allocateImpl _self arg = do
-        cid <- create MockAllocation with admin; spec = arg.allocation
+        now <- getTime
+        cid <- create MockAllocation with
+          admin
+          spec = arg.allocation
+          createdAt = now
+          numIterations = 0
         pure V2.AllocationInstructionResult with
           output = V2.AllocationInstructionResult_Completed (toInterfaceContractId cid)
           authorizerChangeCids = TextMap.empty
@@ -236,9 +174,11 @@ template MockSettlementFactory with
       settlementFactory_settleBatchExtraObservers _ = []
 
       settlementFactory_settleBatchImpl _self arg = do
-        results <- forA arg.allocationCids $ \allocCid ->
-          exercise allocCid V2.Allocation_Settle with
+        results <- forA arg.allocations $ \finalized ->
+          exercise finalized.allocationCid V2.Allocation_Settle with
             actors = arg.actors
+            extraTransferLegSides = finalized.extraTransferLegSides
+            nextIterationFunding = finalized.nextIterationFunding
             extraArgs = arg.extraArgs
         pure V2.SettlementFactory_SettleBatchResult with
           allocationSettleResults = results

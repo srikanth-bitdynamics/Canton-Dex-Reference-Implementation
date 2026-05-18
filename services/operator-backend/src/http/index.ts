@@ -258,6 +258,47 @@ async function routeRequest(
     return;
   }
 
+  if (method === "GET" && path === "/v1/orders/book") {
+    const base = url.searchParams.get("base");
+    const quote = url.searchParams.get("quote");
+    if (!base || !quote) {
+      respondJson(res, 400, { error: "missing ?base= or ?quote=" });
+      return;
+    }
+    const book = await backend.order.book({
+      baseInstrumentId: base,
+      quoteInstrumentId: quote,
+    });
+    respondJson(res, 200, book);
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/orders/match") {
+    const body = await readJson<{ base: string; quote: string }>(req);
+    if (!body.base || !body.quote) {
+      respondJson(res, 400, { error: "expected { base, quote }" });
+      return;
+    }
+    const matches = await backend.order.findMatches({
+      baseInstrumentId: body.base,
+      quoteInstrumentId: body.quote,
+    });
+    respondJson(res, 200, { matches });
+    return;
+  }
+
+  if (method === "GET" && path === "/v1/prices") {
+    const pairsParam = url.searchParams.get("pairs");
+    if (!pairsParam) {
+      respondJson(res, 400, { error: "missing ?pairs=BASE/QUOTE,BASE/QUOTE" });
+      return;
+    }
+    const pairs = pairsParam.split(",").map((s) => s.trim()).filter(Boolean);
+    const prices = await backend.pricing.quoteMany(pairs);
+    respondJson(res, 200, { prices });
+    return;
+  }
+
   if (method === "GET" && path === "/v1/holdings") {
     const owner = url.searchParams.get("owner");
     if (!owner) {

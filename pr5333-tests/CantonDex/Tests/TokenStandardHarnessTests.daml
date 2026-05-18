@@ -97,13 +97,15 @@ testMatchedTradeViaTokenStandardRegistry = do
   -- `getAllocationFactory`.
   let acceptOne trader cid = do
         Some req <- queryContractId trader cid
-        let alloc = V2.AllocationSpecification with
+        let traderAccount = Utils.basicAccount trader
+            alloc = V2.AllocationSpecification with
               settlement = req.settlement
               admin
-              transferLegs = req.transferLegs
+              authorizer = traderAccount
+              transferLegSides = Utils.legsToSides traderAccount req.transferLegs
               nextIterationFunding = None
               committed = False
-              authorizer = Utils.basicAccount trader
+              meta = emptyMetadata
         EnrichedFactoryChoice {factoryCid, arg} <-
           getAllocationFactory registry V2.AllocationFactory_Allocate with
             allocation = alloc
@@ -132,20 +134,21 @@ testMatchedTradeViaTokenStandardRegistry = do
   bobAllocCid <- acceptOne bob bobReqCid
 
   -- Venue groups allocations by admin and settles via the registry's
-  -- SettlementFactory.
-  let allocCids = [aliceAllocCid, bobAllocCid]
+  -- SettlementFactory. Post-PR-5333: SettleBatch takes [FinalizedAllocation],
+  -- not [ContractId Allocation].
+  let allocations = [Utils.finalAllocation aliceAllocCid, Utils.finalAllocation bobAllocCid]
       settlementInfo = MT.mkTradeSettlementInfo tradeCid trade
       settleBatchArg = V2.SettlementFactory_SettleBatch with
         settlement = settlementInfo
         transferLegs = [leg]
-        allocationCids = allocCids
+        allocations
         actors = [venue]
         extraArgs = emptyExtraArgs
   EnrichedFactoryChoice {factoryCid = settleFactoryCid} <-
     getSettlementFactory registry settleBatchArg
 
   let batch = MT.SettlementBatchV2 with
-        allocationCids = allocCids
+        allocations
         factoryCid = settleFactoryCid
         extraArgs = emptyExtraArgs
 

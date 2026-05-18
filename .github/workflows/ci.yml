@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (typecheck + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/operator-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: services/operator-backend/package-lock.json
+      - name: Install registry-client deps
+        run: npm ci
+        working-directory: services/registry-client
+      - name: Install backend deps
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: Docker build smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        run: |
+          if [ -f Dockerfile.backend ]; then
+            docker build -f Dockerfile.backend -t canton-dex-backend:ci .
+          else
+            echo "Dockerfile.backend not present on this branch; skipping"
+          fi
+      - name: Build frontend image
+        run: |
+          if [ -f Dockerfile.frontend ]; then
+            docker build -f Dockerfile.frontend -t canton-dex-frontend:ci .
+          else
+            echo "Dockerfile.frontend not present on this branch; skipping"
+          fi

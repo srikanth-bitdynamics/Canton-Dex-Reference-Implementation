@@ -40,6 +40,7 @@ import type { Party, Pool } from "../types.js";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
 import { DealersService } from "../dealers/index.js";
+import { checkAdminAuth } from "./auth.js";
 import { rootLogger } from "../lib/logger.js";
 
 const httpLog = rootLogger.child({ component: "http" });
@@ -258,6 +259,13 @@ async function routeRequest(
     return;
   }
 
+  // Admin auth gate: writes to /v1/admin/* require the bearer token.
+  const auth = checkAdminAuth(req, adminToken, path);
+  if (!auth.ok) {
+    respondJson(res, auth.status, { error: auth.message, code: auth.code });
+    return;
+  }
+
   // === read endpoints ====================================================
 
   if (method === "GET" && path === "/v1/context") {
@@ -304,6 +312,31 @@ async function routeRequest(
       200,
       all.filter((o) => o.trader === trader),
     );
+    return;
+  }
+
+  if (method === "GET" && path === "/v1/credentials") {
+    const holder = url.searchParams.get("holder");
+    if (!holder) {
+      respondJson(res, 400, { error: "missing ?holder=" });
+      return;
+    }
+    const creds = await backend.ledger.query<{ holder: string }>({
+      templateId: "CantonDex.Instrument.Credentials:Credential",
+      observingParty: backend.operatorParty,
+    });
+    respondJson(res, 200, creds.filter((c) => c.holder === holder));
+    return;
+  }
+
+  if (method === "GET" && path === "/v1/instruments") {
+    const idsParam = url.searchParams.get("ids");
+    const ids = idsParam ? idsParam.split(",").map((s) => s.trim()).filter(Boolean) : null;
+    const all = await backend.ledger.query<{ instrumentId: string }>({
+      templateId: "CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration",
+      observingParty: backend.operatorParty,
+    });
+    respondJson(res, 200, ids ? all.filter((c) => ids.includes(c.instrumentId)) : all);
     return;
   }
 

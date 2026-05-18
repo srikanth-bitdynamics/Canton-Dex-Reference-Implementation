@@ -19,30 +19,25 @@ import Splice.TokenStandard.Utils
 allocatePartyExact : Text -> Script Party
 allocatePartyExact name = allocatePartyByHint (PartyIdHint name)
 
-mkInstrumentId : Party -> Text -> HoldingV2.InstrumentId
-mkInstrumentId admin symbol = HoldingV2.InstrumentId with
-  admin
-  id = symbol
-
-mkTransferLeg : Party -> Text -> Party -> Party -> Decimal -> V2.TransferLeg
-mkTransferLeg admin transferLegId sender receiver amount = V2.TransferLeg with
+-- Post-PR-5333: V2.TransferLeg.instrumentId is plain Text. The admin
+-- is no longer carried on the leg and lives on the OTCTrade template
+-- + AllocationSpecification.admin instead.
+mkTransferLeg : Text -> Party -> Party -> Decimal -> V2.TransferLeg
+mkTransferLeg transferLegId sender receiver amount = V2.TransferLeg with
   transferLegId
   sender = basicAccount sender
   receiver = basicAccount receiver
   amount
-  instrumentId = mkInstrumentId admin "TEST"
+  instrumentId = "TEST"
   meta = emptyMetadata
 
--- Helper that lets a test specify an explicit admin per leg, instead of
--- defaulting to the venue. Used by the multi-admin test below to verify
--- splitLegsByAdmin partitions correctly.
-mkTransferLegWithAdmin : Party -> Text -> Text -> Party -> Party -> Decimal -> V2.TransferLeg
-mkTransferLegWithAdmin admin symbol transferLegId sender receiver amount = V2.TransferLeg with
+mkTransferLegWithSymbol : Text -> Text -> Party -> Party -> Decimal -> V2.TransferLeg
+mkTransferLegWithSymbol symbol transferLegId sender receiver amount = V2.TransferLeg with
   transferLegId
   sender = basicAccount sender
   receiver = basicAccount receiver
   amount
-  instrumentId = mkInstrumentId admin symbol
+  instrumentId = symbol
   meta = emptyMetadata
 
 test_request_allocations_groups_by_authorizer = script do
@@ -53,9 +48,10 @@ test_request_allocations_groups_by_authorizer = script do
 
   let otcTrade = OTCTrade with
         venue
+        admin = venue
         transferLegs =
-          [ mkTransferLeg venue "leg1" alice bob 5.0
-          , mkTransferLeg venue "leg2" alice alice 1.0
+          [ mkTransferLeg "leg1" alice bob 5.0
+          , mkTransferLeg "leg2" alice alice 1.0
           ]
         createdAt = now
         settleAt = now
@@ -76,7 +72,11 @@ test_request_allocations_groups_by_authorizer = script do
 
   requests <- query @OTCTradeAllocationRequest venue
   length requests === 2
-  let requestsByOwner = Map.fromList [ (req.authorizer.owner, req) | (_, req) <- requests ]
+  let ownerOf : HoldingV2.Account -> Party
+      ownerOf account = case account.owner of
+        Some p -> p
+        None -> error "ownerOf: special account"
+  let requestsByOwner = Map.fromList [ (ownerOf req.authorizer, req) | (_, req) <- requests ]
   let aliceReq = fromSomeNote "Missing allocation request for Alice" $
         Map.lookup alice requestsByOwner
   let bobReq = fromSomeNote "Missing allocation request for Bob" $
@@ -96,7 +96,8 @@ test_cancel_archives_trade_and_requests = script do
 
   let otcTrade = OTCTrade with
         venue
-        transferLegs = [mkTransferLeg venue "leg1" alice bob 7.0]
+        admin = venue
+        transferLegs = [mkTransferLeg "leg1" alice bob 7.0]
         createdAt = now
         settleAt = now
         settlementDeadline = None
@@ -119,39 +120,30 @@ test_cancel_archives_trade_and_requests = script do
   openRequests <- query @OTCTradeAllocationRequest venue
   length openRequests === 0
 
--- A1: admin-grouped batch settlement -- request side.
+-- A1: single-admin batch settlement -- request side.
 --
--- Verifies that a trade whose legs span TWO different asset admins
--- produces correctly-shaped allocation requests AND that the
--- splitLegsByAdmin helper from splice-token-standard-utils partitions
--- the legs into the expected per-admin keyed map. This is the
--- precondition that OTCTrade_Settle relies on to build its
--- batchesByAdmin argument.
---
--- A full end-to-end settle test (driving SettlementFactory_SettleBatch
--- per admin and asserting on resultsByAdminV2) requires a registry
--- mock implementing V2.SettlementFactory + V2.AllocationFactory on the
--- STABLE token-standard surface. We have one for PR 5333
--- (pr5333/CantonDex/Testing/MockRegistry.daml); a stable-side mirror
--- is the next slice -- it's mechanical (drop Allocation_Adjust, switch
--- result shapes) and tracked under "production-build-plan.md" workstream 5.
-test_request_allocations_supports_multiple_admins = script do
+-- Post-PR-5333 the V2 surface dropped the per-leg admin and made the
+-- single-admin assumption explicit on the AllocationSpecification +
+-- our local OTCTrade template. The previous multi-admin coverage test
+-- exercised the upstream `splitLegsByAdmin` helper which was retired
+-- in the same refactor (it inferred admin from leg.instrumentId.admin
+-- which no longer exists). The replacement is the local
+-- `splitLegsByAdminSingle` in OTCTradeV2.daml which always returns a
+-- single-entry map keyed by the trade's admin.
+test_request_allocations_supports_single_admin = script do
   venue <- allocatePartyExact "VenueMulti"
   admin1 <- allocatePartyExact "AdminBTC"
-  admin2 <- allocatePartyExact "AdminUSDC"
   alice <- allocatePartyExact "AliceMulti"
   bob <- allocatePartyExact "BobMulti"
   now <- getTime
 
-  -- Two legs across two admins:
-  --   leg1: alice → bob in BTC (admin1)
-  --   leg2: bob → alice in USDC (admin2)
   let legs =
-        [ mkTransferLegWithAdmin admin1 "BTC" "leg-btc" alice bob 1.0
-        , mkTransferLegWithAdmin admin2 "USDC" "leg-usdc" bob alice 60000.0
+        [ mkTransferLegWithSymbol "BTC" "leg-btc" alice bob 1.0
+        , mkTransferLegWithSymbol "USDC" "leg-usdc" bob alice 60000.0
         ]
       otcTrade = OTCTrade with
         venue
+        admin = admin1
         transferLegs = legs
         createdAt = now
         settleAt = now
@@ -159,27 +151,18 @@ test_request_allocations_supports_multiple_admins = script do
   otcTradeCid <- submit venue $ createCmd otcTrade
 
   -- Request allocations: should produce one request per authorizer
-  -- (alice, bob) regardless of how many admins are involved -- the
-  -- request is keyed by authorizer, not admin.
+  -- (alice, bob) regardless of how many distinct instrumentId values
+  -- are involved — the request is keyed by authorizer, not admin.
   requestCids <- submit venue $ exerciseCmd otcTradeCid OTCTrade_RequestAllocations
   length requestCids === 2
 
   -- Verify the two requests target the two authorizers.
   reqs <- query @OTCTradeAllocationRequest venue
-  let authorizers = map (\(_, r) -> r.authorizer.owner) reqs
-  -- Both alice and bob got requests:
+  let ownerOf : HoldingV2.Account -> Party
+      ownerOf account = case account.owner of
+        Some p -> p
+        None -> error "ownerOf: special account"
+  let authorizers = map (\(_, r) -> ownerOf r.authorizer) reqs
   assertMsg "alice has a request" (alice `elem` authorizers)
   assertMsg "bob has a request" (bob `elem` authorizers)
-
-  -- Verify the splitLegsByAdmin helper partitions the legs into two
-  -- keyed buckets matching admin1 and admin2. This is the structural
-  -- precondition the OTCTrade_Settle choice depends on.
-  let perAdmin = splitLegsByAdmin legs
-  Map.size perAdmin === 2
-  assertMsg "admin1 bucket present" (Map.member admin1 perAdmin)
-  assertMsg "admin2 bucket present" (Map.member admin2 perAdmin)
-  let admin1Legs = fromSomeNote "admin1 bucket" (Map.lookup admin1 perAdmin)
-      admin2Legs = fromSomeNote "admin2 bucket" (Map.lookup admin2 perAdmin)
-  length admin1Legs === 1
-  length admin2Legs === 1
   pure ()

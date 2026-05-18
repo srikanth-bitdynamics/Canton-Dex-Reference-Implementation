@@ -42,14 +42,17 @@ The registry docs anchor the instrument model:
 This means the DEX should treat `InstrumentId` as the join key into richer
 instrument semantics instead of hardcoding asset families in the exchange.
 
-### 3. PR 5333
+### 3. Token Standard V2 allocation surface
 
-The pool design depends on the V2 allocation changes proposed in PR 5333:
+The pool design depends on the V2 allocation extensions released in
+Splice's `token-standard-v2-upcoming` branch (originally proposed as
+splice#5333, since merged):
 
 - iterated settlement
 - `nextIterationFunding`
 - committed allocations
-- `Allocation_Adjust`
+- `FinalizedAllocation.extraTransferLegSides` (replaces the
+  draft-era `Allocation_Adjust` choice)
 - settle results that return next-iteration allocation state
 
 Those changes are what make it realistic to use allocations not only for trade
@@ -193,7 +196,7 @@ different settlement bridge behind it.
 
 ### Executor-control constraint
 
-PR 5333 makes long-lived, iterated allocations workable for orders and pools,
+The V2 allocation extensions make long-lived, iterated allocations workable for orders and pools,
 but it also raises a control question:
 
 - once funds sit in committed / iterated allocations, the executor is the party
@@ -264,7 +267,7 @@ story with minimal market-structure complexity.
 
 Orders should be prefunded using allocations:
 
-- production-grade resting orders also require PR 5333 style prefunded and
+- production-grade resting orders also require V2-style prefunded and
   adjustable allocation semantics, because the exact matched transfer legs are
   not known at order placement time
 
@@ -278,7 +281,7 @@ story.
 
 ### For pools
 
-Pool funds require the PR 5333 shape.
+Pool funds require the V2 allocation shape.
 
 The design assumes:
 
@@ -360,7 +363,7 @@ The reference architecture has a deliberate split:
 - OTC and RFQ flows can be implemented against the current `TradingAppV2`
   surface
 - pool-backed liquidity should be implemented only against a branch that
-  includes the PR 5333 style allocation changes
+  includes the V2-style allocation changes
 
 If the upstream API shape changes before landing, this repo should preserve the
 same design intent even if field names or result structures move.

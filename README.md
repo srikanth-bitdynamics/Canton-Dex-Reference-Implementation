@@ -169,12 +169,14 @@ These three upstream sources define the design surface:
 - [**Registry workflows**](https://docs.digitalasset.com/utilities/devnet/overview/registry-user-guide/workflows.html)
   — `InstrumentConfiguration` is the source of truth for
   credential-gated mint/burn/transfer.
-- [**Splice PR 5333**](https://github.com/canton-network/splice/pull/5333)
-  — adds the allocation semantics for pool funds: iterated settlement,
-  committed allocations, `Allocation_Adjust`, and settle results that
-  return rolled-forward allocation state.
+- [**Splice `token-standard-v2-upcoming`**](https://github.com/canton-network/splice/tree/token-standard-v2-upcoming/token-standard)
+  — the released V2 allocation semantics (iterated settlement,
+  committed allocations, `FinalizedAllocation`, and settle results
+  that return rolled-forward allocation state). Originally proposed
+  as [splice#5333](https://github.com/canton-network/splice/pull/5333);
+  merged into the `token-standard-v2-upcoming` branch.
 
-The repo ships the PR-5333 DARs under
+The repo ships the V2 token-standard DARs under
 [`vendor/splice/`](vendor/splice/). When upstream V2
 stable lands on MainNet (target EOM July 2026 per the canton-foundation
 team), we cut over to upstream — the migration plan is in

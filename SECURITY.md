@@ -5,7 +5,7 @@
 Only the `main` branch is supported. We do not backport fixes to
 older tags or releases.
 
-The `canton-dex-pr5333` Daml package version on the public testnet
+The `canton-dex-trading` Daml package version on the public testnet
 is the deployed surface; older versions remain queryable via Daml
 smart-upgrade but are not supported for new contracts.
 
@@ -28,7 +28,7 @@ disclosure.
 
 In scope:
 
-- Contract bugs in the `pr5333/` Daml templates that allow
+- Contract bugs in the `trading/` Daml templates that allow
   unauthorized state transitions, asset movement, or settlement
   bypass.
 - Operator-backend bugs in `services/operator-backend/` that leak

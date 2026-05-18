@@ -21,14 +21,14 @@ builder evaluating Canton + Token Standard V2.
   oracle integrations) that obscure the reference. Those belong in
   forks, not here.
 - Replacing well-tested patterns with personal preferences.
-- Breaking the smart-upgrade lineage on `canton-dex-pr5333` without a
+- Breaking the smart-upgrade lineage on `canton-dex-trading` without a
   migration plan; see `docs/run-testnet.md` "Smart upgrade".
 
 ## Development workflow
 
 1. Pre-reqs: Daml SDK 3.4.11, Node 20+, `tsx`.
-2. Build: `bash scripts/build-pr5333-surface.sh`.
-3. Test: `cd pr5333-tests && daml test`.
+2. Build: `bash scripts/build-trading-surface.sh`.
+3. Test: `cd trading-tests && daml test`.
 4. UI typecheck: `cd app/web && npx tsc --noEmit`.
 5. Backend typecheck: `cd services/operator-backend && npx tsc --noEmit`.
 

@@ -61,7 +61,10 @@ export class PoolService {
     // prefix to match the dApp's TypeScript type. Accept both forms here, and
     // include Unfunded so the UI can render newly-created pools that haven't
     // received their first liquidity yet.
-    return pools.filter((p) => p.status !== "PS_Paused" && p.status !== "Paused");
+    return pools.filter((p) => {
+      const s = p.status as string;
+      return s !== "PS_Paused" && s !== "Paused";
+    });
   }
 
   async initialize(input: PoolInitializeInput): Promise<{

@@ -22,6 +22,8 @@
     "@reown/appkit-common": "^1.8.19",
     "@reown/appkit-universal-connector": "^1.8.19",
     "@tanstack/react-query": "^5.51.0",
+    "@walletconnect/sign-client": "^2.23.9",
+    "@walletconnect/types": "^2.23.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.0",

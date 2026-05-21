@@ -17,6 +17,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@canton-network/dapp-sdk": "^1.1.0",
     "@reown/appkit": "^1.8.19",
     "@reown/appkit-common": "^1.8.19",
     "@reown/appkit-universal-connector": "^1.8.19",

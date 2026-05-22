@@ -6,11 +6,13 @@
 
 import { CantonDirectProvider } from "./canton-direct-provider";
 import { MockWalletProvider } from "./mock-provider";
+import { SdkProvider } from "./sdk-provider";
 import { TokenStandardProvider } from "./token-standard-provider";
 import { WalletConnectProvider } from "./walletconnect-provider";
 import type { WalletProvider } from "./types";
 
 export type WalletProviderId =
+  | "sdk"
   | "token-standard"
   | "walletconnect"
   | "canton-direct"
@@ -26,8 +28,20 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   const authToken = (import.meta.env.VITE_CANTON_AUTH_TOKEN ?? "") as string;
   const apiBase =
     (import.meta.env.VITE_API_BASE ?? "http://localhost:8080") as string;
+  const enableSdk =
+    (import.meta.env.VITE_ENABLE_SDK ?? "") === "1";
+  const packagePrefix = (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID ??
+    "#canton-dex-trading") as string;
 
   const map = new Map<WalletProviderId, WalletProvider>();
+
+  // CIP-0103 dApp-standard provider backed by @canton-network/dapp-sdk.
+  // Gated by VITE_ENABLE_SDK=1 while we cut over from the operator-
+  // relay providers below. Once Phase 3 lands this becomes the default
+  // and the other providers are deleted.
+  if (enableSdk) {
+    map.set("sdk", new SdkProvider(packagePrefix));
+  }
 
   // Token Standard V2 — canonical Canton-native path. Always registered;
   // surfaces a clear error at connect time if the env is missing.

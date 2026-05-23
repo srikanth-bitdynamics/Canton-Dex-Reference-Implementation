@@ -109,7 +109,8 @@ async function queryHoldings(party: string, instrumentId: string) {
                 identifierFilter: {
                   TemplateFilter: {
                     value: {
-                      templateId: tid(cfg.pkgDex, "CantonDex.Registry.V2:Holding"),
+                      // Canton 3.5+ requires `#package-name` in query filters.
+                      templateId: `#canton-dex-trading:CantonDex.Registry.V2:Holding`,
                       includeCreatedEventBlob: false,
                     },
                   },
@@ -163,7 +164,7 @@ async function main() {
           choice: "Registry_RegisterInstrument",
           choiceArgument: {
             instrumentId: "BTC",
-            decimals: 8,
+            decimals: "8",
             supplyCap: SUPPLY_CAP,
             holderRequirements: [],
             issuerRequirements: [],
@@ -244,12 +245,26 @@ async function main() {
         },
       },
     ]);
-    return findCreates(tx, "CantonDex.Dex.MatchedTrade:TradeAllocationRequest").map((c) => ({
-      cid: c.contractId,
-      authorizerOwner: ((c.createArgument as { authorizer: { owner: string } }).authorizer).owner,
-      settlement: (c.createArgument as { settlement: unknown }).settlement,
-      transferLegs: (c.createArgument as { transferLegs: unknown[] }).transferLegs,
-    }));
+    // V2-release projection: TradeAllocationRequest stores
+    // `transferLegs : [V2.TransferLeg]` (bidirectional), but
+    // AllocationFactory_Allocate's AllocationSpecification expects
+    // `transferLegSides : [V2.TransferLegSide]` (one side per leg).
+    // Project here so each authorizer's allocation only carries the
+    // side they're authorizing.
+    type Leg = { transferLegId: string; sender: { owner: string }; receiver: { owner: string }; amount: string; instrumentId: string; meta: unknown };
+    const legToSide = (authorizer: string, leg: Leg) =>
+      leg.sender.owner === authorizer
+        ? { transferLegId: leg.transferLegId, side: "SenderSide", otherside: leg.receiver, amount: leg.amount, instrumentId: leg.instrumentId, meta: leg.meta }
+        : { transferLegId: leg.transferLegId, side: "ReceiverSide", otherside: leg.sender, amount: leg.amount, instrumentId: leg.instrumentId, meta: leg.meta };
+    return findCreates(tx, "CantonDex.Dex.MatchedTrade:TradeAllocationRequest").map((c) => {
+      const args = c.createArgument as { authorizer: { owner: string }; settlement: unknown; transferLegs: Leg[] };
+      return {
+        cid: c.contractId,
+        authorizerOwner: args.authorizer.owner,
+        settlement: args.settlement,
+        transferLegSides: args.transferLegs.map((l) => legToSide(args.authorizer.owner, l)),
+      };
+    });
   });
   const aliceReq = reqInfos.find((r) => r.authorizerOwner === cfg.alice)!;
   const bobReq = reqInfos.find((r) => r.authorizerOwner === cfg.bob)!;
@@ -259,10 +274,11 @@ async function main() {
     const allocSpec = {
       settlement: aliceReq.settlement,
       admin: cfg.admin,
-      transferLegs: aliceReq.transferLegs,
+      transferLegSides: aliceReq.transferLegSides,
       nextIterationFunding: null,
       committed: false,
       authorizer: basicAccount(cfg.alice),
+      meta: { values: {} },
     };
     const tx = await submit([cfg.alice, cfg.admin], `${RUN_ID}-alice-accept`, [
       {
@@ -296,10 +312,11 @@ async function main() {
     const allocSpec = {
       settlement: bobReq.settlement,
       admin: cfg.admin,
-      transferLegs: bobReq.transferLegs,
+      transferLegSides: bobReq.transferLegSides,
       nextIterationFunding: null,
       committed: false,
       authorizer: basicAccount(cfg.bob),
+      meta: { values: {} },
     };
     const tx = await submit([cfg.bob, cfg.admin], `${RUN_ID}-bob-accept`, [
       {
@@ -337,17 +354,25 @@ async function main() {
           contractId: tradeCid,
           choice: "MatchedTrade_Settle",
           choiceArgument: {
+            // V2-release: SettlementBatchV2.allocations is
+            // [V2.FinalizedAllocation], not just allocation CIDs.
+            // Iterated settlement disabled here, so extraTransferLegSides
+            // is empty and nextIterationFunding is null.
             batchesByAdmin: [
               [
                 cfg.admin,
                 {
-                  allocationCids: [aliceAllocCid, bobAllocCid],
+                  allocations: [
+                    { allocationCid: aliceAllocCid, extraTransferLegSides: [], nextIterationFunding: null },
+                    { allocationCid: bobAllocCid, extraTransferLegSides: [], nextIterationFunding: null },
+                  ],
                   factoryCid: registryCid,
                   extraArgs: EMPTY_EXTRA,
                 },
               ],
             ],
             allocationRequests: [],
+            dexPairCid: null,
           },
         },
       },

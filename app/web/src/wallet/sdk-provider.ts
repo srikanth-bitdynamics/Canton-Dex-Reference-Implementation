@@ -91,7 +91,6 @@ export class SdkProvider implements WalletProvider {
       if (!this.initialised) {
         await sdkInit();
         this.initialised = true;
-        this.wireEvents();
       }
 
       const conn = await sdkConnect();
@@ -99,6 +98,11 @@ export class SdkProvider implements WalletProvider {
         throw new Error(
           `sdk-provider: wallet refused connect (${conn.reason ?? "no reason"})`,
         );
+      }
+      // SDK requires the client to be connected before subscribing to
+      // status / accounts changes. Wire AFTER connect() resolves.
+      if (this.statusListener === null) {
+        this.wireEvents();
       }
       const account = await this.primaryAccount();
       this.setStatus({ kind: "connected", account, providerId: this.id });

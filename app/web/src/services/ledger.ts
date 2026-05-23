@@ -55,8 +55,10 @@ export const ledger = {
     // every consumer downstream stays simple.
     const num = (v: unknown): number =>
       typeof v === 'number' ? v : parseFloat(String(v ?? 0));
+    const stripPrefix = (s: string): string => (s.startsWith('PS_') ? s.slice(3) : s);
     return raw.map((p) => ({
       ...p,
+      status: stripPrefix(p.status as unknown as string),
       feeBps: num(p.feeBps),
       totalLpSupply: num(p.totalLpSupply),
       reserves: {

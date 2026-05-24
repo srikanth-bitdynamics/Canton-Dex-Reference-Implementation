@@ -364,10 +364,11 @@ and environment bring-up, **not** core workflow proof.
   segments 3, 4, and 5. Workaround for the recording: stay on the
   Pools page, narrate the Trade / Portfolio behaviour with CLI
   output. Spawned task in the session backlog.
-- **Pools page hook-order error #310** with 4+ pools — fixed in
-  `daf6450` (`web/PoolsPage: hoist useAssetPricesUsd above
-  conditional early returns`). Make sure the dApp is built off
-  `srikanth/dapp-sdk-migration` or `main` after that commit.
+- **Pools page hook-order error #310** triggered when pool data
+  arrives between renders. Root cause: `useAssetPricesUsd` was
+  called after conditional early returns in `PoolsPage`, breaking
+  React's rules-of-hooks. Fixed in this PR by hoisting the hook
+  above the early returns.
 - **Wallet session drops on page reload** — the CIP-0103 SDK
   session does not persist a hard reload. Acceptable for the
   recording; just don't F5 mid-demo unless you also re-connect

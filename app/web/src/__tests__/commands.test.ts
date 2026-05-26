@@ -1,9 +1,4 @@
-// Snapshot tests for the WalletIntent -> Daml command tree mapping.
-//
-// One test per intent. The test fixes a deterministic clock and party,
-// composes the command tree, and asserts the full shape. If any
-// composer changes its emitted commands, the snapshot fails and a
-// reviewer must approve the diff — that is the audit boundary.
+// Snapshot tests for WalletIntent -> Daml command composition.
 
 import { describe, it, expect } from 'vitest';
 

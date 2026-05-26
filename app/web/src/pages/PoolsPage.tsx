@@ -27,6 +27,12 @@ export function PoolsPage() {
 
   const [selected, setSelected] = useState<string | null>(null);
 
+  // Hoisted above early returns: hooks must run in the same order on
+  // every render. `symbols` is empty when `pools` is undefined; the
+  // fiat-price hook handles that case as a no-op.
+  const symbols = (pools ?? []).flatMap((p) => [p.baseInstrumentId, p.quoteInstrumentId]);
+  const { prices: priceUsd } = useAssetPricesUsd(symbols);
+
   if (isLoading) {
     return (
       <div className="text-text-muted text-center py-12">Loading pools...</div>
@@ -58,9 +64,9 @@ export function PoolsPage() {
 
   // Aggregate TVL across pools, using live mid prices for fiat
   // estimates. Pools whose base or quote has no live price are
-  // skipped (we don't fabricate dollars).
-  const symbols = pools.flatMap((p) => [p.baseInstrumentId, p.quoteInstrumentId]);
-  const { prices: priceUsd } = useAssetPricesUsd(symbols);
+  // skipped (we don't fabricate dollars). `symbols` + `priceUsd`
+  // are hoisted above the early returns (see useAssetPricesUsd
+  // call earlier in the function).
   let priceableCount = 0;
   const tvl = pools.reduce((s, p) => {
     const bp = priceUsd[p.baseInstrumentId];

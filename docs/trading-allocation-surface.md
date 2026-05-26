@@ -77,14 +77,6 @@ First concrete utility-layer blocker:
 This confirms that branch-specific DEX work should not assume the stable helper
 layer can be reused unchanged.
 
-Repeatable local probe:
-
-- `bash scripts/probe-trading-tradingappv2-build.sh`
-  - first checks that the upstream `TradingAppV2` source is unchanged
-    against the released V2 surface
-  - then probes whether the upstream utility layer and example package build
-    unchanged
-
 ## Design Notes Present in the V2 Source
 
 The V2 source file explicitly describes the intended use for:

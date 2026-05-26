@@ -1,19 +1,7 @@
-// Live-testnet real trade using the FULL V2 registry
-// (`CantonDex.Registry.V2.Registry`). Replaces the prior
-// `testnet-real-trade-harness.ts` (which used the minimal `RealRegistry`).
-//
-// What's different from the prior harness:
-//   1. Registers an InstrumentConfig FIRST (with supply cap, decimals,
-//      open credential requirements for the demo).
-//   2. Mints holdings via `Registry_Mint` which now enforces issuer
-//      credentials, bumps circulating supply, and respects the cap.
-//   3. AllocationFactory_Allocate enforces per-instrument coverage
-//      with the supplied input holdings.
-//   4. SettlementFactory_SettleBatch mints receiver-side holdings and
-//      drives Allocation_Settle (which archives sender's locked holdings).
-//
-// Required env: same as testnet-real-trade-harness.ts, but
-// CANTON_DEX_PACKAGE_ID must point at v0.0.3 (3df37857...).
+// Matched-trade settlement against a live Canton participant using the
+// V2 Registry as AllocationFactory + SettlementFactory + TransferFactory.
+// Registers an instrument, mints to alice, posts a MatchedTrade, runs
+// the V2 allocation accept on both sides, settles via SettleBatch.
 
 function required(name: string): string {
   const v = process.env[name];
@@ -141,7 +129,7 @@ async function main() {
   console.log(`alice:  ${cfg.alice}  (sender)`);
   console.log(`bob:    ${cfg.bob}   (receiver)`);
 
-  // Step 1: admin creates the full-V2 Registry.
+  // Create the V2 Registry (acts as AllocationFactory + SettlementFactory).
   const registryCid = await step("create Registry (full V2 standard)", async () => {
     const tx = await submit([cfg.admin], `${RUN_ID}-registry`, [
       {
@@ -154,7 +142,7 @@ async function main() {
     return findCreates(tx, "CantonDex.Registry.V2:Registry")[0]!.contractId;
   });
 
-  // Step 2: admin registers an InstrumentConfig for "BTC" (open creds for demo).
+  // Register BTC under a supply cap, open credential reqs for the demo.
   const instrumentConfigCid = await step("Registry_RegisterInstrument (BTC, supply cap 1M)", async () => {
     const tx = await submit([cfg.admin], `${RUN_ID}-register-btc`, [
       {
@@ -177,8 +165,8 @@ async function main() {
     return findCreates(tx, "CantonDex.Registry.V2:InstrumentConfig")[0]!.contractId;
   });
 
-  // Step 3: admin mints alice 25 BTC. Registry_Mint enforces issuer
-  // credentials (open here) AND bumps supply against the cap.
+  // Mint BTC to alice (also rotates the InstrumentConfig CID).
+
   const aliceHoldingCid = await step(`Registry_Mint ${ALICE_MINT} BTC → alice (enforces cap + cred)`, async () => {
     const tx = await submit([cfg.admin, cfg.alice], `${RUN_ID}-mint-alice`, [
       {
@@ -206,7 +194,7 @@ async function main() {
     if (a.length === 0) throw new Error("alice should have a BTC holding pre-trade");
   });
 
-  // Step 4: venue creates MatchedTrade.
+  // Venue posts the MatchedTrade.
   const leg = {
     transferLegId: "leg-1",
     sender: basicAccount(cfg.alice),
@@ -233,7 +221,7 @@ async function main() {
     return findCreates(tx, "CantonDex.Dex.MatchedTrade:MatchedTrade")[0]!.contractId;
   });
 
-  // Step 5: request allocations.
+  // Venue requests allocations — one per counterparty.
   const reqInfos = await step("MatchedTrade_RequestAllocations", async () => {
     const tx = await submit([cfg.venue], `${RUN_ID}-reqallocs`, [
       {
@@ -245,12 +233,8 @@ async function main() {
         },
       },
     ]);
-    // V2-release projection: TradeAllocationRequest stores
-    // `transferLegs : [V2.TransferLeg]` (bidirectional), but
-    // AllocationFactory_Allocate's AllocationSpecification expects
-    // `transferLegSides : [V2.TransferLegSide]` (one side per leg).
-    // Project here so each authorizer's allocation only carries the
-    // side they're authorizing.
+    // TradeAllocationRequest carries bidirectional TransferLegs;
+    // AllocationSpecification expects one-sided TransferLegSides.
     type Leg = { transferLegId: string; sender: { owner: string }; receiver: { owner: string }; amount: string; instrumentId: string; meta: unknown };
     const legToSide = (authorizer: string, leg: Leg) =>
       leg.sender.owner === authorizer
@@ -269,7 +253,7 @@ async function main() {
   const aliceReq = reqInfos.find((r) => r.authorizerOwner === cfg.alice)!;
   const bobReq = reqInfos.find((r) => r.authorizerOwner === cfg.bob)!;
 
-  // Step 6: alice's wallet — Accept + AllocationFactory_Allocate (coverage-enforced).
+  // Alice accepts and allocates her side (coverage-enforced by the factory).
   const aliceAllocCid = await step("alice: Accept + AllocationFactory_Allocate (coverage check)", async () => {
     const allocSpec = {
       settlement: aliceReq.settlement,
@@ -307,7 +291,7 @@ async function main() {
     return findCreates(tx, "CantonDex.Registry.V2:Allocation")[0]!.contractId;
   });
 
-  // Step 7: bob's wallet — Accept + Allocate (receipt, no holdings to lock).
+  // Bob accepts and allocates his side (receipt; no holdings locked).
   const bobAllocCid = await step("bob: Accept + AllocationFactory_Allocate (receipt)", async () => {
     const allocSpec = {
       settlement: bobReq.settlement,
@@ -345,7 +329,7 @@ async function main() {
     return findCreates(tx, "CantonDex.Registry.V2:Allocation")[0]!.contractId;
   });
 
-  // Step 8: venue + admin settle.
+  // Venue + admin settle the batch.
   await step("MatchedTrade_Settle (V2 SettlementFactory_SettleBatch under the hood)", async () => {
     const tx = await submit([cfg.venue, cfg.admin], `${RUN_ID}-settle`, [
       {
@@ -354,10 +338,6 @@ async function main() {
           contractId: tradeCid,
           choice: "MatchedTrade_Settle",
           choiceArgument: {
-            // V2-release: SettlementBatchV2.allocations is
-            // [V2.FinalizedAllocation], not just allocation CIDs.
-            // Iterated settlement disabled here, so extraTransferLegSides
-            // is empty and nextIterationFunding is null.
             batchesByAdmin: [
               [
                 cfg.admin,
@@ -393,13 +373,10 @@ async function main() {
     if (bAmt !== parseFloat(TRADE_AMOUNT)) throw new Error(`bob amount ${bAmt} != ${TRADE_AMOUNT}`);
   });
 
-  console.log("\n✅ FULL V2 STANDARD REGISTRY — REAL TRADE complete on testnet");
-  console.log(`run-id: ${RUN_ID}`);
-  console.log("  10 BTC moved alice → bob through the full CIP-0056 V2 surface");
-  console.log("  (Registry implements AllocationFactory + SettlementFactory + TransferFactory + EventLog)");
+  console.log(`\nmatched-trade complete. run-id: ${RUN_ID}`);
 }
 
 main().catch((e) => {
-  console.error("\n❌ V2 registry trade FAILED:", e);
+  console.error("\nmatched-trade FAILED:", e);
   process.exit(1);
 });

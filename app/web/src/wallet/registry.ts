@@ -1,8 +1,4 @@
-// Provider registry. The dApp picks the active wallet provider from a
-// single place; adding a future provider (CIP-0103 native, Dfns,
-// embedded testnet wallet, ...) is one new module + one registry
-// entry. Components import `useActiveWallet` and the active provider's
-// methods, not concrete classes.
+// Wallet provider registry. Single place to add or gate providers.
 
 import { CantonDirectProvider } from "./canton-direct-provider";
 import { MockWalletProvider } from "./mock-provider";
@@ -35,36 +31,11 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
 
   const map = new Map<WalletProviderId, WalletProvider>();
 
-  // CIP-0103 dApp-standard provider backed by @canton-network/dapp-sdk.
-  // Gated by VITE_ENABLE_SDK=1 while we cut over from the operator-
-  // relay providers below. Once Phase 3 lands this becomes the default
-  // and the other providers are deleted.
-  if (enableSdk) {
-    map.set("sdk", new SdkProvider(packagePrefix));
-  }
-
-  // Token Standard V2 — canonical Canton-native path. Always registered;
-  // surfaces a clear error at connect time if the env is missing.
-  map.set(
-    "token-standard",
-    new TokenStandardProvider(ledgerUrl, authToken, apiBase),
-  );
-
-  // WalletConnect for external wallets supporting CIP-0103 over WC v2.
-  if (projectId) {
-    map.set("walletconnect", new WalletConnectProvider(projectId, networkId));
-  }
-
-  // Direct Canton ledger access (advanced fallback).
-  if (ledgerUrl && authToken) {
-    map.set("canton-direct", new CantonDirectProvider(ledgerUrl, authToken));
-  }
-
-  // Mock available only in dev. Production builds drop this provider
-  // entirely so end users can't accidentally pick it.
-  if (import.meta.env.DEV) {
-    map.set("mock", new MockWalletProvider());
-  }
+  if (enableSdk) map.set("sdk", new SdkProvider(packagePrefix));
+  map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));
+  if (projectId) map.set("walletconnect", new WalletConnectProvider(projectId, networkId));
+  if (ledgerUrl && authToken) map.set("canton-direct", new CantonDirectProvider(ledgerUrl, authToken));
+  if (import.meta.env.DEV) map.set("mock", new MockWalletProvider());
 
   return map;
 }
@@ -80,10 +51,4 @@ export function getProvider(id: WalletProviderId): WalletProvider {
   return p;
 }
 
-/**
- * The default provider the UI offers first. Token Standard is the
- * canonical Canton-native path; WalletConnect for external CIP-0103
- * wallets; canton-direct and mock are advanced/dev fallbacks reachable
- * from the Connect Wallet menu.
- */
 export const DEFAULT_PROVIDER_ID: WalletProviderId = "token-standard";

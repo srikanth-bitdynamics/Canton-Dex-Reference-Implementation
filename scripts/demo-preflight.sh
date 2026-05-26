@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# Demo-preflight check. Run before hitting record on the Canton-Dex
-# walkthrough (docs/demo-walkthrough.md). Verifies every service is
-# up, the seeded contracts are queryable, and the harness scripts
-# can talk to Canton.
-#
-# Exit code: 0 = ready, non-zero = something is broken (and the
-# script prints what to fix).
+# Demo preflight. Checks LocalNet services, token validity, seeded
+# contracts, DAR build outputs, and demo scripts. See docs/e2e-demo-plan.md.
 
 set -e
 RED=$'\033[0;31m'

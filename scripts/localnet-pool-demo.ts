@@ -1,22 +1,7 @@
-// Live-Canton pool lifecycle demo on LocalNet.
-//
-// Exercises Pool_Initialize on a real Canton 3.5.1 participant. Uses
-// the V2 Registry as the AllocationFactory (same one our matched-trade
-// harness uses). Companion to testnet-v2registry-trade.ts:
-//
-//   testnet-v2registry-trade.ts  →  matched-trade settlement   (M1 evidence)
-//   localnet-pool-demo.ts        →  pool init                  (M2 evidence)
-//
-// Why just Pool_Initialize: that's the first state transition
-// (PS_Unfunded → PS_Active). It exercises Pool internally calling
-// AllocationFactory_Allocate twice (base + quote leg) and minting
-// the LP token — i.e. every M2 deliverable from the milestone
-// description in a single on-chain transaction. AddLiquidity, Swap,
-// and RemoveLiquidity follow the same V2 surface and are verified
-// in-script by `testPoolFullLifecycle` in trading-tests/.
-//
-// Reuses the same env vars as testnet-v2registry-trade.ts. Sets up a
-// fresh registry per run so it's idempotent.
+// Pool_Initialize + Pool_AddLiquidity against a live Canton participant.
+// Creates a fresh V2 Registry per run, registers BTC + USDC, mints seed
+// holdings to the operator, then exercises the two pool choices.
+// Reads CANTON_POOL_CID for an existing PS_Unfunded Pool to initialize.
 
 function required(name: string): string {
   const v = process.env[name];
@@ -141,8 +126,6 @@ async function main() {
   console.log(`lpRegistrar:      ${cfg.lpRegistrar}`);
   console.log(`pool cid:         ${cfg.poolCid.slice(0, 24)}…`);
 
-  // Step 1: dedicated Registry for this run (acts as both
-  // AllocationFactory and the instrument issuer scaffolding).
   const registryCid = await step("create Registry (V2 AllocationFactory)", async () => {
     const tx = await submit([cfg.admin], `${RUN_ID}-reg`, [
       {
@@ -155,7 +138,6 @@ async function main() {
     return findCreates(tx, "CantonDex.Registry.V2:Registry")[0]!.contractId;
   });
 
-  // Step 2: register BTC + USDC instruments under the admin issuer.
   const btcConfigCid = await step("Registry_RegisterInstrument BTC", async () => {
     const tx = await submit([cfg.admin], `${RUN_ID}-reg-btc`, [
       {
@@ -199,15 +181,8 @@ async function main() {
     return findCreates(tx, "CantonDex.Registry.V2:InstrumentConfig")[0]!.contractId;
   });
 
-  // Step 3: mint seed liquidity to the operator. Pool_Initialize
-  // consumes operator-owned holdings to bootstrap the reserves; the
-  // LP-token recipient is the lpRegistrar (or any party we choose).
-  //
-  // Registry_Mint internally exercises InstrumentConfig_BumpSupply
-  // which is consuming — each mint archives the InstrumentConfig
-  // and creates a fresh one with the bumped circulating supply. The
-  // harness tracks the latest config CID after each mint so the
-  // second top-up (Add LP) can find a valid config.
+  // Registry_Mint exercises InstrumentConfig_BumpSupply (consuming) so
+  // the config CID rotates each mint. Track the latest.
   let curBtcConfigCid = btcConfigCid;
   let curUsdcConfigCid = usdcConfigCid;
 
@@ -258,9 +233,6 @@ async function main() {
     if (btc.length === 0 || usdc.length === 0) throw new Error("operator should hold seed liquidity pre-init");
   });
 
-  // Step 4: Pool_Initialize. The Pool template's controller is just
-  // the operator; AllocationFactory_Allocate gets called twice (one
-  // per leg) using the operator-owned holdings.
   const initResult = await step("Pool_Initialize (PS_Unfunded → PS_Active)", async () => {
     const tx = await submit([cfg.venue, cfg.lpRegistrar, cfg.admin], `${RUN_ID}-pool-init`, [
       {
@@ -297,15 +269,7 @@ async function main() {
   console.log(`  V2 allocations created: ${initResult.allocCount} (one per leg: base + quote)`);
   console.log(`  Active pool CID: ${initResult.newPoolCid?.slice(0, 24)}…`);
 
-  // ----------------------------------------------------------------
-  // M2: Pool_AddLiquidity. Mint additional holdings, top up the
-  // pool. Same allocation pattern but the pool is already Active.
-  // The pool computes lpToMint via the constant-product invariant
-  // and observes `knownTotalLpSupply` from the operator. Init minted
-  // sqrt(1 * 30000) = ~173.2 LP tokens, so we pass that as the known
-  // supply.
-  // ----------------------------------------------------------------
-
+  // Pool_AddLiquidity. knownTotalLpSupply is sqrt(base * quote) from init.
   let activePoolCid = initResult.newPoolCid!;
   const knownLpSupply = Math.sqrt(parseFloat(BASE_AMOUNT) * parseFloat(QUOTE_AMOUNT)).toFixed(10);
 
@@ -381,33 +345,8 @@ async function main() {
       newAllocs: allocs.length,
     };
   });
-  console.log(`  Reserves: ${addResult.newReserves.baseAmount} BTC / ${addResult.newReserves.quoteAmount} USDC`);
-  console.log(`  Pool now has ${addResult.sliceCount} slice(s) per side (committed allocations)`);
-
-  // ----------------------------------------------------------------
-  // M2: Pool_Swap. The trader (alice) authorizes a one-sided
-  // transfer (USDC → pool) via AllocationFactory_Allocate. The pool
-  // settles that allocation + transfers BTC back to alice in a
-  // single SettlementFactory_SettleBatch.
-  //
-  // We skip the swap here when the harness isn't given an alice
-  // party because the AllocationFactory flow is intricate enough
-  // that a clean retry-safe demo path would need its own ~80 lines.
-  // The in-script test `testPoolSwapEndToEnd` exercises this on the
-  // same Daml templates; see trading-tests/CantonDex/Tests/EndToEndTests.daml.
-  // ----------------------------------------------------------------
-
-  console.log("\n=== POOL LIFECYCLE EVIDENCE ===");
-  console.log(`  ✓ Pool_Initialize:    PS_Unfunded → PS_Active`);
-  console.log(`  ✓ Pool_AddLiquidity:  +${ADD_BASE} BTC, +${ADD_QUOTE} USDC committed via V2 alloc`);
-  console.log(`     final reserves:    ${addResult.newReserves.baseAmount} BTC / ${addResult.newReserves.quoteAmount} USDC`);
-  console.log(`     committed slices:  ${addResult.sliceCount} per side`);
-  console.log(`  ⏭  Pool_Swap:          covered by testPoolSwapEndToEnd (in-script test)`);
-  console.log(`  ⏭  Pool_RemoveLiquidity: covered by testPoolRemoveLiquidity{Consolidates,SliceLocal}`);
-  console.log("\n✅ M2 pool init + add LP verified on real Canton 3.5.1");
-  console.log("\nFor swap + remove end-to-end, see in-script tests in");
-  console.log("trading-tests/CantonDex/Tests/EndToEndTests.daml.");
-  console.log("\nrun-id: " + RUN_ID);
+  console.log(`  Reserves: ${addResult.newReserves.baseAmount} BTC / ${addResult.newReserves.quoteAmount} USDC, ${addResult.sliceCount} slice(s) per side`);
+  console.log(`run-id: ${RUN_ID}`);
 }
 
 main().catch((err) => {

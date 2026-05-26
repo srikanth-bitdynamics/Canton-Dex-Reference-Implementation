@@ -19,31 +19,23 @@ the existing `daml build` flow is the supported path for this repo today.
 ## Two stacks, one repo
 
 The repo carries two co-existing Daml projects against two different token-standard
-snapshots:
+snapshot:
 
-| Path        | Daml package           | Token-standard surface                | What it proves                                                                  |
-| ----------- | ---------------------- | ------------------------------------- | ------------------------------------------------------------------------------- |
-| `src/`      | `canton-dex`           | current upstream (`vendor/splice`)    | OTC / RFQ matched-trade settlement using the `TradingAppV2` pattern             |
-| `trading/`   | `canton-dex-trading`    | V2 standard (`vendor/splice/token-standard/`) | Resting orders, RFQ with policy receipts, pools, swaps, LP token, registry flows |
-
-The split is intentional. PR 108 explicitly distinguishes "what is possible
-today" from "what depends on the V2 allocation extensions". Builders evaluating only the
-OTC settlement substrate can ignore `trading/` entirely.
+| Path | Daml package | Token-standard surface | What it proves |
+| --- | --- | --- | --- |
+| `trading/` | `canton-dex-trading` | V2 standard (`vendor/splice/token-standard/`) | Matched-trade settlement, RFQ with policy receipts, pools + swaps, LP token, registry flows |
 
 ## One-command build + test
 
 ```bash
-# OTC / RFQ stack (TradingAppV2-style):
-bash scripts/build-source-stack.sh
-bash scripts/run-local-daml-tests.sh
-
-# Full stack (orders, pools, LP, registry):
+bash scripts/build-vendored-token-standard.sh
 bash scripts/build-trading-surface.sh
 ( cd trading-tests && daml test )
+( cd examples/stable-pool && daml test )
 ```
 
-A successful run prints 3 OTC test results for the `src/` stack and 25 test
-results for the `trading/` stack — all marked `ok`. Any `failed` line means
+A successful run prints 31 test results in `trading-tests` and 3 in
+`examples/stable-pool` — all marked `ok`. Any `failed` line means
 something broke.
 
 ## What the four runnable workflow families look like
@@ -75,8 +67,8 @@ optional `src/`-stack analog.
 - Tests: `EndToEndTests.daml::testMatchedTradeFullSettle`,
   `testRfqAcceptProducesMatchedTradeWithReceipt`,
   `testTradeAllocationRequestAccept`.
-- `src/` analog: `OTCTradeV2.daml` — verbatim port of upstream TradingAppV2;
-  alignment enforced by `scripts/check-tradingappv2-alignment.sh`.
+- Vendored upstream reference: see
+  `vendor/splice/token-standard/examples/splice-token-test-trading-app-v2/`.
 
 ### C. Resting orders backed by V2.Allocation
 

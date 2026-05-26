@@ -30,7 +30,7 @@ in `services/operator-backend/src/dev-server.ts`.
 For deployments against a remote Canton testnet/MainNet, packaged for
 ops. Brings up:
 
-- `backend` (operator-backend, port 8080) running `prod-server.ts`.
+- `backend` (operator-backend, port 8080) running `testnet-server.ts`.
 - `frontend` (nginx, port 80) serving the Vite build, proxying `/v1/*`
   to the backend.
 

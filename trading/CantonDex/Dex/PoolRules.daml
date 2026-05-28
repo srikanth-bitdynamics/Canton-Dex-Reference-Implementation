@@ -1,0 +1,575 @@
+module CantonDex.Dex.PoolRules where
+
+-- The operational rules for a pool (DEX-41), one `PoolRules` per venue.
+--
+-- Mirrors Amulet's `AmuletRules` over `Amulet`: a stateless,
+-- operator-signed contract whose choices are all `nonconsuming` and
+-- operate on `Pool` config + `PoolState` + `PoolSlice` contracts passed
+-- in by `ContractId`. No contract keys (DA's token-standard uses none);
+-- a contract-swap guard is provided by `expectedPoolId`, asserted
+-- against the fetched config — the same protection Amulet's
+-- `expectedDso` gives.
+--
+-- The Rules pattern here is organizational. The real authorization is
+-- the signatory/controller set on `Pool`, `PoolState` and `PoolSlice`
+-- (all operator-signed); grouping the behaviour in one place makes the
+-- pool's market operations reviewable in one contract.
+
+import DA.Foldable (forA_)
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Dex.Pool
+import CantonDex.Dex.PoolState
+import CantonDex.Dex.PoolSlice
+import CantonDex.Dex.LPToken qualified as LP
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.WorkflowConstructors qualified as WC
+
+-- Results -----------------------------------------------------------------
+
+data PoolRules_InitializeResult = PoolRules_InitializeResult with
+    poolStateCid : ContractId PoolState
+    baseSliceCid : ContractId PoolSlice
+    quoteSliceCid : ContractId PoolSlice
+    lpMintRequestCid : ContractId LP.LPMintRequest
+    lpTokensMinted : Decimal
+  deriving (Eq, Show)
+
+data PoolRules_AddLiquidityResult = PoolRules_AddLiquidityResult with
+    poolStateCid : ContractId PoolState
+    baseSliceCid : ContractId PoolSlice
+    quoteSliceCid : ContractId PoolSlice
+    lpMintRequestCid : ContractId LP.LPMintRequest
+    lpTokensMinted : Decimal
+  deriving (Eq, Show)
+
+data PoolRules_RemoveLiquidityResult = PoolRules_RemoveLiquidityResult with
+    poolStateCid : ContractId PoolState
+    boundaryBaseSliceCid : Optional (ContractId PoolSlice)
+    boundaryQuoteSliceCid : Optional (ContractId PoolSlice)
+    lpBurnRequestCid : ContractId LP.LPBurnRequest
+    baseReturned : Decimal
+    quoteReturned : Decimal
+    baseSlicesConsumed : Int
+    quoteSlicesConsumed : Int
+  deriving (Eq, Show)
+
+data PoolRules_SwapResult = PoolRules_SwapResult with
+    poolStateCid : ContractId PoolState
+    inputSliceCid : ContractId PoolSlice
+    boundaryOutputSliceCid : Optional (ContractId PoolSlice)
+    outputSlicesConsumed : Int
+    settleResult : V2.SettlementFactory_SettleBatchResult
+    amountOut : Decimal
+  deriving (Eq, Show)
+
+-- Math --------------------------------------------------------------------
+
+newtonSqrt : Decimal -> Decimal -> Int -> Decimal
+newtonSqrt target guess iteration
+  | iteration >= 50 = guess
+  | abs (guess * guess - target) < 0.0000000001 = guess
+  | otherwise = newtonSqrt target ((guess + target / guess) / 2.0) (iteration + 1)
+
+sqrtDecimal : Decimal -> Decimal
+sqrtDecimal x
+  | x <= 0.0 = 0.0
+  | otherwise = newtonSqrt x (x / 2.0) 0
+
+constantProductOut : Decimal -> Decimal -> Int -> Decimal -> Decimal
+constantProductOut reserveIn reserveOut feeBps inputAmount =
+  let feeMultiplier = (10000.0 - intToDecimal feeBps) / 10000.0
+      amountInAfterFee = inputAmount * feeMultiplier
+  in (amountInAfterFee * reserveOut) / (reserveIn + amountInAfterFee)
+
+-- Helpers -----------------------------------------------------------------
+
+extractCompleted : V2.AllocationInstructionResult -> Update (ContractId V2.Allocation)
+extractCompleted result = case result.output of
+  V2.AllocationInstructionResult_Completed allocCid -> pure allocCid
+  _ -> abort "Pool allocation requires immediate completion"
+
+poolSettlement : ContractId Pool -> Party -> V2.SettlementInfo
+poolSettlement poolCid operator = V2.SettlementInfo with
+  executors = [operator]
+  id = "DexPool"
+  cid = Some (coerceContractId poolCid)
+  meta = emptyMetadata
+
+-- Fetch the config + state and assert they are the expected pool and are
+-- jointly consistent. This is the `expectedPoolId` contract-swap guard.
+fetchPoolContext
+  : Party -> PoolId -> ContractId Pool -> ContractId PoolState
+  -> Update (Pool, PoolState)
+fetchPoolContext operator expectedPoolId poolCid poolStateCid = do
+  pool <- fetch poolCid
+  state <- fetch poolStateCid
+  assertMsg "expectedPoolId mismatch (pool config swapped?)"
+    (pool.poolId == expectedPoolId)
+  assertMsg "PoolState does not belong to this pool"
+    (state.poolId == expectedPoolId)
+  assertMsg "Pool config operator mismatch" (pool.operator == operator)
+  assertMsg "PoolState operator mismatch" (state.operator == operator)
+  pure (pool, state)
+
+-- Walk an ordered list of (sliceCid, slice) fetched output slices,
+-- drawing `target` from the front. Returns the fully-consumed slices,
+-- the boundary slice (partially consumed) with the amount drawn from it,
+-- and the leftover the boundary slice retains. Aborts if the provided
+-- slices cannot cover `target`.
+data SliceDraw = SliceDraw with
+    fullyConsumed : [(ContractId PoolSlice, PoolSlice)]
+    boundary : Optional (ContractId PoolSlice, PoolSlice, Decimal, Decimal)
+      -- ^ (cid, slice, drawn, leftover)
+  deriving (Eq, Show)
+
+drawFromSlices
+  : Decimal -> [(ContractId PoolSlice, PoolSlice)] -> SliceDraw
+drawFromSlices target items = drawFromSlicesAcc target items []
+
+drawFromSlicesAcc
+  : Decimal
+  -> [(ContractId PoolSlice, PoolSlice)]
+  -> [(ContractId PoolSlice, PoolSlice)]
+  -> SliceDraw
+drawFromSlicesAcc remaining xs acc
+  | remaining <= 0.0 = SliceDraw with fullyConsumed = reverse acc; boundary = None
+  | otherwise = case xs of
+      [] -> error "drawFromSlices: provided slices cannot cover the required amount"
+      (cid, s) :: rest
+        | remaining >= s.amount -> drawFromSlicesAcc (remaining - s.amount) rest ((cid, s) :: acc)
+        | otherwise ->
+            SliceDraw with
+              fullyConsumed = reverse acc
+              boundary = Some (cid, s, remaining, s.amount - remaining)
+
+-- PoolRules ---------------------------------------------------------------
+
+template PoolRules with
+    operator : Party
+  where
+    signatory operator
+
+    -- Fund a freshly-created (Unfunded) pool: lock the initial base +
+    -- quote as committed allocations, create one slice per side, mint the
+    -- initial LP tokens, and flip the state to Active.
+    nonconsuming choice PoolRules_Initialize : PoolRules_InitializeResult
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PoolState
+        recipient : Party
+        baseFactoryCid : ContractId V2.AllocationFactory
+        quoteFactoryCid : ContractId V2.AllocationFactory
+        baseHoldingCids : [ContractId V2.Holding]
+        quoteHoldingCids : [ContractId V2.Holding]
+        baseAmount : Decimal
+        quoteAmount : Decimal
+        requestedAt : Time
+        lpPolicyCid : ContractId LP.LPTokenPolicy
+        extraArgs : ExtraArgs
+      controller operator
+      do
+        (pool, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        assertMsg "Pool must be Unfunded to initialize" (state.status == PS_Unfunded)
+        assertMsg "Base amount must be positive" (baseAmount > 0.0)
+        assertMsg "Quote amount must be positive" (quoteAmount > 0.0)
+
+        let poolAccount = Utils.basicAccount operator
+            settlement = poolSettlement poolCid operator
+            baseFunding = TextMap.fromList [(pool.baseInstrumentId, baseAmount)]
+            quoteFunding = TextMap.fromList [(pool.quoteInstrumentId, quoteAmount)]
+            baseAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
+              pool.admin poolAccount settlement None baseFunding requestedAt baseHoldingCids [operator] extraArgs
+            quoteAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
+              pool.admin poolAccount settlement None quoteFunding requestedAt quoteHoldingCids [operator] extraArgs
+
+        baseAllocCid <- exercise baseFactoryCid baseAllocArg >>= extractCompleted
+        quoteAllocCid <- exercise quoteFactoryCid quoteAllocArg >>= extractCompleted
+
+        let initialLp = sqrtDecimal (baseAmount * quoteAmount)
+        lpMintRequestCid <- create LP.LPMintRequest with
+          operator
+          lpRegistrar = pool.lpRegistrar
+          lpInstrumentId = pool.lpInstrumentId
+          recipient
+          amount = initialLp
+          policyCid = lpPolicyCid
+
+        baseSliceCid <- create PoolSlice with
+          poolId = pool.poolId; operator; side = BaseSide
+          allocationCid = baseAllocCid; amount = baseAmount
+        quoteSliceCid <- create PoolSlice with
+          poolId = pool.poolId; operator; side = QuoteSide
+          allocationCid = quoteAllocCid; amount = quoteAmount
+
+        archive poolStateCid
+        newStateCid <- create state with
+          status = PS_Active
+          reserves = PoolReserves with baseAmount; quoteAmount
+
+        pure PoolRules_InitializeResult with
+          poolStateCid = newStateCid
+          baseSliceCid
+          quoteSliceCid
+          lpMintRequestCid
+          lpTokensMinted = initialLp
+
+    -- Append liquidity: one new slice per side, bump reserves. The new
+    -- slices conflict with nothing existing.
+    nonconsuming choice PoolRules_AddLiquidity : PoolRules_AddLiquidityResult
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PoolState
+        recipient : Party
+        baseFactoryCid : ContractId V2.AllocationFactory
+        quoteFactoryCid : ContractId V2.AllocationFactory
+        baseHoldingCids : [ContractId V2.Holding]
+        quoteHoldingCids : [ContractId V2.Holding]
+        baseAmount : Decimal
+        quoteAmount : Decimal
+        minLpTokens : Decimal
+        knownTotalLpSupply : Decimal
+        requestedAt : Time
+        lpPolicyCid : ContractId LP.LPTokenPolicy
+        extraArgs : ExtraArgs
+      controller operator
+      do
+        (pool, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        assertMsg "Pool must be Active" (state.status == PS_Active)
+        assertMsg "Base amount must be positive" (baseAmount > 0.0)
+        assertMsg "Quote amount must be positive" (quoteAmount > 0.0)
+        assertMsg "Known LP supply must be positive" (knownTotalLpSupply > 0.0)
+
+        let lpByBase = (baseAmount * knownTotalLpSupply) / state.reserves.baseAmount
+            lpByQuote = (quoteAmount * knownTotalLpSupply) / state.reserves.quoteAmount
+            lpToMint = min lpByBase lpByQuote
+        assertMsg "LP tokens below minimum" (lpToMint >= minLpTokens)
+
+        let poolAccount = Utils.basicAccount operator
+            settlement = poolSettlement poolCid operator
+            baseFunding = TextMap.fromList [(pool.baseInstrumentId, baseAmount)]
+            quoteFunding = TextMap.fromList [(pool.quoteInstrumentId, quoteAmount)]
+            baseAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
+              pool.admin poolAccount settlement None baseFunding requestedAt baseHoldingCids [operator] extraArgs
+            quoteAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
+              pool.admin poolAccount settlement None quoteFunding requestedAt quoteHoldingCids [operator] extraArgs
+
+        newBaseAllocCid <- exercise baseFactoryCid baseAllocArg >>= extractCompleted
+        newQuoteAllocCid <- exercise quoteFactoryCid quoteAllocArg >>= extractCompleted
+
+        lpMintRequestCid <- create LP.LPMintRequest with
+          operator
+          lpRegistrar = pool.lpRegistrar
+          lpInstrumentId = pool.lpInstrumentId
+          recipient
+          amount = lpToMint
+          policyCid = lpPolicyCid
+
+        baseSliceCid <- create PoolSlice with
+          poolId = pool.poolId; operator; side = BaseSide
+          allocationCid = newBaseAllocCid; amount = baseAmount
+        quoteSliceCid <- create PoolSlice with
+          poolId = pool.poolId; operator; side = QuoteSide
+          allocationCid = newQuoteAllocCid; amount = quoteAmount
+
+        archive poolStateCid
+        newStateCid <- create state with
+          reserves = PoolReserves with
+            baseAmount = state.reserves.baseAmount + baseAmount
+            quoteAmount = state.reserves.quoteAmount + quoteAmount
+
+        pure PoolRules_AddLiquidityResult with
+          poolStateCid = newStateCid
+          baseSliceCid
+          quoteSliceCid
+          lpMintRequestCid
+          lpTokensMinted = lpToMint
+
+    -- Slice-local redemption. The operator supplies, per side, an ordered
+    -- list of slice cids sufficient to cover the redemption. Fully-
+    -- consumed slices are cancelled (resolveSlice); the boundary slice is
+    -- cancelled and re-allocated for its leftover. Slices not passed in
+    -- are untouched.
+    nonconsuming choice PoolRules_RemoveLiquidity : PoolRules_RemoveLiquidityResult
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PoolState
+        holder : Party
+        lpTokensToRedeem : Decimal
+        knownTotalLpSupply : Decimal
+        minBaseOut : Decimal
+        minQuoteOut : Decimal
+        baseSliceCids : [ContractId PoolSlice]
+        quoteSliceCids : [ContractId PoolSlice]
+        baseFactoryCid : ContractId V2.AllocationFactory
+        quoteFactoryCid : ContractId V2.AllocationFactory
+        boundaryBaseHoldingCids : [ContractId V2.Holding]
+        boundaryQuoteHoldingCids : [ContractId V2.Holding]
+        requestedAt : Time
+        lpPolicyCid : ContractId LP.LPTokenPolicy
+        extraArgs : ExtraArgs
+      controller operator
+      do
+        (pool, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        assertMsg "Pool must be Active" (state.status == PS_Active)
+        assertMsg "LP tokens must be positive" (lpTokensToRedeem > 0.0)
+        assertMsg "Cannot redeem more LP tokens than supply"
+          (lpTokensToRedeem <= knownTotalLpSupply)
+
+        let shareRatio = lpTokensToRedeem / knownTotalLpSupply
+            baseOut = state.reserves.baseAmount * shareRatio
+            quoteOut = state.reserves.quoteAmount * shareRatio
+        assertMsg "Base output below minimum" (baseOut >= minBaseOut)
+        assertMsg "Quote output below minimum" (quoteOut >= minQuoteOut)
+
+        baseItems <- forA baseSliceCids (\cid -> do s <- fetch cid; pure (cid, s))
+        quoteItems <- forA quoteSliceCids (\cid -> do s <- fetch cid; pure (cid, s))
+        let baseDraw = drawFromSlices baseOut baseItems
+            quoteDraw = drawFromSlices quoteOut quoteItems
+
+        let poolAccount = Utils.basicAccount operator
+            settlement = poolSettlement poolCid operator
+
+        boundaryBaseSliceCid <- redeemSide operator pool.poolId BaseSide
+          pool.admin pool.baseInstrumentId poolAccount settlement
+          baseFactoryCid boundaryBaseHoldingCids requestedAt extraArgs baseDraw
+        boundaryQuoteSliceCid <- redeemSide operator pool.poolId QuoteSide
+          pool.admin pool.quoteInstrumentId poolAccount settlement
+          quoteFactoryCid boundaryQuoteHoldingCids requestedAt extraArgs quoteDraw
+
+        lpBurnRequestCid <- create LP.LPBurnRequest with
+          operator
+          lpRegistrar = pool.lpRegistrar
+          lpInstrumentId = pool.lpInstrumentId
+          holder
+          amount = lpTokensToRedeem
+          policyCid = lpPolicyCid
+
+        let newBaseReserve = state.reserves.baseAmount - baseOut
+            newQuoteReserve = state.reserves.quoteAmount - quoteOut
+            newStatus = if newBaseReserve == 0.0 && newQuoteReserve == 0.0
+                        then PS_Unfunded else PS_Active
+
+        archive poolStateCid
+        newStateCid <- create state with
+          status = newStatus
+          reserves = PoolReserves with baseAmount = newBaseReserve; quoteAmount = newQuoteReserve
+
+        let consumedCount draw = length draw.fullyConsumed + (case draw.boundary of Some _ -> 1; None -> 0)
+
+        pure PoolRules_RemoveLiquidityResult with
+          poolStateCid = newStateCid
+          boundaryBaseSliceCid
+          boundaryQuoteSliceCid
+          lpBurnRequestCid
+          baseReturned = baseOut
+          quoteReturned = quoteOut
+          baseSlicesConsumed = consumedCount baseDraw
+          quoteSlicesConsumed = consumedCount quoteDraw
+
+    -- Constant-product swap (C1, multi-slice). Prices against the global
+    -- reserves on PoolState; sources `amountOut` from an ordered list of
+    -- output-side slices, draining fully-consumed ones and re-allocating
+    -- the boundary slice's leftover. The pool's chosen input slice grows
+    -- by `inputAmount`.
+    nonconsuming choice PoolRules_Swap : PoolRules_SwapResult
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PoolState
+        swapperAccount : V2.Account
+        inputInstrumentId : Text
+        inputAmount : Decimal
+        minOutputAmount : Decimal
+        swapperAllocationCid : ContractId V2.Allocation
+        inputSliceCid : ContractId PoolSlice
+        outputSliceCids : [ContractId PoolSlice]
+        factoryCid : ContractId V2.SettlementFactory
+        extraArgs : ExtraArgs
+      controller operator
+      do
+        (pool, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        assertMsg "Pool must be Active" (state.status == PS_Active)
+        assertMsg "Swap needs at least one output slice" (not (null outputSliceCids))
+
+        let inputIsBase = inputInstrumentId == pool.baseInstrumentId
+            outputInstrumentId = if inputIsBase then pool.quoteInstrumentId else pool.baseInstrumentId
+            (reserveIn, reserveOut) =
+              if inputIsBase then (state.reserves.baseAmount, state.reserves.quoteAmount)
+              else (state.reserves.quoteAmount, state.reserves.baseAmount)
+            amountOut = constantProductOut reserveIn reserveOut pool.feeBps inputAmount
+        assertMsg "Output below slippage minimum" (amountOut >= minOutputAmount)
+
+        inputSlice <- fetch inputSliceCid
+        assertMsg "Input slice belongs to a different pool" (inputSlice.poolId == pool.poolId)
+
+        outputItems <- forA outputSliceCids (\cid -> do s <- fetch cid; pure (cid, s))
+        forA_ outputItems $ \(_, s) ->
+          assertMsg "Output slice belongs to a different pool" (s.poolId == pool.poolId)
+        let totalOutputProvided = foldl (\acc (_, s) -> acc + s.amount) 0.0 outputItems
+        assertMsg "Provided output slices cannot cover amountOut"
+          (totalOutputProvided >= amountOut)
+
+        let draw = drawFromSlices amountOut outputItems
+            poolAccount = Utils.basicAccount operator
+            settlement = poolSettlement poolCid operator
+
+        -- swapper -> pool input leg
+        let swapInLeg = V2.TransferLeg with
+              transferLegId = "swap-in"
+              sender = swapperAccount; receiver = poolAccount
+              amount = inputAmount; instrumentId = inputInstrumentId
+              meta = emptyMetadata
+        -- one pool -> swapper output leg per sourced output slice
+        let mkOutLeg idx amount = V2.TransferLeg with
+              transferLegId = "swap-out-" <> show (idx : Int)
+              sender = poolAccount; receiver = swapperAccount
+              amount; instrumentId = outputInstrumentId
+              meta = emptyMetadata
+            fullyOutLegs =
+              [ (cid, s, mkOutLeg i s.amount) | (i, (cid, s)) <- zip [0..] draw.fullyConsumed ]
+            boundaryIdx = length draw.fullyConsumed
+            boundaryOutLeg = case draw.boundary of
+              Some (cid, s, drawn, leftover) ->
+                Some (cid, s, drawn, leftover, mkOutLeg boundaryIdx drawn)
+              None -> None
+
+        -- Finalized allocations:
+        --   swapper: provides input, fully consumed.
+        --   input slice: receives input, rolls forward (grows).
+        --   each fully-consumed output slice: sends its full amount, drained.
+        --   boundary output slice: sends `drawn`, rolls forward with leftover.
+        let allOutLegs =
+              map (\(_, _, leg) -> leg) fullyOutLegs
+                ++ optional [] (\(_, _, _, _, leg) -> [leg]) boundaryOutLeg
+            swapperFinalized = Utils.mkFinalizedAllocation swapperAllocationCid
+              (Utils.legsToSides swapperAccount (swapInLeg :: allOutLegs)) None
+            inputFinalized = Utils.mkFinalizedAllocation inputSlice.allocationCid
+              (Utils.legsToSides poolAccount [swapInLeg])
+              (Some (TextMap.fromList [(inputInstrumentId, inputSlice.amount + inputAmount)]))
+            fullyFinalized =
+              [ Utils.mkFinalizedAllocation s.allocationCid
+                  (Utils.legsToSides poolAccount [leg]) None
+              | (_, s, leg) <- fullyOutLegs ]
+            boundaryFinalized = case boundaryOutLeg of
+              Some (_, s, _, leftover, leg) ->
+                [ Utils.mkFinalizedAllocation s.allocationCid
+                    (Utils.legsToSides poolAccount [leg])
+                    (Some (TextMap.fromList [(outputInstrumentId, leftover)])) ]
+              None -> []
+
+        settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
+          settlement
+          transferLegs = swapInLeg :: allOutLegs
+          allocations = swapperFinalized :: inputFinalized :: (fullyFinalized ++ boundaryFinalized)
+          actors = [operator]
+          extraArgs
+
+        let nextIterCids = Utils.nextIterationAllocationCids settleResult
+        -- order passed to SettleBatch: [swapper, input, fully…, boundary?]
+        let inputNextCid = case nextIterCids of
+              (_swapper :: Some inNext :: _) -> inNext
+              _ -> error "swap: pool input slice must produce a next-iteration allocation"
+
+        -- Archive the consumed output PoolSlice contracts; their
+        -- allocations were drained by the settle (no next iteration).
+        forA_ draw.fullyConsumed $ \(cid, _) -> archive cid
+
+        -- Rewrite the input slice contract to its rolled-forward allocation.
+        archive inputSliceCid
+        newInputSliceCid <- create inputSlice with
+          allocationCid = inputNextCid
+          amount = inputSlice.amount + inputAmount
+
+        -- The boundary output slice: archive the old PoolSlice and create
+        -- a new one for the leftover, pointing at its rolled allocation.
+        boundaryOutputSliceCid <- case (draw.boundary, reverse nextIterCids) of
+          (Some (cid, s, _drawn, leftover), boundaryNext :: _) ->
+            case boundaryNext of
+              Some allocCid -> do
+                archive cid
+                newCid <- create s with allocationCid = allocCid; amount = leftover
+                pure (Some newCid)
+              None -> abort "swap: boundary output slice must produce a next-iteration allocation"
+          (None, _) -> pure None
+          _ -> abort "swap: missing boundary next-iteration allocation"
+
+        let (newBaseReserve, newQuoteReserve) =
+              if inputIsBase
+              then (state.reserves.baseAmount + inputAmount, state.reserves.quoteAmount - amountOut)
+              else (state.reserves.baseAmount - amountOut, state.reserves.quoteAmount + inputAmount)
+            opFee = if pool.operatorFeeBps > 0
+                    then inputAmount * intToDecimal pool.operatorFeeBps / 10000.0 else 0.0
+            bumpedFees = if opFee > 0.0
+              then let cur = optional 0.0 identity (TextMap.lookup inputInstrumentId state.accumulatedOperatorFees)
+                   in TextMap.insert inputInstrumentId (cur + opFee) state.accumulatedOperatorFees
+              else state.accumulatedOperatorFees
+
+        archive poolStateCid
+        newStateCid <- create state with
+          reserves = PoolReserves with baseAmount = newBaseReserve; quoteAmount = newQuoteReserve
+          accumulatedOperatorFees = bumpedFees
+
+        pure PoolRules_SwapResult with
+          poolStateCid = newStateCid
+          inputSliceCid = newInputSliceCid
+          boundaryOutputSliceCid
+          outputSlicesConsumed = length draw.fullyConsumed + (case draw.boundary of Some _ -> 1; None -> 0)
+          settleResult
+          amountOut
+
+    nonconsuming choice PoolRules_Pause : ContractId PoolState
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PoolState
+      controller operator
+      do
+        (_, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        assertMsg "Pool must be Active to pause" (state.status == PS_Active)
+        archive poolStateCid
+        create state with status = PS_Paused
+
+    nonconsuming choice PoolRules_Resume : ContractId PoolState
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PoolState
+      controller operator
+      do
+        (_, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        assertMsg "Pool must be Paused to resume" (state.status == PS_Paused)
+        archive poolStateCid
+        create state with status = PS_Active
+
+-- Redeem one side: cancel fully-consumed slices, re-allocate the boundary
+-- leftover. Returns the new boundary slice cid (if any).
+redeemSide
+  : Party -> PoolId -> Side -> Party -> Text -> V2.Account -> V2.SettlementInfo
+  -> ContractId V2.AllocationFactory -> [ContractId V2.Holding] -> Time -> ExtraArgs
+  -> SliceDraw -> Update (Optional (ContractId PoolSlice))
+redeemSide operator poolId side admin instrumentId poolAccount settlement factoryCid boundaryHoldingCids requestedAt extraArgs draw = do
+  forA_ draw.fullyConsumed $ \(cid, _) -> resolveSlice operator cid extraArgs
+  case draw.boundary of
+    None -> pure None
+    Some (cid, _s, _drawn, leftover) -> do
+      resolveSlice operator cid extraArgs
+      if leftover <= 0.0
+        then pure None
+        else do
+          let arg = WC.mkCommittedPoolAllocationFactoryAllocate
+                      admin poolAccount settlement None
+                      (TextMap.fromList [(instrumentId, leftover)])
+                      requestedAt boundaryHoldingCids [operator] extraArgs
+          allocCid <- exercise factoryCid arg >>= extractCompleted
+          newCid <- create PoolSlice with
+            poolId; operator; side; allocationCid = allocCid; amount = leftover
+          pure (Some newCid)

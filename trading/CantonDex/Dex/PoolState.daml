@@ -1,0 +1,49 @@
+module CantonDex.Dex.PoolState where
+
+-- The minimal hot contract for a pool (DEX-40/41).
+--
+-- A constant-product swap needs the *global* reserves to price (`x*y=k`),
+-- so there is an irreducible serialization point: every add / remove /
+-- swap updates the totals. We make that point as small as possible by
+-- keeping only the aggregate reserves, LP supply, status and fee accrual
+-- here — the committed funds themselves live on `PoolSlice` contracts,
+-- which add/remove/swap touch individually without rewriting each other.
+--
+-- `reserves` is derived state for pricing: the sum of active base (resp.
+-- quote) `PoolSlice.amount` MUST equal `reserves.baseAmount` (resp.
+-- `quoteAmount`). The slices are the source of truth for funds; this
+-- aggregate exists so a swap can price in one transaction.
+
+import DA.TextMap qualified as TextMap
+
+import CantonDex.Dex.Pool (PoolId, PoolReserves, PoolStatus (..))
+
+template PoolState with
+    poolId : PoolId
+    operator : Party
+    lpRegistrar : Party
+    status : PoolStatus
+    reserves : PoolReserves
+    totalLpSupply : Decimal
+    accumulatedOperatorFees : TextMap.TextMap Decimal
+      -- ^ Running per-instrument total of operator-fee accrual, bumped on
+      --   every swap and cleared by the operator's collect workflow.
+    publicReaders : [Party]
+      -- ^ Parties allowed to observe pool state on-ledger (indexers,
+      --   off-chain pricers, dashboards). Empty = operator + lpRegistrar
+      --   only.
+  where
+    signatory operator
+    observer (lpRegistrar :: publicReaders)
+
+    -- The lpRegistrar owns the LP instrument's circulating supply, so it
+    -- (not the operator) records the post-mint/burn supply back onto the
+    -- state. Kept here rather than on PoolRules because the authority is
+    -- the registrar's, not the operator's.
+    choice PoolState_RecordLPSupply : ContractId PoolState
+      with
+        newSupply : Decimal
+      controller lpRegistrar
+      do
+        assertMsg "Supply must be non-negative" (newSupply >= 0.0)
+        create this with totalLpSupply = newSupply

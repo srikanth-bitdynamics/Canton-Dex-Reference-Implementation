@@ -422,12 +422,14 @@ testExpiredAddRejected = do
       lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId (PR.sqrtDecimal 2000000.0)
   baseHold <- mintHolding fx.registry alice "BTC" 10.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
-  -- The base-deposit allocation carries an already-expired deadline.
+  -- The QUOTE-deposit allocation carries an already-expired deadline; the
+  -- base deposit is fresh. The settle must still abort, proving every
+  -- LP-authored allocation is deadline-checked, not just the base leg.
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement
-    (mkSpecDeadline fx.registry aliceAcct [baseDepositLeg] True pastDeadline)
-    [toInterfaceContractId baseHold] now
+    (mkSpec fx.registry aliceAcct [baseDepositLeg] True) [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [quoteDepositLeg] True) [toInterfaceContractId quoteHold] now
+    (mkSpecDeadline fx.registry aliceAcct [quoteDepositLeg] True pastDeadline)
+    [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement
     (mkSpec fx.registry aliceAcct [lpMintLeg] False) [] now
   -- Even with a fresh `requestedAt`, the settle must abort on the expired
@@ -443,5 +445,50 @@ testExpiredAddRejected = do
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0
+      requestedAt = now; extraArgs = emptyExtraArgs
+  pure ()
+
+-- Symmetric to the add case, on the remove side: a past deadline on a
+-- holder receipt allocation (NOT the burn-sender) must still abort the
+-- settle, proving all holder-authored allocations are deadline-checked.
+testExpiredRemoveRejected : Script ()
+testExpiredRemoveRejected = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  addRes <- dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  let lpAmount = PR.sqrtDecimal 2000000.0
+      pastDeadline = addRelTime now (hours (-1))
+      aliceAcct = Utils.basicAccount alice
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PR.poolSettlement fx.poolCid fx.operator
+      baseOutLeg = V2.TransferLeg with
+        transferLegId = "lp-base-out-0"; sender = opAcct; receiver = aliceAcct
+        amount = 10.0; instrumentId = "BTC"; meta = emptyMetadata
+      quoteOutLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-out-0"; sender = opAcct; receiver = aliceAcct
+        amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
+      burnLeg = Lp.lpBurnLeg fx.registry aliceAcct lpId lpAmount
+  aliceHs <- query @RegV2.Holding alice
+  let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) aliceHs)
+  -- The BASE-receipt allocation is expired; the burn-sender is fresh.
+  baseReceipt <- mkAlloc fx.factoryCid alice settlement
+    (mkSpecDeadline fx.registry aliceAcct [baseOutLeg] False pastDeadline) [] now
+  quoteReceipt <- mkAlloc fx.factoryCid alice settlement
+    (mkSpec fx.registry aliceAcct [quoteOutLeg] False) [] now
+  burnSender <- mkAlloc fx.factoryCid alice settlement
+    (mkSpec fx.registry aliceAcct [burnLeg] True) [toInterfaceContractId lpHoldCid] now
+  submitMultiMustFail [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleRemoveLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+      holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
+      minBaseOut = 0.0; minQuoteOut = 0.0
+      baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
+      holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
+      holderBurnSenderCid = burnSender
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       requestedAt = now; extraArgs = emptyExtraArgs
   pure ()

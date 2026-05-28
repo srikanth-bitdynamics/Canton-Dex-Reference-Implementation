@@ -190,8 +190,11 @@ template LpDvpRules with
         extraArgs : ExtraArgs
       controller operator, lpRegistrar
       do
-        -- Deadline read from the LP's deposit allocation (ledger state).
-        enforceAllocationDeadline lpBaseDepositCid
+        -- Deadline read from EVERY LP-authored allocation in this settle
+        -- (ledger state), not just one: this registry does not enforce
+        -- `settlementDeadline` per-settle, so an expired deposit or receipt
+        -- leg could otherwise ride along behind a fresh one.
+        forA_ [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] enforceAllocationDeadline
         (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         -- Allowed: first-funding (Unfunded) or a funded pool (Active);
         -- a paused pool rejects liquidity changes (matches the old path).
@@ -322,8 +325,11 @@ template LpDvpRules with
         extraArgs : ExtraArgs
       controller operator, lpRegistrar
       do
-        -- Deadline read from the holder's burn-sender allocation (ledger state).
-        enforceAllocationDeadline holderBurnSenderCid
+        -- Deadline read from EVERY holder-authored allocation in this settle
+        -- (ledger state): the two receipt legs and the burn-sender leg must
+        -- all be unexpired, not merely the one checked allocation.
+        forA_ [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
+          enforceAllocationDeadline
         (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         assertMsg "Pool must be Active to remove liquidity" (state.status == PS_Active)
         assertMsg "LP tokens must be positive" (lpTokensToRedeem > 0.0)

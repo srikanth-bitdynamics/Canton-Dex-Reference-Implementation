@@ -164,7 +164,9 @@ export class PoolService {
         baseSlices: poolSlices.filter((s) => s.side === "BaseSide").map(toSlice),
         quoteSlices: poolSlices.filter((s) => s.side === "QuoteSide").map(toSlice),
         operatorFeeBps: cfg.operatorFeeBps,
-        accumulatedOperatorFees: state.accumulatedOperatorFees,
+        // No operator-fee accrual on-chain (see PoolRules_Swap); the API
+        // field is retained as null for wire-shape stability.
+        accumulatedOperatorFees: null,
         publicReaders: state.publicReaders,
       });
     }

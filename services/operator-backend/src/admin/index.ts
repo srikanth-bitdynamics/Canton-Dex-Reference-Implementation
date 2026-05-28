@@ -181,7 +181,6 @@ export class AdminService {
             status: "PS_Unfunded",
             reserves: { baseAmount: zero, quoteAmount: zero },
             totalLpSupply: zero,
-            accumulatedOperatorFees: {},
             publicReaders: [],
           },
         },

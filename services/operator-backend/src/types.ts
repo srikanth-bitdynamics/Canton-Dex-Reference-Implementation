@@ -105,7 +105,6 @@ export interface PoolStateContract {
   status: PoolStatus;
   reserves: PoolReserves;
   totalLpSupply: Decimal;
-  accumulatedOperatorFees: Record<string, Decimal>;
   publicReaders: Party[];
 }
 

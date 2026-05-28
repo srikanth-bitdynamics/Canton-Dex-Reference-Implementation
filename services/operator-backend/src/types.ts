@@ -68,8 +68,10 @@ export interface PoolReserves {
 }
 
 export interface PoolSlice {
+  contractId: ContractId<"PoolSlice">;
   allocationCid: ContractId<"Allocation">;
   amount: Decimal;
+  side: "BaseSide" | "QuoteSide";
 }
 
 /** Token Standard V2 instrument identity: registry admin + textual id. */
@@ -78,8 +80,57 @@ export interface InstrumentId {
   id: string;
 }
 
+// Raw on-ledger contract shapes after the DEX-40/41 split. The Pool is
+// now immutable config; reserves/status/supply live on PoolState; each
+// committed allocation is its own PoolSlice contract; the operational
+// choices live on a per-venue PoolRules.
+export interface PoolConfigContract {
+  contractId: ContractId<"Pool">;
+  poolId: string;
+  operator: Party;
+  lpRegistrar: Party;
+  admin: Party;
+  baseInstrumentId: string;
+  quoteInstrumentId: string;
+  lpInstrumentId: InstrumentId;
+  feeBps: number;
+  operatorFeeBps: number;
+}
+
+export interface PoolStateContract {
+  contractId: ContractId<"PoolState">;
+  poolId: string;
+  operator: Party;
+  lpRegistrar: Party;
+  status: PoolStatus;
+  reserves: PoolReserves;
+  totalLpSupply: Decimal;
+  accumulatedOperatorFees: Record<string, Decimal>;
+  publicReaders: Party[];
+}
+
+export interface PoolSliceContract {
+  contractId: ContractId<"PoolSlice">;
+  poolId: string;
+  operator: Party;
+  side: "BaseSide" | "QuoteSide";
+  allocationCid: ContractId<"Allocation">;
+  amount: Decimal;
+}
+
+export interface PoolRulesContract {
+  contractId: ContractId<"PoolRules">;
+  operator: Party;
+}
+
+// Combined API view assembled by PoolService from the split contracts.
+// Keeps the wire shape the dApp + http layer consume, plus the cids the
+// PoolRules choices need.
 export interface Pool {
   contractId: ContractId<"Pool">;
+  poolId: string;
+  poolStateCid: ContractId<"PoolState">;
+  rulesCid: ContractId<"PoolRules">;
   operator: Party;
   lpRegistrar: Party;
   admin: Party;
@@ -92,7 +143,6 @@ export interface Pool {
   totalLpSupply: Decimal;
   baseSlices: PoolSlice[];
   quoteSlices: PoolSlice[];
-  // Optional in Daml v0.0.6 (smart-upgrade compat with v0.0.5).
   operatorFeeBps: number | null;
   accumulatedOperatorFees: Record<string, Decimal> | null;
   publicReaders: Party[] | null;

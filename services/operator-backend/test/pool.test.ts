@@ -34,11 +34,12 @@ class StubRegistry extends RegistryClient {
 
 const LP_ID = { admin: "lp", id: "BTC-USDC-LP" };
 
-// Capturing ledger: answers fetchPool + fetchLpPolicy from canned rows
-// and records the last submitted command so a test can inspect the
-// choice argument.
+// Capturing ledger: answers the split-pool queries listActive() makes
+// (config + state + slices + rules) + fetchLpPolicy, and records the
+// last submitted command so a test can inspect the choice argument.
 class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
+  servePolicy = true;
   constructor(private readonly pool: Pool, private readonly policy: LPTokenPolicy) {}
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.lastSubmit = req;
@@ -48,9 +49,30 @@ class CapturingLedger implements LedgerSubmitter {
     // no streaming in this stub
   }
   async query<T>(filter: SubscriptionFilter): Promise<T[]> {
-    if (filter.templateId === "CantonDex.Dex.Pool:Pool") return [this.pool as unknown as T];
-    if (filter.templateId === "CantonDex.Dex.LPToken:LPTokenPolicy") return [this.policy as unknown as T];
-    return [];
+    const p = this.pool;
+    switch (filter.templateId) {
+      case "CantonDex.Dex.Pool:Pool":
+        return [{
+          contractId: p.contractId, poolId: p.poolId, operator: p.operator,
+          lpRegistrar: p.lpRegistrar, admin: p.admin,
+          baseInstrumentId: p.baseInstrumentId, quoteInstrumentId: p.quoteInstrumentId,
+          lpInstrumentId: p.lpInstrumentId, feeBps: p.feeBps, operatorFeeBps: 0,
+        } as unknown as T];
+      case "CantonDex.Dex.PoolState:PoolState":
+        return [{
+          contractId: p.poolStateCid, poolId: p.poolId, operator: p.operator,
+          lpRegistrar: p.lpRegistrar, status: p.status, reserves: p.reserves,
+          totalLpSupply: p.totalLpSupply, accumulatedOperatorFees: {}, publicReaders: [],
+        } as unknown as T];
+      case "CantonDex.Dex.PoolSlice:PoolSlice":
+        return [];
+      case "CantonDex.Dex.PoolRules:PoolRules":
+        return [{ contractId: p.rulesCid, operator: p.operator } as unknown as T];
+      case "CantonDex.Dex.LPToken:LPTokenPolicy":
+        return this.servePolicy ? [this.policy as unknown as T] : [];
+      default:
+        return [];
+    }
   }
 }
 
@@ -74,6 +96,9 @@ function mkPool(
 ): Pool {
   return {
     contractId: "#p:0" as never,
+    poolId: "BTC-USDC",
+    poolStateCid: "#ps:0" as never,
+    rulesCid: "#rules:0" as never,
     operator: "op" as never,
     lpRegistrar: "lp" as never,
     admin: "ad" as never,
@@ -163,17 +188,24 @@ describe("PoolService.initialize (DEX-46)", () => {
     assert.ok(ledger.lastSubmit, "a command was submitted");
     const cmd = ledger.lastSubmit!.command;
     assert.equal(cmd.kind, "exercise");
+    assert.equal(
+      (cmd as { templateId: string }).templateId,
+      "CantonDex.Dex.PoolRules:PoolRules",
+      "init drives the PoolRules contract",
+    );
+    assert.equal((cmd as { choice: string }).choice, "PoolRules_Initialize");
     const arg = (cmd as { argument: Record<string, unknown> }).argument;
     assert.equal(arg.lpPolicyCid, "#lp:0", "lpPolicyCid is the looked-up policy cid");
+    assert.equal(arg.expectedPoolId, "BTC-USDC", "expectedPoolId guard is set");
+    assert.equal(arg.poolStateCid, "#ps:0", "poolStateCid is threaded");
     assert.ok(arg.extraArgs, "extraArgs (choice context) is present");
   });
 
   it("fails loudly when no LPTokenPolicy exists for the pool", async () => {
     const pool = mkPool(0, 0);
-    // Capturing ledger that returns no policy rows.
+    // Capturing ledger that serves the pool contracts but no policy rows.
     const ledger = new CapturingLedger(pool, mkLpPolicy());
-    (ledger as unknown as { query: unknown }).query = async (f: SubscriptionFilter) =>
-      f.templateId === "CantonDex.Dex.Pool:Pool" ? [pool] : [];
+    ledger.servePolicy = false;
     const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
     await assert.rejects(
       () =>

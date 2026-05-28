@@ -52,10 +52,15 @@ function registerHandlers(
   lpRegistrar: Party,
   admin: Party,
 ): void {
-  // Pool creation visible to operator + lpRegistrar.
-  ledger.registerCreateHandler("CantonDex.Dex.Pool:Pool", () => ({
-    observers: [operator, lpRegistrar],
-  }));
+  // Pool config + state + slices + rules visible to operator + lpRegistrar.
+  for (const tid of [
+    "CantonDex.Dex.Pool:Pool",
+    "CantonDex.Dex.PoolState:PoolState",
+    "CantonDex.Dex.PoolSlice:PoolSlice",
+    "CantonDex.Dex.PoolRules:PoolRules",
+  ]) {
+    ledger.registerCreateHandler(tid, () => ({ observers: [operator, lpRegistrar] }));
+  }
   ledger.registerCreateHandler("CantonDex.Dex.DexPair:DexPair", () => ({
     observers: [operator, admin],
   }));
@@ -77,78 +82,74 @@ function registerHandlers(
     observers: [operator, (payload as { trader: Party }).trader],
   }));
 
-  // Minimal Pool_Swap handler: updates head-slice amounts and reserves
-  // exactly the way the Daml choice does, so listActive shows the
-  // post-swap state. Returns a fake settlement result.
-  ledger.registerChoice("CantonDex.Dex.Pool:Pool", "Pool_Swap", (ctx) => {
-    const pool = ctx.self.payload as Pool;
+  // Minimal PoolRules_Swap handler (DEX-40/41): reads PoolState + the
+  // input/output slices by cid from the ACS, recreates PoolState with the
+  // new reserves, grows the input slice and shrinks the head output slice,
+  // so listActive shows the post-swap state. Best-effort mock; the real
+  // Daml choice rotates allocation cids via SettleBatch.
+  ledger.registerChoice("CantonDex.Dex.PoolRules:PoolRules", "PoolRules_Swap", (ctx) => {
     const arg = ctx.arg as {
+      poolCid: string;
+      poolStateCid: string;
       inputInstrumentId: string;
       inputAmount: Decimal;
-      minOutputAmount: Decimal;
+      inputSliceCid: string;
+      outputSliceCids: string[];
     };
-    const isBaseIn = arg.inputInstrumentId === pool.baseInstrumentId;
-    const reserveIn = parseFloat(
-      isBaseIn ? pool.reserves.baseAmount : pool.reserves.quoteAmount,
-    );
-    const reserveOut = parseFloat(
-      isBaseIn ? pool.reserves.quoteAmount : pool.reserves.baseAmount,
-    );
-    const feeMul = (10000 - pool.feeBps) / 10000;
+    const cfg = ctx.acs.get(arg.poolCid)?.payload as
+      | { baseInstrumentId: string; feeBps: number }
+      | undefined;
+    const stateEntry = ctx.acs.get(arg.poolStateCid);
+    const state = stateEntry?.payload as
+      | { reserves: { baseAmount: string; quoteAmount: string } } & Record<string, unknown>
+      | undefined;
+    if (!cfg || !state) throw new Error("dev-mock: pool config/state not found");
+
+    const isBaseIn = arg.inputInstrumentId === cfg.baseInstrumentId;
+    const reserveIn = parseFloat(isBaseIn ? state.reserves.baseAmount : state.reserves.quoteAmount);
+    const reserveOut = parseFloat(isBaseIn ? state.reserves.quoteAmount : state.reserves.baseAmount);
+    const feeMul = (10000 - cfg.feeBps) / 10000;
     const dx = parseFloat(arg.inputAmount) * feeMul;
     const out = (reserveOut * dx) / (reserveIn + dx);
 
-    const newReserveBase = (
-      isBaseIn
-        ? parseFloat(pool.reserves.baseAmount) + parseFloat(arg.inputAmount)
-        : parseFloat(pool.reserves.baseAmount) - out
-    ).toFixed(10);
-    const newReserveQuote = (
-      isBaseIn
-        ? parseFloat(pool.reserves.quoteAmount) - out
-        : parseFloat(pool.reserves.quoteAmount) + parseFloat(arg.inputAmount)
-    ).toFixed(10);
-
-    // Head slice deltas: input side grows by inputAmount, output shrinks
-    // by `out`. For demo simplicity we adjust head slice in place
-    // without rotating CIDs (real Daml rotates to next-iter CIDs).
-    const bumpHead = (
-      slices: PoolSlice[],
-      delta: number,
-    ): PoolSlice[] => {
-      if (slices.length === 0) return slices;
-      const [head, ...rest] = slices;
-      return [
-        { ...head!, amount: (parseFloat(head!.amount) + delta).toFixed(10) },
-        ...rest,
-      ];
+    const newReserves = {
+      baseAmount: (isBaseIn
+        ? parseFloat(state.reserves.baseAmount) + parseFloat(arg.inputAmount)
+        : parseFloat(state.reserves.baseAmount) - out).toFixed(10),
+      quoteAmount: (isBaseIn
+        ? parseFloat(state.reserves.quoteAmount) - out
+        : parseFloat(state.reserves.quoteAmount) + parseFloat(arg.inputAmount)).toFixed(10),
     };
-    const newBaseSlices = bumpHead(
-      pool.baseSlices,
-      isBaseIn ? parseFloat(arg.inputAmount) : -out,
-    );
-    const newQuoteSlices = bumpHead(
-      pool.quoteSlices,
-      isBaseIn ? -out : parseFloat(arg.inputAmount),
-    );
 
-    ctx.archive(ctx.self.contractId);
-    const newCid = ctx.create(
-      "CantonDex.Dex.Pool:Pool",
-      {
-        ...pool,
-        reserves: {
-          baseAmount: newReserveBase,
-          quoteAmount: newReserveQuote,
-        },
-        baseSlices: newBaseSlices,
-        quoteSlices: newQuoteSlices,
-      },
+    // Recreate PoolState with the new reserves.
+    ctx.archive(arg.poolStateCid);
+    const newStateCid = ctx.create(
+      "CantonDex.Dex.PoolState:PoolState",
+      { ...state, reserves: newReserves },
       [operator, lpRegistrar],
     );
 
+    // Grow the input slice; shrink the head output slice.
+    const bump = (cid: string, delta: number): string => {
+      const e = ctx.acs.get(cid);
+      if (!e) return cid;
+      const s = e.payload as { amount: string } & Record<string, unknown>;
+      ctx.archive(cid);
+      return ctx.create(
+        "CantonDex.Dex.PoolSlice:PoolSlice",
+        { ...s, amount: (parseFloat(s.amount) + delta).toFixed(10) },
+        [operator, lpRegistrar],
+      );
+    };
+    const newInputSliceCid = bump(arg.inputSliceCid, parseFloat(arg.inputAmount));
+    const headOut = arg.outputSliceCids[0];
+    const newBoundaryCid = headOut ? bump(headOut, -out) : null;
+
     return {
-      poolCid: newCid,
+      poolStateCid: newStateCid,
+      inputSliceCid: newInputSliceCid,
+      boundaryOutputSliceCid: newBoundaryCid,
+      outputSlicesConsumed: 1,
       amountOut: out.toFixed(10),
       settleResult: { allocationSettleResults: [], meta: {} },
     };
@@ -234,8 +235,10 @@ async function seed(
     },
   });
 
-  // Pool: 10 BTC + 200000 USDC across two slices per side (one big + one
-  // small) so the UI can show the slice count.
+  // Pool (DEX-40/41 split): immutable config + Active state + two slices
+  // per side (one big + one small, so the UI shows the slice count) + the
+  // per-venue rules contract.
+  const poolId = "BTC-USDC";
   await ledger.submit({
     actAs: [operator],
     commandId: "seed-pool-btcusdc",
@@ -243,6 +246,7 @@ async function seed(
       kind: "create",
       templateId: "CantonDex.Dex.Pool:Pool",
       argument: {
+        poolId,
         operator,
         lpRegistrar,
         admin,
@@ -250,21 +254,52 @@ async function seed(
         quoteInstrumentId: "USDC",
         lpInstrumentId: { admin: lpRegistrar, id: "BTC-USDC-LP" },
         feeBps: 30,
+        operatorFeeBps: 0,
+      },
+    },
+  });
+  await ledger.submit({
+    actAs: [operator],
+    commandId: "seed-pool-state-btcusdc",
+    command: {
+      kind: "create",
+      templateId: "CantonDex.Dex.PoolState:PoolState",
+      argument: {
+        poolId,
+        operator,
+        lpRegistrar,
         status: "Active",
         reserves: { baseAmount: "10.0000000000", quoteAmount: "200000.0000000000" },
         totalLpSupply: "1414.2135623731",
-        baseSlices: [
-          { allocationCid: "#alloc-base-1:0", amount: "7.5000000000" },
-          { allocationCid: "#alloc-base-2:0", amount: "2.5000000000" },
-        ],
-        quoteSlices: [
-          { allocationCid: "#alloc-quote-1:0", amount: "150000.0000000000" },
-          { allocationCid: "#alloc-quote-2:0", amount: "50000.0000000000" },
-        ],
-        operatorFeeBps: null,
-        accumulatedOperatorFees: null,
-        publicReaders: null,
+        accumulatedOperatorFees: {},
+        publicReaders: [],
       },
+    },
+  });
+  const slices: Array<["BaseSide" | "QuoteSide", string, string]> = [
+    ["BaseSide", "#alloc-base-1:0", "7.5000000000"],
+    ["BaseSide", "#alloc-base-2:0", "2.5000000000"],
+    ["QuoteSide", "#alloc-quote-1:0", "150000.0000000000"],
+    ["QuoteSide", "#alloc-quote-2:0", "50000.0000000000"],
+  ];
+  for (const [side, allocationCid, amount] of slices) {
+    await ledger.submit({
+      actAs: [operator],
+      commandId: `seed-pool-slice-${side}-${allocationCid}`,
+      command: {
+        kind: "create",
+        templateId: "CantonDex.Dex.PoolSlice:PoolSlice",
+        argument: { poolId, operator, side, allocationCid, amount },
+      },
+    });
+  }
+  await ledger.submit({
+    actAs: [operator],
+    commandId: "seed-pool-rules",
+    command: {
+      kind: "create",
+      templateId: "CantonDex.Dex.PoolRules:PoolRules",
+      argument: { operator },
     },
   });
 

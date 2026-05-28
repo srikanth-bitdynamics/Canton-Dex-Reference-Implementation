@@ -83,9 +83,8 @@ template MockAllocation with
       allocation_cancelExtraObservers _ = []
       allocation_withdrawExtraObservers _ = []
 
-      -- Post-PR-5333: the arg now carries extraTransferLegSides +
-      -- nextIterationFunding. The retired Allocation_Adjust step is
-      -- folded in here.
+      -- The arg carries extraTransferLegSides + nextIterationFunding;
+      -- there is no separate adjust step.
       allocation_settleImpl self arg = do
         archive self
         nextCid <- case arg.nextIterationFunding of

@@ -945,8 +945,8 @@ async function routeRequest(
     // Operator-driven half of the remove-liquidity flow: cancels the
     // pool's existing allocations, consolidates the remainder, and
     // creates the LPBurnRequest. The trader's LP-holding burn happens
-    // separately via the wallet against the lpRegistrar's
-    // LPTokenPolicy_AcceptBurn choice.
+    // separately via the wallet through LPBurnRequest_AcceptAndBurn
+    // (holder + lpRegistrar).
     const body = await readJson<
       Parameters<typeof backend.pool.removeLiquidity>[0]
     >(req);

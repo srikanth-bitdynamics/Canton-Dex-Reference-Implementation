@@ -19,6 +19,20 @@ module CantonDex.Tests.DvpMintBurnTests where
 -- authorization + registry mint/burn-account semantics), proven without
 -- touching the pool flow. The existing LPMintRequest path stays in place
 -- until the pool add/remove cutover.
+--
+-- AUTHORIZATION CAVEAT (read before trusting "tests pass"): this harness
+-- does NOT enforce mint authorization. `RealAllocation` is signatory
+-- `admin, authorizerOwner`, and for a mint `authorizerOwner = admin`, so
+-- the factory choice runs with the registry's ambient admin authority —
+-- nothing here stops a non-admin from exercising the factory to forge a
+-- mint allocation (see `testHarnessDoesNotGateMintAuthorization`, which
+-- documents exactly that). This is the same class of limitation as
+-- MockRegistry's "unsuitable for testing the V2 authorization model"
+-- caveat. The happy-path tests below prove the mint/burn *mechanism*
+-- (who gets credited / debited), not the authorization model. Real
+-- mint authorization lives in the production registry our DEX consumes,
+-- not in this shipped test registry — upstream proves it with
+-- `TestDeliveryVersusBurnMint`'s `mkAllocMustFail alice adminMintAlloc`.
 
 import DA.Assert
 import DA.List (head)
@@ -149,10 +163,49 @@ testDvpMintThenBurn = do
       actors = [registrar]
       extraArgs = emptyExtraArgs
 
-  -- Alice's LP is gone; the burn account holds nothing (owner None never
-  -- gets credited).
+  -- Alice's LP is gone — assert NO LP holding at all (locked or not), so
+  -- a holding left locked by a settle that failed to archive would be a
+  -- failure, not a false pass. The burn account holds nothing either
+  -- (owner None is never credited).
   aliceLpAfter <- query @RR.RealHolding alice
-  let lpAfter = filter (\(_, h) -> h.instrumentId == "LP" && h.owner == alice && not h.locked) aliceLpAfter
+  let lpAfter = filter (\(_, h) -> h.instrumentId == "LP" && h.owner == alice) aliceLpAfter
   length lpAfter === 0
 
+  pure ()
+
+-- Documents the harness limitation called out in the module header: a
+-- non-admin can author a mint allocation here because the factory runs
+-- with the registry's ambient admin authority. This is NOT desired
+-- behaviour — it asserts the gap so it's visible by inspection rather
+-- than silently assumed-safe. Production registries gate this via the V2
+-- authorization model (upstream: TestDeliveryVersusBurnMint's
+-- `mkAllocMustFail alice adminMintAlloc`).
+testHarnessDoesNotGateMintAuthorization : Script ()
+testHarnessDoesNotGateMintAuthorization = do
+  registrar <- allocateParty "registrar"
+  mallory <- allocateParty "mallory"
+  now <- getTime
+  regCid <- submit registrar $ createCmd RR.RealRegistry with
+    admin = registrar; users = [mallory]
+  let factoryCid : ContractId V2.AllocationFactory = toInterfaceContractId regCid
+      settlement = V2.SettlementInfo with
+        executors = [registrar]; id = "forge"; cid = None; meta = emptyMetadata
+      forgedMintLeg = V2.TransferLeg with
+        transferLegId = "forge-mint"; sender = mintAcct
+        receiver = Utils.basicAccount mallory; amount = 1000.0
+        instrumentId = "LP"; meta = emptyMetadata
+      forgedSpec = V2.AllocationSpecification with
+        admin = registrar; authorizer = mintAcct
+        transferLegSides = Utils.legsToSides mintAcct [forgedMintLeg]
+        settlementDeadline = None; nextIterationFunding = None
+        committed = False; meta = emptyMetadata
+  -- Mallory (a non-admin) authors a mint allocation. In a production
+  -- registry this MUST fail; in this harness it succeeds — documenting
+  -- that authorization is not enforced here.
+  res <- submit mallory $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+    settlement; allocation = forgedSpec; requestedAt = now
+    inputHoldingCids = []; actors = [mallory]; extraArgs = emptyExtraArgs
+  case res.output of
+    V2.AllocationInstructionResult_Completed _ -> pure ()
+    _ -> abort "expected the harness to (permissively) complete the forged mint"
   pure ()

@@ -208,10 +208,14 @@ template RealRegistry with
         let spec = arg.allocation
             -- DvP mint/burn (DEX-42): a mint/burn allocation names a
             -- special account with `owner = None` (mintAccount/burnAccount).
-            -- It is authorized by the admin (registrar) itself, not a
-            -- holder, and locks no holdings (mint has nothing to lock; a
-            -- burn locks the holder's holding via the HOLDER's allocation,
-            -- not this admin-side one).
+            -- `owner = None` is the ONLY marker; `id`/`provider` are not
+            -- inspected, and mint vs burn is distinguished purely by leg
+            -- direction at settle (sender None = mint, receiver None =
+            -- burn). This matches the upstream convention.
+            -- The allocation is authorized by the admin (registrar)
+            -- itself, not a holder, and locks no holdings (mint has
+            -- nothing to lock; a burn locks the holder's holding via the
+            -- HOLDER's allocation, not this admin-side one).
             isSpecialAcct = isNone spec.authorizer.owner
             authorizerOwner = if isSpecialAcct then admin else Utils.accountOwner spec.authorizer
         -- Compute how much this authorizer must lock from its
@@ -234,13 +238,14 @@ template RealRegistry with
         -- holdings (matching that instrument and owner) must be
         -- >= the outflow amount. Surplus is allowed; settle returns
         -- it after.
-        forA_ sendSides $ \_side -> do
-          -- We've already fetched + re-created with locked=True; the
-          -- caller is expected to have supplied the right holdings.
-          -- A production impl would re-read and validate. For the
-          -- harness, we trust the caller (the operator-backend or
-          -- runner) supplied the correct set.
-          pure ()
+        -- HARNESS LIMITATION: this loop does NOT validate that the locked
+        -- holdings cover the send-side outflow — it is a deliberate no-op
+        -- that trusts the caller. This is also why mint "locks nothing"
+        -- works (no coverage check to fail on empty inputHoldingCids). A
+        -- production registry MUST re-read and enforce per-instrument
+        -- coverage here; do not read "tests pass" as "sender coverage is
+        -- validated".
+        forA_ sendSides $ \_side -> pure ()
         now <- getTime
         allocationCid <- create RealAllocation with
           admin

@@ -141,6 +141,10 @@ export class AdminService {
     // LP instrument is administered by the lpRegistrar; build the
     // structured V2 InstrumentId from the supplied textual id.
     const lpInstrumentId = { admin: input.lpRegistrar, id: input.lpInstrumentId };
+    const poolId = `${input.baseInstrumentId}-${input.quoteInstrumentId}`;
+
+    // DEX-40/41 split: create the immutable config, the Unfunded state,
+    // and (idempotently) the per-venue rules contract.
     const poolCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"Pool">>({
         actAs: [this.operatorParty],
@@ -149,6 +153,7 @@ export class AdminService {
           kind: "create",
           templateId: "CantonDex.Dex.Pool:Pool",
           argument: {
+            poolId,
             operator: this.operatorParty,
             lpRegistrar: input.lpRegistrar,
             admin: input.admin,
@@ -156,18 +161,33 @@ export class AdminService {
             quoteInstrumentId: input.quoteInstrumentId,
             lpInstrumentId,
             feeBps: input.feeBps,
-            status: "PS_Unfunded",
-            reserves: { baseAmount: zero, quoteAmount: zero },
-            totalLpSupply: zero,
-            baseSlices: [],
-            quoteSlices: [],
-            operatorFeeBps: null,
-            accumulatedOperatorFees: null,
-            publicReaders: null,
+            operatorFeeBps: 0,
           },
         },
       }),
     );
+
+    await retryOnContention(() =>
+      this.ledger.submit({
+        actAs: [this.operatorParty],
+        commandId: `pool-state-create:${poolId}`,
+        command: {
+          kind: "create",
+          templateId: "CantonDex.Dex.PoolState:PoolState",
+          argument: {
+            poolId,
+            operator: this.operatorParty,
+            lpRegistrar: input.lpRegistrar,
+            status: "PS_Unfunded",
+            reserves: { baseAmount: zero, quoteAmount: zero },
+            totalLpSupply: zero,
+            publicReaders: [],
+          },
+        },
+      }),
+    );
+
+    await this.ensurePoolRules();
 
     // Create the matching LPTokenPolicy (lpRegistrar-signed) so the pool's
     // mint/burn flow has a policy to reference. Pool_Initialize /
@@ -195,5 +215,25 @@ export class AdminService {
     );
 
     return poolCid;
+  }
+
+  /** Create the per-venue PoolRules if the operator doesn't have one yet. */
+  private async ensurePoolRules(): Promise<void> {
+    const existing = await this.ledger.query<{ contractId: ContractId<"PoolRules">; operator: Party }>({
+      templateId: "CantonDex.Dex.PoolRules:PoolRules",
+      observingParty: this.operatorParty,
+    });
+    if (existing.some((r) => r.operator === this.operatorParty)) return;
+    await retryOnContention(() =>
+      this.ledger.submit({
+        actAs: [this.operatorParty],
+        commandId: `pool-rules-create:${this.operatorParty}`,
+        command: {
+          kind: "create",
+          templateId: "CantonDex.Dex.PoolRules:PoolRules",
+          argument: { operator: this.operatorParty },
+        },
+      }),
+    );
   }
 }

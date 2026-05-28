@@ -117,8 +117,7 @@ template Order with
         allowFutureIterations : Bool
       controller operator
       do
-        -- Post-PR-5333 (token-standard-v2-upcoming): there is no
-        -- separate Allocation_Adjust step. The match's transfer legs
+        -- There is no separate adjust step. The match's transfer legs
         -- are carried through to SettlementFactory_SettleBatch via
         -- FinalizedAllocation.extraTransferLegSides at the settlement
         -- call site (MatchedTrade_Settle or OrderMatchExecution_Execute).

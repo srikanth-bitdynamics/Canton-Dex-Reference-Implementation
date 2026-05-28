@@ -180,8 +180,8 @@ export class PoolService {
    * the redemption, and re-allocates at most ONE boundary slice per side
    * from the operator-supplied boundary holdings. Slices beyond the
    * boundary stay untouched. The trader's LP-holding burn is a separate
-   * wallet-handoff step (the lpRegistrar archives the holding via
-   * LPTokenPolicy_AcceptBurn against the LPBurnRequest this choice
+   * wallet-handoff step (holder + lpRegistrar archive the holding via
+   * LPBurnRequest_AcceptAndBurn against the LPBurnRequest this choice
    * creates).
    */
   async removeLiquidity(input: PoolRemoveLiquidityInput): Promise<unknown> {

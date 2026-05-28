@@ -134,7 +134,7 @@ testMatchedTradeViaTokenStandardRegistry = do
   bobAllocCid <- acceptOne bob bobReqCid
 
   -- Venue groups allocations by admin and settles via the registry's
-  -- SettlementFactory. Post-PR-5333: SettleBatch takes [FinalizedAllocation],
+  -- SettlementFactory. SettleBatch takes [FinalizedAllocation],
   -- not [ContractId Allocation].
   let allocations = [Utils.finalAllocation aliceAllocCid, Utils.finalAllocation bobAllocCid]
       settlementInfo = MT.mkTradeSettlementInfo tradeCid trade

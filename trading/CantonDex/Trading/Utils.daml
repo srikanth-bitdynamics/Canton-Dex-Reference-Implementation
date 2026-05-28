@@ -1,7 +1,6 @@
 module CantonDex.Trading.Utils where
 
--- Helper layer over the token-standard-v2-upcoming AllocationV2 API
--- (post-PR-5333 refactor; vendored from splice@a5b54c9).
+-- Helper layer over the AllocationV2 API (vendored from splice).
 --
 -- Key API deltas absorbed here:
 --   - `HoldingV2.Account.owner : Optional Party` (was `Party`). Special

@@ -6,7 +6,7 @@ import { RegistryClient } from "@canton-dex/registry-client";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import { toFloat } from "../policy/index.js";
-import type { Decimal, Party, Pool, Time, V2Account } from "../types.js";
+import type { Decimal, LPTokenPolicy, Party, Pool, Time, V2Account } from "../types.js";
 
 export interface PoolInitializeInput {
   poolCid: ContractId<"Pool">;
@@ -91,6 +91,7 @@ export class PoolService {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);
+    const lpPolicyCid = await this.fetchLpPolicy(pool);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
@@ -110,6 +111,7 @@ export class PoolService {
             baseAmount: input.baseAmount,
             quoteAmount: input.quoteAmount,
             requestedAt: input.requestedAt,
+            lpPolicyCid,
             extraArgs: ctx.extraArgs,
           },
         },
@@ -121,6 +123,7 @@ export class PoolService {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);
+    const lpPolicyCid = await this.fetchLpPolicy(pool);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
@@ -142,6 +145,7 @@ export class PoolService {
             minLpTokens: input.minLpTokens,
             knownTotalLpSupply: input.knownTotalLpSupply,
             requestedAt: input.requestedAt,
+            lpPolicyCid,
             extraArgs: ctx.extraArgs,
           },
         },
@@ -211,6 +215,7 @@ export class PoolService {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);
+    const lpPolicyCid = await this.fetchLpPolicy(pool);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
@@ -232,6 +237,7 @@ export class PoolService {
             boundaryBaseHoldingCids: input.boundaryBaseHoldingCids,
             boundaryQuoteHoldingCids: input.boundaryQuoteHoldingCids,
             requestedAt: input.requestedAt,
+            lpPolicyCid,
             extraArgs: ctx.extraArgs,
           },
         },
@@ -244,5 +250,30 @@ export class PoolService {
     const found = pools.find((p) => p.contractId === cid);
     if (!found) throw new Error(`Pool ${cid} not found`);
     return found;
+  }
+
+  /**
+   * The LPTokenPolicy backing a pool, matched on the full (admin, id)
+   * LP instrument identity. Created alongside the pool by
+   * AdminService.createPool; required by the mint/burn-bearing Pool
+   * choices.
+   */
+  private async fetchLpPolicy(pool: Pool): Promise<ContractId<"LPTokenPolicy">> {
+    const policies = await this.ledger.query<LPTokenPolicy>({
+      templateId: "CantonDex.Dex.LPToken:LPTokenPolicy",
+      observingParty: this.operatorParty,
+    });
+    const found = policies.find(
+      (p) =>
+        p.active &&
+        p.lpInstrumentId.id === pool.lpInstrumentId.id &&
+        p.lpInstrumentId.admin === pool.lpInstrumentId.admin,
+    );
+    if (!found) {
+      throw new Error(
+        `no active LPTokenPolicy for ${pool.lpInstrumentId.admin}:${pool.lpInstrumentId.id}`,
+      );
+    }
+    return found.contractId;
   }
 }

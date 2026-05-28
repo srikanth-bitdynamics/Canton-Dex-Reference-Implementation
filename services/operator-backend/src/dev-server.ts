@@ -268,6 +268,27 @@ async function seed(
     },
   });
 
+  // Matching LP token policy so add/remove-liquidity can resolve the
+  // pool's policy cid (PoolService.fetchLpPolicy).
+  await ledger.submit({
+    actAs: [lpRegistrar],
+    commandId: "seed-lp-policy-btcusdc",
+    command: {
+      kind: "create",
+      templateId: "CantonDex.Dex.LPToken:LPTokenPolicy",
+      argument: {
+        lpRegistrar,
+        operator,
+        lpInstrumentId: { admin: lpRegistrar, id: "BTC-USDC-LP" },
+        baseInstrumentId: "BTC",
+        quoteInstrumentId: "USDC",
+        poolCid: "#pool-btcusdc:0",
+        totalSupply: "1414.2135623731",
+        active: true,
+      },
+    },
+  });
+
   // A few holdings for the demo trader.
   for (const [instrumentId, amount] of [
     ["USDC", "5000.0000000000"],

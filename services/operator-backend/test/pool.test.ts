@@ -9,9 +9,15 @@ import assert from "node:assert/strict";
 
 import { PoolService } from "../src/pool/index.js";
 import { InMemoryLedger } from "../src/ledger/in-memory.js";
+import type {
+  LedgerSubmitter,
+  SubmitRequest,
+  SubscriptionFilter,
+  LedgerEvent,
+} from "../src/ledger/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type { ContractId } from "@canton-dex/registry-client";
-import type { Pool } from "../src/types.js";
+import type { LPTokenPolicy, Pool } from "../src/types.js";
 
 class StubRegistry extends RegistryClient {
   constructor() {
@@ -26,6 +32,41 @@ class StubRegistry extends RegistryClient {
   }
 }
 
+const LP_ID = { admin: "lp", id: "BTC-USDC-LP" };
+
+// Capturing ledger: answers fetchPool + fetchLpPolicy from canned rows
+// and records the last submitted command so a test can inspect the
+// choice argument.
+class CapturingLedger implements LedgerSubmitter {
+  lastSubmit: SubmitRequest | null = null;
+  constructor(private readonly pool: Pool, private readonly policy: LPTokenPolicy) {}
+  async submit<R>(req: SubmitRequest): Promise<R> {
+    this.lastSubmit = req;
+    return "#result:0" as R;
+  }
+  async *subscribe<T>(_f: SubscriptionFilter): AsyncIterable<LedgerEvent<T>> {
+    // no streaming in this stub
+  }
+  async query<T>(filter: SubscriptionFilter): Promise<T[]> {
+    if (filter.templateId === "CantonDex.Dex.Pool:Pool") return [this.pool as unknown as T];
+    if (filter.templateId === "CantonDex.Dex.LPToken:LPTokenPolicy") return [this.policy as unknown as T];
+    return [];
+  }
+}
+
+function mkLpPolicy(): LPTokenPolicy {
+  return {
+    contractId: "#lp:0" as ContractId<"LPTokenPolicy">,
+    lpRegistrar: "lp" as never,
+    operator: "op" as never,
+    lpInstrumentId: LP_ID,
+    baseInstrumentId: "BTC",
+    quoteInstrumentId: "USDC",
+    totalSupply: "0.0",
+    active: true,
+  };
+}
+
 function mkPool(
   baseReserve: number,
   quoteReserve: number,
@@ -38,7 +79,7 @@ function mkPool(
     admin: "ad" as never,
     baseInstrumentId: "BTC",
     quoteInstrumentId: "USDC",
-    lpInstrumentId: "BTC-USDC-LP",
+    lpInstrumentId: LP_ID,
     feeBps,
     status: "Active",
     reserves: {
@@ -99,6 +140,53 @@ describe("PoolService.computeQuote", () => {
     assert.ok(
       bigMid < tinyMid,
       `large swap should give worse per-unit price (tiny=${tinyMid}, big=${bigMid})`,
+    );
+  });
+});
+
+describe("PoolService.initialize (DEX-46)", () => {
+  it("threads lpPolicyCid + extraArgs into the Pool_Initialize argument", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    await svc.initialize({
+      poolCid: pool.contractId,
+      recipient: "lp" as never,
+      baseHoldingCids: [],
+      quoteHoldingCids: [],
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      requestedAt: "1970-01-01T00:00:00Z" as never,
+    });
+
+    assert.ok(ledger.lastSubmit, "a command was submitted");
+    const cmd = ledger.lastSubmit!.command;
+    assert.equal(cmd.kind, "exercise");
+    const arg = (cmd as { argument: Record<string, unknown> }).argument;
+    assert.equal(arg.lpPolicyCid, "#lp:0", "lpPolicyCid is the looked-up policy cid");
+    assert.ok(arg.extraArgs, "extraArgs (choice context) is present");
+  });
+
+  it("fails loudly when no LPTokenPolicy exists for the pool", async () => {
+    const pool = mkPool(0, 0);
+    // Capturing ledger that returns no policy rows.
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    (ledger as unknown as { query: unknown }).query = async (f: SubscriptionFilter) =>
+      f.templateId === "CantonDex.Dex.Pool:Pool" ? [pool] : [];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+    await assert.rejects(
+      () =>
+        svc.initialize({
+          poolCid: pool.contractId,
+          recipient: "lp" as never,
+          baseHoldingCids: [],
+          quoteHoldingCids: [],
+          baseAmount: "10.0",
+          quoteAmount: "200000.0",
+          requestedAt: "1970-01-01T00:00:00Z" as never,
+        }),
+      /no active LPTokenPolicy/,
     );
   });
 });

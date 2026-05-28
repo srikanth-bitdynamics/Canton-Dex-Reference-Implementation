@@ -95,6 +95,17 @@ export interface Pool {
   publicReaders: Party[] | null;
 }
 
+export interface LPTokenPolicy {
+  contractId: ContractId<"LPTokenPolicy">;
+  lpRegistrar: Party;
+  operator: Party;
+  lpInstrumentId: InstrumentId;
+  baseInstrumentId: string;
+  quoteInstrumentId: string;
+  totalSupply: Decimal;
+  active: boolean;
+}
+
 export type RfqSide = "RFQ_Buy" | "RFQ_Sell";
 export type DealerTier = "TierTrusted" | "TierWhitelist";
 

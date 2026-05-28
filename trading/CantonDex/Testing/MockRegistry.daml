@@ -39,6 +39,7 @@ module CantonDex.Testing.MockRegistry where
 -- This file lives under `CantonDex/Testing/` to make its scope clear.
 -- Production code MUST NOT import from this module.
 
+import DA.Action (when)
 import DA.Foldable (forA_)
 import DA.Map qualified as Map
 import DA.TextMap qualified as TextMap
@@ -54,6 +55,20 @@ emptyExtraArgs : ExtraArgs
 emptyExtraArgs = ExtraArgs with
   context = emptyChoiceContext
   meta = emptyMetadata
+
+-- Marker key a context-requiring mock looks for. Stands in for the
+-- real registry choice-context payload (disclosed config, app rights)
+-- so a test can prove the DEX threads caller-supplied context through
+-- to the factory choice rather than hardcoding an empty one.
+dexChoiceContextKey : Text
+dexChoiceContextKey = "dex.choiceContext"
+
+assertContextPresent : Bool -> ExtraArgs -> Update ()
+assertContextPresent requireContext extraArgs =
+  when requireContext $
+    assertMsg
+      "choice context required but absent (caller passed empty context)"
+      (TextMap.member dexChoiceContextKey extraArgs.context.values)
 
 -- | Mock V2.Allocation. Carries the spec verbatim; settlement/cancel/
 -- withdraw archive self; adjust archives + recreates with combined legs;
@@ -128,6 +143,10 @@ template MockAllocation with
 template MockAllocationFactory with
     admin : Party
     users : [Party]
+    requireContext : Bool
+      -- ^ When True, allocate asserts the caller supplied a non-empty
+      --   choice context. Lets a test prove the DEX threads context
+      --   through; default-False keeps lenient mocks for other tests.
   where
     signatory admin
     observer users
@@ -140,6 +159,7 @@ template MockAllocationFactory with
       allocationFactory_allocateExtraObservers _ = []
 
       allocationFactory_allocateImpl _self arg = do
+        assertContextPresent requireContext arg.extraArgs
         now <- getTime
         cid <- create MockAllocation with
           admin
@@ -161,6 +181,8 @@ template MockAllocationFactory with
 template MockSettlementFactory with
     admin : Party
     users : [Party]
+    requireContext : Bool
+      -- ^ See MockAllocationFactory.requireContext.
   where
     signatory admin
     observer users
@@ -173,6 +195,7 @@ template MockSettlementFactory with
       settlementFactory_settleBatchExtraObservers _ = []
 
       settlementFactory_settleBatchImpl _self arg = do
+        assertContextPresent requireContext arg.extraArgs
         results <- forA arg.allocations $ \finalized ->
           exercise finalized.allocationCid V2.Allocation_Settle with
             actors = arg.actors
@@ -192,10 +215,10 @@ template MockSettlementFactory with
 
 createMockAllocationFactory : Party -> [Party] -> Update (ContractId V2.AllocationFactory)
 createMockAllocationFactory admin users = do
-  cid <- create MockAllocationFactory with admin; users
+  cid <- create MockAllocationFactory with admin; users; requireContext = False
   pure (toInterfaceContractId cid)
 
 createMockSettlementFactory : Party -> [Party] -> Update (ContractId V2.SettlementFactory)
 createMockSettlementFactory admin users = do
-  cid <- create MockSettlementFactory with admin; users
+  cid <- create MockSettlementFactory with admin; users; requireContext = False
   pure (toInterfaceContractId cid)

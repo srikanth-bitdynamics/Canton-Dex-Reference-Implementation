@@ -59,8 +59,8 @@ setupRegistries : Party -> [Party] -> Script ( ContractId V2.AllocationFactory
                                               , ContractId V2.SettlementFactory
                                               )
 setupRegistries admin users = do
-  factoryCid <- submit admin $ createCmd Mock.MockAllocationFactory with admin; users
-  settleCid <- submit admin $ createCmd Mock.MockSettlementFactory with admin; users
+  factoryCid <- submit admin $ createCmd Mock.MockAllocationFactory with admin; users; requireContext = False
+  settleCid <- submit admin $ createCmd Mock.MockSettlementFactory with admin; users; requireContext = False
   pure (toInterfaceContractId factoryCid, toInterfaceContractId settleCid)
 
 -- 1. Pool init + add + swap + remove keeps reserves backed --------------
@@ -117,6 +117,7 @@ testPoolFullLifecycle = do
     baseAmount = 10.0
     quoteAmount = 200000.0
     lpPolicyCid = policyCid
+    extraArgs = emptyExtraArgs
     requestedAt = now
 
   Some pool1 <- queryContractId operator initRes.poolCid
@@ -147,6 +148,7 @@ testPoolFullLifecycle = do
     quoteAmount = 100000.0
     minLpTokens = 0.0
     lpPolicyCid = acceptRes.policyCid
+    extraArgs = emptyExtraArgs
     knownTotalLpSupply = initRes.lpTokensMinted
     requestedAt = now
 
@@ -405,12 +407,14 @@ testPoolRemoveLiquidityConsolidates = do
     baseAmount = 10.0
     quoteAmount = 200000.0
     lpPolicyCid = policyCid
+    extraArgs = emptyExtraArgs
     requestedAt = now
 
   removeRes <- submit operator $ exerciseCmd initRes.poolCid Pool.Pool_RemoveLiquidity with
     holder = alice
     lpTokensToRedeem = initRes.lpTokensMinted / 2.0
     lpPolicyCid = policyCid
+    extraArgs = emptyExtraArgs
     knownTotalLpSupply = initRes.lpTokensMinted
     minBaseOut = 0.0
     minQuoteOut = 0.0
@@ -488,6 +492,7 @@ testPoolSwapEndToEnd = do
     baseAmount = 10.0
     quoteAmount = 200000.0
     lpPolicyCid = policyCid
+    extraArgs = emptyExtraArgs
     requestedAt = now
 
   -- Bob creates a prefunded swap allocation (100 USDC -> BTC).
@@ -518,6 +523,7 @@ testPoolSwapEndToEnd = do
     minOutputAmount = 0.0
     swapperAllocationCid = bobAllocationCid
     factoryCid = settleCid
+    extraArgs = emptyExtraArgs
 
   -- Verify reserves moved.
   Some pool <- queryContractId operator swapRes.poolCid
@@ -725,6 +731,7 @@ testPoolRemoveLiquiditySliceLocal = do
     baseAmount = 10.0
     quoteAmount = 200000.0
     lpPolicyCid = policyCid
+    extraArgs = emptyExtraArgs
     requestedAt = now
 
   -- Record supply so AddLiquidity has something to divide by.
@@ -743,6 +750,7 @@ testPoolRemoveLiquiditySliceLocal = do
     quoteAmount = 100000.0
     minLpTokens = 0.0
     lpPolicyCid = policyCid
+    extraArgs = emptyExtraArgs
     knownTotalLpSupply = initRes.lpTokensMinted
     requestedAt = now
 
@@ -776,6 +784,7 @@ testPoolRemoveLiquiditySliceLocal = do
     boundaryBaseHoldingCids = []
     boundaryQuoteHoldingCids = []
     lpPolicyCid = policyCid
+    extraArgs = emptyExtraArgs
     requestedAt = now
 
   -- Only the head slice was consumed (and partially); the second slice
@@ -825,3 +834,67 @@ testPoolRemoveLiquiditySliceLocal = do
     (close poolAfter.reserves.quoteAmount 290000.0 0.01)
 
   pure ()
+
+-- DEX-37: the DEX threads the registry choice context through to the
+-- token-standard factory choice rather than hardcoding an empty one.
+-- We prove it with a context-requiring mock factory: Pool_Initialize
+-- succeeds only when the caller supplies the marker context.
+
+mkPoolFixture
+  : Party -> Party -> Party -> Bool -> Script (ContractId Pool.Pool, ContractId LP.LPTokenPolicy, ContractId V2.AllocationFactory)
+mkPoolFixture operator lpRegistrar admin requireContext = do
+  factory <- submit admin $ createCmd Mock.MockAllocationFactory with
+    admin; users = [operator, lpRegistrar]; requireContext
+  let lpId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
+  poolCid <- submit operator $ createCmd Pool.Pool with
+    operator; lpRegistrar; admin
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId = lpId
+    feeBps = 30; status = Pool.PS_Unfunded
+    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
+    totalLpSupply = 0.0; baseSlices = []; quoteSlices = []
+    operatorFeeBps = None; accumulatedOperatorFees = None; publicReaders = None
+  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
+    lpRegistrar; operator; lpInstrumentId = lpId
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
+  pure (poolCid, policyCid, toInterfaceContractId factory)
+
+markerContext : ExtraArgs
+markerContext = ExtraArgs with
+  context = ChoiceContext with
+    values = TextMap.fromList [(Mock.dexChoiceContextKey, AV_Bool True)]
+  meta = emptyMetadata
+
+testPoolInitializeThreadsChoiceContext : Script ()
+testPoolInitializeThreadsChoiceContext = do
+  operator <- allocateParty "operator"
+  lpRegistrar <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+  now <- getTime
+  (poolCid, policyCid, factoryCid) <- mkPoolFixture operator lpRegistrar admin True
+  -- With the marker context the context-requiring factory accepts.
+  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+    recipient = lpRegistrar
+    baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid
+    baseHoldingCids = []; quoteHoldingCids = []
+    baseAmount = 10.0; quoteAmount = 200000.0
+    lpPolicyCid = policyCid; requestedAt = now
+    extraArgs = markerContext
+  Some pool <- queryContractId operator initRes.poolCid
+  pool.status === Pool.PS_Active
+
+testPoolInitializeRejectsEmptyContext : Script ()
+testPoolInitializeRejectsEmptyContext = do
+  operator <- allocateParty "operator"
+  lpRegistrar <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+  now <- getTime
+  (poolCid, policyCid, factoryCid) <- mkPoolFixture operator lpRegistrar admin True
+  -- Empty context against the context-requiring factory must fail.
+  submitMustFail operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+    recipient = lpRegistrar
+    baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid
+    baseHoldingCids = []; quoteHoldingCids = []
+    baseAmount = 10.0; quoteAmount = 200000.0
+    lpPolicyCid = policyCid; requestedAt = now
+    extraArgs = emptyExtraArgs

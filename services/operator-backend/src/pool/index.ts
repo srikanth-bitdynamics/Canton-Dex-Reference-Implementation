@@ -1,6 +1,6 @@
 // Pool flow.
 
-import type { ContractId } from "@canton-dex/registry-client";
+import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
@@ -51,6 +51,23 @@ export class PoolService {
     private readonly operatorParty: Party,
   ) {}
 
+  /**
+   * Fetch the registry choice context for an admin and shape it into the
+   * `ExtraArgs` the Pool choices forward to the factory choices, plus the
+   * disclosed contracts to attach to the submission. Empty for our own
+   * registry; populated by a context-requiring registry.
+   */
+  private async choiceContext(admin: Party): Promise<{
+    extraArgs: { context: { values: Record<string, unknown> }; meta: { values: Record<string, unknown> } };
+    disclosure: DisclosedContract[];
+  }> {
+    const ctx = await this.registry.getChoiceContext(admin);
+    return {
+      extraArgs: { context: ctx.context, meta: { values: {} } },
+      disclosure: ctx.disclosure,
+    };
+  }
+
   async listActive(): Promise<Pool[]> {
     const pools = await this.ledger.query<Pool>({
       templateId: "CantonDex.Dex.Pool:Pool",
@@ -73,11 +90,12 @@ export class PoolService {
   }> {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
+    const ctx = await this.choiceContext(pool.admin);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         commandId: `pool-init:${input.poolCid}`,
-        disclosure: factories.disclosure,
+        disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.Pool:Pool",
@@ -92,6 +110,7 @@ export class PoolService {
             baseAmount: input.baseAmount,
             quoteAmount: input.quoteAmount,
             requestedAt: input.requestedAt,
+            extraArgs: ctx.extraArgs,
           },
         },
       }),
@@ -101,11 +120,12 @@ export class PoolService {
   async addLiquidity(input: PoolAddLiquidityInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
+    const ctx = await this.choiceContext(pool.admin);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         commandId: `pool-add:${input.poolCid}:${input.requestedAt}`,
-        disclosure: factories.disclosure,
+        disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.Pool:Pool",
@@ -122,6 +142,7 @@ export class PoolService {
             minLpTokens: input.minLpTokens,
             knownTotalLpSupply: input.knownTotalLpSupply,
             requestedAt: input.requestedAt,
+            extraArgs: ctx.extraArgs,
           },
         },
       }),
@@ -151,11 +172,12 @@ export class PoolService {
   async swap(input: PoolSwapInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
+    const ctx = await this.choiceContext(pool.admin);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         commandId: `pool-swap:${input.poolCid}:${Date.now()}`,
-        disclosure: factories.disclosure,
+        disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.Pool:Pool",
@@ -168,6 +190,7 @@ export class PoolService {
             minOutputAmount: input.minOutputAmount,
             swapperAllocationCid: input.swapperAllocationCid,
             factoryCid: factories.settlementFactoryCid,
+            extraArgs: ctx.extraArgs,
           },
         },
       }),
@@ -187,11 +210,12 @@ export class PoolService {
   async removeLiquidity(input: PoolRemoveLiquidityInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
+    const ctx = await this.choiceContext(pool.admin);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         commandId: `pool-remove:${input.poolCid}:${input.requestedAt}`,
-        disclosure: factories.disclosure,
+        disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.Pool:Pool",
@@ -208,6 +232,7 @@ export class PoolService {
             boundaryBaseHoldingCids: input.boundaryBaseHoldingCids,
             boundaryQuoteHoldingCids: input.boundaryQuoteHoldingCids,
             requestedAt: input.requestedAt,
+            extraArgs: ctx.extraArgs,
           },
         },
       }),

@@ -1,0 +1,441 @@
+module CantonDex.Dex.LpDvpRules where
+
+-- DvP liquidity at the boundary (DEX-42/43), co-controlled by operator +
+-- lpRegistrar. Additive: the operator-only PoolRules add/remove path is
+-- left intact (deprecated) and retired in 3b/3c.
+--
+-- Model (see docs/dex-42-lp-funded-custody.md): the pool stays
+-- operator-custodied between operations; at the add/remove boundary a DvP
+-- settle moves assets. Slices stay operator-authored locality units;
+-- LP entitlement is pro-rata over aggregate reserves. Because settlement
+-- is admin-scoped, each op is two per-admin SettleBatches in one
+-- transaction — base/quote under `pool.admin`, LP mint/burn under
+-- `pool.lpRegistrar` (they collapse to one when admin == lpRegistrar).
+--
+-- LpDvpRules is co-controlled `operator, lpRegistrar` so its choices can
+-- both rewrite the operator-signed PoolState/PoolSlice and drive the
+-- lpRegistrar-controlled LPTokenPolicy + mint/burn.
+
+import DA.Foldable (forA_)
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Dex.Pool
+import CantonDex.Dex.PoolState qualified as PS
+import CantonDex.Dex.PoolSlice qualified as PSlice
+import CantonDex.Dex.PoolRules qualified as PR
+import CantonDex.Dex.LPToken qualified as LP
+import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
+import CantonDex.Lp.Instrument qualified as Lp
+import CantonDex.Trading.Utils qualified as Utils
+
+data LpDvpRules_SettleAddResult = LpDvpRules_SettleAddResult with
+    poolStateCid : ContractId PS.PoolState
+    baseSliceCid : ContractId PSlice.PoolSlice
+    quoteSliceCid : ContractId PSlice.PoolSlice
+    lpPolicyCid : ContractId LP.LPTokenPolicy
+    lpTokensMinted : Decimal
+  deriving (Eq, Show)
+
+data LpDvpRules_SettleRemoveResult = LpDvpRules_SettleRemoveResult with
+    poolStateCid : ContractId PS.PoolState
+    boundaryBaseSliceCid : Optional (ContractId PSlice.PoolSlice)
+    boundaryQuoteSliceCid : Optional (ContractId PSlice.PoolSlice)
+    lpPolicyCid : ContractId LP.LPTokenPolicy
+    baseReturned : Decimal
+    quoteReturned : Decimal
+  deriving (Eq, Show)
+
+-- Build the AllocationFactory_Allocate arg for an operator-authored
+-- committed receiver allocation over `leg` (receives into the pool). No
+-- funding at allocate time — funding is applied on the FinalizedAllocation
+-- at the settle step (avoids the factory coverage check), mirroring swap.
+mkOperatorReceiver
+  : Party -> Party -> V2.SettlementInfo -> V2.TransferLeg -> Time -> ExtraArgs
+  -> V2.AllocationFactory_Allocate
+mkOperatorReceiver operator admin settlement leg requestedAt extraArgs =
+  let poolAccount = Utils.basicAccount operator
+  in V2.AllocationFactory_Allocate with
+       settlement
+       allocation = V2.AllocationSpecification with
+         admin
+         authorizer = poolAccount
+         transferLegSides = Utils.legsToSides poolAccount [leg]
+         settlementDeadline = None
+         nextIterationFunding = None
+         committed = True
+         meta = emptyMetadata
+       requestedAt
+       inputHoldingCids = []
+       actors = [operator]
+       extraArgs
+
+-- Enforce the quote deadline carried ON the LP/holder's allocation — i.e.
+-- read it from ledger state (the `settlementDeadline` the authorizer set
+-- when creating the allocation), NOT from a caller-supplied argument. The
+-- operator drives the settle but cannot relax a deadline the LP committed
+-- to; an expired quote cannot be settled (P1 review).
+enforceAllocationDeadline : ContractId V2.Allocation -> Update ()
+enforceAllocationDeadline cid = do
+  v <- view <$> fetch cid
+  case v.allocation.settlementDeadline of
+    None -> pure ()
+    Some deadline -> do
+      now <- getTime
+      assertMsg "liquidity request quote has expired" (now <= deadline)
+
+-- The per-side result of drawing a redemption across an ordered slice
+-- prefix: the delivery legs (one per sourced slice), the finalized slice
+-- allocations, the fully-consumed slice cids to archive, and the boundary
+-- (cid + leftover) to re-wrap. Mirrors PoolRules_Swap's multi-slice output.
+data SideDelivery = SideDelivery with
+    legs : [V2.TransferLeg]
+    sliceFinalizeds : [V2.FinalizedAllocation]
+    drainedSliceCids : [ContractId PSlice.PoolSlice]
+    boundary : Optional (ContractId PSlice.PoolSlice, Decimal)
+  deriving (Eq, Show)
+
+buildSideDelivery
+  : Text -> V2.Account -> V2.Account -> Text -> PR.SliceDraw -> SideDelivery
+buildSideDelivery prefix opAcct holderAcct instrumentId draw =
+  let mkLeg i amt = V2.TransferLeg with
+        transferLegId = prefix <> show (i : Int)
+        sender = opAcct; receiver = holderAcct
+        amount = amt; instrumentId; meta = emptyMetadata
+      fullyTriples =
+        [ (cid, slice, mkLeg i slice.amount)
+        | (i, (cid, slice)) <- zip [0 .. length draw.fullyConsumed - 1] draw.fullyConsumed ]
+      bIdx = length draw.fullyConsumed
+      bTriple = case draw.boundary of
+        Some (cid, slice, drawn, leftover) -> Some (cid, slice, leftover, mkLeg bIdx drawn)
+        None -> None
+      legs = [ leg | (_, _, leg) <- fullyTriples ]
+          ++ optional [] (\(_, _, _, leg) -> [leg]) bTriple
+      sliceFinalizeds =
+        [ Utils.mkFinalizedAllocation slice.allocationCid (Utils.legsToSides opAcct [leg]) None
+        | (_, slice, leg) <- fullyTriples ]
+        ++ optional []
+             (\(_, slice, leftover, leg) ->
+                [ Utils.mkFinalizedAllocation slice.allocationCid (Utils.legsToSides opAcct [leg])
+                    (if leftover > 0.0 then Some (TextMap.fromList [(instrumentId, leftover)]) else None) ])
+             bTriple
+  in SideDelivery with
+       legs
+       sliceFinalizeds
+       drainedSliceCids = [ cid | (cid, _, _) <- fullyTriples ]
+       boundary = fmap (\(cid, _, leftover, _) -> (cid, leftover)) bTriple
+
+template LpDvpRules with
+    operator : Party
+    lpRegistrar : Party
+  where
+    signatory operator, lpRegistrar
+
+    -- Create the directional request the LP/holder accepts to author the
+    -- boundary allocations. Thin: the substance is in the Settle choices.
+    nonconsuming choice LpDvpRules_RequestAddLiquidity : ContractId LAR.LiquidityAllocationRequest
+      with
+        poolCid : ContractId Pool
+        lp : Party
+        settlement : V2.SettlementInfo
+        allocations : [V2.AllocationSpecification]
+        requestedAt : Time
+        settleAt : Optional Time
+      controller operator
+      do
+        create LAR.LiquidityAllocationRequest with
+          operator; lp; settlement; allocations; requestedAt; settleAt
+
+    nonconsuming choice LpDvpRules_RequestRemoveLiquidity : ContractId LAR.LiquidityAllocationRequest
+      with
+        poolCid : ContractId Pool
+        holder : Party
+        settlement : V2.SettlementInfo
+        allocations : [V2.AllocationSpecification]
+        requestedAt : Time
+        settleAt : Optional Time
+      controller operator
+      do
+        create LAR.LiquidityAllocationRequest with
+          operator; lp = holder; settlement; allocations; requestedAt; settleAt
+
+    -- DvP add: the LP's pre-created committed base/quote deposit
+    -- allocations + LP-token receipt allocation settle atomically; the
+    -- operator's receiver allocations roll forward into the two new
+    -- operator-authored slices; the registrar mints LP tokens to the LP.
+    nonconsuming choice LpDvpRules_SettleAddLiquidity : LpDvpRules_SettleAddResult
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PS.PoolState
+        lpPolicyCid : ContractId LP.LPTokenPolicy
+        recipient : Party
+        lpBaseDepositCid : ContractId V2.Allocation
+        lpQuoteDepositCid : ContractId V2.Allocation
+        lpReceiptCid : ContractId V2.Allocation
+        baseFactoryCid : ContractId V2.AllocationFactory
+        quoteFactoryCid : ContractId V2.AllocationFactory
+        lpFactoryCid : ContractId V2.AllocationFactory
+        baseQuoteSettleCid : ContractId V2.SettlementFactory
+        lpSettleCid : ContractId V2.SettlementFactory
+        baseAmount : Decimal
+        quoteAmount : Decimal
+        minLpTokens : Decimal
+        knownTotalLpSupply : Decimal
+        requestedAt : Time
+        extraArgs : ExtraArgs
+      controller operator, lpRegistrar
+      do
+        -- Deadline read from EVERY LP-authored allocation in this settle
+        -- (ledger state), not just one: this registry does not enforce
+        -- `settlementDeadline` per-settle, so an expired deposit or receipt
+        -- leg could otherwise ride along behind a fresh one.
+        forA_ [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] enforceAllocationDeadline
+        (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        -- Allowed: first-funding (Unfunded) or a funded pool (Active);
+        -- a paused pool rejects liquidity changes (matches the old path).
+        assertMsg "Pool must not be paused" (state.status /= PS_Paused)
+        assertMsg "Base amount must be positive" (baseAmount > 0.0)
+        assertMsg "Quote amount must be positive" (quoteAmount > 0.0)
+        -- Supply-sync + stale-quote guards.
+        policy <- fetch lpPolicyCid
+        assertMsg "LPTokenPolicy/PoolState supply divergence"
+          (policy.totalSupply == state.totalLpSupply)
+        assertMsg "knownTotalLpSupply must match recorded supply"
+          (knownTotalLpSupply == state.totalLpSupply)
+
+        let recipientAcct = Utils.basicAccount recipient
+            settlement = PR.poolSettlement poolCid operator
+            lpAmount =
+              if state.totalLpSupply == 0.0
+              then PR.sqrtDecimal (baseAmount * quoteAmount)
+              else min ((baseAmount * state.totalLpSupply) / state.reserves.baseAmount)
+                       ((quoteAmount * state.totalLpSupply) / state.reserves.quoteAmount)
+        assertMsg "LP tokens below minimum" (lpAmount >= minLpTokens)
+
+        let baseDepositLeg = V2.TransferLeg with
+              transferLegId = "lp-base-deposit"
+              sender = recipientAcct; receiver = Utils.basicAccount operator
+              amount = baseAmount; instrumentId = pool.baseInstrumentId
+              meta = emptyMetadata
+            quoteDepositLeg = V2.TransferLeg with
+              transferLegId = "lp-quote-deposit"
+              sender = recipientAcct; receiver = Utils.basicAccount operator
+              amount = quoteAmount; instrumentId = pool.quoteInstrumentId
+              meta = emptyMetadata
+            lpMintLeg = Lp.lpMintLeg lpRegistrar recipientAcct pool.lpInstrumentId.id lpAmount
+
+        -- Operator receiver allocations (roll forward into the new slices).
+        opBaseRecv <- exercise baseFactoryCid
+          (mkOperatorReceiver operator pool.admin settlement baseDepositLeg requestedAt extraArgs)
+          >>= PR.extractCompleted
+        opQuoteRecv <- exercise quoteFactoryCid
+          (mkOperatorReceiver operator pool.admin settlement quoteDepositLeg requestedAt extraArgs)
+          >>= PR.extractCompleted
+        -- Registrar mint allocation (admin-authorized, owner-None account).
+        regMint <- exercise lpFactoryCid
+          (V2.AllocationFactory_Allocate with
+             settlement
+             allocation = Lp.mintSenderSpec lpRegistrar lpMintLeg
+             requestedAt; inputHoldingCids = []; actors = [lpRegistrar]; extraArgs)
+          >>= PR.extractCompleted
+
+        -- base/quote batch (pool.admin): deposits in, operator receivers
+        -- roll forward with nextIterationFunding on the finalized step.
+        bqResult <- exercise baseQuoteSettleCid V2.SettlementFactory_SettleBatch with
+          settlement
+          transferLegs = [baseDepositLeg, quoteDepositLeg]
+          allocations =
+            [ Utils.finalAllocation lpBaseDepositCid
+            , Utils.finalAllocation lpQuoteDepositCid
+            , Utils.mkFinalizedAllocation opBaseRecv []
+                (Some (TextMap.fromList [(pool.baseInstrumentId, baseAmount)]))
+            , Utils.mkFinalizedAllocation opQuoteRecv []
+                (Some (TextMap.fromList [(pool.quoteInstrumentId, quoteAmount)]))
+            ]
+          actors = [operator]
+          extraArgs
+        (nextBaseAllocCid, nextQuoteAllocCid) <-
+          case Utils.nextIterationAllocationCids bqResult of
+            [_, _, Some b, Some q] -> pure (b, q)
+            _ -> abort "SettleAddLiquidity: operator receivers must roll forward"
+
+        -- LP-mint batch (pool.lpRegistrar): mint LP tokens to the LP.
+        _ <- exercise lpSettleCid V2.SettlementFactory_SettleBatch with
+          settlement
+          transferLegs = [lpMintLeg]
+          allocations = [Utils.finalAllocation regMint, Utils.finalAllocation lpReceiptCid]
+          actors = [operator]
+          extraArgs
+
+        baseSliceCid <- create PSlice.PoolSlice with
+          poolId = pool.poolId; operator; side = BaseSide
+          allocationCid = nextBaseAllocCid; amount = baseAmount
+        quoteSliceCid <- create PSlice.PoolSlice with
+          poolId = pool.poolId; operator; side = QuoteSide
+          allocationCid = nextQuoteAllocCid; amount = quoteAmount
+
+        newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordMint with amount = lpAmount
+
+        archive poolStateCid
+        newStateCid <- create state with
+          status = PS_Active
+          reserves = PoolReserves with
+            baseAmount = state.reserves.baseAmount + baseAmount
+            quoteAmount = state.reserves.quoteAmount + quoteAmount
+          totalLpSupply = state.totalLpSupply + lpAmount
+
+        pure LpDvpRules_SettleAddResult with
+          poolStateCid = newStateCid
+          baseSliceCid; quoteSliceCid
+          lpPolicyCid = newPolicyCid
+          lpTokensMinted = lpAmount
+
+    -- DvP remove: pro-rata over aggregate reserves; the sourced operator
+    -- slices deliver base+quote to the HOLDER (symmetric to swap), the
+    -- holder's LP tokens burn to burnAccount. Sources from a single
+    -- provided slice per side (the boundary case); multi-slice draw
+    -- mirrors PoolRules_Swap and is a follow-up.
+    nonconsuming choice LpDvpRules_SettleRemoveLiquidity : LpDvpRules_SettleRemoveResult
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PS.PoolState
+        lpPolicyCid : ContractId LP.LPTokenPolicy
+        holder : Party
+        lpTokensToRedeem : Decimal
+        knownTotalLpSupply : Decimal
+        minBaseOut : Decimal
+        minQuoteOut : Decimal
+        baseSliceCids : [ContractId PSlice.PoolSlice]
+        quoteSliceCids : [ContractId PSlice.PoolSlice]
+        holderBaseReceiptCid : ContractId V2.Allocation
+        holderQuoteReceiptCid : ContractId V2.Allocation
+        holderBurnSenderCid : ContractId V2.Allocation
+        baseFactoryCid : ContractId V2.AllocationFactory
+        quoteFactoryCid : ContractId V2.AllocationFactory
+        lpFactoryCid : ContractId V2.AllocationFactory
+        baseQuoteSettleCid : ContractId V2.SettlementFactory
+        lpSettleCid : ContractId V2.SettlementFactory
+        requestedAt : Time
+        extraArgs : ExtraArgs
+      controller operator, lpRegistrar
+      do
+        -- Deadline read from EVERY holder-authored allocation in this settle
+        -- (ledger state): the two receipt legs and the burn-sender leg must
+        -- all be unexpired, not merely the one checked allocation.
+        forA_ [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
+          enforceAllocationDeadline
+        (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        assertMsg "Pool must be Active to remove liquidity" (state.status == PS_Active)
+        assertMsg "LP tokens must be positive" (lpTokensToRedeem > 0.0)
+        assertMsg "Cannot redeem more than supply" (lpTokensToRedeem <= knownTotalLpSupply)
+        policy <- fetch lpPolicyCid
+        assertMsg "LPTokenPolicy/PoolState supply divergence"
+          (policy.totalSupply == state.totalLpSupply)
+        assertMsg "knownTotalLpSupply must match recorded supply"
+          (knownTotalLpSupply == state.totalLpSupply)
+
+        let share = lpTokensToRedeem / knownTotalLpSupply
+            baseOut = state.reserves.baseAmount * share
+            quoteOut = state.reserves.quoteAmount * share
+        assertMsg "Base output below minimum" (baseOut >= minBaseOut)
+        assertMsg "Quote output below minimum" (quoteOut >= minQuoteOut)
+
+        -- Draw the redemption across an ordered slice prefix per side
+        -- (multi-slice, like PoolRules_Swap): fully-consumed slices drain,
+        -- only the boundary slice is re-wrapped.
+        baseItems <- forA baseSliceCids (\cid -> do s <- fetch cid; pure (cid, s))
+        quoteItems <- forA quoteSliceCids (\cid -> do s <- fetch cid; pure (cid, s))
+        assertMsg "Provided base slices cannot cover the redemption"
+          (foldl (\a (_, s) -> a + s.amount) 0.0 baseItems >= baseOut)
+        assertMsg "Provided quote slices cannot cover the redemption"
+          (foldl (\a (_, s) -> a + s.amount) 0.0 quoteItems >= quoteOut)
+
+        let holderAcct = Utils.basicAccount holder
+            operatorAcct = Utils.basicAccount operator
+            settlement = PR.poolSettlement poolCid operator
+            burnLeg = Lp.lpBurnLeg lpRegistrar holderAcct pool.lpInstrumentId.id lpTokensToRedeem
+            baseDraw = PR.drawFromSlices baseOut baseItems
+            quoteDraw = PR.drawFromSlices quoteOut quoteItems
+            baseDel = buildSideDelivery "lp-base-out-" operatorAcct holderAcct pool.baseInstrumentId baseDraw
+            quoteDel = buildSideDelivery "lp-quote-out-" operatorAcct holderAcct pool.quoteInstrumentId quoteDraw
+
+        -- Registrar burn-receiver allocation (admin-authorized, owner-None).
+        regBurn <- exercise lpFactoryCid
+          (V2.AllocationFactory_Allocate with
+             settlement
+             allocation = Lp.burnReceiptSpec lpRegistrar burnLeg
+             requestedAt; inputHoldingCids = []; actors = [lpRegistrar]; extraArgs)
+          >>= PR.extractCompleted
+
+        -- base/quote batch (pool.admin): the sourced slices send per-slice
+        -- delivery legs to the holder (receiver = the holder's receipt
+        -- allocations); boundary slices roll forward, the rest drain.
+        bqResult <- exercise baseQuoteSettleCid V2.SettlementFactory_SettleBatch with
+          settlement
+          transferLegs = baseDel.legs ++ quoteDel.legs
+          allocations =
+            baseDel.sliceFinalizeds
+              ++ [Utils.finalAllocation holderBaseReceiptCid]
+              ++ quoteDel.sliceFinalizeds
+              ++ [Utils.finalAllocation holderQuoteReceiptCid]
+          actors = [operator]
+          extraArgs
+        -- The only roll-forward (Some) entries are the boundary slices,
+        -- in allocation order: base boundary then quote boundary.
+        let someNexts = [ c | Some c <- Utils.nextIterationAllocationCids bqResult ]
+            baseRolls = case baseDel.boundary of Some (_, lo) -> lo > 0.0; None -> False
+            quoteRolls = case quoteDel.boundary of Some (_, lo) -> lo > 0.0; None -> False
+        (baseRollCid, quoteRollCid) <- case (baseRolls, quoteRolls, someNexts) of
+          (True, True, [b, q]) -> pure (Some b, Some q)
+          (True, False, [b]) -> pure (Some b, None)
+          (False, True, [q]) -> pure (None, Some q)
+          (False, False, []) -> pure (None, None)
+          _ -> abort "remove: unexpected boundary roll-forward count"
+
+        -- LP-burn batch (pool.lpRegistrar): the holder's LP holding burns.
+        _ <- exercise lpSettleCid V2.SettlementFactory_SettleBatch with
+          settlement
+          transferLegs = [burnLeg]
+          allocations = [Utils.finalAllocation holderBurnSenderCid, Utils.finalAllocation regBurn]
+          actors = [operator]
+          extraArgs
+
+        -- Archive fully-consumed slice contracts (drained, no replacement).
+        forA_ (baseDel.drainedSliceCids ++ quoteDel.drainedSliceCids) archive
+        -- Re-wrap each boundary slice: archive the old contract; create a
+        -- fresh one for the leftover when >0 (else it too is drained).
+        let rewrapBoundary side rollCid mb = case mb of
+              None -> pure None
+              Some (oldCid, leftover) -> do
+                archive oldCid
+                if leftover > 0.0
+                  then case rollCid of
+                    Some cid -> Some <$> create PSlice.PoolSlice with
+                      poolId = pool.poolId; operator; side; allocationCid = cid; amount = leftover
+                    None -> abort "remove: boundary must roll forward"
+                  else pure None
+        boundaryBaseSliceCid <- rewrapBoundary BaseSide baseRollCid baseDel.boundary
+        boundaryQuoteSliceCid <- rewrapBoundary QuoteSide quoteRollCid quoteDel.boundary
+
+        newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordBurn with amount = lpTokensToRedeem
+
+        let newBase = state.reserves.baseAmount - baseOut
+            newQuote = state.reserves.quoteAmount - quoteOut
+        archive poolStateCid
+        newStateCid <- create state with
+          status = if newBase == 0.0 && newQuote == 0.0 then PS_Unfunded else PS_Active
+          reserves = PoolReserves with baseAmount = newBase; quoteAmount = newQuote
+          totalLpSupply = state.totalLpSupply - lpTokensToRedeem
+
+        pure LpDvpRules_SettleRemoveResult with
+          poolStateCid = newStateCid
+          boundaryBaseSliceCid; boundaryQuoteSliceCid
+          lpPolicyCid = newPolicyCid
+          baseReturned = baseOut
+          quoteReturned = quoteOut

@@ -21,6 +21,7 @@ module CantonDex.Trading.Utils where
 --     (Pending / Settled / Cancelled / Withdrawn).
 
 import DA.Map qualified as Map
+import DA.Optional (isNone)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
@@ -42,6 +43,33 @@ accountOwner account = case account.owner of
 
 basicAccount : Party -> HoldingV2.Account
 basicAccount owner = HoldingV2.Account (Some owner) None ""
+
+-- Canonical Token-Standard-V2 mint/burn account identities. These mirror
+-- `Splice.TokenStandard.Utils` (which our `trading` package does not
+-- depend on): a special account with `owner = None` and the standard id.
+-- They are the ONLY accounts a registry treats as admin-authorized
+-- mint/burn sources — see the shape + actor checks in
+-- `CantonDex.Registry.V2`.
+mintAccountId : Text
+mintAccountId = "cip-112/mint"
+
+burnAccountId : Text
+burnAccountId = "cip-112/burn"
+
+mintAccount : HoldingV2.Account
+mintAccount = HoldingV2.Account None None mintAccountId
+
+burnAccount : HoldingV2.Account
+burnAccount = HoldingV2.Account None None burnAccountId
+
+-- True for exactly the two standard mint/burn accounts (owner None + the
+-- canonical id). A registry must NOT treat any other `owner = None`
+-- account as a mint/burn source.
+isMintAccount : HoldingV2.Account -> Bool
+isMintAccount a = isNone a.owner && a.id == mintAccountId
+
+isBurnAccount : HoldingV2.Account -> Bool
+isBurnAccount a = isNone a.owner && a.id == burnAccountId
 
 accountParties : HoldingV2.Account -> [Party]
 accountParties account =

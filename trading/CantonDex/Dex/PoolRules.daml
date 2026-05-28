@@ -222,6 +222,11 @@ template PoolRules with
 
     -- Append liquidity: one new slice per side, bump reserves. The new
     -- slices conflict with nothing existing.
+    -- DEPRECATED (DEX-42): superseded by the DvP path
+    -- `LpDvpRules_SettleAddLiquidity`. This operator-only add (LP tokens
+    -- minted via the LPMintRequest handshake, no atomic delivery) is kept
+    -- only until the operator-backend/dApp cut over; retired as a named
+    -- step in 3b/3c. Do not attach new callers.
     nonconsuming choice PoolRules_AddLiquidity : PoolRules_AddLiquidityResult
       with
         expectedPoolId : PoolId
@@ -306,6 +311,11 @@ template PoolRules with
     -- consumed slices are cancelled (resolveSlice); the boundary slice is
     -- cancelled and re-allocated for its leftover. Slices not passed in
     -- are untouched.
+    -- DEPRECATED (DEX-42): superseded by the DvP path
+    -- `LpDvpRules_SettleRemoveLiquidity`, which delivers base+quote to the
+    -- HOLDER (this version returns them to the operator's pool account —
+    -- finding #3) and burns LP tokens via `burnAccount`. Kept until the
+    -- backend/dApp cut over; retired as a named step in 3b/3c.
     nonconsuming choice PoolRules_RemoveLiquidity : PoolRules_RemoveLiquidityResult
       with
         expectedPoolId : PoolId

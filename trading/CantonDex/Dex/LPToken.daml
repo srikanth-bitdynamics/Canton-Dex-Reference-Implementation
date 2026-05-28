@@ -79,6 +79,10 @@ template LPTokenPolicy with
 
 -- | Operator-signed request to mint LP tokens for `recipient`, created
 --   in Pool_AddLiquidity. Recipient + lpRegistrar jointly accept.
+-- DEPRECATED (DEX-42): the LP-token mint is being moved to a DvP leg
+-- (`mintAccount lpRegistrar → LP`) settled atomically with the deposit in
+-- `CantonDex.Dex.LpDvpRules`. This operator-signed request + joint-accept
+-- handshake is kept until the backend/dApp cut over; retired in 3b/3c.
 template LPMintRequest with
     operator : Party
     lpRegistrar : Party
@@ -118,6 +122,9 @@ template LPMintRequest with
 
 -- | Operator-signed request to burn LP tokens from `holder`, created
 --   in Pool_RemoveLiquidity. Holder + lpRegistrar jointly accept.
+-- DEPRECATED (DEX-42): superseded by the DvP burn leg
+-- (`LP → burnAccount lpRegistrar`) in `CantonDex.Dex.LpDvpRules`. Kept
+-- until the backend/dApp cut over; retired in 3b/3c.
 template LPBurnRequest with
     operator : Party
     lpRegistrar : Party

@@ -1,0 +1,58 @@
+module CantonDex.Dex.LiquidityAllocationRequest where
+
+-- Directional allocation request the LP / holder accepts to pre-author
+-- the boundary allocations of a DvP add or remove (DEX-42/43).
+--
+-- Implements `V2.AllocationRequest` (mirrors the OTC trading app's
+-- `OTCTradeAllocationRequest`): the operator creates it naming the
+-- `AllocationSpecification`s the LP must produce; the LP's wallet accepts
+-- and creates those allocations, which `LpDvpRules` then settles. In 3a's
+-- Daml tests the allocations are created directly; this template proves
+-- the wallet-facing surface.
+
+import DA.Map qualified as Map
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationRequestV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+template LiquidityAllocationRequest with
+    operator : Party
+    lp : Party
+      -- ^ The LP (add) or holder (remove) asked to author the allocations.
+    settlement : V2.SettlementInfo
+    allocations : [V2.AllocationSpecification]
+    requestedAt : Time
+    settleAt : Optional Time
+  where
+    signatory operator
+    observer lp
+
+    interface instance V2.AllocationRequest for LiquidityAllocationRequest where
+      view = V2.AllocationRequestView with
+        originalRequestCid = None
+        settlement
+        allocations
+        requestedAt
+        settleAt
+        availableActions = Map.fromList
+          [ (V2.ARA_Accept, [[lp]])
+          , (V2.ARA_Reject, [[lp]])
+          ]
+        meta = emptyMetadata
+
+      allocationRequest_acceptExtraObservers = \_ -> []
+      allocationRequest_rejectExtraObservers = \_ -> []
+      allocationRequest_withdrawExtraObservers = \_ -> []
+
+      -- Accept signals intent; the wallet composes this with the
+      -- AllocationFactory_Allocate calls in the same transaction.
+      allocationRequest_acceptImpl = \self _arg -> do
+        archive self
+        pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
+      allocationRequest_rejectImpl = \self _arg -> do
+        archive self
+        pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
+      allocationRequest_withdrawImpl = \self _arg -> do
+        archive self
+        pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata

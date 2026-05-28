@@ -39,10 +39,8 @@ data OrderMatch_ExecuteResult = OrderMatch_ExecuteResult with
     sellerNextAllocationCid : Optional (ContractId V2.Allocation)
   deriving (Eq, Show)
 
-mkOrderMatchRef : Text -> V2.Reference
-mkOrderMatchRef matchId = V2.Reference with
-  id = "OrderMatch-" <> matchId
-  cid = None
+mkOrderMatchRefId : Text -> Text
+mkOrderMatchRefId matchId = "OrderMatch-" <> matchId
 
 mkMatchTransferLegs : MatchedOrderPair -> [V2.TransferLeg]
 mkMatchTransferLegs match =
@@ -87,8 +85,8 @@ template OrderMatchExecution with
         let transferLegs = mkMatchTransferLegs match
             settlement = V2.SettlementInfo with
               executors = [operator]
-              settlementRef = mkOrderMatchRef matchId
-              settlementDeadline = None
+              id = mkOrderMatchRefId matchId
+              cid = None
               meta = emptyMetadata
 
         -- Build per-allocation FinalizedAllocations. Each side

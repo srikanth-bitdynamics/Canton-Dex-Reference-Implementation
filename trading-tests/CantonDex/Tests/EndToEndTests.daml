@@ -186,14 +186,15 @@ testTradeAllocationRequestAccept = do
         meta = emptyMetadata
       settlement = V2.SettlementInfo with
         executors = [operator]
-        settlementRef = V2.Reference with id = "test-trade"; cid = None
-        settlementDeadline = Some (addRelTime now (hours 1))
+        id = "test-trade"
+        cid = None
         meta = emptyMetadata
 
   reqCid <- submit operator $ createCmd MT.TradeAllocationRequest with
     authorizer = aliceAccount
     admin
     settlement
+    settlementDeadline = Some (addRelTime now (hours 1))
     transferLegs = [leg]
     requestedAt = now
 
@@ -259,11 +260,11 @@ testOrderFundingFlow = do
       lockedFunding = TextMap.fromList [("USDC", 0.5 * 60000.0)]
       settlement = V2.SettlementInfo with
         executors = [operator]
-        settlementRef = orderRef
-        settlementDeadline = order.expiry
+        id = orderRef.id
+        cid = orderRef.cid
         meta = emptyMetadata
       allocateArg = WC.mkPrefundedAllocationFactoryAllocate
-        admin aliceAccount settlement lockedFunding now [] [alice]
+        admin aliceAccount settlement order.expiry lockedFunding now [] [alice]
 
   instrResult <- submit alice $ exerciseCmd factoryCid allocateArg
   case instrResult.output of
@@ -499,16 +500,15 @@ testPoolSwapEndToEnd = do
   -- Settlement reference matches the pool's so the legs can be settled.
   let bobAccount = Utils.basicAccount bob
       poolAccount = Utils.basicAccount operator
-      poolRef = Pool.makePoolRef initRes.poolCid
       swapSettlement = V2.SettlementInfo with
         executors = [operator]
-        settlementRef = poolRef
-        settlementDeadline = None
+        id = "DexPool"
+        cid = Some (coerceContractId initRes.poolCid)
         meta = emptyMetadata
       -- Prefunded: empty legs, nextIterationFunding holds the swap input
       bobFunding = TextMap.fromList [("USDC", 100.0)]
       bobAllocateArg = WC.mkPrefundedAllocationFactoryAllocate
-        admin bobAccount swapSettlement bobFunding now [] [bob]
+        admin bobAccount swapSettlement None bobFunding now [] [bob]
 
   bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
   bobAllocationCid <- case bobInstr.output of
@@ -595,14 +595,15 @@ testMatchedTradeFullSettle = do
                  settlementDeadline = None
                  policyReceipt = None)
             spec = V2.AllocationSpecification with
-              settlement
               admin
               authorizer = acct
               transferLegSides = Utils.legsToSides acct legs
+              settlementDeadline = None
               nextIterationFunding = None
               committed = False
               meta = emptyMetadata
             allocateArg = AllocationInstructionV2.AllocationFactory_Allocate with
+              settlement
               allocation = spec
               requestedAt = now
               inputHoldingCids = []

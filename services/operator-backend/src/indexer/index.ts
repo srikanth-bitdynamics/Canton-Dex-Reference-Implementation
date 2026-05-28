@@ -38,9 +38,24 @@ interface MatchedTradeContract {
   } | null;
 }
 
+// DEX-40/41: the contract that rotates on every pool op is now PoolState
+// (Pool config is immutable). We track PoolState transitions for swap
+// detection, joining Pool config by poolId for the instrument ids.
+interface PoolConfigRow {
+  contractId: string;
+  poolId: string;
+  baseInstrumentId: string;
+  quoteInstrumentId: string;
+}
+interface PoolStateRow {
+  contractId: string;
+  poolId: string;
+  status: string;
+  reserves: { baseAmount: string; quoteAmount: string };
+  totalLpSupply: string;
+}
 interface PoolContract {
   contractId: string;
-  operator: Party;
   baseInstrumentId: string;
   quoteInstrumentId: string;
   status: string;
@@ -156,9 +171,30 @@ export class Indexer {
   }
 
   private async reconcilePools(ts: number): Promise<void> {
-    const live = await this.ledger.query<PoolContract>({
-      templateId: "CantonDex.Dex.Pool:Pool",
-      observingParty: this.cfg.observingParty,
+    const [configs, states] = await Promise.all([
+      this.ledger.query<PoolConfigRow>({
+        templateId: "CantonDex.Dex.Pool:Pool",
+        observingParty: this.cfg.observingParty,
+      }),
+      this.ledger.query<PoolStateRow>({
+        templateId: "CantonDex.Dex.PoolState:PoolState",
+        observingParty: this.cfg.observingParty,
+      }),
+    ]);
+    const cfgByPool = new Map(configs.map((c) => [c.poolId, c]));
+    // The tracked "pool" row is keyed by the PoolState cid (the contract
+    // that rotates), with instrument ids joined from the config.
+    const live: PoolContract[] = states.flatMap((s) => {
+      const cfg = cfgByPool.get(s.poolId);
+      if (!cfg) return [];
+      return [{
+        contractId: s.contractId,
+        baseInstrumentId: cfg.baseInstrumentId,
+        quoteInstrumentId: cfg.quoteInstrumentId,
+        status: s.status,
+        reserves: s.reserves,
+        totalLpSupply: s.totalLpSupply,
+      }];
     });
     const known = new Map(
       (this.db
@@ -261,9 +297,9 @@ export class Indexer {
           event.run(
             ts,
             "pool_swap",
-            "CantonDex.Dex.Pool:Pool",
+            "CantonDex.Dex.PoolState:PoolState",
             p.contractId,
-            p.operator,
+            this.cfg.observingParty,
             JSON.stringify({ pair: pairKey, baseDelta, quoteDelta, price }),
           );
         }

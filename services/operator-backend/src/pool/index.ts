@@ -1,4 +1,10 @@
-// Pool flow.
+// Pool flow (DEX-40/41).
+//
+// The on-chain pool is split into Pool (immutable config), PoolState
+// (reserves/status/supply), PoolSlice (one committed allocation each) and
+// PoolRules (one per venue, holding the operational choices). This service
+// assembles those into the combined `Pool` view the HTTP/dApp layer
+// consumes, and drives the PoolRules choices with the cids they need.
 
 import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
@@ -6,7 +12,19 @@ import { RegistryClient } from "@canton-dex/registry-client";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import { toFloat } from "../policy/index.js";
-import type { Decimal, LPTokenPolicy, Party, Pool, Time, V2Account } from "../types.js";
+import type {
+  Decimal,
+  LPTokenPolicy,
+  Party,
+  Pool,
+  PoolConfigContract,
+  PoolRulesContract,
+  PoolSlice,
+  PoolSliceContract,
+  PoolStateContract,
+  Time,
+  V2Account,
+} from "../types.js";
 
 export interface PoolInitializeInput {
   poolCid: ContractId<"Pool">;
@@ -44,6 +62,20 @@ export interface PoolRemoveLiquidityInput {
   requestedAt: Time;
 }
 
+// Select the ordered prefix of slices whose cumulative amount covers
+// `target` (the slice-local contention optimization: pass the rules
+// choice only the slices it actually needs, head-first).
+function selectCoveringPrefix(slices: PoolSlice[], target: number): ContractId<"PoolSlice">[] {
+  const out: ContractId<"PoolSlice">[] = [];
+  let acc = 0;
+  for (const s of slices) {
+    out.push(s.contractId);
+    acc += toFloat(s.amount);
+    if (acc >= target) break;
+  }
+  return out;
+}
+
 export class PoolService {
   constructor(
     private readonly ledger: LedgerSubmitter,
@@ -51,12 +83,6 @@ export class PoolService {
     private readonly operatorParty: Party,
   ) {}
 
-  /**
-   * Fetch the registry choice context for an admin and shape it into the
-   * `ExtraArgs` the Pool choices forward to the factory choices, plus the
-   * disclosed contracts to attach to the submission. Empty for our own
-   * registry; populated by a context-requiring registry.
-   */
   private async choiceContext(admin: Party): Promise<{
     extraArgs: { context: { values: Record<string, unknown> }; meta: { values: Record<string, unknown> } };
     disclosure: DisclosedContract[];
@@ -68,20 +94,81 @@ export class PoolService {
     };
   }
 
-  async listActive(): Promise<Pool[]> {
-    const pools = await this.ledger.query<Pool>({
-      templateId: "CantonDex.Dex.Pool:Pool",
+  /** The per-venue PoolRules cid for this operator. */
+  private async rulesCid(): Promise<ContractId<"PoolRules">> {
+    const rules = await this.ledger.query<PoolRulesContract>({
+      templateId: "CantonDex.Dex.PoolRules:PoolRules",
       observingParty: this.operatorParty,
     });
-    // Daml serializes variant names with the PS_ prefix (PS_Active, PS_Unfunded,
-    // PS_Paused). The InMemoryLedger seed in dev-server stores them without the
-    // prefix to match the dApp's TypeScript type. Accept both forms here, and
-    // include Unfunded so the UI can render newly-created pools that haven't
-    // received their first liquidity yet.
-    return pools.filter((p) => {
-      const s = p.status as string;
-      return s !== "PS_Paused" && s !== "Paused";
-    });
+    const found = rules.find((r) => r.operator === this.operatorParty);
+    if (!found) throw new Error("no PoolRules contract for operator");
+    return found.contractId;
+  }
+
+  /**
+   * Assemble the combined `Pool` view by joining the split contracts by
+   * poolId: config + state + its slices. Pools without an active state
+   * (none seeded yet) are skipped.
+   */
+  async listActive(): Promise<Pool[]> {
+    const [configs, states, slices] = await Promise.all([
+      this.ledger.query<PoolConfigContract>({
+        templateId: "CantonDex.Dex.Pool:Pool",
+        observingParty: this.operatorParty,
+      }),
+      this.ledger.query<PoolStateContract>({
+        templateId: "CantonDex.Dex.PoolState:PoolState",
+        observingParty: this.operatorParty,
+      }),
+      this.ledger.query<PoolSliceContract>({
+        templateId: "CantonDex.Dex.PoolSlice:PoolSlice",
+        observingParty: this.operatorParty,
+      }),
+    ]);
+    let rulesCid: ContractId<"PoolRules"> | undefined;
+    try {
+      rulesCid = await this.rulesCid();
+    } catch {
+      rulesCid = undefined;
+    }
+
+    const stateByPool = new Map(states.map((s) => [s.poolId, s]));
+    const combined: Pool[] = [];
+    for (const cfg of configs) {
+      const state = stateByPool.get(cfg.poolId);
+      if (!state) continue;
+      const poolSlices = slices.filter((s) => s.poolId === cfg.poolId);
+      const toSlice = (s: PoolSliceContract): PoolSlice => ({
+        contractId: s.contractId,
+        allocationCid: s.allocationCid,
+        amount: s.amount,
+        side: s.side,
+      });
+      const status = state.status as string;
+      if (status === "PS_Paused" || status === "Paused") continue;
+      combined.push({
+        contractId: cfg.contractId,
+        poolId: cfg.poolId,
+        poolStateCid: state.contractId,
+        rulesCid: rulesCid ?? ("" as ContractId<"PoolRules">),
+        operator: cfg.operator,
+        lpRegistrar: cfg.lpRegistrar,
+        admin: cfg.admin,
+        baseInstrumentId: cfg.baseInstrumentId,
+        quoteInstrumentId: cfg.quoteInstrumentId,
+        lpInstrumentId: cfg.lpInstrumentId,
+        feeBps: cfg.feeBps,
+        status: state.status,
+        reserves: state.reserves,
+        totalLpSupply: state.totalLpSupply,
+        baseSlices: poolSlices.filter((s) => s.side === "BaseSide").map(toSlice),
+        quoteSlices: poolSlices.filter((s) => s.side === "QuoteSide").map(toSlice),
+        operatorFeeBps: cfg.operatorFeeBps,
+        accumulatedOperatorFees: state.accumulatedOperatorFees,
+        publicReaders: state.publicReaders,
+      });
+    }
+    return combined;
   }
 
   async initialize(input: PoolInitializeInput): Promise<{
@@ -92,17 +179,20 @@ export class PoolService {
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);
     const lpPolicyCid = await this.fetchLpPolicy(pool);
-    return retryOnContention(() =>
+    await retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         commandId: `pool-init:${input.poolCid}`,
         disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
-          templateId: "CantonDex.Dex.Pool:Pool",
-          contractId: input.poolCid,
-          choice: "Pool_Initialize",
+          templateId: "CantonDex.Dex.PoolRules:PoolRules",
+          contractId: pool.rulesCid,
+          choice: "PoolRules_Initialize",
           argument: {
+            expectedPoolId: pool.poolId,
+            poolCid: input.poolCid,
+            poolStateCid: pool.poolStateCid,
             recipient: input.recipient,
             baseFactoryCid: factories.allocationFactoryCid,
             quoteFactoryCid: factories.allocationFactoryCid,
@@ -117,6 +207,7 @@ export class PoolService {
         },
       }),
     );
+    return { poolCid: input.poolCid, lpTokensMinted: "0.0" };
   }
 
   async addLiquidity(input: PoolAddLiquidityInput): Promise<unknown> {
@@ -131,10 +222,13 @@ export class PoolService {
         disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
-          templateId: "CantonDex.Dex.Pool:Pool",
-          contractId: input.poolCid,
-          choice: "Pool_AddLiquidity",
+          templateId: "CantonDex.Dex.PoolRules:PoolRules",
+          contractId: pool.rulesCid,
+          choice: "PoolRules_AddLiquidity",
           argument: {
+            expectedPoolId: pool.poolId,
+            poolCid: input.poolCid,
+            poolStateCid: pool.poolStateCid,
             recipient: input.recipient,
             baseFactoryCid: factories.allocationFactoryCid,
             quoteFactoryCid: factories.allocationFactoryCid,
@@ -154,9 +248,9 @@ export class PoolService {
   }
 
   /**
-   * Off-chain quote computation. Mirrors Pool.daml's Pool_ComputeSwapOut.
-   * The on-chain Pool_Swap re-validates against `minOutputAmount`, so
-   * the operator's quote is advisory not authoritative.
+   * Off-chain quote computation. Mirrors the on-chain constant-product
+   * formula. The on-chain PoolRules_Swap re-validates against
+   * `minOutputAmount`, so the operator's quote is advisory not authoritative.
    */
   computeQuote(
     pool: Pool,
@@ -177,6 +271,15 @@ export class PoolService {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);
+    const inputIsBase = input.inputInstrumentId === pool.baseInstrumentId;
+    const inputSlices = inputIsBase ? pool.baseSlices : pool.quoteSlices;
+    const outputSlices = inputIsBase ? pool.quoteSlices : pool.baseSlices;
+    const headInput = inputSlices[0];
+    if (!headInput) throw new Error("pool has no input-side slice");
+    // Pool grows its head input slice; source output across the prefix
+    // that covers the quoted amountOut.
+    const amountOut = toFloat(this.computeQuote(pool, input.inputInstrumentId, input.inputAmount));
+    const outputSliceCids = selectCoveringPrefix(outputSlices, amountOut);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
@@ -184,15 +287,20 @@ export class PoolService {
         disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
-          templateId: "CantonDex.Dex.Pool:Pool",
-          contractId: input.poolCid,
-          choice: "Pool_Swap",
+          templateId: "CantonDex.Dex.PoolRules:PoolRules",
+          contractId: pool.rulesCid,
+          choice: "PoolRules_Swap",
           argument: {
+            expectedPoolId: pool.poolId,
+            poolCid: input.poolCid,
+            poolStateCid: pool.poolStateCid,
             swapperAccount: input.swapperAccount,
             inputInstrumentId: input.inputInstrumentId,
             inputAmount: input.inputAmount,
             minOutputAmount: input.minOutputAmount,
             swapperAllocationCid: input.swapperAllocationCid,
+            inputSliceCid: headInput.contractId,
+            outputSliceCids,
             factoryCid: factories.settlementFactoryCid,
             extraArgs: ctx.extraArgs,
           },
@@ -202,20 +310,20 @@ export class PoolService {
   }
 
   /**
-   * Pool_RemoveLiquidity. Operator-driven, slice-local. Walks the pool's
-   * slice list from the front, cancels only the slices needed to cover
-   * the redemption, and re-allocates at most ONE boundary slice per side
-   * from the operator-supplied boundary holdings. Slices beyond the
-   * boundary stay untouched. The trader's LP-holding burn is a separate
-   * wallet-handoff step (holder + lpRegistrar archive the holding via
-   * LPBurnRequest_AcceptAndBurn against the LPBurnRequest this choice
-   * creates).
+   * PoolRules_RemoveLiquidity. Slice-local: the operator passes only the
+   * head-first prefix of slices per side that covers the redemption; the
+   * choice cancels the fully-consumed ones and re-allocates the boundary.
    */
   async removeLiquidity(input: PoolRemoveLiquidityInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);
     const lpPolicyCid = await this.fetchLpPolicy(pool);
+    const share = toFloat(input.lpTokensToRedeem) / toFloat(input.knownTotalLpSupply);
+    const baseOut = toFloat(pool.reserves.baseAmount) * share;
+    const quoteOut = toFloat(pool.reserves.quoteAmount) * share;
+    const baseSliceCids = selectCoveringPrefix(pool.baseSlices, baseOut);
+    const quoteSliceCids = selectCoveringPrefix(pool.quoteSlices, quoteOut);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
@@ -223,15 +331,20 @@ export class PoolService {
         disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
-          templateId: "CantonDex.Dex.Pool:Pool",
-          contractId: input.poolCid,
-          choice: "Pool_RemoveLiquidity",
+          templateId: "CantonDex.Dex.PoolRules:PoolRules",
+          contractId: pool.rulesCid,
+          choice: "PoolRules_RemoveLiquidity",
           argument: {
+            expectedPoolId: pool.poolId,
+            poolCid: input.poolCid,
+            poolStateCid: pool.poolStateCid,
             holder: input.holder,
             lpTokensToRedeem: input.lpTokensToRedeem,
             knownTotalLpSupply: input.knownTotalLpSupply,
             minBaseOut: input.minBaseOut,
             minQuoteOut: input.minQuoteOut,
+            baseSliceCids,
+            quoteSliceCids,
             baseFactoryCid: factories.allocationFactoryCid,
             quoteFactoryCid: factories.allocationFactoryCid,
             boundaryBaseHoldingCids: input.boundaryBaseHoldingCids,
@@ -252,12 +365,6 @@ export class PoolService {
     return found;
   }
 
-  /**
-   * The LPTokenPolicy backing a pool, matched on the full (admin, id)
-   * LP instrument identity. Created alongside the pool by
-   * AdminService.createPool; required by the mint/burn-bearing Pool
-   * choices.
-   */
   private async fetchLpPolicy(pool: Pool): Promise<ContractId<"LPTokenPolicy">> {
     const policies = await this.ledger.query<LPTokenPolicy>({
       templateId: "CantonDex.Dex.LPToken:LPTokenPolicy",

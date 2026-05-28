@@ -31,10 +31,13 @@ export interface V2TransferLeg {
   meta: Record<string, string>;
 }
 
+// As of the V2 pre-freeze API, SettlementInfo carries the settlement
+// reference inline (id/cid) and no longer holds settlementDeadline,
+// which moved onto AllocationSpecification.
 export interface V2SettlementInfo {
   executors: Party[];
-  settlementRef: V2Reference;
-  settlementDeadline: Time | null;
+  id: string;
+  cid: string | null;
   meta: Record<string, string>;
 }
 

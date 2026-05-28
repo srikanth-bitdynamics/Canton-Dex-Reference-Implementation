@@ -99,15 +99,16 @@ testMatchedTradeViaTokenStandardRegistry = do
         Some req <- queryContractId trader cid
         let traderAccount = Utils.basicAccount trader
             alloc = V2.AllocationSpecification with
-              settlement = req.settlement
               admin
               authorizer = traderAccount
               transferLegSides = Utils.legsToSides traderAccount req.transferLegs
+              settlementDeadline = req.settlementDeadline
               nextIterationFunding = None
               committed = False
               meta = emptyMetadata
         EnrichedFactoryChoice {factoryCid, arg} <-
           getAllocationFactory registry V2.AllocationFactory_Allocate with
+            settlement = req.settlement
             allocation = alloc
             requestedAt = now
             inputHoldingCids = []

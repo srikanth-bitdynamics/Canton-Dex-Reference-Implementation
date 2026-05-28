@@ -133,20 +133,24 @@ legsToSides authorizer = mapOptional (legToSide authorizer)
   where
     mapOptional f = foldr (\a acc -> case f a of Some b -> b :: acc; None -> acc) []
 
+-- Note: as of the V2 pre-freeze API, `settlement` is no longer carried
+-- inside `AllocationSpecification` (it is passed separately to
+-- `AllocationFactory_Allocate`), and the per-allocation
+-- `settlementDeadline` lives on the spec.
 mkIteratedAllocationSpecification
   : Party
   -> HoldingV2.Account
-  -> V2.SettlementInfo
+  -> Optional Time
   -> [V2.TransferLeg]
   -> Optional Funding
   -> Bool
   -> V2.AllocationSpecification
-mkIteratedAllocationSpecification admin authorizer settlement transferLegs nextIterationFunding committed =
+mkIteratedAllocationSpecification admin authorizer settlementDeadline transferLegs nextIterationFunding committed =
   V2.AllocationSpecification with
-    settlement
     admin
     authorizer
     transferLegSides = legsToSides authorizer transferLegs
+    settlementDeadline
     nextIterationFunding
     committed
     meta = emptyMetadata
@@ -155,14 +159,14 @@ mkIteratedAllocationSpecification admin authorizer settlement transferLegs nextI
 mkPrefundedAllocationSpecification
   : Party
   -> HoldingV2.Account
-  -> V2.SettlementInfo
+  -> Optional Time
   -> Funding
   -> V2.AllocationSpecification
-mkPrefundedAllocationSpecification admin authorizer settlement nextIterationFunding =
+mkPrefundedAllocationSpecification admin authorizer settlementDeadline nextIterationFunding =
   mkIteratedAllocationSpecification
     admin
     authorizer
-    settlement
+    settlementDeadline
     []
     (Some nextIterationFunding)
     False
@@ -170,14 +174,14 @@ mkPrefundedAllocationSpecification admin authorizer settlement nextIterationFund
 mkCommittedPoolAllocationSpecification
   : Party
   -> HoldingV2.Account
-  -> V2.SettlementInfo
+  -> Optional Time
   -> Funding
   -> V2.AllocationSpecification
-mkCommittedPoolAllocationSpecification admin authorizer settlement nextIterationFunding =
+mkCommittedPoolAllocationSpecification admin authorizer settlementDeadline nextIterationFunding =
   mkIteratedAllocationSpecification
     admin
     authorizer
-    settlement
+    settlementDeadline
     []
     (Some nextIterationFunding)
     True

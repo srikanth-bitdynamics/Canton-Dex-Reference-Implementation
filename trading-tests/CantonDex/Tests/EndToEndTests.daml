@@ -42,6 +42,9 @@ import CantonDex.Dex.MatchedTrade qualified as MT
 import CantonDex.Dex.Order qualified as Order
 import CantonDex.Dex.OrderFundingRequest qualified as OFR
 import CantonDex.Dex.Pool qualified as Pool
+import CantonDex.Dex.PoolState qualified as PState
+import CantonDex.Dex.PoolSlice qualified as PSlice
+import CantonDex.Dex.PoolRules qualified as PRules
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Dex.Rfq qualified as Rfq
 import CantonDex.Trading.Utils qualified as Utils
@@ -54,6 +57,35 @@ emptyExtraArgs : ExtraArgs
 emptyExtraArgs = ExtraArgs with
   context = emptyChoiceContext
   meta = emptyMetadata
+
+-- Create the split pool contracts (config + Unfunded state + rules) the
+-- operator can then initialize via PoolRules. Returns everything keyed by
+-- the contract ids the rules choices need.
+setupPool
+  : Party -> Party -> Party
+  -> Script (Pool.PoolId, ContractId Pool.Pool, ContractId PState.PoolState, ContractId PRules.PoolRules)
+setupPool operator lpRegistrar admin = do
+  let poolId = "BTC-USDC"
+  poolCid <- submit operator $ createCmd Pool.Pool with
+    poolId
+    operator
+    lpRegistrar
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
+    feeBps = 30
+    operatorFeeBps = 0
+  stateCid <- submit operator $ createCmd PState.PoolState with
+    poolId
+    operator
+    lpRegistrar
+    status = Pool.PS_Unfunded
+    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
+    totalLpSupply = 0.0
+    publicReaders = []
+  rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
+  pure (poolId, poolCid, stateCid, rulesCid)
 
 setupRegistries : Party -> [Party] -> Script ( ContractId V2.AllocationFactory
                                               , ContractId V2.SettlementFactory
@@ -76,26 +108,11 @@ testPoolFullLifecycle = do
 
   (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
 
-  -- Build an empty pool the operator can initialize.
-  poolCid <- submit operator $ createCmd Pool.Pool with
-    operator
-    lpRegistrar
-    admin
-    baseInstrumentId = "BTC"
-    quoteInstrumentId = "USDC"
-    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
-    feeBps = 30
-    status = Pool.PS_Unfunded
-    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
-    totalLpSupply = 0.0
-    baseSlices = []
-    quoteSlices = []
-    operatorFeeBps = None
-    accumulatedOperatorFees = None
-    publicReaders = None
+  -- Build the split pool the operator can initialize.
+  (poolId, poolCid, stateCid, rulesCid) <- setupPool operator lpRegistrar admin
 
-  -- LP policy must exist BEFORE Pool_Initialize so the mint request
-  -- can reference it (Pool threads the policy cid through).
+  -- LP policy must exist BEFORE PoolRules_Initialize so the mint request
+  -- can reference it (the rules choice threads the policy cid through).
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar
     operator
@@ -107,8 +124,11 @@ testPoolFullLifecycle = do
     active = True
 
   -- Initialize: 10 BTC + 200,000 USDC. Mock factory returns immediate
-  -- completed allocations. LPMintRequest is emitted.
-  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+  -- completed allocations. LPMintRequest is emitted; one slice per side.
+  initRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = stateCid
     recipient = alice
     baseFactoryCid = factoryCid
     quoteFactoryCid = factoryCid
@@ -120,25 +140,29 @@ testPoolFullLifecycle = do
     extraArgs = emptyExtraArgs
     requestedAt = now
 
-  Some pool1 <- queryContractId operator initRes.poolCid
-  length pool1.baseSlices === 1
-  length pool1.quoteSlices === 1
+  Some state1 <- queryContractId operator initRes.poolStateCid
+  Some _baseSlice <- queryContractId operator initRes.baseSliceCid
+  Some _quoteSlice <- queryContractId operator initRes.quoteSliceCid
   Some _mintReq <- queryContractId operator initRes.lpMintRequestCid
   assertMsg "LP minted is positive" (initRes.lpTokensMinted > 0.0)
-  pool1.status === Pool.PS_Active
+  state1.status === Pool.PS_Active
+  state1.reserves.baseAmount === 10.0
+  state1.reserves.quoteAmount === 200000.0
 
   -- V2-standard mint: recipient (alice) + lpRegistrar jointly accept.
   acceptRes <- submitMulti [alice, lpRegistrar] [] $
     exerciseCmd initRes.lpMintRequestCid LP.LPMintRequest_AcceptAndMint
   Some _ <- queryContractId lpRegistrar acceptRes.policyCid
-  pool2 <- submitMulti [lpRegistrar] [operator] $
-    exerciseCmd initRes.poolCid Pool.Pool_RecordLPSupply with
+  state2 <- submitMulti [lpRegistrar] [operator] $
+    exerciseCmd initRes.poolStateCid PState.PoolState_RecordLPSupply with
       newSupply = initRes.lpTokensMinted
 
-  -- Add liquidity from Bob: another 5 BTC + 100,000 USDC. The fix
-  -- being verified: this should APPEND a new allocation per side, not
-  -- overwrite the existing init allocations.
-  addRes <- submit operator $ exerciseCmd pool2 Pool.Pool_AddLiquidity with
+  -- Add liquidity from Bob: another 5 BTC + 100,000 USDC. APPENDS a new
+  -- slice per side; the original init slices stay untouched.
+  addRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_AddLiquidity with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = state2
     recipient = bob
     baseFactoryCid = factoryCid
     quoteFactoryCid = factoryCid
@@ -152,13 +176,12 @@ testPoolFullLifecycle = do
     knownTotalLpSupply = initRes.lpTokensMinted
     requestedAt = now
 
-  Some pool3 <- queryContractId operator addRes.poolCid
-  -- THE BUG FIX: lists are length 2 now, not 1. The original init
-  -- allocations are still there.
-  length pool3.baseSlices === 2
-  length pool3.quoteSlices === 2
-  pool3.reserves.baseAmount === 15.0
-  pool3.reserves.quoteAmount === 300000.0
+  Some state3 <- queryContractId operator addRes.poolStateCid
+  -- Original init slices still active; the add produced new ones.
+  Some _initBase <- queryContractId operator initRes.baseSliceCid
+  Some _addBase <- queryContractId operator addRes.baseSliceCid
+  state3.reserves.baseAmount === 15.0
+  state3.reserves.quoteAmount === 300000.0
 
   pure ()
 
@@ -377,29 +400,17 @@ testPoolRemoveLiquidityConsolidates = do
 
   (factoryCid, _) <- setupRegistries admin [operator, lpRegistrar, alice]
 
-  poolCid <- submit operator $ createCmd Pool.Pool with
-    operator
-    lpRegistrar
-    admin
-    baseInstrumentId = "BTC"
-    quoteInstrumentId = "USDC"
-    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
-    feeBps = 30
-    status = Pool.PS_Unfunded
-    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
-    totalLpSupply = 0.0
-    baseSlices = []
-    quoteSlices = []
-    operatorFeeBps = None
-    accumulatedOperatorFees = None
-    publicReaders = None
+  (poolId, poolCid, stateCid, rulesCid) <- setupPool operator lpRegistrar admin
 
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
     poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
 
-  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+  initRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = stateCid
     recipient = alice
     baseFactoryCid = factoryCid
     quoteFactoryCid = factoryCid
@@ -411,7 +422,17 @@ testPoolRemoveLiquidityConsolidates = do
     extraArgs = emptyExtraArgs
     requestedAt = now
 
-  removeRes <- submit operator $ exerciseCmd initRes.poolCid Pool.Pool_RemoveLiquidity with
+  -- Registrar records circulating supply so remove's supply assert holds.
+  stateFunded <- submitMulti [lpRegistrar] [operator] $
+    exerciseCmd initRes.poolStateCid PState.PoolState_RecordLPSupply with
+      newSupply = initRes.lpTokensMinted
+
+  -- Redeem half. The operator passes the single init slice per side,
+  -- which is the boundary slice (partially consumed → re-allocated).
+  removeRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RemoveLiquidity with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = stateFunded
     holder = alice
     lpTokensToRedeem = initRes.lpTokensMinted / 2.0
     lpPolicyCid = policyCid
@@ -419,21 +440,21 @@ testPoolRemoveLiquidityConsolidates = do
     knownTotalLpSupply = initRes.lpTokensMinted
     minBaseOut = 0.0
     minQuoteOut = 0.0
+    baseSliceCids = [initRes.baseSliceCid]
+    quoteSliceCids = [initRes.quoteSliceCid]
     baseFactoryCid = factoryCid
     quoteFactoryCid = factoryCid
     boundaryBaseHoldingCids = []
     boundaryQuoteHoldingCids = []
     requestedAt = now
 
-  Some pool <- queryContractId operator removeRes.poolCid
+  Some state <- queryContractId operator removeRes.poolStateCid
   -- Reserves halved; one boundary slice per side, status Active.
-  pool.reserves.baseAmount === 5.0
-  pool.reserves.quoteAmount === 100000.0
-  length pool.baseSlices === 1
-  length pool.quoteSlices === 1
-  pool.status === Pool.PS_Active
-  assertMsg "boundary base alloc returned" (isSome removeRes.boundaryBaseAllocationCid)
-  assertMsg "boundary quote alloc returned" (isSome removeRes.boundaryQuoteAllocationCid)
+  state.reserves.baseAmount === 5.0
+  state.reserves.quoteAmount === 100000.0
+  state.status === Pool.PS_Active
+  assertMsg "boundary base slice returned" (isSome removeRes.boundaryBaseSliceCid)
+  assertMsg "boundary quote slice returned" (isSome removeRes.boundaryQuoteSliceCid)
   -- Single slice on each side was consumed (the boundary slice).
   removeRes.baseSlicesConsumed === 1
   removeRes.quoteSlicesConsumed === 1
@@ -464,27 +485,15 @@ testPoolSwapEndToEnd = do
   (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
 
   -- Initialize pool with 10 BTC + 200k USDC
-  poolCid <- submit operator $ createCmd Pool.Pool with
-    operator
-    lpRegistrar
-    admin
-    baseInstrumentId = "BTC"
-    quoteInstrumentId = "USDC"
-    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
-    feeBps = 30
-    status = Pool.PS_Unfunded
-    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
-    totalLpSupply = 0.0
-    baseSlices = []
-    quoteSlices = []
-    operatorFeeBps = None
-    accumulatedOperatorFees = None
-    publicReaders = None
+  (poolId, poolCid, stateCid, rulesCid) <- setupPool operator lpRegistrar admin
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
     poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
-  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+  initRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = stateCid
     recipient = alice
     baseFactoryCid = factoryCid
     quoteFactoryCid = factoryCid
@@ -499,11 +508,10 @@ testPoolSwapEndToEnd = do
   -- Bob creates a prefunded swap allocation (100 USDC -> BTC).
   -- Settlement reference matches the pool's so the legs can be settled.
   let bobAccount = Utils.basicAccount bob
-      poolAccount = Utils.basicAccount operator
       swapSettlement = V2.SettlementInfo with
         executors = [operator]
         id = "DexPool"
-        cid = Some (coerceContractId initRes.poolCid)
+        cid = Some (coerceContractId poolCid)
         meta = emptyMetadata
       -- Prefunded: empty legs, nextIterationFunding holds the swap input
       bobFunding = TextMap.fromList [("USDC", 100.0)]
@@ -515,24 +523,29 @@ testPoolSwapEndToEnd = do
     V2.AllocationInstructionResult_Completed cid -> pure cid
     _ -> abort "swap allocation must complete"
 
-  -- Operator drives the swap.
-  swapRes <- submit operator $ exerciseCmd initRes.poolCid Pool.Pool_Swap with
+  -- Operator drives the swap: input USDC into the quote slice, source
+  -- BTC out from the base slice.
+  swapRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Swap with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = initRes.poolStateCid
     swapperAccount = bobAccount
     inputInstrumentId = "USDC"
     inputAmount = 100.0
     minOutputAmount = 0.0
     swapperAllocationCid = bobAllocationCid
+    inputSliceCid = initRes.quoteSliceCid
+    outputSliceCids = [initRes.baseSliceCid]
     factoryCid = settleCid
     extraArgs = emptyExtraArgs
 
   -- Verify reserves moved.
-  Some pool <- queryContractId operator swapRes.poolCid
-  assertMsg "base reserve decreased" (pool.reserves.baseAmount < 10.0)
-  assertMsg "quote reserve increased" (pool.reserves.quoteAmount > 200000.0)
-  -- Pool still has exactly one slice per side (the next-iteration CID
-  -- replaced the head we adjusted).
-  length pool.baseSlices === 1
-  length pool.quoteSlices === 1
+  Some state <- queryContractId operator swapRes.poolStateCid
+  assertMsg "base reserve decreased" (state.reserves.baseAmount < 10.0)
+  assertMsg "quote reserve increased" (state.reserves.quoteAmount > 200000.0)
+  -- Input slice (quote) grew; output slice (base) re-allocated as boundary.
+  Some _newQuote <- queryContractId operator swapRes.inputSliceCid
+  assertMsg "boundary output slice produced" (isSome swapRes.boundaryOutputSliceCid)
   -- The output amount is positive.
   assertMsg "swap produced output" (swapRes.amountOut > 0.0)
   pure ()
@@ -700,22 +713,7 @@ testPoolRemoveLiquiditySliceLocal = do
   (factoryCid, _) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
 
   -- Empty pool.
-  poolCid <- submit operator $ createCmd Pool.Pool with
-    operator
-    lpRegistrar
-    admin
-    baseInstrumentId = "BTC"
-    quoteInstrumentId = "USDC"
-    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
-    feeBps = 30
-    status = Pool.PS_Unfunded
-    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
-    totalLpSupply = 0.0
-    baseSlices = []
-    quoteSlices = []
-    operatorFeeBps = None
-    accumulatedOperatorFees = None
-    publicReaders = None
+  (poolId, poolCid, stateCid, rulesCid) <- setupPool operator lpRegistrar admin
 
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
@@ -723,7 +721,10 @@ testPoolRemoveLiquiditySliceLocal = do
     poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
 
   -- Init: slice 1 holds 10 BTC + 200k USDC.
-  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+  initRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = stateCid
     recipient = alice
     baseFactoryCid = factoryCid
     quoteFactoryCid = factoryCid
@@ -736,12 +737,15 @@ testPoolRemoveLiquiditySliceLocal = do
     requestedAt = now
 
   -- Record supply so AddLiquidity has something to divide by.
-  pool2 <- submitMulti [lpRegistrar] [operator] $
-    exerciseCmd initRes.poolCid Pool.Pool_RecordLPSupply with
+  state2 <- submitMulti [lpRegistrar] [operator] $
+    exerciseCmd initRes.poolStateCid PState.PoolState_RecordLPSupply with
       newSupply = initRes.lpTokensMinted
 
   -- Add: slice 2 appends 5 BTC + 100k USDC.
-  addRes <- submit operator $ exerciseCmd pool2 Pool.Pool_AddLiquidity with
+  addRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_AddLiquidity with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = state2
     recipient = bob
     baseFactoryCid = factoryCid
     quoteFactoryCid = factoryCid
@@ -755,31 +759,29 @@ testPoolRemoveLiquiditySliceLocal = do
     knownTotalLpSupply = initRes.lpTokensMinted
     requestedAt = now
 
-  Some poolBefore <- queryContractId operator addRes.poolCid
-  length poolBefore.baseSlices === 2
-  length poolBefore.quoteSlices === 2
-  let slice0Before = head poolBefore.baseSlices
-      slice1Before = head (tail poolBefore.baseSlices)
-      qSlice0Before = head poolBefore.quoteSlices
-      qSlice1Before = head (tail poolBefore.quoteSlices)
-  slice0Before.amount === 10.0
-  slice1Before.amount === 5.0
-  qSlice0Before.amount === 200000.0
-  qSlice1Before.amount === 100000.0
+  -- slice 0 = init (10 BTC / 200k), slice 1 = add (5 BTC / 100k).
+  Some baseSlice0Before <- queryContractId operator initRes.baseSliceCid
+  Some baseSlice1Before <- queryContractId operator addRes.baseSliceCid
+  baseSlice0Before.amount === 10.0
+  baseSlice1Before.amount === 5.0
 
-  -- Redeem ~1/30 of total supply. With totalLpSupply == sqrt(2e6) ≈
-  -- 1414.21, redeeming 1414.21/30 ≈ 47.14 LP tokens corresponds to
-  -- a 1/30 share of pool reserves: 15/30 = 0.5 BTC and 300000/30 =
-  -- 10000 USDC -- well inside slice 0's 10 BTC and 200000 USDC.
+  -- Redeem ~1/30 of total supply: 0.5 BTC and 10000 USDC -- well inside
+  -- slice 0. The operator passes ONLY slice 0 (the head) per side; slice
+  -- 1 is not passed and so cannot be touched.
   let totalSupply = initRes.lpTokensMinted
       lpToRedeem = totalSupply / 30.0
 
-  removeRes <- submit operator $ exerciseCmd addRes.poolCid Pool.Pool_RemoveLiquidity with
+  removeRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RemoveLiquidity with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = addRes.poolStateCid
     holder = alice
     lpTokensToRedeem = lpToRedeem
     knownTotalLpSupply = totalSupply
     minBaseOut = 0.0
     minQuoteOut = 0.0
+    baseSliceCids = [initRes.baseSliceCid]
+    quoteSliceCids = [initRes.quoteSliceCid]
     baseFactoryCid = factoryCid
     quoteFactoryCid = factoryCid
     boundaryBaseHoldingCids = []
@@ -792,47 +794,31 @@ testPoolRemoveLiquiditySliceLocal = do
   -- on each side is untouched.
   removeRes.baseSlicesConsumed === 1
   removeRes.quoteSlicesConsumed === 1
-  assertMsg "boundary base alloc returned" (isSome removeRes.boundaryBaseAllocationCid)
-  assertMsg "boundary quote alloc returned" (isSome removeRes.boundaryQuoteAllocationCid)
+  assertMsg "boundary base slice returned" (isSome removeRes.boundaryBaseSliceCid)
+  assertMsg "boundary quote slice returned" (isSome removeRes.boundaryQuoteSliceCid)
 
-  Some poolAfter <- queryContractId operator removeRes.poolCid
-  -- Two slices remain on each side: one boundary re-allocation
-  -- (replacing the consumed head) and the original second slice.
-  length poolAfter.baseSlices === 2
-  length poolAfter.quoteSlices === 2
+  -- The head slice was resolved (archived); slice 1 is untouched, same
+  -- CID and amount.
+  None <- queryContractId operator initRes.baseSliceCid
+  Some baseSlice1After <- queryContractId operator addRes.baseSliceCid
+  baseSlice1After.amount === baseSlice1Before.amount
 
-  -- The second slice is identical (same CID, same amount).
-  let slice0After = head poolAfter.baseSlices
-      slice1After = head (tail poolAfter.baseSlices)
-      qSlice0After = head poolAfter.quoteSlices
-      qSlice1After = head (tail poolAfter.quoteSlices)
-  slice1After.allocationCid === slice1Before.allocationCid
-  slice1After.amount === slice1Before.amount
-  qSlice1After.allocationCid === qSlice1Before.allocationCid
-  qSlice1After.amount === qSlice1Before.amount
-
-  -- The boundary slice carries the leftover: ~10.0 - 0.5 = 9.5 BTC,
-  -- ~200000 - 10000 = 190000 USDC. LP supply is sqrt(2e6) which is
-  -- irrational, so the shareRatio rounds at the Decimal-10 precision;
-  -- assert within a 1e-6 tolerance.
+  -- The boundary slice carries the leftover ~9.5 BTC / ~190000 USDC.
   let close a b tol = abs (a - b) < tol
-  assertMsg ("base leftover near 9.5: " <> show slice0After.amount)
-    (close slice0After.amount 9.5 0.000001)
-  assertMsg ("quote leftover near 190000: " <> show qSlice0After.amount)
-    (close qSlice0After.amount 190000.0 0.01)
-  -- And its CID is a fresh allocation, not the original head.
-  assertMsg "head slice CID rotated"
-    (slice0After.allocationCid /= slice0Before.allocationCid)
-  assertMsg "quote head slice CID rotated"
-    (qSlice0After.allocationCid /= qSlice0Before.allocationCid)
+  Some boundaryBase <- queryContractId operator (fromSome removeRes.boundaryBaseSliceCid)
+  Some boundaryQuote <- queryContractId operator (fromSome removeRes.boundaryQuoteSliceCid)
+  assertMsg ("base leftover near 9.5: " <> show boundaryBase.amount)
+    (close boundaryBase.amount 9.5 0.000001)
+  assertMsg ("quote leftover near 190000: " <> show boundaryQuote.amount)
+    (close boundaryQuote.amount 190000.0 0.01)
 
-  -- Pool stays Active and reserves shrink by approximately the redeemed
-  -- share (same rounding caveat).
-  poolAfter.status === Pool.PS_Active
-  assertMsg ("base reserve near 14.5: " <> show poolAfter.reserves.baseAmount)
-    (close poolAfter.reserves.baseAmount 14.5 0.000001)
-  assertMsg ("quote reserve near 290000: " <> show poolAfter.reserves.quoteAmount)
-    (close poolAfter.reserves.quoteAmount 290000.0 0.01)
+  -- Pool stays Active and reserves shrink by the redeemed share.
+  Some stateAfter <- queryContractId operator removeRes.poolStateCid
+  stateAfter.status === Pool.PS_Active
+  assertMsg ("base reserve near 14.5: " <> show stateAfter.reserves.baseAmount)
+    (close stateAfter.reserves.baseAmount 14.5 0.000001)
+  assertMsg ("quote reserve near 290000: " <> show stateAfter.reserves.quoteAmount)
+    (close stateAfter.reserves.quoteAmount 290000.0 0.01)
 
   pure ()
 
@@ -842,23 +828,28 @@ testPoolRemoveLiquiditySliceLocal = do
 -- succeeds only when the caller supplies the marker context.
 
 mkPoolFixture
-  : Party -> Party -> Party -> Bool -> Script (ContractId Pool.Pool, ContractId LP.LPTokenPolicy, ContractId V2.AllocationFactory)
+  : Party -> Party -> Party -> Bool
+  -> Script (Pool.PoolId, ContractId Pool.Pool, ContractId PState.PoolState, ContractId PRules.PoolRules, ContractId LP.LPTokenPolicy, ContractId V2.AllocationFactory)
 mkPoolFixture operator lpRegistrar admin requireContext = do
   factory <- submit admin $ createCmd Mock.MockAllocationFactory with
     admin; users = [operator, lpRegistrar]; requireContext
   let lpId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
+      poolId = "BTC-USDC"
   poolCid <- submit operator $ createCmd Pool.Pool with
-    operator; lpRegistrar; admin
+    poolId; operator; lpRegistrar; admin
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId = lpId
-    feeBps = 30; status = Pool.PS_Unfunded
+    feeBps = 30; operatorFeeBps = 0
+  stateCid <- submit operator $ createCmd PState.PoolState with
+    poolId; operator; lpRegistrar
+    status = Pool.PS_Unfunded
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
-    totalLpSupply = 0.0; baseSlices = []; quoteSlices = []
-    operatorFeeBps = None; accumulatedOperatorFees = None; publicReaders = None
+    totalLpSupply = 0.0; publicReaders = []
+  rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = lpId
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
     poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
-  pure (poolCid, policyCid, toInterfaceContractId factory)
+  pure (poolId, poolCid, stateCid, rulesCid, policyCid, toInterfaceContractId factory)
 
 markerContext : ExtraArgs
 markerContext = ExtraArgs with
@@ -872,17 +863,19 @@ testPoolInitializeThreadsChoiceContext = do
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   now <- getTime
-  (poolCid, policyCid, factoryCid) <- mkPoolFixture operator lpRegistrar admin True
+  (poolId, poolCid, stateCid, rulesCid, policyCid, factoryCid) <- mkPoolFixture operator lpRegistrar admin True
   -- With the marker context the context-requiring factory accepts.
-  initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+  initRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
+    expectedPoolId = poolId
+    poolCid; poolStateCid = stateCid
     recipient = lpRegistrar
     baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid
     baseHoldingCids = []; quoteHoldingCids = []
     baseAmount = 10.0; quoteAmount = 200000.0
     lpPolicyCid = policyCid; requestedAt = now
     extraArgs = markerContext
-  Some pool <- queryContractId operator initRes.poolCid
-  pool.status === Pool.PS_Active
+  Some state <- queryContractId operator initRes.poolStateCid
+  state.status === Pool.PS_Active
 
 testPoolInitializeRejectsEmptyContext : Script ()
 testPoolInitializeRejectsEmptyContext = do
@@ -890,9 +883,11 @@ testPoolInitializeRejectsEmptyContext = do
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   now <- getTime
-  (poolCid, policyCid, factoryCid) <- mkPoolFixture operator lpRegistrar admin True
+  (poolId, poolCid, stateCid, rulesCid, policyCid, factoryCid) <- mkPoolFixture operator lpRegistrar admin True
   -- Empty context against the context-requiring factory must fail.
-  submitMustFail operator $ exerciseCmd poolCid Pool.Pool_Initialize with
+  submitMustFail operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
+    expectedPoolId = poolId
+    poolCid; poolStateCid = stateCid
     recipient = lpRegistrar
     baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid
     baseHoldingCids = []; quoteHoldingCids = []

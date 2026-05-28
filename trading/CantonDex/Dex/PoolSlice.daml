@@ -1,0 +1,41 @@
+module CantonDex.Dex.PoolSlice where
+
+-- One committed allocation backing a side of a pool, as its own contract
+-- (DEX-40).
+--
+-- Moving slices out of the `Pool` contract is what removes the
+-- unbounded-growth / hot-singleton problem: add creates a new slice
+-- (conflicts with nothing), remove/swap touch only the slices they
+-- source. The operator-backend indexer tracks slices by `poolId` and
+-- supplies the relevant `ContractId`s to each `PoolRules` choice.
+--
+-- `amount` is stored alongside the allocation cid so the rules choices
+-- can walk slices without a `fetch` per slice for the amount. It is
+-- always reconciled against the underlying allocation's funding by the
+-- choice that writes the slice.
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.MetadataV1 (ExtraArgs)
+
+import CantonDex.Dex.Pool (PoolId, Side)
+
+template PoolSlice with
+    poolId : PoolId
+    operator : Party
+    side : Side
+    allocationCid : ContractId V2.Allocation
+    amount : Decimal
+  where
+    signatory operator
+
+-- | Archive a slice and cancel its underlying committed allocation in
+-- one step (C3). A `PoolSlice` and its allocation must always be retired
+-- together or the pool leaks committed funds; every call site that
+-- removes a slice goes through this helper.
+resolveSlice : Party -> ContractId PoolSlice -> ExtraArgs -> Update ()
+resolveSlice operator sliceCid extraArgs = do
+  slice <- fetch sliceCid
+  _ <- exercise slice.allocationCid V2.Allocation_Cancel with
+    actors = [operator]
+    extraArgs
+  archive sliceCid

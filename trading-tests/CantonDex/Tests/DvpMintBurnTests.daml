@@ -1,0 +1,158 @@
+module CantonDex.Tests.DvpMintBurnTests where
+
+-- DEX-42 (step 1): prove the delivery-versus-mint/burn mechanism on the
+-- V2 allocation surface, in isolation, against the real (holding-tracking)
+-- registry. Mirrors the upstream
+-- `Splice.Tests.TestDeliveryVersusBurnMint`:
+--
+--   - A MINT is a transfer leg `mintAccount registrar -> recipient`,
+--     authorized by the registrar's own allocation (authorizer is a
+--     special account with `owner = None`) and settled atomically with
+--     the recipient's receipt allocation. No holding is locked on the
+--     mint side; the settle credits the recipient.
+--   - A BURN is the symmetric leg `holder -> burnAccount registrar`: the
+--     holder's allocation locks the holding, the registrar's burn
+--     allocation authorizes receipt into the burn account, and settle
+--     archives the holding (no receiver credited).
+--
+-- This is the conceptually risky half of DEX-42 (multi-party
+-- authorization + registry mint/burn-account semantics), proven without
+-- touching the pool flow. The existing LPMintRequest path stays in place
+-- until the pool add/remove cutover.
+
+import DA.Assert
+import DA.List (head)
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Testing.RealRegistry qualified as RR
+import CantonDex.Trading.Utils qualified as Utils
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- Special mint/burn accounts: owner None marks them to the registry.
+mintAcct : V2.Account
+mintAcct = V2.Account with owner = None; provider = None; id = "mint"
+
+burnAcct : V2.Account
+burnAcct = V2.Account with owner = None; provider = None; id = "burn"
+
+-- Lift the instruction result to its completed allocation cid.
+completed : V2.AllocationInstructionResult -> ContractId V2.Allocation
+completed r = case r.output of
+  V2.AllocationInstructionResult_Completed cid -> cid
+  _ -> error "allocation must complete immediately"
+
+testDvpMintThenBurn : Script ()
+testDvpMintThenBurn = do
+  registrar <- allocateParty "registrar"
+  alice <- allocateParty "alice"
+  now <- getTime
+
+  regCid <- submit registrar $ createCmd RR.RealRegistry with
+    admin = registrar
+    users = [alice]
+  let factoryCid : ContractId V2.AllocationFactory = toInterfaceContractId regCid
+      settleCid : ContractId V2.SettlementFactory = toInterfaceContractId regCid
+      aliceAcct = Utils.basicAccount alice
+      settlement = V2.SettlementInfo with
+        executors = [registrar]
+        id = "dvp-mint-burn"
+        cid = None
+        meta = emptyMetadata
+
+  -- ---- MINT 100 LP to alice via DvP ----
+  let mintLeg = V2.TransferLeg with
+        transferLegId = "mint-lp"
+        sender = mintAcct
+        receiver = aliceAcct
+        amount = 100.0
+        instrumentId = "LP"
+        meta = emptyMetadata
+      mintSpec = V2.AllocationSpecification with
+        admin = registrar
+        authorizer = mintAcct
+        transferLegSides = Utils.legsToSides mintAcct [mintLeg]
+        settlementDeadline = None
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+      receiptSpec = mintSpec with
+        authorizer = aliceAcct
+        transferLegSides = Utils.legsToSides aliceAcct [mintLeg]
+
+  mintRes <- submit registrar $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+    settlement; allocation = mintSpec; requestedAt = now
+    inputHoldingCids = []; actors = [registrar]; extraArgs = emptyExtraArgs
+  receiptRes <- submit alice $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+    settlement; allocation = receiptSpec; requestedAt = now
+    inputHoldingCids = []; actors = [alice]; extraArgs = emptyExtraArgs
+
+  _ <- submitMulti [registrar, alice] [] $
+    exerciseCmd settleCid V2.SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [mintLeg]
+      allocations =
+        [ Utils.finalAllocation (completed mintRes)
+        , Utils.finalAllocation (completed receiptRes)
+        ]
+      actors = [registrar]
+      extraArgs = emptyExtraArgs
+
+  -- Alice now holds exactly 100 LP, freshly minted.
+  aliceLp <- query @RR.RealHolding alice
+  let lpHoldings = filter (\(_, h) -> h.instrumentId == "LP" && h.owner == alice && not h.locked) aliceLp
+  length lpHoldings === 1
+  let (lpCid, lpHolding) = head lpHoldings
+  lpHolding.amount === 100.0
+
+  -- ---- BURN the 100 LP via DvP ----
+  let burnLeg = V2.TransferLeg with
+        transferLegId = "burn-lp"
+        sender = aliceAcct
+        receiver = burnAcct
+        amount = 100.0
+        instrumentId = "LP"
+        meta = emptyMetadata
+      burnSenderSpec = V2.AllocationSpecification with
+        admin = registrar
+        authorizer = aliceAcct
+        transferLegSides = Utils.legsToSides aliceAcct [burnLeg]
+        settlementDeadline = None
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+      burnReceiverSpec = burnSenderSpec with
+        authorizer = burnAcct
+        transferLegSides = Utils.legsToSides burnAcct [burnLeg]
+
+  burnSenderRes <- submit alice $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+    settlement; allocation = burnSenderSpec; requestedAt = now
+    inputHoldingCids = [toInterfaceContractId lpCid]; actors = [alice]; extraArgs = emptyExtraArgs
+  burnReceiverRes <- submit registrar $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+    settlement; allocation = burnReceiverSpec; requestedAt = now
+    inputHoldingCids = []; actors = [registrar]; extraArgs = emptyExtraArgs
+
+  _ <- submitMulti [registrar, alice] [] $
+    exerciseCmd settleCid V2.SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = [burnLeg]
+      allocations =
+        [ Utils.finalAllocation (completed burnSenderRes)
+        , Utils.finalAllocation (completed burnReceiverRes)
+        ]
+      actors = [registrar]
+      extraArgs = emptyExtraArgs
+
+  -- Alice's LP is gone; the burn account holds nothing (owner None never
+  -- gets credited).
+  aliceLpAfter <- query @RR.RealHolding alice
+  let lpAfter = filter (\(_, h) -> h.instrumentId == "LP" && h.owner == alice && not h.locked) aliceLpAfter
+  length lpAfter === 0
+
+  pure ()

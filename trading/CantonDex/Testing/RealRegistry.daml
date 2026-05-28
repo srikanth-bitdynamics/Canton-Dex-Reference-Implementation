@@ -33,9 +33,9 @@
 
 module CantonDex.Testing.RealRegistry where
 
-import DA.Action (when)
 import DA.Foldable (forA_)
 import DA.List (sortOn)
+import DA.Optional (isNone)
 import DA.Map qualified as Map
 import DA.TextMap qualified as TextMap
 
@@ -206,7 +206,14 @@ template RealRegistry with
 
       allocationFactory_allocateImpl _self arg = do
         let spec = arg.allocation
-            authorizerOwner = Utils.accountOwner spec.authorizer
+            -- DvP mint/burn (DEX-42): a mint/burn allocation names a
+            -- special account with `owner = None` (mintAccount/burnAccount).
+            -- It is authorized by the admin (registrar) itself, not a
+            -- holder, and locks no holdings (mint has nothing to lock; a
+            -- burn locks the holder's holding via the HOLDER's allocation,
+            -- not this admin-side one).
+            isSpecialAcct = isNone spec.authorizer.owner
+            authorizerOwner = if isSpecialAcct then admin else Utils.accountOwner spec.authorizer
         -- Compute how much this authorizer must lock from its
         -- SenderSide legs (receivers don't lock).
         let sendSides =
@@ -273,14 +280,22 @@ template RealRegistry with
         -- (so we can read sender legs); then we drive Allocation_Settle
         -- which archives them.
         forA_ arg.transferLegs $ \leg ->
-          when (Utils.accountOwner leg.sender /= Utils.accountOwner leg.receiver) $ do
-            create RealHolding with
-              admin
-              owner = Utils.accountOwner leg.receiver
-              instrumentId = leg.instrumentId
-              amount = leg.amount
-              locked = False
-            pure ()
+          -- Credit the receiver unless it is a special account:
+          --   * receiver owner None  => burn leg: mint nothing (the
+          --     holder's locked holding is archived by its Allocation_Settle).
+          --   * sender owner None     => mint leg: the receiver still gets
+          --     a fresh holding (the mint), with no sender holding to archive.
+          --   * normal transfer       => mint the receiver as before.
+          case leg.receiver.owner of
+            Some recvOwner | leg.sender /= leg.receiver -> do
+              create RealHolding with
+                admin
+                owner = recvOwner
+                instrumentId = leg.instrumentId
+                amount = leg.amount
+                locked = False
+              pure ()
+            _ -> pure ()
         results <- forA arg.allocations $ \finalized ->
           exercise finalized.allocationCid V2.Allocation_Settle with
             actors = arg.actors

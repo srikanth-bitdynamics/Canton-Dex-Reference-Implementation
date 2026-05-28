@@ -43,9 +43,9 @@ data DexRegistry = DexRegistry
 initialize : Party -> [Party] -> Script DexRegistry
 initialize admin users = do
   allocFactoryCid <- submit admin $
-    createCmd Mock.MockAllocationFactory with admin; users
+    createCmd Mock.MockAllocationFactory with admin; users; requireContext = False
   settleFactoryCid <- submit admin $
-    createCmd Mock.MockSettlementFactory with admin; users
+    createCmd Mock.MockSettlementFactory with admin; users; requireContext = False
   pure DexRegistry with
     admin
     allocationFactory = toInterfaceContractId allocFactoryCid

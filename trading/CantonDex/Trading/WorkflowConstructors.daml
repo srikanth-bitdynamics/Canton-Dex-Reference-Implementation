@@ -53,6 +53,10 @@ mkPrefundedAllocationFactoryAllocate admin authorizer settlement nextIterationFu
     actors
     emptyExtraArgs
 
+-- The caller supplies `extraArgs`, which carries the registry's
+-- off-ledger choice context. Token-standard registries may require it
+-- (disclosed config contracts, featured-app rights, …); passing an
+-- empty context only works against registries that don't.
 mkCommittedPoolAllocationFactoryAllocate
   : Party
   -> HoldingV2.Account
@@ -61,14 +65,15 @@ mkCommittedPoolAllocationFactoryAllocate
   -> Time
   -> [ContractId HoldingV2.Holding]
   -> [Party]
+  -> ExtraArgs
   -> AllocationInstructionV2.AllocationFactory_Allocate
-mkCommittedPoolAllocationFactoryAllocate admin authorizer settlement nextIterationFunding requestedAt inputHoldingCids actors =
+mkCommittedPoolAllocationFactoryAllocate admin authorizer settlement nextIterationFunding requestedAt inputHoldingCids actors extraArgs =
   mkAllocationFactoryAllocate
     (Utils.mkCommittedPoolAllocationSpecification admin authorizer settlement nextIterationFunding)
     requestedAt
     inputHoldingCids
     actors
-    emptyExtraArgs
+    extraArgs
 
 -- Construct the FinalizedAllocation that carries the extra transfer-leg
 -- sides authorized by the given authorizer (projecting legs into sides

@@ -21,31 +21,30 @@ import Splice.Api.Token.MetadataV1 (emptyMetadata)
 
 import CantonDex.Trading.Utils qualified as Utils
 
--- | The special mint/burn accounts: `owner = None` marks them to the
--- registry (`Registry.V2` admin-authorizes and never credits them). Only
--- the `id` distinguishes mint from burn; the `lpRegistrar` arg fixes the
--- admin that authors them, matching the upstream convention.
+-- | The standard mint/burn accounts (`Utils.mintAccount`/`burnAccount`,
+-- `owner = None` + the canonical cip-112 ids). `Registry.V2` recognises
+-- exactly these as admin-authorized mint/burn sources.
 mintAccount : Party -> V2.Account
-mintAccount _lpRegistrar = V2.Account with owner = None; provider = None; id = "mint"
+mintAccount _lpRegistrar = Utils.mintAccount
 
 burnAccount : Party -> V2.Account
-burnAccount _lpRegistrar = V2.Account with owner = None; provider = None; id = "burn"
+burnAccount _lpRegistrar = Utils.burnAccount
 
 -- | The LP-token transfer legs.
 lpMintLeg : Party -> V2.Account -> Text -> Decimal -> V2.TransferLeg
-lpMintLeg lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
+lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-mint"
-  sender = mintAccount lpRegistrar
+  sender = Utils.mintAccount
   receiver = recipient
   amount
   instrumentId = lpInstrumentId
   meta = emptyMetadata
 
 lpBurnLeg : Party -> V2.Account -> Text -> Decimal -> V2.TransferLeg
-lpBurnLeg lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
+lpBurnLeg _lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-burn"
   sender = holder
-  receiver = burnAccount lpRegistrar
+  receiver = Utils.burnAccount
   amount
   instrumentId = lpInstrumentId
   meta = emptyMetadata

@@ -435,7 +435,8 @@ template PoolRules with
               amount; instrumentId = outputInstrumentId
               meta = emptyMetadata
             fullyOutLegs =
-              [ (cid, s, mkOutLeg i s.amount) | (i, (cid, s)) <- zip [0..] draw.fullyConsumed ]
+              [ (cid, s, mkOutLeg i s.amount)
+              | (i, (cid, s)) <- zip [0 .. length draw.fullyConsumed - 1] draw.fullyConsumed ]
             boundaryIdx = length draw.fullyConsumed
             boundaryOutLeg = case draw.boundary of
               Some (cid, s, drawn, leftover) ->

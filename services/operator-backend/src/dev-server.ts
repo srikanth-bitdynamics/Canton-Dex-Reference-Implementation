@@ -248,7 +248,7 @@ async function seed(
         admin,
         baseInstrumentId: "BTC",
         quoteInstrumentId: "USDC",
-        lpInstrumentId: "BTC-USDC-LP",
+        lpInstrumentId: { admin: lpRegistrar, id: "BTC-USDC-LP" },
         feeBps: 30,
         status: "Active",
         reserves: { baseAmount: "10.0000000000", quoteAmount: "200000.0000000000" },
@@ -264,6 +264,27 @@ async function seed(
         operatorFeeBps: null,
         accumulatedOperatorFees: null,
         publicReaders: null,
+      },
+    },
+  });
+
+  // Matching LP token policy so add/remove-liquidity can resolve the
+  // pool's policy cid (PoolService.fetchLpPolicy).
+  await ledger.submit({
+    actAs: [lpRegistrar],
+    commandId: "seed-lp-policy-btcusdc",
+    command: {
+      kind: "create",
+      templateId: "CantonDex.Dex.LPToken:LPTokenPolicy",
+      argument: {
+        lpRegistrar,
+        operator,
+        lpInstrumentId: { admin: lpRegistrar, id: "BTC-USDC-LP" },
+        baseInstrumentId: "BTC",
+        quoteInstrumentId: "USDC",
+        poolCid: "#pool-btcusdc:0",
+        totalSupply: "1414.2135623731",
+        active: true,
       },
     },
   });

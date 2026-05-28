@@ -13,6 +13,7 @@
 
 import { TtlCache } from "./cache.js";
 import {
+  ChoiceContextRef,
   Credential,
   FactoryRefs,
   InstrumentConfiguration,
@@ -83,6 +84,18 @@ export class RegistryClient {
     }
     this.factoryCache.set(admin, refs);
     return refs;
+  }
+
+  /**
+   * Off-ledger choice context for token-standard factory choices.
+   * Token-standard registries compute this (disclosed config contracts,
+   * featured-app rights, …) and the caller threads it into the choice's
+   * ExtraArgs. Our own CantonDex registry needs none, so the default is
+   * empty; a context-requiring registry overrides this to fetch real
+   * context + disclosed contracts.
+   */
+  async getChoiceContext(_admin: Party): Promise<ChoiceContextRef> {
+    return { context: { values: {} }, disclosure: [] };
   }
 
   async getCredentials(holder: Party): Promise<Credential[]> {

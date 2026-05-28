@@ -115,7 +115,7 @@ testPoolFullLifecycle = do
     quoteHoldingCids = []
     baseAmount = 10.0
     quoteAmount = 200000.0
-    lpPolicyCid = Some policyCid
+    lpPolicyCid = policyCid
     requestedAt = now
 
   Some pool1 <- queryContractId operator initRes.poolCid
@@ -145,7 +145,7 @@ testPoolFullLifecycle = do
     baseAmount = 5.0
     quoteAmount = 100000.0
     minLpTokens = 0.0
-    lpPolicyCid = Some acceptRes.policyCid
+    lpPolicyCid = acceptRes.policyCid
     knownTotalLpSupply = initRes.lpTokensMinted
     requestedAt = now
 
@@ -403,13 +403,13 @@ testPoolRemoveLiquidityConsolidates = do
     quoteHoldingCids = []
     baseAmount = 10.0
     quoteAmount = 200000.0
-    lpPolicyCid = Some policyCid
+    lpPolicyCid = policyCid
     requestedAt = now
 
   removeRes <- submit operator $ exerciseCmd initRes.poolCid Pool.Pool_RemoveLiquidity with
     holder = alice
     lpTokensToRedeem = initRes.lpTokensMinted / 2.0
-    lpPolicyCid = Some policyCid
+    lpPolicyCid = policyCid
     knownTotalLpSupply = initRes.lpTokensMinted
     minBaseOut = 0.0
     minQuoteOut = 0.0
@@ -486,7 +486,7 @@ testPoolSwapEndToEnd = do
     quoteHoldingCids = []
     baseAmount = 10.0
     quoteAmount = 200000.0
-    lpPolicyCid = Some policyCid
+    lpPolicyCid = policyCid
     requestedAt = now
 
   -- Bob creates a prefunded swap allocation (100 USDC -> BTC).
@@ -723,7 +723,7 @@ testPoolRemoveLiquiditySliceLocal = do
     quoteHoldingCids = []
     baseAmount = 10.0
     quoteAmount = 200000.0
-    lpPolicyCid = Some policyCid
+    lpPolicyCid = policyCid
     requestedAt = now
 
   -- Record supply so AddLiquidity has something to divide by.
@@ -741,7 +741,7 @@ testPoolRemoveLiquiditySliceLocal = do
     baseAmount = 5.0
     quoteAmount = 100000.0
     minLpTokens = 0.0
-    lpPolicyCid = Some policyCid
+    lpPolicyCid = policyCid
     knownTotalLpSupply = initRes.lpTokensMinted
     requestedAt = now
 
@@ -774,7 +774,7 @@ testPoolRemoveLiquiditySliceLocal = do
     quoteFactoryCid = factoryCid
     boundaryBaseHoldingCids = []
     boundaryQuoteHoldingCids = []
-    lpPolicyCid = Some policyCid
+    lpPolicyCid = policyCid
     requestedAt = now
 
   -- Only the head slice was consumed (and partially); the second slice

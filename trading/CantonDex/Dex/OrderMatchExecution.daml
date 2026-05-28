@@ -2,8 +2,7 @@ module CantonDex.Dex.OrderMatchExecution where
 
 -- Order matching and settlement execution.
 --
--- Implements the post-PR-5333 prefunded trade pattern (against
--- token-standard-v2-upcoming):
+-- Implements the prefunded trade pattern:
 --   1. both orders already have prefunded allocations (no transfer
 --      legs, just nextIterationFunding)
 --   2. the matcher builds FinalizedAllocation entries carrying the
@@ -12,8 +11,9 @@ module CantonDex.Dex.OrderMatchExecution where
 --   4. next-iteration allocations are either stored on
 --      partially-filled orders or cancelled to release unused funds
 --
--- The retired Allocation_Adjust step (PR-5333 pre-refactor) collapses
--- into the SettleBatch call via FinalizedAllocation.extraTransferLegSides.
+-- The concrete transfer leg sides flow through the SettleBatch call
+-- via FinalizedAllocation.extraTransferLegSides; there is no separate
+-- adjust step.
 
 import DA.TextMap qualified as TextMap
 

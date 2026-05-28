@@ -215,10 +215,8 @@ template Pool with
       -- ^ Full set of committed allocations backing the base reserve.
       --   The sum of slice amounts equals `reserves.baseAmount`.
     quoteSlices : [PoolSlice]
-    -- New in v0.0.6: Optional for Daml smart-upgrade compatibility with
-    -- the v0.0.5-vetted Pool template on the testnet synchronizer.
-    -- Defaults (None) preserve legacy behavior: 0 operator-fee share,
-    -- empty accrual book, no extra observers.
+    -- Optional fields; None means: 0 operator-fee share, empty accrual
+    -- book, no extra observers.
     operatorFeeBps : Optional Int
       -- ^ Operator's share of the swap fee in basis points. Must be
       --   `<= feeBps`. None / 0 = LPs get all fees (legacy behavior).
@@ -246,8 +244,7 @@ template Pool with
         baseAmount : Decimal
         quoteAmount : Decimal
         requestedAt : Time
-        lpPolicyCid : Optional (ContractId LP.LPTokenPolicy)
-          -- ^ V0.0.7 (new field at end for smart-upgrade compat).
+        lpPolicyCid : ContractId LP.LPTokenPolicy
       controller operator
       do
         assertMsg "Pool must be Unfunded to initialize" (status == PS_Unfunded)
@@ -309,8 +306,7 @@ template Pool with
           --   so the operator passes it in. Sanity-checked downstream by
           --   the registrar against the policy ledger.
         requestedAt : Time
-        lpPolicyCid : Optional (ContractId LP.LPTokenPolicy)
-          -- ^ V0.0.7 (new field at end for smart-upgrade compat).
+        lpPolicyCid : ContractId LP.LPTokenPolicy
       controller operator
       do
         assertMsg "Pool must be Active" (status == PS_Active)
@@ -394,8 +390,7 @@ template Pool with
           --   boundary or the side ends empty.
         boundaryQuoteHoldingCids : [ContractId V2.Holding]
         requestedAt : Time
-        lpPolicyCid : Optional (ContractId LP.LPTokenPolicy)
-          -- ^ V0.0.7 (new field at end for smart-upgrade compat).
+        lpPolicyCid : ContractId LP.LPTokenPolicy
       controller operator
       do
         assertMsg "Pool must be Active" (status == PS_Active)
@@ -567,8 +562,7 @@ template Pool with
               instrumentId = outputInstrumentId
               meta = emptyMetadata
 
-        -- Post-PR-5333: no separate Allocation_Adjust step. The
-        -- extra transfer-leg sides + residual next-iteration funding
+        -- The extra transfer-leg sides + residual next-iteration funding
         -- flow through FinalizedAllocation entries on the SettleBatch.
         --
         --   - swapper: provides the input leg; allocation is fully

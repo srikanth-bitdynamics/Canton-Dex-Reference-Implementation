@@ -13,6 +13,7 @@ module CantonDex.Tests.LpDvpPoolTests where
 
 import DA.Assert
 import DA.List (head)
+import DA.Time (addRelTime, hours)
 import Daml.Script
 
 import Splice.Api.Token.AllocationV2 qualified as V2
@@ -103,6 +104,13 @@ mkSpec admin authorizer legs committed = V2.AllocationSpecification with
   settlementDeadline = None; nextIterationFunding = None; committed
   meta = emptyMetadata
 
+-- Like `mkSpec` but carries a settlement deadline on the allocation, so
+-- the on-ledger expiry invariant (`enforceAllocationDeadline`) has a
+-- source to check against.
+mkSpecDeadline : Party -> V2.Account -> [V2.TransferLeg] -> Bool -> Time -> V2.AllocationSpecification
+mkSpecDeadline admin authorizer legs committed deadline =
+  (mkSpec admin authorizer legs committed) with settlementDeadline = Some deadline
+
 -- Drive a DvP add of `baseAmount` BTC + `quoteAmount` USDC by `lp`,
 -- returning the settle result. Builds the LP's deposit + receipt
 -- allocations matching the legs LpDvpRules settles.
@@ -142,7 +150,7 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid; settleBefore = None
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = knownSupply
       requestedAt = now; extraArgs = emptyExtraArgs
 
@@ -220,7 +228,7 @@ testDvpRemoveDeliversToHolder = do
       holderBurnSenderCid = burnSender
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid; settleBefore = None
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       requestedAt = now; extraArgs = emptyExtraArgs
 
   -- Pool drained; alice holds the returned base+quote, LP tokens gone.
@@ -272,7 +280,7 @@ testStaleQuoteRejected = do
       recipient = bob
       lpBaseDepositCid = bBase; lpQuoteDepositCid = bQuote; lpReceiptCid = bRcpt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid; settleBefore = None
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount = 1.0; quoteAmount = 20000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0   -- STALE: pool is funded now
       requestedAt = now; extraArgs = emptyExtraArgs
@@ -299,7 +307,7 @@ testSettleRequiresCoControl = do
       holderQuoteReceiptCid = coerceContractId addRes.baseSliceCid
       holderBurnSenderCid = coerceContractId addRes.baseSliceCid
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid; settleBefore = None
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       requestedAt = now; extraArgs = emptyExtraArgs
   pure ()
 
@@ -357,7 +365,7 @@ testDvpMultiSliceRemove = do
       holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
       holderBurnSenderCid = burnSender
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid; settleBefore = None
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       requestedAt = now; extraArgs = emptyExtraArgs
 
   -- Both slices per side consumed; pool drained; alice got it all back.
@@ -389,4 +397,51 @@ testMintRequiresAdmin = do
   submitMustFail mallory $ exerciseCmd fx.factoryCid V2.AllocationFactory_Allocate with
     settlement; allocation = forgedSpec; requestedAt = now
     inputHoldingCids = []; actors = [mallory]; extraArgs = emptyExtraArgs
+  pure ()
+
+-- P1 (ledger-anchored deadline): the settle reads the deadline from the
+-- LP's accepted allocation, NOT from a caller-supplied argument. An
+-- allocation whose `settlementDeadline` is already in the past must be
+-- rejected regardless of what the caller passes. This proves the expiry
+-- check is bound to ledger state.
+testExpiredAddRejected : Script ()
+testExpiredAddRejected = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  let pastDeadline = addRelTime now (hours (-1))
+      aliceAcct = Utils.basicAccount alice
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PR.poolSettlement fx.poolCid fx.operator
+      baseDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = aliceAcct; receiver = opAcct
+        amount = 10.0; instrumentId = "BTC"; meta = emptyMetadata
+      quoteDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
+        amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
+      lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId (PR.sqrtDecimal 2000000.0)
+  baseHold <- mintHolding fx.registry alice "BTC" 10.0
+  quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
+  -- The base-deposit allocation carries an already-expired deadline.
+  lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement
+    (mkSpecDeadline fx.registry aliceAcct [baseDepositLeg] True pastDeadline)
+    [toInterfaceContractId baseHold] now
+  lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement
+    (mkSpec fx.registry aliceAcct [quoteDepositLeg] True) [toInterfaceContractId quoteHold] now
+  lpReceipt <- mkAlloc fx.factoryCid alice settlement
+    (mkSpec fx.registry aliceAcct [lpMintLeg] False) [] now
+  -- Even with a fresh `requestedAt`, the settle must abort on the expired
+  -- ledger-anchored deadline.
+  submitMultiMustFail [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+      lpPolicyCid = fx.policyCid; recipient = alice
+      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+      lpReceiptCid = lpReceipt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+      knownTotalLpSupply = 0.0
+      requestedAt = now; extraArgs = emptyExtraArgs
   pure ()

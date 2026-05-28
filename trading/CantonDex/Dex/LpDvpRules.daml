@@ -74,14 +74,19 @@ mkOperatorReceiver operator admin settlement leg requestedAt extraArgs =
        actors = [operator]
        extraArgs
 
--- Abort if the request's quote deadline (if any) has passed, wiring
--- `LiquidityAllocationRequest.settleAt` into settle-time enforcement.
-assertWithinDeadline : Optional Time -> Update ()
-assertWithinDeadline settleBefore = case settleBefore of
-  None -> pure ()
-  Some deadline -> do
-    now <- getTime
-    assertMsg "liquidity request quote has expired" (now <= deadline)
+-- Enforce the quote deadline carried ON the LP/holder's allocation — i.e.
+-- read it from ledger state (the `settlementDeadline` the authorizer set
+-- when creating the allocation), NOT from a caller-supplied argument. The
+-- operator drives the settle but cannot relax a deadline the LP committed
+-- to; an expired quote cannot be settled (P1 review).
+enforceAllocationDeadline : ContractId V2.Allocation -> Update ()
+enforceAllocationDeadline cid = do
+  v <- view <$> fetch cid
+  case v.allocation.settlementDeadline of
+    None -> pure ()
+    Some deadline -> do
+      now <- getTime
+      assertMsg "liquidity request quote has expired" (now <= deadline)
 
 -- The per-side result of drawing a redemption across an ordered slice
 -- prefix: the delivery legs (one per sourced slice), the finalized slice
@@ -181,14 +186,12 @@ template LpDvpRules with
         quoteAmount : Decimal
         minLpTokens : Decimal
         knownTotalLpSupply : Decimal
-        settleBefore : Optional Time
-          -- ^ The request's quote deadline (`LiquidityAllocationRequest.
-          --   settleAt`); the settle aborts past it. `None` = no deadline.
         requestedAt : Time
         extraArgs : ExtraArgs
       controller operator, lpRegistrar
       do
-        assertWithinDeadline settleBefore
+        -- Deadline read from the LP's deposit allocation (ledger state).
+        enforceAllocationDeadline lpBaseDepositCid
         (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         -- Allowed: first-funding (Unfunded) or a funded pool (Active);
         -- a paused pool rejects liquidity changes (matches the old path).
@@ -315,12 +318,12 @@ template LpDvpRules with
         lpFactoryCid : ContractId V2.AllocationFactory
         baseQuoteSettleCid : ContractId V2.SettlementFactory
         lpSettleCid : ContractId V2.SettlementFactory
-        settleBefore : Optional Time
         requestedAt : Time
         extraArgs : ExtraArgs
       controller operator, lpRegistrar
       do
-        assertWithinDeadline settleBefore
+        -- Deadline read from the holder's burn-sender allocation (ledger state).
+        enforceAllocationDeadline holderBurnSenderCid
         (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         assertMsg "Pool must be Active to remove liquidity" (state.status == PS_Active)
         assertMsg "LP tokens must be positive" (lpTokensToRedeem > 0.0)

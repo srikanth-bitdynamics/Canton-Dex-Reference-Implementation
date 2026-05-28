@@ -606,8 +606,28 @@ template Registry with
         -- cover its sender-side outflow + reserved next-iteration funding.
         lockedCids <- case spec.authorizer.owner of
           None -> do
+            -- SECURITY (DEX-48): a mint/burn allocation must be EXACTLY the
+            -- standard mint or burn account, authored by the admin, with
+            -- only the legal leg sides. Without these checks an `owner=None`
+            -- authorizer would be an unrestricted mint/burn backdoor that
+            -- bypasses LPTokenPolicy. `AllocationFactory_Allocate` is
+            -- `controller actors`, so `admin `elem` arg.actors` requires the
+            -- submitter to actually `actAs admin` — a real authorization
+            -- check, not just a data assertion.
+            let isMint = Utils.isMintAccount spec.authorizer
+                isBurn = Utils.isBurnAccount spec.authorizer
+            assertMsg "owner-None authorizer must be the standard mint/burn account"
+              (isMint || isBurn)
+            assertMsg "mint/burn allocation must be admin-authorized"
+              (admin `elem` arg.actors)
             assertMsg "mint/burn allocation must lock no holdings"
               (null arg.inputHoldingCids)
+            -- Mint sends (sender-side legs); burn receives (receiver-side).
+            let sideOk side =
+                  if isMint then side.side == V2.SenderSide
+                            else side.side == V2.ReceiverSide
+            assertMsg "mint may carry only sender-side legs; burn only receiver-side"
+              (all sideOk spec.transferLegSides)
             pure []
           Some authorizerOwner -> do
             -- SenderSide legs this authorizer must fund.

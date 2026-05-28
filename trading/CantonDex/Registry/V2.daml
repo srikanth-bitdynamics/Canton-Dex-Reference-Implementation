@@ -26,7 +26,7 @@
 --     requirements (empty list = open access, matches the registry
 --     user-guide posture for test instruments).
 --
--- PR-5333 surface notes:
+-- V2 surface notes:
 --   * `V2.TransferLeg.instrumentId` is plain `Text` (admin lookup
 --     happens via the SettlementFactory's admin field on the registry).
 --   * `Allocation_Adjust` is properly implemented for iterated
@@ -240,7 +240,7 @@ template Allocation with
       -- authority. Sender-side legs simply archive the locked holdings
       -- (the receiver-side allocation will mint the new ones).
       --
-      -- In the post-PR-5333 API the choice arg carries
+      -- The choice arg carries
       -- `extraTransferLegSides` (additional sides settled this
       -- iteration) and `nextIterationFunding` (residual reserved for
       -- the next iteration). We honor both: process settle for the
@@ -667,8 +667,8 @@ template Registry with
                 else admin :: arg.actors
         -- Each allocation's settle mints receiver-side holdings under
         -- its OWN authority (admin + that allocation's authorizer).
-        -- Post-PR-5333: each FinalizedAllocation carries its extra
-        -- transfer-leg sides + next-iteration funding to use.
+        -- Each FinalizedAllocation carries its extra transfer-leg sides
+        -- + next-iteration funding to use.
         results <- forA arg.allocations $ \finalized ->
           exercise finalized.allocationCid V2.Allocation_Settle with
             actors = expandedActors

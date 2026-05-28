@@ -1,15 +1,11 @@
 module CantonDex.Trading.WorkflowConstructors where
 
--- Workflow-step constructors over the upstream AllocationV2 surface
--- (token-standard-v2-upcoming branch tip; post-PR-5333 refactor).
+-- Workflow-step constructors over the AllocationV2 surface.
 --
--- Migration note: the original PR-5333 surface offered an
--- `Allocation_Adjust` choice on `V2.Allocation` that callers used to
--- attach additional transfer legs to an open allocation between
--- creation and settlement. The branch-tip refactor folded that step
--- into `SettlementFactory_SettleBatch`: extra legs are now carried on
--- `FinalizedAllocation.extraTransferLegSides`, and any residual
--- next-iteration funding is carried on `FinalizedAllocation.nextIterationFunding`.
+-- There is no Allocation_Adjust step: extra transfer legs are carried
+-- on FinalizedAllocation.extraTransferLegSides and residual funding on
+-- FinalizedAllocation.nextIterationFunding, both consumed by
+-- SettlementFactory_SettleBatch.
 
 import DA.TextMap qualified as TextMap
 

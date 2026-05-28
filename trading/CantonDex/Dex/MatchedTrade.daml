@@ -1,6 +1,6 @@
 module CantonDex.Dex.MatchedTrade where
 
--- PR-5333-native matched trade settlement.
+-- Matched trade settlement on the V2 token standard.
 --
 -- Adapted from the upstream TradingAppV2 pattern but simplified to V2-only
 -- and using the PR 5333 allocation surface:

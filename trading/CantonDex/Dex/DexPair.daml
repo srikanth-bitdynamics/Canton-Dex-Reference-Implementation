@@ -22,8 +22,7 @@ template DexPair with
     tradingMode : TradingMode
     feeModel : FeeModel
     active : Bool
-    -- New in v0.0.6: Optional for Daml smart-upgrade compatibility with
-    -- the v0.0.5-vetted DexPair template on the testnet synchronizer.
+    -- Optional so an empty value means operator-private.
     publicReaders : Optional [Party]
       -- ^ Parties allowed to observe the pair listing on-ledger.
       --   None / [] = pair is operator-private except for admin.

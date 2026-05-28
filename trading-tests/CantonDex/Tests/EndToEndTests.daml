@@ -83,7 +83,6 @@ setupPool operator lpRegistrar admin = do
     status = Pool.PS_Unfunded
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
     totalLpSupply = 0.0
-    accumulatedOperatorFees = TextMap.empty
     publicReaders = []
   rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
   pure (poolId, poolCid, stateCid, rulesCid)
@@ -423,12 +422,17 @@ testPoolRemoveLiquidityConsolidates = do
     extraArgs = emptyExtraArgs
     requestedAt = now
 
+  -- Registrar records circulating supply so remove's supply assert holds.
+  stateFunded <- submitMulti [lpRegistrar] [operator] $
+    exerciseCmd initRes.poolStateCid PState.PoolState_RecordLPSupply with
+      newSupply = initRes.lpTokensMinted
+
   -- Redeem half. The operator passes the single init slice per side,
   -- which is the boundary slice (partially consumed → re-allocated).
   removeRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RemoveLiquidity with
     expectedPoolId = poolId
     poolCid
-    poolStateCid = initRes.poolStateCid
+    poolStateCid = stateFunded
     holder = alice
     lpTokensToRedeem = initRes.lpTokensMinted / 2.0
     lpPolicyCid = policyCid
@@ -839,7 +843,7 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
     poolId; operator; lpRegistrar
     status = Pool.PS_Unfunded
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
-    totalLpSupply = 0.0; accumulatedOperatorFees = TextMap.empty; publicReaders = []
+    totalLpSupply = 0.0; publicReaders = []
   rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = lpId

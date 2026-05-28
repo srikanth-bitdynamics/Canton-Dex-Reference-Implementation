@@ -14,8 +14,6 @@ module CantonDex.Dex.PoolState where
 -- `quoteAmount`). The slices are the source of truth for funds; this
 -- aggregate exists so a swap can price in one transaction.
 
-import DA.TextMap qualified as TextMap
-
 import CantonDex.Dex.Pool (PoolId, PoolReserves, PoolStatus (..))
 
 template PoolState with
@@ -25,9 +23,6 @@ template PoolState with
     status : PoolStatus
     reserves : PoolReserves
     totalLpSupply : Decimal
-    accumulatedOperatorFees : TextMap.TextMap Decimal
-      -- ^ Running per-instrument total of operator-fee accrual, bumped on
-      --   every swap and cleared by the operator's collect workflow.
     publicReaders : [Party]
       -- ^ Parties allowed to observe pool state on-ledger (indexers,
       --   off-chain pricers, dashboards). Empty = operator + lpRegistrar

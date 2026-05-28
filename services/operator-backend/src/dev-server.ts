@@ -271,7 +271,6 @@ async function seed(
         status: "Active",
         reserves: { baseAmount: "10.0000000000", quoteAmount: "200000.0000000000" },
         totalLpSupply: "1414.2135623731",
-        accumulatedOperatorFees: {},
         publicReaders: [],
       },
     },

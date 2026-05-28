@@ -62,7 +62,7 @@ class CapturingLedger implements LedgerSubmitter {
         return [{
           contractId: p.poolStateCid, poolId: p.poolId, operator: p.operator,
           lpRegistrar: p.lpRegistrar, status: p.status, reserves: p.reserves,
-          totalLpSupply: p.totalLpSupply, accumulatedOperatorFees: {}, publicReaders: [],
+          totalLpSupply: p.totalLpSupply, publicReaders: [],
         } as unknown as T];
       case "CantonDex.Dex.PoolSlice:PoolSlice":
         return [];

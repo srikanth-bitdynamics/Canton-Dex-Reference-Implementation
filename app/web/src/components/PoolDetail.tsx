@@ -157,7 +157,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       knownTotalLpSupply: pool.totalLpSupply,
       minBaseOut: minBaseOutWithSlippage,
       minQuoteOut: minQuoteOutWithSlippage,
-      lpInstrumentId: pool.lpInstrumentId,
+      lpInstrumentId: pool.lpInstrumentId.id,
     });
   };
 
@@ -379,7 +379,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
             <div className="card">
               <div className="card-head">
                 <h3 className="card-title">Your LP position</h3>
-                <span className="alloc-pill">LPToken#{pool.lpInstrumentId}</span>
+                <span className="alloc-pill">LPToken#{pool.lpInstrumentId.id}</span>
               </div>
               <div className="card-body">
                 <div className="grid-2">
@@ -630,7 +630,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
               <div className="kv">
                 <span className="k">LP token policy</span>
                 <span className="v alloc-pill">
-                  LPToken#{pool.lpInstrumentId}
+                  LPToken#{pool.lpInstrumentId.id}
                 </span>
               </div>
               <div className="kv">

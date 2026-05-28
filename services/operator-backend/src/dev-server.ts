@@ -248,7 +248,7 @@ async function seed(
         admin,
         baseInstrumentId: "BTC",
         quoteInstrumentId: "USDC",
-        lpInstrumentId: "BTC-USDC-LP",
+        lpInstrumentId: { admin: lpRegistrar, id: "BTC-USDC-LP" },
         feeBps: 30,
         status: "Active",
         reserves: { baseAmount: "10.0000000000", quoteAmount: "200000.0000000000" },

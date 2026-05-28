@@ -204,7 +204,7 @@ template Pool with
       -- ^ Asset admin (registrar) for the base+quote instruments.
     baseInstrumentId : Text
     quoteInstrumentId : Text
-    lpInstrumentId : Text
+    lpInstrumentId : V2.InstrumentId
     feeBps : Int
       -- ^ Total swap fee in basis points. The operator's share is
       --   `operatorFeeBps`; LPs receive the rest (`feeBps - operatorFeeBps`).

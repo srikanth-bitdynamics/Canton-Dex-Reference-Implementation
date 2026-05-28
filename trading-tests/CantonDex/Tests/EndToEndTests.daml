@@ -30,6 +30,7 @@ import DA.Time
 
 import Daml.Script
 
+import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
@@ -82,7 +83,7 @@ testPoolFullLifecycle = do
     admin
     baseInstrumentId = "BTC"
     quoteInstrumentId = "USDC"
-    lpInstrumentId = "BTC-USDC-LP"
+    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     feeBps = 30
     status = Pool.PS_Unfunded
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
@@ -98,7 +99,7 @@ testPoolFullLifecycle = do
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar
     operator
-    lpInstrumentId = "BTC-USDC-LP"
+    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     baseInstrumentId = "BTC"
     quoteInstrumentId = "USDC"
     poolCid = coerceContractId poolCid
@@ -379,7 +380,7 @@ testPoolRemoveLiquidityConsolidates = do
     admin
     baseInstrumentId = "BTC"
     quoteInstrumentId = "USDC"
-    lpInstrumentId = "BTC-USDC-LP"
+    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     feeBps = 30
     status = Pool.PS_Unfunded
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
@@ -391,7 +392,7 @@ testPoolRemoveLiquidityConsolidates = do
     publicReaders = None
 
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
-    lpRegistrar; operator; lpInstrumentId = "BTC-USDC-LP"
+    lpRegistrar; operator; lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
     poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
 
@@ -464,7 +465,7 @@ testPoolSwapEndToEnd = do
     admin
     baseInstrumentId = "BTC"
     quoteInstrumentId = "USDC"
-    lpInstrumentId = "BTC-USDC-LP"
+    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     feeBps = 30
     status = Pool.PS_Unfunded
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
@@ -475,7 +476,7 @@ testPoolSwapEndToEnd = do
     accumulatedOperatorFees = None
     publicReaders = None
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
-    lpRegistrar; operator; lpInstrumentId = "BTC-USDC-LP"
+    lpRegistrar; operator; lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
     poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
   initRes <- submit operator $ exerciseCmd poolCid Pool.Pool_Initialize with
@@ -698,7 +699,7 @@ testPoolRemoveLiquiditySliceLocal = do
     admin
     baseInstrumentId = "BTC"
     quoteInstrumentId = "USDC"
-    lpInstrumentId = "BTC-USDC-LP"
+    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     feeBps = 30
     status = Pool.PS_Unfunded
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
@@ -710,7 +711,7 @@ testPoolRemoveLiquiditySliceLocal = do
     publicReaders = None
 
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
-    lpRegistrar; operator; lpInstrumentId = "BTC-USDC-LP"
+    lpRegistrar; operator; lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
     poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
 

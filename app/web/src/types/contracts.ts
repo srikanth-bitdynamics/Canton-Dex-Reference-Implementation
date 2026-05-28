@@ -62,6 +62,12 @@ export interface PoolSlice {
   amount: number;
 }
 
+/** Token Standard V2 instrument identity: registry admin + textual id. */
+export interface InstrumentId {
+  admin: string;
+  id: string;
+}
+
 export interface Pool {
   contractId: string;
   operator: string;
@@ -69,7 +75,7 @@ export interface Pool {
   admin: string;
   baseInstrumentId: string;
   quoteInstrumentId: string;
-  lpInstrumentId: string;
+  lpInstrumentId: InstrumentId;
   feeBps: number;
   status: PoolStatus;
   reserves: PoolReserves;
@@ -85,7 +91,7 @@ export interface LPTokenPolicy {
   contractId: string;
   lpRegistrar: string;
   operator: string;
-  lpInstrumentId: string;
+  lpInstrumentId: InstrumentId;
   baseInstrumentId: string;
   quoteInstrumentId: string;
   totalSupply: number;
@@ -109,6 +115,7 @@ export interface SwapRequest {
 export interface Holding {
   contractId: string;
   owner: string;
+  admin: string;
   instrumentId: string;
   amount: number;
   locked: boolean;

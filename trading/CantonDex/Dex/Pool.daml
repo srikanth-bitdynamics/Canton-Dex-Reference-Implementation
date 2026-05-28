@@ -27,9 +27,9 @@ import Splice.Api.Token.HoldingV2 qualified as V2
 -- | Stable identifier correlating a `Pool` config with its `PoolState`
 -- and `PoolSlice` contracts. Not a contract key — purely a value used
 -- for the `expectedPoolId` guard and for the operator-backend to group
--- contracts by pool.
-data PoolId = PoolId Text
-  deriving (Eq, Show, Ord)
+-- contracts by pool. A plain `Text` so it serializes transparently over
+-- the JSON ledger API.
+type PoolId = Text
 
 data PoolStatus
   = PS_Unfunded

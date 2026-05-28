@@ -65,7 +65,7 @@ setupPool
   : Party -> Party -> Party
   -> Script (Pool.PoolId, ContractId Pool.Pool, ContractId PState.PoolState, ContractId PRules.PoolRules)
 setupPool operator lpRegistrar admin = do
-  let poolId = Pool.PoolId "BTC-USDC"
+  let poolId = "BTC-USDC"
   poolCid <- submit operator $ createCmd Pool.Pool with
     poolId
     operator
@@ -830,7 +830,7 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
   factory <- submit admin $ createCmd Mock.MockAllocationFactory with
     admin; users = [operator, lpRegistrar]; requireContext
   let lpId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
-      poolId = Pool.PoolId "BTC-USDC"
+      poolId = "BTC-USDC"
   poolCid <- submit operator $ createCmd Pool.Pool with
     poolId; operator; lpRegistrar; admin
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId = lpId

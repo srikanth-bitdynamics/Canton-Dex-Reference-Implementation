@@ -1,0 +1,80 @@
+module CantonDex.Lp.Instrument where
+
+-- LP-token issuance as delivery-versus-payment over the V2 allocation
+-- surface (DEX-42 / DEX-43).
+--
+-- The LP token is just a V2 instrument administered by the `lpRegistrar`
+-- via `CantonDex.Registry.V2` — there is no parallel registry. Minting
+-- and burning are modelled exactly like Splice's
+-- `TestDeliveryVersusBurnMint`: a mint is a transfer leg from the special
+-- `mintAccount lpRegistrar` to the recipient (authorized by the
+-- registrar's own allocation), and a burn is the symmetric leg from the
+-- holder to `burnAccount lpRegistrar`. Both settle atomically inside the
+-- pool's add/remove DvP batch (see `CantonDex.Dex.LpDvpRules`).
+--
+-- This module is pure leg/spec construction; the choreography (who
+-- creates which allocation, the SettleBatch) lives in `LpDvpRules`.
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+
+import CantonDex.Trading.Utils qualified as Utils
+
+-- | The special mint/burn accounts: `owner = None` marks them to the
+-- registry (`Registry.V2` admin-authorizes and never credits them). Only
+-- the `id` distinguishes mint from burn; the `lpRegistrar` arg fixes the
+-- admin that authors them, matching the upstream convention.
+mintAccount : Party -> V2.Account
+mintAccount _lpRegistrar = V2.Account with owner = None; provider = None; id = "mint"
+
+burnAccount : Party -> V2.Account
+burnAccount _lpRegistrar = V2.Account with owner = None; provider = None; id = "burn"
+
+-- | The LP-token transfer legs.
+lpMintLeg : Party -> V2.Account -> Text -> Decimal -> V2.TransferLeg
+lpMintLeg lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
+  transferLegId = "lp-mint"
+  sender = mintAccount lpRegistrar
+  receiver = recipient
+  amount
+  instrumentId = lpInstrumentId
+  meta = emptyMetadata
+
+lpBurnLeg : Party -> V2.Account -> Text -> Decimal -> V2.TransferLeg
+lpBurnLeg lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
+  transferLegId = "lp-burn"
+  sender = holder
+  receiver = burnAccount lpRegistrar
+  amount
+  instrumentId = lpInstrumentId
+  meta = emptyMetadata
+
+-- | Build an `AllocationSpecification` for one authorizer over a leg,
+-- projecting the leg to that authorizer's side. `admin` is the LP
+-- instrument admin (= lpRegistrar).
+mkSpec : Party -> V2.Account -> V2.TransferLeg -> V2.AllocationSpecification
+mkSpec admin authorizer leg = V2.AllocationSpecification with
+  admin
+  authorizer
+  transferLegSides = Utils.legsToSides authorizer [leg]
+  settlementDeadline = None
+  nextIterationFunding = None
+  committed = False
+  meta = emptyMetadata
+
+-- Mint: registrar authors the sender side (from `mintAccount`); recipient
+-- authors the receiver side (the receipt of the minted tokens).
+mintSenderSpec : Party -> V2.TransferLeg -> V2.AllocationSpecification
+mintSenderSpec lpRegistrar leg = mkSpec lpRegistrar (mintAccount lpRegistrar) leg
+
+mintReceiptSpec : Party -> V2.Account -> V2.TransferLeg -> V2.AllocationSpecification
+mintReceiptSpec lpRegistrar recipient leg = mkSpec lpRegistrar recipient leg
+
+-- Burn: holder authors the sender side (locking the LP holding);
+-- registrar authors the receiver side (into `burnAccount`).
+burnSenderSpec : Party -> V2.Account -> V2.TransferLeg -> V2.AllocationSpecification
+burnSenderSpec lpRegistrar holder leg = mkSpec lpRegistrar holder leg
+
+burnReceiptSpec : Party -> V2.TransferLeg -> V2.AllocationSpecification
+burnReceiptSpec lpRegistrar leg = mkSpec lpRegistrar (burnAccount lpRegistrar) leg

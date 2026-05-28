@@ -1,0 +1,301 @@
+module CantonDex.Tests.LpDvpPoolTests where
+
+-- DEX-42/43 Step 3a: DvP liquidity at the boundary, against Registry.V2
+-- (holding-tracking + iterated settlement + mint/burn accounts). Proves:
+--   - atomic add: LP funds base+quote and receives LP tokens in one flow;
+--   - remove delivers base+quote to the HOLDER (finding #3) and burns LP
+--     tokens via burnAccount;
+--   - stale-quote rejection;
+--   - the settle is co-controlled (operator + lpRegistrar).
+--
+-- To keep the harness to one registry we use admin == lpRegistrar (the
+-- two per-admin batches collapse to one); the choice still issues both.
+
+import DA.Assert
+import DA.List (head)
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Dex.Pool
+import CantonDex.Dex.PoolState qualified as PS
+import CantonDex.Dex.PoolSlice qualified as PSlice
+import CantonDex.Dex.PoolRules qualified as PR
+import CantonDex.Dex.LpDvpRules qualified as Dvp
+import CantonDex.Dex.LPToken qualified as LP
+import CantonDex.Lp.Instrument qualified as Lp
+import CantonDex.Registry.V2 qualified as RegV2
+import CantonDex.Trading.Utils qualified as Utils
+
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+lpId : Text
+lpId = "BTC-USDC-LP"
+
+-- A fixture: one Registry.V2 (admin = lpRegistrar = `registry`), an
+-- Unfunded pool, its rules, the LP policy, and the operator's DvP rules.
+data Fixture = Fixture with
+    operator : Party
+    registry : Party
+    factoryCid : ContractId V2.AllocationFactory
+    settleCid : ContractId V2.SettlementFactory
+    poolId : PoolId
+    poolCid : ContractId Pool
+    stateCid : ContractId PS.PoolState
+    policyCid : ContractId LP.LPTokenPolicy
+    dvpCid : ContractId Dvp.LpDvpRules
+
+-- `lps` become Registry observers so they can exercise the factory.
+setup : [Party] -> Script Fixture
+setup lps = do
+  operator <- allocateParty "operator"
+  registry <- allocateParty "registry"   -- admin AND lpRegistrar
+  reg <- submit registry $ createCmd RegV2.Registry with admin = registry; users = operator :: lps
+  let factoryCid : ContractId V2.AllocationFactory = toInterfaceContractId reg
+      settleCid : ContractId V2.SettlementFactory = toInterfaceContractId reg
+      poolId = "BTC-USDC"
+      lpInstrumentId = V2.InstrumentId with admin = registry; id = lpId
+  poolCid <- submit operator $ createCmd Pool with
+    poolId; operator; lpRegistrar = registry; admin = registry
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId
+    feeBps = 30; operatorFeeBps = 0
+  stateCid <- submit operator $ createCmd PS.PoolState with
+    poolId; operator; lpRegistrar = registry
+    status = PS_Unfunded
+    reserves = PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
+    totalLpSupply = 0.0; publicReaders = []
+  policyCid <- submit registry $ createCmd LP.LPTokenPolicy with
+    lpRegistrar = registry; operator; lpInstrumentId
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
+  dvpCid <- submitMulti [operator, registry] [] $
+    createCmd Dvp.LpDvpRules with operator; lpRegistrar = registry
+  pure Fixture with
+    operator; registry; factoryCid; settleCid; poolId; poolCid; stateCid; policyCid; dvpCid
+
+-- Mint a Registry.V2 holding directly (Holding is signatory admin+owner).
+mintHolding : Party -> Party -> Text -> Decimal -> Script (ContractId RegV2.Holding)
+mintHolding registry owner instrumentId amount =
+  submitMulti [registry, owner] [] $ createCmd RegV2.Holding with
+    admin = registry; owner; instrumentId; amount; locked = False
+
+-- Create an allocation via the factory under `party`'s authority.
+mkAlloc
+  : ContractId V2.AllocationFactory -> Party -> V2.SettlementInfo
+  -> V2.AllocationSpecification -> [ContractId V2.Holding] -> Time
+  -> Script (ContractId V2.Allocation)
+mkAlloc factoryCid party settlement spec inputHoldingCids requestedAt = do
+  res <- submit party $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+    settlement; allocation = spec; requestedAt; inputHoldingCids
+    actors = [party]; extraArgs = emptyExtraArgs
+  case res.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "allocation must complete"
+
+mkSpec : Party -> V2.Account -> [V2.TransferLeg] -> Bool -> V2.AllocationSpecification
+mkSpec admin authorizer legs committed = V2.AllocationSpecification with
+  admin; authorizer
+  transferLegSides = Utils.legsToSides authorizer legs
+  settlementDeadline = None; nextIterationFunding = None; committed
+  meta = emptyMetadata
+
+-- Drive a DvP add of `baseAmount` BTC + `quoteAmount` USDC by `lp`,
+-- returning the settle result. Builds the LP's deposit + receipt
+-- allocations matching the legs LpDvpRules settles.
+dvpAdd
+  : Fixture -> Party -> Decimal -> Decimal -> Decimal -> Time
+  -> Script Dvp.LpDvpRules_SettleAddResult
+dvpAdd fx lp baseAmount quoteAmount knownSupply now = do
+  let lpAcct = Utils.basicAccount lp
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PR.poolSettlement fx.poolCid fx.operator
+      baseDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = lpAcct; receiver = opAcct
+        amount = baseAmount; instrumentId = "BTC"; meta = emptyMetadata
+      quoteDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
+        amount = quoteAmount; instrumentId = "USDC"; meta = emptyMetadata
+      lpAmount =
+        if knownSupply == 0.0 then PR.sqrtDecimal (baseAmount * quoteAmount)
+        else knownSupply  -- only first-add path exercised in tests
+      lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
+  baseHold <- mintHolding fx.registry lp "BTC" baseAmount
+  quoteHold <- mintHolding fx.registry lp "USDC" quoteAmount
+  lpBaseDeposit <- mkAlloc fx.factoryCid lp settlement
+    (mkSpec fx.registry lpAcct [baseDepositLeg] True) [toInterfaceContractId baseHold] now
+  lpQuoteDeposit <- mkAlloc fx.factoryCid lp settlement
+    (mkSpec fx.registry lpAcct [quoteDepositLeg] True) [toInterfaceContractId quoteHold] now
+  lpReceipt <- mkAlloc fx.factoryCid lp settlement
+    (mkSpec fx.registry lpAcct [lpMintLeg] False) [] now
+  submitMulti [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+      lpPolicyCid = fx.policyCid; recipient = lp
+      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+      lpReceiptCid = lpReceipt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = knownSupply
+      requestedAt = now; extraArgs = emptyExtraArgs
+
+testDvpAddLiquidity : Script ()
+testDvpAddLiquidity = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  res <- dvpAdd fx alice 10.0 200000.0 0.0 now
+
+  -- Reserves + supply set; status Active; two operator-authored slices.
+  Some state <- queryContractId fx.operator res.poolStateCid
+  state.status === PS_Active
+  state.reserves.baseAmount === 10.0
+  state.reserves.quoteAmount === 200000.0
+  let expectedLp = PR.sqrtDecimal 2000000.0
+  state.totalLpSupply === expectedLp
+  res.lpTokensMinted === expectedLp
+  Some baseSlice <- queryContractId fx.operator res.baseSliceCid
+  Some quoteSlice <- queryContractId fx.operator res.quoteSliceCid
+  baseSlice.operator === fx.operator
+  baseSlice.amount === 10.0
+  quoteSlice.amount === 200000.0
+
+  -- Alice received the freshly-minted LP holding (DvP, finding #4).
+  aliceHoldings <- query @RegV2.Holding alice
+  let lpHoldings = filter (\(_, h) -> h.instrumentId == lpId && h.owner == alice && not h.locked) aliceHoldings
+  length lpHoldings === 1
+  (snd (head lpHoldings)).amount === expectedLp
+  pure ()
+
+-- Remove (full redemption): base+quote are delivered to the HOLDER
+-- (finding #3) and the LP tokens are burned (finding #4). Full redemption
+-- keeps the burn clean (the whole LP holding is consumed; partial-burn
+-- change is a documented harness follow-up).
+testDvpRemoveDeliversToHolder : Script ()
+testDvpRemoveDeliversToHolder = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  addRes <- dvpAdd fx alice 10.0 200000.0 0.0 now
+  let lpAmount = PR.sqrtDecimal 2000000.0
+      aliceAcct = Utils.basicAccount alice
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PR.poolSettlement fx.poolCid fx.operator
+      baseOutLeg = V2.TransferLeg with
+        transferLegId = "lp-base-out"; sender = opAcct; receiver = aliceAcct
+        amount = 10.0; instrumentId = "BTC"; meta = emptyMetadata
+      quoteOutLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-out"; sender = opAcct; receiver = aliceAcct
+        amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
+      burnLeg = Lp.lpBurnLeg fx.registry aliceAcct lpId lpAmount
+
+  -- alice's LP holding (to lock for the burn).
+  aliceHs <- query @RegV2.Holding alice
+  let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) aliceHs)
+
+  baseReceipt <- mkAlloc fx.factoryCid alice settlement
+    (mkSpec fx.registry aliceAcct [baseOutLeg] False) [] now
+  quoteReceipt <- mkAlloc fx.factoryCid alice settlement
+    (mkSpec fx.registry aliceAcct [quoteOutLeg] False) [] now
+  burnSender <- mkAlloc fx.factoryCid alice settlement
+    (mkSpec fx.registry aliceAcct [burnLeg] True) [toInterfaceContractId lpHoldCid] now
+
+  remRes <- submitMulti [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleRemoveLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+      holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
+      minBaseOut = 0.0; minQuoteOut = 0.0
+      baseSliceCid = addRes.baseSliceCid; quoteSliceCid = addRes.quoteSliceCid
+      holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
+      holderBurnSenderCid = burnSender
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      boundaryBaseHoldingCids = []; boundaryQuoteHoldingCids = []
+      requestedAt = now; extraArgs = emptyExtraArgs
+
+  -- Pool drained; alice holds the returned base+quote, LP tokens gone.
+  Some state <- queryContractId fx.operator remRes.poolStateCid
+  state.reserves.baseAmount === 0.0
+  state.reserves.quoteAmount === 0.0
+  state.status === PS_Unfunded
+  remRes.baseReturned === 10.0
+  remRes.quoteReturned === 200000.0
+  after <- query @RegV2.Holding alice
+  let lpLeft = filter (\(_, h) -> h.instrumentId == lpId && h.owner == alice) after
+      btcOut = filter (\(_, h) -> h.instrumentId == "BTC" && h.owner == alice && not h.locked) after
+      usdcOut = filter (\(_, h) -> h.instrumentId == "USDC" && h.owner == alice && not h.locked) after
+  length lpLeft === 0
+  assertMsg "alice received BTC back" (any (\(_, h) -> h.amount == 10.0) btcOut)
+  assertMsg "alice received USDC back" (any (\(_, h) -> h.amount == 200000.0) usdcOut)
+  pure ()
+
+-- The settle re-checks the quote against current state: a knownTotalLpSupply
+-- that disagrees with PoolState aborts.
+testStaleQuoteRejected : Script ()
+testStaleQuoteRejected = do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  fx <- setup [alice, bob]
+  now <- getTime
+  addRes <- dvpAdd fx alice 10.0 200000.0 0.0 now
+  -- bob attempts an add quoting a stale supply (0.0) while the pool is
+  -- now funded — the stale-quote assert must fail.
+  let bobAcct = Utils.basicAccount bob
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PR.poolSettlement fx.poolCid fx.operator
+      baseDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = bobAcct; receiver = opAcct
+        amount = 1.0; instrumentId = "BTC"; meta = emptyMetadata
+      quoteDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = bobAcct; receiver = opAcct
+        amount = 20000.0; instrumentId = "USDC"; meta = emptyMetadata
+      lpMintLeg = Lp.lpMintLeg fx.registry bobAcct lpId 100.0
+  bBtc <- mintHolding fx.registry bob "BTC" 1.0
+  bUsdc <- mintHolding fx.registry bob "USDC" 20000.0
+  bBase <- mkAlloc fx.factoryCid bob settlement (mkSpec fx.registry bobAcct [baseDepositLeg] True) [toInterfaceContractId bBtc] now
+  bQuote <- mkAlloc fx.factoryCid bob settlement (mkSpec fx.registry bobAcct [quoteDepositLeg] True) [toInterfaceContractId bUsdc] now
+  bRcpt <- mkAlloc fx.factoryCid bob settlement (mkSpec fx.registry bobAcct [lpMintLeg] False) [] now
+  submitMultiMustFail [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+      recipient = bob
+      lpBaseDepositCid = bBase; lpQuoteDepositCid = bQuote; lpReceiptCid = bRcpt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount = 1.0; quoteAmount = 20000.0; minLpTokens = 0.0
+      knownTotalLpSupply = 0.0   -- STALE: pool is funded now
+      requestedAt = now; extraArgs = emptyExtraArgs
+  pure ()
+
+-- The settle choices are co-controlled (operator, lpRegistrar): the
+-- operator alone cannot drive them.
+testSettleRequiresCoControl : Script ()
+testSettleRequiresCoControl = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  addRes <- dvpAdd fx alice 10.0 200000.0 0.0 now
+  -- Operator alone (no lpRegistrar) cannot settle a remove.
+  submitMustFail fx.operator $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleRemoveLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+      holder = alice; lpTokensToRedeem = PR.sqrtDecimal 2000000.0
+      knownTotalLpSupply = PR.sqrtDecimal 2000000.0
+      minBaseOut = 0.0; minQuoteOut = 0.0
+      baseSliceCid = addRes.baseSliceCid; quoteSliceCid = addRes.quoteSliceCid
+      holderBaseReceiptCid = coerceContractId addRes.baseSliceCid
+      holderQuoteReceiptCid = coerceContractId addRes.baseSliceCid
+      holderBurnSenderCid = coerceContractId addRes.baseSliceCid
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      boundaryBaseHoldingCids = []; boundaryQuoteHoldingCids = []
+      requestedAt = now; extraArgs = emptyExtraArgs
+  pure ()

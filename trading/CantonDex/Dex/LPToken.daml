@@ -19,6 +19,7 @@ module CantonDex.Dex.LPToken where
 -- a recipient's ledger view. Burn is the symmetric joint archive.
 
 import CantonDex.Registry.V2 qualified as RegV2
+import Splice.Api.Token.HoldingV2 qualified as V2
 
 data LPTokenPolicy_BurnResult = LPTokenPolicy_BurnResult with
     policyCid : ContractId LPTokenPolicy
@@ -32,7 +33,7 @@ data LPMintResultV2 = LPMintResultV2 with
 template LPTokenPolicy with
     lpRegistrar : Party
     operator : Party
-    lpInstrumentId : Text
+    lpInstrumentId : V2.InstrumentId
     baseInstrumentId : Text
     quoteInstrumentId : Text
     poolCid : ContractId ()
@@ -43,6 +44,11 @@ template LPTokenPolicy with
   where
     signatory lpRegistrar
     observer operator
+
+    -- The LP instrument is administered by the lpRegistrar, so the
+    -- structured id must name it. Guards against minting under a
+    -- foreign admin's namespace.
+    ensure lpInstrumentId.admin == lpRegistrar
 
     -- Supply bump, called from LPMintRequest_AcceptAndMint. The
     -- recipient's authority is supplied by the calling choice's
@@ -76,7 +82,7 @@ template LPTokenPolicy with
 template LPMintRequest with
     operator : Party
     lpRegistrar : Party
-    lpInstrumentId : Text
+    lpInstrumentId : V2.InstrumentId
     recipient : Party
     amount : Decimal
     policyCid : ContractId LPTokenPolicy
@@ -101,9 +107,9 @@ template LPMintRequest with
       do
         newPolicyCid <- exercise policyCid LPTokenPolicy_RecordMint with amount
         holdingCid <- create RegV2.Holding with
-          admin = lpRegistrar
+          admin = lpInstrumentId.admin
           owner = recipient
-          instrumentId = lpInstrumentId
+          instrumentId = lpInstrumentId.id
           amount
           locked = False
         pure LPMintResultV2 with
@@ -115,7 +121,7 @@ template LPMintRequest with
 template LPBurnRequest with
     operator : Party
     lpRegistrar : Party
-    lpInstrumentId : Text
+    lpInstrumentId : V2.InstrumentId
     holder : Party
     amount : Decimal
     policyCid : ContractId LPTokenPolicy
@@ -142,8 +148,10 @@ template LPBurnRequest with
       do
         h <- fetch holderHoldingCid
         assertMsg "Holding owner mismatch" (h.owner == holder)
-        assertMsg "Holding admin must be lpRegistrar" (h.admin == lpRegistrar)
-        assertMsg "Holding instrument mismatch" (h.instrumentId == lpInstrumentId)
+        -- Compare the full (admin, id) instrument identity, not just the
+        -- textual id — two registrars can reuse the same text id.
+        let heldId = V2.InstrumentId with admin = h.admin; id = h.instrumentId
+        assertMsg "Holding instrument mismatch" (heldId == lpInstrumentId)
         assertMsg "Holding amount must equal burn amount" (h.amount == amount)
         archive holderHoldingCid
         newPolicyCid <- exercise policyCid LPTokenPolicy_RecordBurn with amount

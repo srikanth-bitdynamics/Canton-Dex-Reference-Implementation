@@ -48,9 +48,12 @@ export function PoolsPage() {
 
   const selectedPool = pools.find((p) => p.contractId === selected);
   if (selectedPool) {
-    // Find user's LP holding for this pool's lpInstrumentId.
+    // Find user's LP holding for this pool, matching the full (admin, id)
+    // instrument identity rather than the textual id alone.
     const lpHolding = holdings?.find(
-      (h) => h.instrumentId === selectedPool.lpInstrumentId,
+      (h) =>
+        h.instrumentId === selectedPool.lpInstrumentId.id &&
+        h.admin === selectedPool.lpInstrumentId.admin,
     );
     return (
       <PoolDetail
@@ -114,7 +117,9 @@ export function PoolsPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {pools.map((pool) => {
           const lp = holdings?.find(
-            (h) => h.instrumentId === pool.lpInstrumentId,
+            (h) =>
+              h.instrumentId === pool.lpInstrumentId.id &&
+              h.admin === pool.lpInstrumentId.admin,
           );
           return (
             <PoolCard

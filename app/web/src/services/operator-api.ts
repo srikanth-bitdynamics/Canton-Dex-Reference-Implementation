@@ -18,7 +18,7 @@ export interface Pool {
   admin: Party;
   baseInstrumentId: string;
   quoteInstrumentId: string;
-  lpInstrumentId: string;
+  lpInstrumentId: { admin: Party; id: string };
   feeBps: number;
   status: "Active" | "Paused" | "Unfunded";
   reserves: { baseAmount: Decimal; quoteAmount: Decimal };

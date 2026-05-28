@@ -138,7 +138,10 @@ export class AdminService {
 
   async createPool(input: CreatePoolInput): Promise<ContractId<"Pool">> {
     const zero: Decimal = "0.0";
-    return retryOnContention(() =>
+    // LP instrument is administered by the lpRegistrar; build the
+    // structured V2 InstrumentId from the supplied textual id.
+    const lpInstrumentId = { admin: input.lpRegistrar, id: input.lpInstrumentId };
+    const poolCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"Pool">>({
         actAs: [this.operatorParty],
         commandId: `pool-create:${input.baseInstrumentId}:${input.quoteInstrumentId}`,
@@ -151,7 +154,7 @@ export class AdminService {
             admin: input.admin,
             baseInstrumentId: input.baseInstrumentId,
             quoteInstrumentId: input.quoteInstrumentId,
-            lpInstrumentId: input.lpInstrumentId,
+            lpInstrumentId,
             feeBps: input.feeBps,
             status: "PS_Unfunded",
             reserves: { baseAmount: zero, quoteAmount: zero },
@@ -165,5 +168,32 @@ export class AdminService {
         },
       }),
     );
+
+    // Create the matching LPTokenPolicy (lpRegistrar-signed) so the pool's
+    // mint/burn flow has a policy to reference. Pool_Initialize /
+    // _AddLiquidity / _RemoveLiquidity require its cid; PoolService looks
+    // it up by lpInstrumentId.
+    await retryOnContention(() =>
+      this.ledger.submit({
+        actAs: [input.lpRegistrar],
+        commandId: `lp-policy-create:${input.lpInstrumentId}`,
+        command: {
+          kind: "create",
+          templateId: "CantonDex.Dex.LPToken:LPTokenPolicy",
+          argument: {
+            lpRegistrar: input.lpRegistrar,
+            operator: this.operatorParty,
+            lpInstrumentId,
+            baseInstrumentId: input.baseInstrumentId,
+            quoteInstrumentId: input.quoteInstrumentId,
+            poolCid,
+            totalSupply: zero,
+            active: true,
+          },
+        },
+      }),
+    );
+
+    return poolCid;
   }
 }

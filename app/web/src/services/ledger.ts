@@ -266,7 +266,7 @@ export const ledger = {
     });
 
     // Trader-side LP burn handoff: the wallet exercises
-    // LPTokenPolicy_AcceptBurn against the request the operator just
+    // LPBurnRequest_AcceptAndBurn against the request the operator just
     // created, archiving the trader's locked LP holding. If the caller
     // didn't supply a holding cid the dApp can't drive this leg; fall
     // back to surfacing the burn-request cid so the trader can complete

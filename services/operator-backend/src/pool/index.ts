@@ -1,12 +1,12 @@
 // Pool flow.
 
-import type { ContractId } from "@canton-dex/registry-client";
+import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import { toFloat } from "../policy/index.js";
-import type { Decimal, Party, Pool, Time, V2Account } from "../types.js";
+import type { Decimal, LPTokenPolicy, Party, Pool, Time, V2Account } from "../types.js";
 
 export interface PoolInitializeInput {
   poolCid: ContractId<"Pool">;
@@ -51,6 +51,23 @@ export class PoolService {
     private readonly operatorParty: Party,
   ) {}
 
+  /**
+   * Fetch the registry choice context for an admin and shape it into the
+   * `ExtraArgs` the Pool choices forward to the factory choices, plus the
+   * disclosed contracts to attach to the submission. Empty for our own
+   * registry; populated by a context-requiring registry.
+   */
+  private async choiceContext(admin: Party): Promise<{
+    extraArgs: { context: { values: Record<string, unknown> }; meta: { values: Record<string, unknown> } };
+    disclosure: DisclosedContract[];
+  }> {
+    const ctx = await this.registry.getChoiceContext(admin);
+    return {
+      extraArgs: { context: ctx.context, meta: { values: {} } },
+      disclosure: ctx.disclosure,
+    };
+  }
+
   async listActive(): Promise<Pool[]> {
     const pools = await this.ledger.query<Pool>({
       templateId: "CantonDex.Dex.Pool:Pool",
@@ -73,11 +90,13 @@ export class PoolService {
   }> {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
+    const ctx = await this.choiceContext(pool.admin);
+    const lpPolicyCid = await this.fetchLpPolicy(pool);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         commandId: `pool-init:${input.poolCid}`,
-        disclosure: factories.disclosure,
+        disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.Pool:Pool",
@@ -92,6 +111,8 @@ export class PoolService {
             baseAmount: input.baseAmount,
             quoteAmount: input.quoteAmount,
             requestedAt: input.requestedAt,
+            lpPolicyCid,
+            extraArgs: ctx.extraArgs,
           },
         },
       }),
@@ -101,11 +122,13 @@ export class PoolService {
   async addLiquidity(input: PoolAddLiquidityInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
+    const ctx = await this.choiceContext(pool.admin);
+    const lpPolicyCid = await this.fetchLpPolicy(pool);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         commandId: `pool-add:${input.poolCid}:${input.requestedAt}`,
-        disclosure: factories.disclosure,
+        disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.Pool:Pool",
@@ -122,6 +145,8 @@ export class PoolService {
             minLpTokens: input.minLpTokens,
             knownTotalLpSupply: input.knownTotalLpSupply,
             requestedAt: input.requestedAt,
+            lpPolicyCid,
+            extraArgs: ctx.extraArgs,
           },
         },
       }),
@@ -151,11 +176,12 @@ export class PoolService {
   async swap(input: PoolSwapInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
+    const ctx = await this.choiceContext(pool.admin);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         commandId: `pool-swap:${input.poolCid}:${Date.now()}`,
-        disclosure: factories.disclosure,
+        disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.Pool:Pool",
@@ -168,6 +194,7 @@ export class PoolService {
             minOutputAmount: input.minOutputAmount,
             swapperAllocationCid: input.swapperAllocationCid,
             factoryCid: factories.settlementFactoryCid,
+            extraArgs: ctx.extraArgs,
           },
         },
       }),
@@ -187,11 +214,13 @@ export class PoolService {
   async removeLiquidity(input: PoolRemoveLiquidityInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
     const factories = await this.registry.getFactories(pool.admin);
+    const ctx = await this.choiceContext(pool.admin);
+    const lpPolicyCid = await this.fetchLpPolicy(pool);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         commandId: `pool-remove:${input.poolCid}:${input.requestedAt}`,
-        disclosure: factories.disclosure,
+        disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.Pool:Pool",
@@ -208,6 +237,8 @@ export class PoolService {
             boundaryBaseHoldingCids: input.boundaryBaseHoldingCids,
             boundaryQuoteHoldingCids: input.boundaryQuoteHoldingCids,
             requestedAt: input.requestedAt,
+            lpPolicyCid,
+            extraArgs: ctx.extraArgs,
           },
         },
       }),
@@ -219,5 +250,30 @@ export class PoolService {
     const found = pools.find((p) => p.contractId === cid);
     if (!found) throw new Error(`Pool ${cid} not found`);
     return found;
+  }
+
+  /**
+   * The LPTokenPolicy backing a pool, matched on the full (admin, id)
+   * LP instrument identity. Created alongside the pool by
+   * AdminService.createPool; required by the mint/burn-bearing Pool
+   * choices.
+   */
+  private async fetchLpPolicy(pool: Pool): Promise<ContractId<"LPTokenPolicy">> {
+    const policies = await this.ledger.query<LPTokenPolicy>({
+      templateId: "CantonDex.Dex.LPToken:LPTokenPolicy",
+      observingParty: this.operatorParty,
+    });
+    const found = policies.find(
+      (p) =>
+        p.active &&
+        p.lpInstrumentId.id === pool.lpInstrumentId.id &&
+        p.lpInstrumentId.admin === pool.lpInstrumentId.admin,
+    );
+    if (!found) {
+      throw new Error(
+        `no active LPTokenPolicy for ${pool.lpInstrumentId.admin}:${pool.lpInstrumentId.id}`,
+      );
+    }
+    return found.contractId;
   }
 }

@@ -61,6 +61,17 @@ export interface DisclosedContract {
   payloadBlob: string;
 }
 
+/**
+ * Off-ledger choice context for a token-standard factory choice. The
+ * registry computes `context.values` (disclosed config, app rights, …);
+ * the caller threads it into the choice's `ExtraArgs` and adds
+ * `disclosure` to the submission.
+ */
+export interface ChoiceContextRef {
+  context: { values: Record<string, unknown> };
+  disclosure: DisclosedContract[];
+}
+
 export type RegistryErrorKind =
   | "config-not-found"
   | "credential-missing"

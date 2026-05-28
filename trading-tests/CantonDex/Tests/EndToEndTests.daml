@@ -641,9 +641,9 @@ testMatchedTradeFullSettle = do
 
 -- 8. Iterated SettleBatch enforces funding conservation -----------------
 --
--- The pre-PR-5333 surface had a dedicated `Allocation_Adjust` choice
--- that this test exercised. The branch-tip refactor folded "adjust"
--- into `SettlementFactory_SettleBatch` via FinalizedAllocation's
+-- An earlier surface had a dedicated `Allocation_Adjust` choice that
+-- this test exercised. "Adjust" is now folded into
+-- `SettlementFactory_SettleBatch` via FinalizedAllocation's
 -- `extraTransferLegSides` + `nextIterationFunding`, so the equivalent
 -- conservation test now hits the SettleBatch path.
 --

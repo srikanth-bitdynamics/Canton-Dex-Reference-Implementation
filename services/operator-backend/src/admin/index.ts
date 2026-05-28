@@ -151,7 +151,9 @@ export class AdminService {
             admin: input.admin,
             baseInstrumentId: input.baseInstrumentId,
             quoteInstrumentId: input.quoteInstrumentId,
-            lpInstrumentId: input.lpInstrumentId,
+            // LP instrument is administered by the lpRegistrar; build the
+            // structured V2 InstrumentId from the supplied textual id.
+            lpInstrumentId: { admin: input.lpRegistrar, id: input.lpInstrumentId },
             feeBps: input.feeBps,
             status: "PS_Unfunded",
             reserves: { baseAmount: zero, quoteAmount: zero },

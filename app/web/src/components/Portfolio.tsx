@@ -84,14 +84,16 @@ export function Portfolio({
         priceUsd[p.quoteInstrumentId] == null,
     );
 
-  // Synthesize LP rows from holdings whose instrumentId matches a
-  // pool's lpInstrumentId.
+  // Synthesize LP rows from holdings whose instrument matches a pool's
+  // LP instrument. Match on the full (admin, id) identity — comparing
+  // the textual id alone would conflate LP tokens from different
+  // registrars that happen to share a name.
+  const isLpOf = (p: Pool, h: Holding) =>
+    p.lpInstrumentId.id === h.instrumentId && p.lpInstrumentId.admin === h.admin;
   const lpRows = holdings
-    .filter((h) =>
-      pools.some((p) => p.lpInstrumentId === h.instrumentId),
-    )
+    .filter((h) => pools.some((p) => isLpOf(p, h)))
     .map((h) => {
-      const pool = pools.find((p) => p.lpInstrumentId === h.instrumentId)!;
+      const pool = pools.find((p) => isLpOf(p, h))!;
       const pct =
         pool.totalLpSupply > 0 ? h.amount / pool.totalLpSupply : 0;
       const baseShare = pct * pool.reserves.baseAmount;

@@ -69,6 +69,12 @@ export interface PoolSlice {
   amount: Decimal;
 }
 
+/** Token Standard V2 instrument identity: registry admin + textual id. */
+export interface InstrumentId {
+  admin: Party;
+  id: string;
+}
+
 export interface Pool {
   contractId: ContractId<"Pool">;
   operator: Party;
@@ -76,7 +82,7 @@ export interface Pool {
   admin: Party;
   baseInstrumentId: string;
   quoteInstrumentId: string;
-  lpInstrumentId: string;
+  lpInstrumentId: InstrumentId;
   feeBps: number;
   status: PoolStatus;
   reserves: PoolReserves;

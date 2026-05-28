@@ -199,22 +199,24 @@ template Holding with
 -- Implements `V2.Allocation` including `Allocation_Adjust` for iterated settlement.
 template Allocation with
     admin : Party
+    settlement : V2.SettlementInfo
     spec : V2.AllocationSpecification
     lockedHoldings : [ContractId Holding]
     createdAt : Time
     numIterations : Int
   where
     signatory admin, Utils.accountOwner spec.authorizer
-    observer spec.settlement.executors
+    observer settlement.executors
 
     interface instance V2.Allocation for Allocation where
       view = V2.AllocationView with
         originalAllocationCid = None
+        settlement
         allocation = spec
         holdingCids = map toInterfaceContractId lockedHoldings
         createdAt
         numIterations
-        expiresAt = spec.settlement.settlementDeadline
+        expiresAt = spec.settlementDeadline
         availableActions = Map.empty
         meta = emptyMetadata
 
@@ -246,7 +248,7 @@ template Allocation with
       -- the next iteration). We honor both: process settle for the
       -- spec's existing legs + arg's extras, then roll forward.
       allocation_settleImpl self arg = do
-        let expectedActors = spec.settlement.executors ++ [admin]
+        let expectedActors = settlement.executors ++ [admin]
         unless (all (\p -> p `elem` arg.actors) expectedActors) $
           abort "Allocation_Settle: missing required actor (executors + admin)"
         let authorizerOwner = Utils.accountOwner spec.authorizer
@@ -630,6 +632,7 @@ template Registry with
         now <- getTime
         allocationCid <- create Allocation with
           admin
+          settlement = arg.settlement
           spec
           lockedHoldings = lockedCids
           createdAt = now

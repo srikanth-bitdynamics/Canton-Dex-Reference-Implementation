@@ -52,13 +52,22 @@ data Order_CancelResult = Order_CancelResult with
     releasedHoldings : TextMap.TextMap [ContractId V2.Holding]
   deriving (Eq, Show)
 
-makeOrderRef : ContractId Order -> V2.Reference
-makeOrderRef orderCid = V2.Reference with
+-- The V2 pre-freeze API retired the `Reference` type and inlined its
+-- `id` / `cid` onto `SettlementInfo`. We keep a small local record so
+-- that templates can still carry a settlement reference as a field and
+-- expand it into `SettlementInfo` at the construction boundary.
+data SettlementRef = SettlementRef with
+    id : Text
+    cid : Optional AnyContractId
+  deriving (Eq, Show)
+
+makeOrderRef : ContractId Order -> SettlementRef
+makeOrderRef orderCid = SettlementRef with
   id = "DexOrder"
   cid = Some (coerceContractId orderCid)
 
-makeOrderRefFromText : Text -> V2.Reference
-makeOrderRefFromText refId = V2.Reference with
+makeOrderRefFromText : Text -> SettlementRef
+makeOrderRefFromText refId = SettlementRef with
   id = "DexOrder-" <> refId
   cid = None
 
@@ -74,7 +83,7 @@ template Order with
     expiry : Optional Time
     status : OrderStatus
     allocationCid : Optional (ContractId V2.Allocation)
-    settlementRef : V2.Reference
+    settlementRef : SettlementRef
   where
     signatory operator
     observer trader
@@ -202,7 +211,7 @@ template OrderAllocationRequest with
     operator : Party
     trader : Party
     admin : Party
-    orderRef : V2.Reference
+    orderRef : SettlementRef
     lockInstrumentId : Text
     lockAmount : Decimal
     expiry : Optional Time
@@ -214,20 +223,21 @@ template OrderAllocationRequest with
     interface instance V2.AllocationRequest for OrderAllocationRequest where
       view = V2.AllocationRequestView with
         originalRequestCid = None
-        authorizer = Utils.basicAccount trader
         settlement = V2.SettlementInfo with
           executors = [operator]
-          settlementRef = orderRef
-          settlementDeadline = expiry
+          id = orderRef.id
+          cid = orderRef.cid
           meta = emptyMetadata
         allocations =
           -- Prefunded order: no transfer legs at request time; the
           -- trader locks `lockAmount` of `lockInstrumentId` as
           -- next-iteration funding. Concrete legs travel with the
           -- match flow into SettleBatch.extraTransferLegSides.
-          [ V2.RequestedAllocation with
+          [ V2.AllocationSpecification with
               admin
+              authorizer = Utils.basicAccount trader
               transferLegSides = []
+              settlementDeadline = expiry
               nextIterationFunding = Some (TextMap.fromList [(lockInstrumentId, lockAmount)])
               committed = True
               meta = emptyMetadata

@@ -22,14 +22,16 @@ emptyExtraArgs = ExtraArgs with
   meta = emptyMetadata
 
 mkAllocationFactoryAllocate
-  : V2.AllocationSpecification
+  : V2.SettlementInfo
+  -> V2.AllocationSpecification
   -> Time
   -> [ContractId HoldingV2.Holding]
   -> [Party]
   -> ExtraArgs
   -> AllocationInstructionV2.AllocationFactory_Allocate
-mkAllocationFactoryAllocate allocation requestedAt inputHoldingCids actors extraArgs =
+mkAllocationFactoryAllocate settlement allocation requestedAt inputHoldingCids actors extraArgs =
   AllocationInstructionV2.AllocationFactory_Allocate with
+    settlement
     allocation
     requestedAt
     inputHoldingCids
@@ -40,14 +42,16 @@ mkPrefundedAllocationFactoryAllocate
   : Party
   -> HoldingV2.Account
   -> V2.SettlementInfo
+  -> Optional Time
   -> Utils.Funding
   -> Time
   -> [ContractId HoldingV2.Holding]
   -> [Party]
   -> AllocationInstructionV2.AllocationFactory_Allocate
-mkPrefundedAllocationFactoryAllocate admin authorizer settlement nextIterationFunding requestedAt inputHoldingCids actors =
+mkPrefundedAllocationFactoryAllocate admin authorizer settlement settlementDeadline nextIterationFunding requestedAt inputHoldingCids actors =
   mkAllocationFactoryAllocate
-    (Utils.mkPrefundedAllocationSpecification admin authorizer settlement nextIterationFunding)
+    settlement
+    (Utils.mkPrefundedAllocationSpecification admin authorizer settlementDeadline nextIterationFunding)
     requestedAt
     inputHoldingCids
     actors
@@ -61,15 +65,17 @@ mkCommittedPoolAllocationFactoryAllocate
   : Party
   -> HoldingV2.Account
   -> V2.SettlementInfo
+  -> Optional Time
   -> Utils.Funding
   -> Time
   -> [ContractId HoldingV2.Holding]
   -> [Party]
   -> ExtraArgs
   -> AllocationInstructionV2.AllocationFactory_Allocate
-mkCommittedPoolAllocationFactoryAllocate admin authorizer settlement nextIterationFunding requestedAt inputHoldingCids actors extraArgs =
+mkCommittedPoolAllocationFactoryAllocate admin authorizer settlement settlementDeadline nextIterationFunding requestedAt inputHoldingCids actors extraArgs =
   mkAllocationFactoryAllocate
-    (Utils.mkCommittedPoolAllocationSpecification admin authorizer settlement nextIterationFunding)
+    settlement
+    (Utils.mkCommittedPoolAllocationSpecification admin authorizer settlementDeadline nextIterationFunding)
     requestedAt
     inputHoldingCids
     actors

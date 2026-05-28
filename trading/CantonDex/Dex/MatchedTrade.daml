@@ -32,6 +32,7 @@ template TradeAllocationRequest with
     authorizer : V2.Account
     admin : Party
     settlement : V2.SettlementInfo
+    settlementDeadline : Optional Time
     transferLegs : [V2.TransferLeg]
     requestedAt : Time
   where
@@ -41,18 +42,19 @@ template TradeAllocationRequest with
     interface instance V2.AllocationRequest for TradeAllocationRequest where
       view = V2.AllocationRequestView with
         originalRequestCid = None
-        authorizer
         settlement
         allocations =
-          [ V2.RequestedAllocation with
+          [ V2.AllocationSpecification with
               admin
+              authorizer
               transferLegSides = Utils.legsToSides authorizer transferLegs
+              settlementDeadline
               nextIterationFunding = None
               committed = False
               meta = emptyMetadata
           ]
         requestedAt
-        settleAt = settlement.settlementDeadline
+        settleAt = settlementDeadline
         availableActions = Map.fromList
           [ (V2.ARA_Accept, [[p] | p <- Utils.accountParties authorizer])
           , (V2.ARA_Reject, [[p] | p <- Utils.accountParties authorizer])
@@ -97,16 +99,11 @@ data MatchedTrade_CancelResult = MatchedTrade_CancelResult with
     cancelResults : [(V2.Account, V2.AllocationResult)]
   deriving (Eq, Show)
 
-makeTradeRef : ContractId MatchedTrade -> V2.Reference
-makeTradeRef tradeCid = V2.Reference with
-  id = "MatchedTrade"
-  cid = Some (coerceContractId tradeCid)
-
 mkTradeSettlementInfo : ContractId MatchedTrade -> MatchedTrade -> V2.SettlementInfo
 mkTradeSettlementInfo tradeCid trade = V2.SettlementInfo with
   executors = [trade.venue]
-  settlementRef = makeTradeRef tradeCid
-  settlementDeadline = trade.settlementDeadline
+  id = "MatchedTrade"
+  cid = Some (coerceContractId tradeCid)
   meta = PR.foldPolicyReceiptIntoMetadata trade.policyReceipt emptyMetadata
 
 -- | Collect every account party that appears as sender or receiver across
@@ -160,6 +157,7 @@ template MatchedTrade with
             authorizer
             admin
             settlement
+            settlementDeadline = this.settlementDeadline
             transferLegs = legs
             requestedAt = now
 

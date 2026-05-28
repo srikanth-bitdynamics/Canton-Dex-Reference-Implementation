@@ -83,16 +83,11 @@ data PoolSlice = PoolSlice with
 sumSlices : [PoolSlice] -> Decimal
 sumSlices = foldl (\acc s -> acc + s.amount) 0.0
 
-makePoolRef : ContractId Pool -> V2.Reference
-makePoolRef poolCid = V2.Reference with
-  id = "DexPool"
-  cid = Some (coerceContractId poolCid)
-
 poolSettlementInfo : ContractId Pool -> Pool -> V2.SettlementInfo
 poolSettlementInfo poolCid pool = V2.SettlementInfo with
   executors = [pool.operator]
-  settlementRef = makePoolRef poolCid
-  settlementDeadline = None
+  id = "DexPool"
+  cid = Some (coerceContractId poolCid)
   meta = emptyMetadata
 
 data Pool_InitializeResult = Pool_InitializeResult with
@@ -254,9 +249,9 @@ template Pool with
             baseFunding = TextMap.fromList [(baseInstrumentId, baseAmount)]
             quoteFunding = TextMap.fromList [(quoteInstrumentId, quoteAmount)]
             baseAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
-              admin poolAccount settlement baseFunding requestedAt baseHoldingCids [operator] extraArgs
+              admin poolAccount settlement None baseFunding requestedAt baseHoldingCids [operator] extraArgs
             quoteAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
-              admin poolAccount settlement quoteFunding requestedAt quoteHoldingCids [operator] extraArgs
+              admin poolAccount settlement None quoteFunding requestedAt quoteHoldingCids [operator] extraArgs
 
         baseResult <- exercise baseFactoryCid baseAllocArg
         baseAllocCid <- extractCompleted baseResult
@@ -324,9 +319,9 @@ template Pool with
             baseFunding = TextMap.fromList [(baseInstrumentId, baseAmount)]
             quoteFunding = TextMap.fromList [(quoteInstrumentId, quoteAmount)]
             baseAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
-              admin poolAccount settlement baseFunding requestedAt baseHoldingCids [operator] extraArgs
+              admin poolAccount settlement None baseFunding requestedAt baseHoldingCids [operator] extraArgs
             quoteAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
-              admin poolAccount settlement quoteFunding requestedAt quoteHoldingCids [operator] extraArgs
+              admin poolAccount settlement None quoteFunding requestedAt quoteHoldingCids [operator] extraArgs
 
         baseResult <- exercise baseFactoryCid baseAllocArg
         newBaseAllocCid <- extractCompleted baseResult
@@ -432,7 +427,7 @@ template Pool with
         boundaryBaseSlice <- if leftoverBase > 0.0
           then do
             let arg = WC.mkCommittedPoolAllocationFactoryAllocate
-                        admin poolAccount settlement
+                        admin poolAccount settlement None
                         (TextMap.fromList [(baseInstrumentId, leftoverBase)])
                         requestedAt boundaryBaseHoldingCids [operator] extraArgs
             result <- exercise baseFactoryCid arg
@@ -442,7 +437,7 @@ template Pool with
         boundaryQuoteSlice <- if leftoverQuote > 0.0
           then do
             let arg = WC.mkCommittedPoolAllocationFactoryAllocate
-                        admin poolAccount settlement
+                        admin poolAccount settlement None
                         (TextMap.fromList [(quoteInstrumentId, leftoverQuote)])
                         requestedAt boundaryQuoteHoldingCids [operator] extraArgs
             result <- exercise quoteFactoryCid arg

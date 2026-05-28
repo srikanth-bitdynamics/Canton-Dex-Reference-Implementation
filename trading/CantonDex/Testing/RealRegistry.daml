@@ -102,22 +102,24 @@ ownerOutflowFor owner legs instrumentId =
 template RealAllocation with
     admin : Party
     authorizerOwner : Party
+    settlement : V2.SettlementInfo
     spec : V2.AllocationSpecification
     lockedHoldings : [ContractId RealHolding]
     createdAt : Time
     numIterations : Int
   where
     signatory admin, authorizerOwner
-    observer spec.settlement.executors
+    observer settlement.executors
 
     interface instance V2.Allocation for RealAllocation where
       view = V2.AllocationView with
         originalAllocationCid = None
+        settlement
         allocation = spec
         holdingCids = map toInterfaceContractId lockedHoldings
         createdAt
         numIterations
-        expiresAt = spec.settlement.settlementDeadline
+        expiresAt = spec.settlementDeadline
         availableActions = Map.empty
         meta = emptyMetadata
 
@@ -236,6 +238,7 @@ template RealRegistry with
         allocationCid <- create RealAllocation with
           admin
           authorizerOwner
+          settlement = arg.settlement
           spec
           lockedHoldings = lockedCids
           createdAt = now

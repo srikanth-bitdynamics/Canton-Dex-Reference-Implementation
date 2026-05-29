@@ -172,7 +172,7 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
       lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = knownSupply
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
 
 -- First-funding add with an EXPLICIT receipt LP amount (overriding the
 -- fair-share quote) — used to exercise the symmetric dust bound.
@@ -210,7 +210,7 @@ dvpAddWithLp fx stateCid policyCid lp baseAmount quoteAmount lpAmount now = do
       lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = 0.0
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
 
 testDvpAddLiquidity : Script ()
 testDvpAddLiquidity = do
@@ -288,7 +288,7 @@ testDvpRemoveDeliversToHolder = do
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
 
   -- Pool drained; alice holds the returned base+quote, LP tokens gone.
   Some state <- queryContractId fx.operator remRes.poolStateCid
@@ -346,7 +346,7 @@ testStaleQuoteRejected = do
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount = 1.0; quoteAmount = 20000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0   -- STALE: pool is funded now
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
 -- The settle choices are co-controlled (operator, lpRegistrar): the
@@ -372,7 +372,7 @@ testSettleRequiresCoControl = do
       holderBurnSenderCid = coerceContractId addRes.baseSliceCid
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
 -- Multi-slice remove: two adds create two slices per side; a full
@@ -432,7 +432,7 @@ testDvpMultiSliceRemove = do
       holderBurnSenderCid = burnSender
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
 
   -- Both slices per side consumed; pool drained; alice got it all back.
   remRes.baseReturned === 15.0
@@ -511,7 +511,7 @@ testExpiredAddRejected = do
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
 -- Symmetric to the add case, on the remove side: a past deadline on a
@@ -558,7 +558,7 @@ testExpiredRemoveRejected = do
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
 -- 3b.0 (request-bound settle): a supplied allocation whose spec is NOT one
@@ -601,7 +601,7 @@ testSettleRejectsForeignAllocation = do
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
 -- 3b.0 (request-bound settle): the request's `settleAt` is the single
@@ -643,7 +643,7 @@ testSettleRejectsExpiredRequest = do
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
 -- 3b.0/option-1 guard: the minted amount is read from the LP receipt, but
@@ -686,7 +686,7 @@ testAddRejectsOverMint = do
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
 -- 3b review #1: the over-mint bound is symmetric with the dust tolerance.
@@ -753,5 +753,5 @@ testAcceptConsumesRequestThenSettleFails = do
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0
-      requestedAt = now; extraArgs = emptyExtraArgs
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()

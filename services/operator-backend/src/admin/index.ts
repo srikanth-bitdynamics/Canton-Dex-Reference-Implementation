@@ -172,7 +172,7 @@ export class AdminService {
     );
 
     await this.ensurePoolRules();
-    await this.ensureLpDvpRules(input.lpRegistrar);
+    await this.ensurePoolLiquidityRules(input.lpRegistrar);
 
     // Create the matching LPTokenPolicy.
     await retryOnContention(() =>
@@ -217,17 +217,17 @@ export class AdminService {
   }
 
   /**
-   * Create the per-venue co-controlled LpDvpRules (operator + lpRegistrar)
+   * Create the per-venue co-controlled PoolLiquidityRules (operator + lpRegistrar)
    * if this (operator, lpRegistrar) venue doesn't have one yet. Hosts the
    * DvP liquidity request/settle choices; created once, reused.
    */
-  private async ensureLpDvpRules(lpRegistrar: Party): Promise<void> {
+  private async ensurePoolLiquidityRules(lpRegistrar: Party): Promise<void> {
     const existing = await this.ledger.query<{
-      contractId: ContractId<"LpDvpRules">;
+      contractId: ContractId<"PoolLiquidityRules">;
       operator: Party;
       lpRegistrar: Party;
     }>({
-      templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+      templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
       observingParty: this.operatorParty,
     });
     if (existing.some((r) => r.operator === this.operatorParty && r.lpRegistrar === lpRegistrar)) {
@@ -235,12 +235,12 @@ export class AdminService {
     }
     await retryOnContention(() =>
       this.ledger.submit({
-        // Co-signed: LpDvpRules is signatory operator, lpRegistrar.
+        // Co-signed: PoolLiquidityRules is signatory operator, lpRegistrar.
         actAs: [this.operatorParty, lpRegistrar],
         commandId: `lp-dvp-rules-create:${this.operatorParty}:${lpRegistrar}`,
         command: {
           kind: "create",
-          templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+          templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
           argument: { operator: this.operatorParty, lpRegistrar },
         },
       }),

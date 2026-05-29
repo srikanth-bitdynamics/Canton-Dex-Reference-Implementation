@@ -1,4 +1,4 @@
-module CantonDex.Dex.LpDvpRules where
+module CantonDex.Dex.PoolLiquidityRules where
 
 -- Liquidity add/remove at the pool boundary.
 --
@@ -24,7 +24,7 @@ import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
 import CantonDex.Lp.Instrument qualified as Lp
 import CantonDex.Trading.Utils qualified as Utils
 
-data LpDvpRules_SettleAddResult = LpDvpRules_SettleAddResult with
+data PoolLiquidityRules_SettleAddResult = PoolLiquidityRules_SettleAddResult with
     poolStateCid : ContractId PS.PoolState
     baseSliceCid : ContractId PSlice.PoolSlice
     quoteSliceCid : ContractId PSlice.PoolSlice
@@ -32,7 +32,7 @@ data LpDvpRules_SettleAddResult = LpDvpRules_SettleAddResult with
     lpTokensMinted : Decimal
   deriving (Eq, Show)
 
-data LpDvpRules_SettleRemoveResult = LpDvpRules_SettleRemoveResult with
+data PoolLiquidityRules_SettleRemoveResult = PoolLiquidityRules_SettleRemoveResult with
     poolStateCid : ContractId PS.PoolState
     boundaryBaseSliceCid : Optional (ContractId PSlice.PoolSlice)
     boundaryQuoteSliceCid : Optional (ContractId PSlice.PoolSlice)
@@ -193,7 +193,7 @@ buildSideDelivery prefix opAcct holderAcct instrumentId draw =
        drainedSliceCids = [ cid | (cid, _, _) <- fullyTriples ]
        boundary = fmap (\(cid, _, leftover, _) -> (cid, leftover)) bTriple
 
-template LpDvpRules with
+template PoolLiquidityRules with
     operator : Party
     lpRegistrar : Party
   where
@@ -201,7 +201,7 @@ template LpDvpRules with
 
     -- Create the directional request the LP/holder accepts to author the
     -- boundary allocations; the substance is in the Settle choices.
-    nonconsuming choice LpDvpRules_RequestAddLiquidity : ContractId LAR.LiquidityAllocationRequest
+    nonconsuming choice PoolLiquidityRules_RequestAddLiquidity : ContractId LAR.LiquidityAllocationRequest
       with
         poolCid : ContractId Pool
         recipient : Party
@@ -219,7 +219,7 @@ template LpDvpRules with
         create LAR.LiquidityAllocationRequest with
           operator; lp = recipient; settlement; allocations; requestedAt; settleAt
 
-    nonconsuming choice LpDvpRules_RequestRemoveLiquidity : ContractId LAR.LiquidityAllocationRequest
+    nonconsuming choice PoolLiquidityRules_RequestRemoveLiquidity : ContractId LAR.LiquidityAllocationRequest
       with
         poolCid : ContractId Pool
         holder : Party
@@ -240,7 +240,7 @@ template LpDvpRules with
     -- DvP add: the LP's committed deposits + LP-mint receipt settle
     -- atomically; the operator's receiver allocations roll forward into the
     -- two new slices; the registrar mints LP tokens to the LP.
-    nonconsuming choice LpDvpRules_SettleAddLiquidity : LpDvpRules_SettleAddResult
+    nonconsuming choice PoolLiquidityRules_SettleAddLiquidity : PoolLiquidityRules_SettleAddResult
       with
         expectedPoolId : PoolId
         poolCid : ContractId Pool
@@ -370,7 +370,7 @@ template LpDvpRules with
             quoteAmount = state.reserves.quoteAmount + quoteAmount
           totalLpSupply = state.totalLpSupply + lpAmount
 
-        pure LpDvpRules_SettleAddResult with
+        pure PoolLiquidityRules_SettleAddResult with
           poolStateCid = newStateCid
           baseSliceCid; quoteSliceCid
           lpPolicyCid = newPolicyCid
@@ -379,7 +379,7 @@ template LpDvpRules with
     -- DvP remove: pro-rata over aggregate reserves; sourced operator slices
     -- deliver base+quote to the holder (symmetric to swap) and the holder's
     -- LP tokens burn to burnAccount.
-    nonconsuming choice LpDvpRules_SettleRemoveLiquidity : LpDvpRules_SettleRemoveResult
+    nonconsuming choice PoolLiquidityRules_SettleRemoveLiquidity : PoolLiquidityRules_SettleRemoveResult
       with
         expectedPoolId : PoolId
         poolCid : ContractId Pool
@@ -511,7 +511,7 @@ template LpDvpRules with
           reserves = PoolReserves with baseAmount = newBase; quoteAmount = newQuote
           totalLpSupply = state.totalLpSupply - lpTokensToRedeem
 
-        pure LpDvpRules_SettleRemoveResult with
+        pure PoolLiquidityRules_SettleRemoveResult with
           poolStateCid = newStateCid
           boundaryBaseSliceCid; boundaryQuoteSliceCid
           lpPolicyCid = newPolicyCid

@@ -149,7 +149,13 @@ export interface RemoveLiquidityIntent {
   allocations: V2AllocationSpecification[];
   depositFactoryCid: ContractId<"AllocationFactory">;
   lpFactoryCid: ContractId<"AllocationFactory">;
-  lpHoldingCid: ContractId<"Holding">;
+  /**
+   * ALL the holder's unlocked LP holdings to lock for the burn — an LP
+   * position can be fragmented across several holdings after multiple
+   * adds, so the burn-sender allocation must be able to draw from all of
+   * them, not just the first.
+   */
+  lpHoldingCids: ContractId<"Holding">[];
 }
 
 /**

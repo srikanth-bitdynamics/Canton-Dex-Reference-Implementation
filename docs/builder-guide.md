@@ -30,8 +30,8 @@ in forks.
 DexPair                  pair listing, fee model, optional public observers
 Pool                     constant-product pool, slice-local reserves
 LPTokenPolicy            LP instrument supply ledger, accept-mint/burn gates
-LPMintRequest            operator-issued; recipient + lpRegistrar jointly accept
-LPBurnRequest            operator-issued; holder + lpRegistrar jointly accept
+LPMintRequest            operator-issued; recipient + lpRegistrar jointly accept (first-pool funding)
+LiquidityAllocationRequest  operator-issued; carries the add/remove-liquidity DvP allocation request
 Order                    resting limit order backed by V2.Allocation
 OrderAllocationRequest   trader-observed allocation request (V2 interface)
 OrderMatchExecution      operator-driven match of two opposing allocations
@@ -94,8 +94,9 @@ template.
 ## Wallet integration
 
 The dApp does not sign as the trader. Trader-authority writes (place
-order, add liquidity, swap allocation creation, RFQ accept, LP-mint
-accept) go through the connected wallet via CIP-0103
+order, add/remove-liquidity allocations via `AllocationFactory_Allocate`,
+swap allocation creation, RFQ accept, LP-mint accept) go through the
+connected wallet via CIP-0103
 `canton_prepareExecute`. The operator-backend produces unsigned
 command trees; the wallet signs and submits.
 

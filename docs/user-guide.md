@@ -78,12 +78,16 @@ Use this to provide both sides of a pool and earn LP tokens.
 1. Open **Pools** → click a pool → enter the base amount.
 2. The quote amount auto-fills at the current pool ratio. The card
    shows your expected LP tokens and post-add pool share %.
-3. Click **Add liquidity** → wallet signs two
-   `AllocationFactory_Allocate` calls (one per side) and an
-   `AddLiquidityRequest`.
-4. Toast banner shows: DepositRequest → allocations → reserves refresh
-   → LP tokens minted.
-5. Your LP balance appears under "Your LP position" once settled.
+3. Click **Add liquidity**. The operator opens the request
+   (`POST /v1/pools/add-liquidity/request`), creating a
+   `LiquidityAllocationRequest`.
+4. Your wallet authors the base-deposit, quote-deposit, and LP-receipt
+   allocations via `AllocationFactory_Allocate`.
+5. The operator and lpRegistrar settle
+   (`POST /v1/pools/add-liquidity/settle`,
+   `LpDvpRules_SettleAddLiquidity`): your funds enter the pool and LP
+   tokens are minted to you, atomically.
+6. Your LP balance appears under "Your LP position" once settled.
 
 LP tokens are **unversioned**: any holder of `BTC-USDC-LP` holds the
 same instrument regardless of when they minted. See
@@ -93,20 +97,24 @@ same instrument regardless of when they minted. See
 
 ## Remove liquidity (Pools page)
 
-A two-step flow because the LP holding lives in the registry, not the
-DEX:
+A DvP flow because the LP holding lives in the registry, not the DEX:
 
-1. Operator step (driven by the UI): `Pool_RemoveLiquidity` returns the
-   pool's portion of base + quote, creates an `LPBurnRequest`.
-2. Wallet step: your wallet signs `LPTokenPolicy_AcceptBurn` against
-   your locked LP holding.
+1. Operator step (driven by the UI): `POST /v1/pools/remove-liquidity/request`
+   creates a `LiquidityAllocationRequest`.
+2. Wallet step: your wallet authors the base-receipt, quote-receipt,
+   and LP burn-sender allocations via `AllocationFactory_Allocate`.
+3. Settle step: `POST /v1/pools/remove-liquidity/settle`
+   (`LpDvpRules_SettleRemoveLiquidity`, co-signed by the operator and
+   lpRegistrar) delivers base + quote to you and burns the LP tokens to
+   the burn account, atomically.
 
 **UI walkthrough**:
 
 1. Pool detail → scroll to **Your LP position**.
 2. Use the 25 / 50 / 75 / 100 % buttons or the slider to pick how much
    to redeem. The card shows what you'll receive.
-3. Click **Remove liquidity** → toast walks the two steps.
+3. Click **Remove liquidity** → toast walks the request, allocation,
+   and settle steps.
 
 ---
 
@@ -192,8 +200,8 @@ above goes through your wallet provider:
 | UI action | Wallet intent | On-ledger result |
 |---|---|---|
 | Swap | `request-swap` | `Allocation` (prefunded) + `SwapRequest` |
-| Add liquidity | `add-liquidity` | Two `Allocation`s + `AddLiquidityRequest` |
-| Remove liquidity (step 2) | `accept-lp-burn` | `LPTokenPolicy_AcceptBurn` |
+| Add liquidity | `add-liquidity` | Base-deposit + quote-deposit + LP-receipt `Allocation`s (settled by `LpDvpRules_SettleAddLiquidity`) |
+| Remove liquidity | `remove-liquidity` | Base-receipt + quote-receipt + LP burn-sender `Allocation`s (settled by `LpDvpRules_SettleRemoveLiquidity`) |
 | Place order | `place-order` | `OrderFundingRequest` |
 | Accept RFQ | `accept-rfq` | Joint `Rfq_Accept` exercise |
 | Post RFQ quote (dealer) | `post-rfq-quote` | `RfqQuote` create |

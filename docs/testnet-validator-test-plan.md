@@ -134,15 +134,26 @@ Requires `OPERATOR_ADMIN_TOKEN`.
 - [ ] Submit swap intent through wallet → on-ledger Pool_Swap exercised
 - [ ] Pool reserves update; swap appears in `GET /v1/swaps`
 
-### 5.4 Add liquidity
-- [ ] Submit AddLiquidityIntent with BTC + USDC holdings
+### 5.4 Add liquidity (two-call DvP)
+- [ ] `POST /v1/pools/add-liquidity/request` → operator creates a
+      LiquidityAllocationRequest
+- [ ] Wallet authors the base-deposit, quote-deposit, and LP-receipt
+      allocations via AllocationFactory_Allocate
+- [ ] `POST /v1/pools/add-liquidity/settle` → operator + lpRegistrar
+      settle (LpDvpRules_SettleAddLiquidity); funds enter the pool and
+      LP tokens are minted to the LP atomically
 - [ ] LP tokens minted (visible in Portfolio page LP section)
 - [ ] Pool reserves grow proportionally
 
-### 5.5 Remove liquidity
-- [ ] Operator step succeeds → LPBurnRequest created
-- [ ] Wallet AcceptLpBurnIntent exercised → LP holding burned
-- [ ] Trader receives base + quote proportional to share
+### 5.5 Remove liquidity (two-call DvP)
+- [ ] `POST /v1/pools/remove-liquidity/request` → operator creates a
+      LiquidityAllocationRequest
+- [ ] Wallet authors the holder's base-receipt + quote-receipt + LP
+      burn-sender allocations
+- [ ] `POST /v1/pools/remove-liquidity/settle` → operator + lpRegistrar
+      settle (LpDvpRules_SettleRemoveLiquidity); base + quote are
+      delivered to the holder and the LP tokens burn to the burn
+      account atomically
 
 ### 5.6 RFQ
 - [ ] Trader creates RFQ via `POST /v1/rfq`

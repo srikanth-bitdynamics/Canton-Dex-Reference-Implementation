@@ -216,7 +216,7 @@ function composeRemoveLiquidity(
     commands: [
       allocateCmd(intent.depositFactoryCid, intent.settlement, baseReceiptSpec, [], ctx.party, requestedAt),
       allocateCmd(intent.depositFactoryCid, intent.settlement, quoteReceiptSpec, [], ctx.party, requestedAt),
-      allocateCmd(intent.lpFactoryCid, intent.settlement, burnSenderSpec, [intent.lpHoldingCid], ctx.party, requestedAt),
+      allocateCmd(intent.lpFactoryCid, intent.settlement, burnSenderSpec, intent.lpHoldingCids, ctx.party, requestedAt),
     ],
   };
 }

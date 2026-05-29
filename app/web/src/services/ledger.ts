@@ -29,6 +29,8 @@ interface RequestAddResult {
   quoteAmount: string;
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
+  depositFactoryCid: string;
+  lpFactoryCid: string;
 }
 interface RequestRemoveResult {
   requestCid: string;
@@ -39,6 +41,8 @@ interface RequestRemoveResult {
   quoteOuts: string[];
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
+  depositFactoryCid: string;
+  lpFactoryCid: string;
 }
 
 function connectedParty(): string {
@@ -252,8 +256,10 @@ export const ledger = {
       requestCid: req.requestCid,
       settlement: req.settlement,
       allocations: req.allocations,
-      depositFactoryCid: params.context.allocationFactoryCid,
-      lpFactoryCid: params.context.allocationFactoryCid,
+      // Distinct factories per admin (deposits under pool.admin, LP receipt
+      // under pool.lpRegistrar) — both come from /request, not context.
+      depositFactoryCid: req.depositFactoryCid,
+      lpFactoryCid: req.lpFactoryCid,
       baseHoldingCids: params.baseHoldingCids ?? [],
       quoteHoldingCids: params.quoteHoldingCids ?? [],
     });
@@ -294,9 +300,13 @@ export const ledger = {
     lpTokens: number;
     minBaseOut: number;
     minQuoteOut: number;
-    /** LP holding the trader's wallet locks for the burn (required). */
-    holderLpHoldingCid: string;
+    /** ALL the trader's unlocked LP holdings to lock for the burn (an LP
+     *  position can be split across several holdings). Must be non-empty. */
+    holderLpHoldingCids: string[];
   }) => {
+    if (params.holderLpHoldingCids.length === 0) {
+      throw new Error('no unlocked LP holdings to burn');
+    }
     const requestedAt = new Date().toISOString();
     const req = await fetchJson<RequestRemoveResult>('/v1/pools/remove-liquidity/request', {
       method: 'POST',
@@ -312,9 +322,9 @@ export const ledger = {
       requestCid: req.requestCid,
       settlement: req.settlement,
       allocations: req.allocations,
-      depositFactoryCid: params.context.allocationFactoryCid,
-      lpFactoryCid: params.context.allocationFactoryCid,
-      lpHoldingCid: params.holderLpHoldingCid,
+      depositFactoryCid: req.depositFactoryCid,
+      lpFactoryCid: req.lpFactoryCid,
+      lpHoldingCids: params.holderLpHoldingCids,
     });
     const cids = walletRes.createdAllocationCids;
     if (!cids || cids.length !== 3) {

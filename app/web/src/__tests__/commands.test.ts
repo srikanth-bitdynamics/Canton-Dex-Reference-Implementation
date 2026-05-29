@@ -217,7 +217,7 @@ describe('composeCommands', () => {
       allocations: [baseRcpt, quoteRcpt, burnSpec],
       depositFactoryCid: 'depF',
       lpFactoryCid: 'lpF',
-      lpHoldingCid: 'lp1',
+      lpHoldingCids: ['lp1', 'lp2'],
     };
     const out = composeCommands(intent, ctx);
     expect(out.commands).toHaveLength(3);
@@ -226,9 +226,10 @@ describe('composeCommands', () => {
     expect(cmds[0].choiceArgument.inputHoldingCids).toEqual([]);
     expect(cmds[1].contractId).toBe('depF');
     expect(cmds[1].choiceArgument.inputHoldingCids).toEqual([]);
-    // burn-sender locks the LP holding under the LP factory
+    // burn-sender locks ALL the LP holdings under the LP factory (fragmented
+    // LP positions must be redeemable).
     expect(cmds[2].contractId).toBe('lpF');
-    expect(cmds[2].choiceArgument.inputHoldingCids).toEqual(['lp1']);
+    expect(cmds[2].choiceArgument.inputHoldingCids).toEqual(['lp1', 'lp2']);
     expect(cmds[2].choiceArgument.allocation).toEqual(burnSpec);
   });
 

@@ -41,11 +41,6 @@ export interface PoolInitializeInput {
   requestedAt: Time;
 }
 
-export interface PoolAddLiquidityInput extends PoolInitializeInput {
-  knownTotalLpSupply: Decimal;
-  minLpTokens: Decimal;
-}
-
 export interface PoolSwapInput {
   poolCid: ContractId<"Pool">;
   swapperAccount: V2Account;
@@ -53,18 +48,6 @@ export interface PoolSwapInput {
   inputAmount: Decimal;
   minOutputAmount: Decimal;
   swapperAllocationCid: ContractId<"Allocation">;
-}
-
-export interface PoolRemoveLiquidityInput {
-  poolCid: ContractId<"Pool">;
-  holder: Party;
-  lpTokensToRedeem: Decimal;
-  knownTotalLpSupply: Decimal;
-  minBaseOut: Decimal;
-  minQuoteOut: Decimal;
-  boundaryBaseHoldingCids: ContractId<"Holding">[];
-  boundaryQuoteHoldingCids: ContractId<"Holding">[];
-  requestedAt: Time;
 }
 
 // === DvP liquidity (DEX-53) — two-call: request then settle ===========
@@ -95,6 +78,11 @@ export interface PoolRequestAddLiquidityResult {
   // _Allocate from these and posts the resulting cids back to /settle.
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
+  // Distinct factories the wallet must use: deposits + receipts under
+  // pool.admin, the LP mint/burn under pool.lpRegistrar. Equal only in the
+  // self-registry case; split-admin venues need both (3c review P2).
+  depositFactoryCid: ContractId<"AllocationFactory">;
+  lpFactoryCid: ContractId<"AllocationFactory">;
 }
 
 export interface PoolSettleAddLiquidityInput {
@@ -137,6 +125,8 @@ export interface PoolRequestRemoveLiquidityResult {
   // LP burn-sender] + the settlement, for the wallet (see add result).
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
+  depositFactoryCid: ContractId<"AllocationFactory">;
+  lpFactoryCid: ContractId<"AllocationFactory">;
 }
 
 export interface PoolSettleRemoveLiquidityInput {
@@ -344,43 +334,6 @@ export class PoolService {
     return { poolCid: input.poolCid, lpTokensMinted: "0.0" };
   }
 
-  async addLiquidity(input: PoolAddLiquidityInput): Promise<unknown> {
-    const pool = await this.fetchPool(input.poolCid);
-    const factories = await this.registry.getFactories(pool.admin);
-    const ctx = await this.choiceContext(pool.admin);
-    const lpPolicyCid = await this.fetchLpPolicy(pool);
-    return retryOnContention(() =>
-      this.ledger.submit({
-        actAs: [this.operatorParty],
-        commandId: `pool-add:${input.poolCid}:${input.requestedAt}`,
-        disclosure: [...factories.disclosure, ...ctx.disclosure],
-        command: {
-          kind: "exercise",
-          templateId: "CantonDex.Dex.PoolRules:PoolRules",
-          contractId: pool.rulesCid,
-          choice: "PoolRules_AddLiquidity",
-          argument: {
-            expectedPoolId: pool.poolId,
-            poolCid: input.poolCid,
-            poolStateCid: pool.poolStateCid,
-            recipient: input.recipient,
-            baseFactoryCid: factories.allocationFactoryCid,
-            quoteFactoryCid: factories.allocationFactoryCid,
-            baseHoldingCids: input.baseHoldingCids,
-            quoteHoldingCids: input.quoteHoldingCids,
-            baseAmount: input.baseAmount,
-            quoteAmount: input.quoteAmount,
-            minLpTokens: input.minLpTokens,
-            knownTotalLpSupply: input.knownTotalLpSupply,
-            requestedAt: input.requestedAt,
-            lpPolicyCid,
-            extraArgs: ctx.extraArgs,
-          },
-        },
-      }),
-    );
-  }
-
   /**
    * Off-chain quote computation. Mirrors the on-chain constant-product
    * formula. The on-chain PoolRules_Swap re-validates against
@@ -436,55 +389,6 @@ export class PoolService {
             inputSliceCid: headInput.contractId,
             outputSliceCids,
             factoryCid: factories.settlementFactoryCid,
-            extraArgs: ctx.extraArgs,
-          },
-        },
-      }),
-    );
-  }
-
-  /**
-   * PoolRules_RemoveLiquidity. Slice-local: the operator passes only the
-   * head-first prefix of slices per side that covers the redemption; the
-   * choice cancels the fully-consumed ones and re-allocates the boundary.
-   */
-  async removeLiquidity(input: PoolRemoveLiquidityInput): Promise<unknown> {
-    const pool = await this.fetchPool(input.poolCid);
-    const factories = await this.registry.getFactories(pool.admin);
-    const ctx = await this.choiceContext(pool.admin);
-    const lpPolicyCid = await this.fetchLpPolicy(pool);
-    const share = toFloat(input.lpTokensToRedeem) / toFloat(input.knownTotalLpSupply);
-    const baseOut = toFloat(pool.reserves.baseAmount) * share;
-    const quoteOut = toFloat(pool.reserves.quoteAmount) * share;
-    const baseSliceCids = selectCoveringPrefix(pool.baseSlices, baseOut);
-    const quoteSliceCids = selectCoveringPrefix(pool.quoteSlices, quoteOut);
-    return retryOnContention(() =>
-      this.ledger.submit({
-        actAs: [this.operatorParty],
-        commandId: `pool-remove:${input.poolCid}:${input.requestedAt}`,
-        disclosure: [...factories.disclosure, ...ctx.disclosure],
-        command: {
-          kind: "exercise",
-          templateId: "CantonDex.Dex.PoolRules:PoolRules",
-          contractId: pool.rulesCid,
-          choice: "PoolRules_RemoveLiquidity",
-          argument: {
-            expectedPoolId: pool.poolId,
-            poolCid: input.poolCid,
-            poolStateCid: pool.poolStateCid,
-            holder: input.holder,
-            lpTokensToRedeem: input.lpTokensToRedeem,
-            knownTotalLpSupply: input.knownTotalLpSupply,
-            minBaseOut: input.minBaseOut,
-            minQuoteOut: input.minQuoteOut,
-            baseSliceCids,
-            quoteSliceCids,
-            baseFactoryCid: factories.allocationFactoryCid,
-            quoteFactoryCid: factories.allocationFactoryCid,
-            boundaryBaseHoldingCids: input.boundaryBaseHoldingCids,
-            boundaryQuoteHoldingCids: input.boundaryQuoteHoldingCids,
-            requestedAt: input.requestedAt,
-            lpPolicyCid,
             extraArgs: ctx.extraArgs,
           },
         },
@@ -576,6 +480,10 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
+    const [bqFactories, lpFactories] = await Promise.all([
+      this.registry.getFactories(pool.admin),
+      this.registry.getFactories(pool.lpRegistrar),
+    ]);
     return {
       requestCid,
       lpAmount,
@@ -584,6 +492,8 @@ export class PoolService {
       quoteAmount: input.quoteAmount,
       allocations: req.allocations,
       settlement: req.settlement,
+      depositFactoryCid: bqFactories.allocationFactoryCid,
+      lpFactoryCid: lpFactories.allocationFactoryCid,
     };
   }
 
@@ -718,6 +628,10 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
+    const [bqFactories, lpFactories] = await Promise.all([
+      this.registry.getFactories(pool.admin),
+      this.registry.getFactories(pool.lpRegistrar),
+    ]);
     return {
       requestCid,
       knownTotalLpSupply: pool.totalLpSupply,
@@ -727,6 +641,8 @@ export class PoolService {
       quoteOuts: plan.quote.outs,
       allocations: req.allocations,
       settlement: req.settlement,
+      depositFactoryCid: bqFactories.allocationFactoryCid,
+      lpFactoryCid: lpFactories.allocationFactoryCid,
     };
   }
 

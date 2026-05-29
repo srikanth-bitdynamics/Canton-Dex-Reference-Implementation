@@ -152,10 +152,9 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   const onRemove = async () => {
     if (!party) throw new Error('connect a wallet to remove liquidity');
     if (!context) throw new Error('dApp context not loaded yet');
-    const lpHoldingCid = holdings.find(
-      (h) => h.instrumentId === pool.lpInstrumentId.id && !h.locked,
-    )?.contractId;
-    if (!lpHoldingCid) throw new Error('no unlocked LP holding to burn');
+    // An LP position can be fragmented across several holdings; lock them all.
+    const lpHoldingCids = holdingCidsFor(pool.lpInstrumentId.id);
+    if (lpHoldingCids.length === 0) throw new Error('no unlocked LP holding to burn');
     toast.push(
       `Remove ${removePct}% LP from ${pool.baseInstrumentId}/${pool.quoteInstrumentId}`,
       'removeLp',
@@ -168,7 +167,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       lpTokens: (lpHeld * removePct) / 100,
       minBaseOut: minBaseOutWithSlippage,
       minQuoteOut: minQuoteOutWithSlippage,
-      holderLpHoldingCid: lpHoldingCid,
+      holderLpHoldingCids: lpHoldingCids,
     });
   };
 

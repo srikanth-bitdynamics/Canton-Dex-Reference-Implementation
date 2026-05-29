@@ -17,6 +17,7 @@ module CantonDex.Dex.LpDvpRules where
 -- lpRegistrar-controlled LPTokenPolicy + mint/burn.
 
 import DA.Foldable (forA_)
+import DA.List (find)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
@@ -88,6 +89,112 @@ enforceAllocationDeadline cid = do
       now <- getTime
       assertMsg "liquidity request quote has expired" (now <= deadline)
 
+-- The minted LP amount is taken from the LP's receipt allocation rather
+-- than recomputed off-ledger, so the LP-mint batch balances without the
+-- operator-backend having to replicate Daml's Decimal sqrt. The on-ledger
+-- bounds (see SettleAddLiquidity) prevent over-minting; this is the dust
+-- tolerance for the unavoidable cross-language rounding shortfall.
+lpMintDustTolerance : Decimal
+lpMintDustTolerance = 0.000001
+
+-- The amount on the named transfer-leg side of an allocation (ledger
+-- state). Used to read the LP's intended mint/receipt amount.
+allocationLegAmount : Text -> ContractId V2.Allocation -> Update Decimal
+allocationLegAmount legId cid = do
+  v <- view <$> fetch cid
+  case find (\s -> s.transferLegId == legId) v.allocation.transferLegSides of
+    Some s -> pure s.amount
+    None -> abort ("allocation missing expected leg: " <> legId)
+
+-- Bind the settle to the accepted `LiquidityAllocationRequest` (the
+-- single authoritative source). The operator drives the settle but cannot
+-- substitute a different settlement, party, deadline, or allocation shape
+-- than the LP/holder accepted: every supplied allocation's spec must be
+-- one the request named, the settlement + party must match, and the
+-- request's `settleAt` is the binding deadline. Returns unit; the caller
+-- archives the request once the settle commits (3b.0 / DEX-53).
+validateAgainstRequest
+  : ContractId LAR.LiquidityAllocationRequest
+  -> Party                       -- ^ expected lp/holder
+  -> V2.SettlementInfo           -- ^ the settle's settlement
+  -> [ContractId V2.Allocation]  -- ^ supplied participant allocations
+  -> Update ()
+validateAgainstRequest requestCid expectedParty settlement allocCids = do
+  req <- fetch requestCid
+  assertMsg "settle settlement must match the accepted request"
+    (req.settlement == settlement)
+  assertMsg "request party must match the settle recipient/holder"
+    (req.lp == expectedParty)
+  -- Authoritative deadline: the request's settleAt (not a caller arg, not
+  -- only a per-allocation field).
+  case req.settleAt of
+    None -> pure ()
+    Some deadline -> do
+      now <- getTime
+      assertMsg "liquidity request has expired" (now <= deadline)
+  -- Every supplied allocation must match a spec the request named. This is
+  -- a membership check, not a bijection: it does not by itself prove the
+  -- supplied allocations are distinct or cover every request spec. The
+  -- binding is completed downstream — `allocationLegAmount "lp-mint"` reads
+  -- the receipt by leg id and the per-admin SettleBatch fails unless each
+  -- leg is covered by exactly the right allocation — so a duplicated or
+  -- mis-slotted allocation still aborts. This check is the cheap first line.
+  forA_ allocCids $ \cid -> do
+    v <- view <$> fetch cid
+    assertMsg "supplied allocation does not match any spec in the request"
+      (v.allocation `elem` req.allocations)
+
+-- Canonical leg + spec builders, shared by the Request choices, the tests,
+-- and (via the request view) the wallet — so all three agree on the exact
+-- spec shape the Settle choices validate. The operator passes only scalars;
+-- the specs are built on-ledger (single source of truth), mirroring how the
+-- Settle choices build their own legs.
+
+dvpLeg : Text -> V2.Account -> V2.Account -> Decimal -> Text -> V2.TransferLeg
+dvpLeg legId sender receiver amount instrumentId = V2.TransferLeg with
+  transferLegId = legId; sender; receiver; amount; instrumentId; meta = emptyMetadata
+
+dvpSpec : Party -> V2.Account -> [V2.TransferLeg] -> Bool -> V2.AllocationSpecification
+dvpSpec admin authorizer legs committed = V2.AllocationSpecification with
+  admin; authorizer
+  transferLegSides = Utils.legsToSides authorizer legs
+  settlementDeadline = None; nextIterationFunding = None; committed
+  meta = emptyMetadata
+
+-- The three add specs the LP authors, in the canonical order the settle
+-- consumes: committed base deposit, committed quote deposit, LP-mint
+-- receipt (receiver side, uncommitted).
+addLiquiditySpecs
+  : Pool -> Party -> Party -> Decimal -> Decimal -> Decimal -> [V2.AllocationSpecification]
+addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount =
+  let lpAcct = Utils.basicAccount recipient
+      opAcct = Utils.basicAccount operator
+      baseLeg = dvpLeg "lp-base-deposit" lpAcct opAcct baseAmount pool.baseInstrumentId
+      quoteLeg = dvpLeg "lp-quote-deposit" lpAcct opAcct quoteAmount pool.quoteInstrumentId
+      mintLeg = Lp.lpMintLeg pool.lpRegistrar lpAcct pool.lpInstrumentId.id lpAmount
+  in [ dvpSpec pool.admin lpAcct [baseLeg] True
+     , dvpSpec pool.admin lpAcct [quoteLeg] True
+     , Lp.mintReceiptSpec pool.lpRegistrar lpAcct mintLeg ]
+
+-- The three remove specs the holder authors: base receipt + quote receipt
+-- (receiver side, one leg per drawn slice — `baseOuts`/`quoteOuts` are the
+-- per-slice out amounts the operator computed) + committed LP-burn sender
+-- (locks the holder's LP holding).
+removeLiquiditySpecs
+  : Pool -> Party -> Party -> [Decimal] -> [Decimal] -> Decimal -> [V2.AllocationSpecification]
+removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount =
+  let holderAcct = Utils.basicAccount holder
+      opAcct = Utils.basicAccount operator
+      outLegs prefix instrumentId amounts =
+        [ dvpLeg (prefix <> show (i : Int)) opAcct holderAcct amt instrumentId
+        | (i, amt) <- zip [0 .. length amounts - 1] amounts ]
+      baseLegs = outLegs "lp-base-out-" pool.baseInstrumentId baseOuts
+      quoteLegs = outLegs "lp-quote-out-" pool.quoteInstrumentId quoteOuts
+      burnLeg = Lp.lpBurnLeg pool.lpRegistrar holderAcct pool.lpInstrumentId.id lpBurnAmount
+  in [ dvpSpec pool.admin holderAcct baseLegs False
+     , dvpSpec pool.admin holderAcct quoteLegs False
+     , dvpSpec pool.lpRegistrar holderAcct [burnLeg] True ]
+
 -- The per-side result of drawing a redemption across an ordered slice
 -- prefix: the delivery legs (one per sourced slice), the finalized slice
 -- allocations, the fully-consumed slice cids to archive, and the boundary
@@ -140,26 +247,37 @@ template LpDvpRules with
     nonconsuming choice LpDvpRules_RequestAddLiquidity : ContractId LAR.LiquidityAllocationRequest
       with
         poolCid : ContractId Pool
-        lp : Party
-        settlement : V2.SettlementInfo
-        allocations : [V2.AllocationSpecification]
+        recipient : Party
+        baseAmount : Decimal
+        quoteAmount : Decimal
+        lpAmount : Decimal
+          -- ^ The operator's off-ledger LP-amount quote; the settle bounds
+          --   it (minLpTokens <= it <= fair share, within dust).
         requestedAt : Time
         settleAt : Optional Time
       controller operator
       do
+        pool <- fetch poolCid
+        let settlement = PR.poolSettlement poolCid operator
+            allocations = addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount
         create LAR.LiquidityAllocationRequest with
-          operator; lp; settlement; allocations; requestedAt; settleAt
+          operator; lp = recipient; settlement; allocations; requestedAt; settleAt
 
     nonconsuming choice LpDvpRules_RequestRemoveLiquidity : ContractId LAR.LiquidityAllocationRequest
       with
         poolCid : ContractId Pool
         holder : Party
-        settlement : V2.SettlementInfo
-        allocations : [V2.AllocationSpecification]
+        baseOuts : [Decimal]
+          -- ^ Per-slice base out amounts (operator's slice draw), in order.
+        quoteOuts : [Decimal]
+        lpBurnAmount : Decimal
         requestedAt : Time
         settleAt : Optional Time
       controller operator
       do
+        pool <- fetch poolCid
+        let settlement = PR.poolSettlement poolCid operator
+            allocations = removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount
         create LAR.LiquidityAllocationRequest with
           operator; lp = holder; settlement; allocations; requestedAt; settleAt
 
@@ -173,6 +291,7 @@ template LpDvpRules with
         poolCid : ContractId Pool
         poolStateCid : ContractId PS.PoolState
         lpPolicyCid : ContractId LP.LPTokenPolicy
+        requestCid : ContractId LAR.LiquidityAllocationRequest
         recipient : Party
         lpBaseDepositCid : ContractId V2.Allocation
         lpQuoteDepositCid : ContractId V2.Allocation
@@ -195,6 +314,9 @@ template LpDvpRules with
         -- `settlementDeadline` per-settle, so an expired deposit or receipt
         -- leg could otherwise ride along behind a fresh one.
         forA_ [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] enforceAllocationDeadline
+        -- Bind to the accepted request: settlement/party/deadline/specs.
+        validateAgainstRequest requestCid recipient (PR.poolSettlement poolCid operator)
+          [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid]
         (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         -- Allowed: first-funding (Unfunded) or a funded pool (Active);
         -- a paused pool rejects liquidity changes (matches the old path).
@@ -210,12 +332,29 @@ template LpDvpRules with
 
         let recipientAcct = Utils.basicAccount recipient
             settlement = PR.poolSettlement poolCid operator
-            lpAmount =
+            -- The fair LP entitlement computed on-ledger: sqrt(k) at first
+            -- funding, else pro-rata over reserves.
+            fairLp =
               if state.totalLpSupply == 0.0
               then PR.sqrtDecimal (baseAmount * quoteAmount)
               else min ((baseAmount * state.totalLpSupply) / state.reserves.baseAmount)
                        ((quoteAmount * state.totalLpSupply) / state.reserves.quoteAmount)
+        -- Mint exactly what the LP's receipt allocation authorizes (so the
+        -- LP-mint batch balances without the backend replicating Daml's
+        -- Decimal sqrt). Bound it on-ledger: at least the LP's floor, never
+        -- above the fair share (anti over-mint), and any shortfall from fair
+        -- is only rounding dust (anti arbitrary under-claim).
+        lpAmount <- allocationLegAmount "lp-mint" lpReceiptCid
         assertMsg "LP tokens below minimum" (lpAmount >= minLpTokens)
+        -- Both bounds carry the dust tolerance symmetrically: the backend's
+        -- floored JS-double quote and Daml's Newton `sqrtDecimal` are two
+        -- different sqrt implementations, so the receipt can land up to one
+        -- 1e-10 bucket on EITHER side of `fairLp`. A strict `<= fairLp` would
+        -- abort an otherwise-fair add when the quote rounds a hair high.
+        assertMsg "LP receipt exceeds fair share beyond dust tolerance"
+          (lpAmount - fairLp <= lpMintDustTolerance)
+        assertMsg "LP receipt shortfall beyond dust tolerance"
+          (fairLp - lpAmount <= lpMintDustTolerance)
 
         let baseDepositLeg = V2.TransferLeg with
               transferLegId = "lp-base-deposit"
@@ -281,6 +420,8 @@ template LpDvpRules with
 
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordMint with amount = lpAmount
 
+        -- Consume the accepted request now that it has settled.
+        archive requestCid
         archive poolStateCid
         newStateCid <- create state with
           status = PS_Active
@@ -306,6 +447,7 @@ template LpDvpRules with
         poolCid : ContractId Pool
         poolStateCid : ContractId PS.PoolState
         lpPolicyCid : ContractId LP.LPTokenPolicy
+        requestCid : ContractId LAR.LiquidityAllocationRequest
         holder : Party
         lpTokensToRedeem : Decimal
         knownTotalLpSupply : Decimal
@@ -330,6 +472,9 @@ template LpDvpRules with
         -- all be unexpired, not merely the one checked allocation.
         forA_ [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
           enforceAllocationDeadline
+        -- Bind to the accepted request: settlement/party/deadline/specs.
+        validateAgainstRequest requestCid holder (PR.poolSettlement poolCid operator)
+          [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
         (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         assertMsg "Pool must be Active to remove liquidity" (state.status == PS_Active)
         assertMsg "LP tokens must be positive" (lpTokensToRedeem > 0.0)
@@ -424,6 +569,9 @@ template LpDvpRules with
         boundaryQuoteSliceCid <- rewrapBoundary QuoteSide quoteRollCid quoteDel.boundary
 
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordBurn with amount = lpTokensToRedeem
+
+        -- Consume the accepted request now that it has settled.
+        archive requestCid
 
         let newBase = state.reserves.baseAmount - baseOut
             newQuote = state.reserves.quoteAmount - quoteOut

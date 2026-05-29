@@ -16,8 +16,12 @@ export interface V2Reference {
   cid: string | null;
 }
 
+// `owner` is nullable: the canonical Token-Standard mint/burn accounts
+// (cip-112/mint, cip-112/burn) carry `owner = null` (and `provider =
+// null`). DvP LP mint/burn specs reference those accounts, so the wire
+// type must allow a null owner rather than assuming a real party.
 export interface V2Account {
-  owner: Party;
+  owner: Party | null;
   provider: Party | null;
   id: string;
 }
@@ -28,6 +32,33 @@ export interface V2TransferLeg {
   receiver: V2Account;
   amount: Decimal;
   instrumentId: string;
+  meta: Record<string, string>;
+}
+
+export type V2TransferLegSideKind = "SenderSide" | "ReceiverSide";
+
+// One authorizer's projected side of a transfer leg, mirroring the Daml
+// `AllocationV2.TransferLegSide`. The backend projects legs to sides at
+// the spec-construction boundary (same as `Utils.legsToSides`).
+export interface V2TransferLegSide {
+  transferLegId: string;
+  side: V2TransferLegSideKind;
+  otherside: V2Account;
+  amount: Decimal;
+  instrumentId: string;
+  meta: Record<string, string>;
+}
+
+// Mirrors Daml `AllocationV2.AllocationSpecification`. The backend builds
+// these for the LiquidityAllocationRequest the LP/holder accepts; the
+// on-ledger settle validates supplied allocations against this exact shape.
+export interface V2AllocationSpecification {
+  admin: Party;
+  authorizer: V2Account;
+  transferLegSides: V2TransferLegSide[];
+  settlementDeadline: Time | null;
+  nextIterationFunding: Record<string, Decimal> | null;
+  committed: boolean;
   meta: Record<string, string>;
 }
 
@@ -122,6 +153,14 @@ export interface PoolRulesContract {
   operator: Party;
 }
 
+// The co-controlled DvP rules contract (operator + lpRegistrar), one per
+// venue. Hosts the LpDvpRules_Request*/Settle* choices.
+export interface LpDvpRulesContract {
+  contractId: ContractId<"LpDvpRules">;
+  operator: Party;
+  lpRegistrar: Party;
+}
+
 // Combined API view assembled by PoolService from the split contracts.
 // Keeps the wire shape the dApp + http layer consume, plus the cids the
 // PoolRules choices need.
@@ -130,6 +169,7 @@ export interface Pool {
   poolId: string;
   poolStateCid: ContractId<"PoolState">;
   rulesCid: ContractId<"PoolRules">;
+  lpDvpRulesCid: ContractId<"LpDvpRules"> | null;
   operator: Party;
   lpRegistrar: Party;
   admin: Party;

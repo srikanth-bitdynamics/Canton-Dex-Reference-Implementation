@@ -18,6 +18,7 @@ import Daml.Script
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
@@ -708,4 +709,54 @@ testAddAcceptsWithinDust = do
   res.lpTokensMinted === nearLp
   Some state <- queryContractId fx.operator res.poolStateCid
   state.totalLpSupply === nearLp
+  pure ()
+
+-- 3b review #1: the canonical DvP flow consumes the request via the settle,
+-- NOT via AllocationRequest_Accept (which is standard-conformant but
+-- optional). Calling accept out-of-band consumes the request, so a later
+-- settle binding to it fails — a documented fail-safe. (The happy-path
+-- no-accept flow is covered by testDvpAddLiquidity et al.)
+testAcceptConsumesRequestThenSettleFails : Script ()
+testAcceptConsumesRequestThenSettleFails = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  let lpAmount = PR.sqrtDecimal 2000000.0
+      lpAcct = Utils.basicAccount alice
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PR.poolSettlement fx.poolCid fx.operator
+      baseDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = lpAcct; receiver = opAcct
+        amount = 10.0; instrumentId = "BTC"; meta = emptyMetadata
+      quoteDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
+        amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
+      lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
+      baseSpec = mkSpec fx.registry lpAcct [baseDepositLeg] True
+      quoteSpec = mkSpec fx.registry lpAcct [quoteDepositLeg] True
+      receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
+  baseHold <- mintHolding fx.registry alice "BTC" 10.0
+  quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
+  reqCid <- requestAdd fx alice 10.0 200000.0 lpAmount None now
+  lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
+  lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
+  lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
+
+  -- alice (the request observer) exercises the standard accept → consumes it.
+  _ <- submit alice $ exerciseCmd (toInterfaceContractId @V2.AllocationRequest reqCid)
+    (V2.AllocationRequest_Accept with actors = [alice]; extraArgs = emptyExtraArgs)
+
+  -- The settle can no longer bind to the consumed request.
+  submitMultiMustFail [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+      lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = alice
+      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+      lpReceiptCid = lpReceipt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+      knownTotalLpSupply = 0.0
+      requestedAt = now; extraArgs = emptyExtraArgs
   pure ()

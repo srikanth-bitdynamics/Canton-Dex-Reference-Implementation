@@ -1,19 +1,6 @@
 module CantonDex.Dex.PoolRules where
 
--- The operational rules for a pool (DEX-41), one `PoolRules` per venue.
---
--- Mirrors Amulet's `AmuletRules` over `Amulet`: a stateless,
--- operator-signed contract whose choices are all `nonconsuming` and
--- operate on `Pool` config + `PoolState` + `PoolSlice` contracts passed
--- in by `ContractId`. No contract keys (DA's token-standard uses none);
--- a contract-swap guard is provided by `expectedPoolId`, asserted
--- against the fetched config — the same protection Amulet's
--- `expectedDso` gives.
---
--- The Rules pattern here is organizational. The real authorization is
--- the signatory/controller set on `Pool`, `PoolState` and `PoolSlice`
--- (all operator-signed); grouping the behaviour in one place makes the
--- pool's market operations reviewable in one contract.
+-- Operational rules for one pool venue.
 
 import DA.Foldable (forA_)
 import DA.TextMap qualified as TextMap
@@ -220,13 +207,7 @@ template PoolRules with
           lpMintRequestCid
           lpTokensMinted = initialLp
 
-    -- Append liquidity: one new slice per side, bump reserves. The new
-    -- slices conflict with nothing existing.
-    -- DEPRECATED (DEX-42): superseded by the DvP path
-    -- `LpDvpRules_SettleAddLiquidity`. This operator-only add (LP tokens
-    -- minted via the LPMintRequest handshake, no atomic delivery) is kept
-    -- only until the operator-backend/dApp cut over; retired as a named
-    -- step in 3b/3c. Do not attach new callers.
+    -- Legacy compatibility path for operator-only add liquidity.
     nonconsuming choice PoolRules_AddLiquidity : PoolRules_AddLiquidityResult
       with
         expectedPoolId : PoolId
@@ -306,16 +287,7 @@ template PoolRules with
           lpMintRequestCid
           lpTokensMinted = lpToMint
 
-    -- Slice-local redemption. The operator supplies, per side, an ordered
-    -- list of slice cids sufficient to cover the redemption. Fully-
-    -- consumed slices are cancelled (resolveSlice); the boundary slice is
-    -- cancelled and re-allocated for its leftover. Slices not passed in
-    -- are untouched.
-    -- DEPRECATED (DEX-42): superseded by the DvP path
-    -- `LpDvpRules_SettleRemoveLiquidity`, which delivers base+quote to the
-    -- HOLDER (this version returns them to the operator's pool account —
-    -- finding #3) and burns LP tokens via `burnAccount`. Kept until the
-    -- backend/dApp cut over; retired as a named step in 3b/3c.
+    -- Legacy compatibility path for operator-only remove liquidity.
     nonconsuming choice PoolRules_RemoveLiquidity : PoolRules_RemoveLiquidityResult
       with
         expectedPoolId : PoolId
@@ -337,12 +309,6 @@ template PoolRules with
         extraArgs : ExtraArgs
       controller operator
       do
-        -- NOTE (DEX-42): like the original fat Pool_RemoveLiquidity, this
-        -- cancels the pool's committed allocations (funds return to the
-        -- operator's pool account) and burns LP tokens, but does NOT emit
-        -- transfer legs delivering base+quote to the holder. Atomic
-        -- holder delivery is the DvP gap DEX-42 closes — it will turn this
-        -- into a settle batch with holder-receiver legs, symmetric to Swap.
         (pool, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
         assertMsg "Pool must be Active" (state.status == PS_Active)
         assertMsg "LP tokens must be positive" (lpTokensToRedeem > 0.0)

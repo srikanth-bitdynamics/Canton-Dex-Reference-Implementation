@@ -1,6 +1,4 @@
-// HTTP shim around the operator backend services. The dApp calls
-// these endpoints; the operator backend translates them into ledger
-// submissions.
+// HTTP surface over the operator backend services.
 //
 // Runs on Node's built-in http server (no framework dependency). Not
 // production-grade auth; production should put this behind an auth
@@ -941,7 +939,7 @@ async function routeRequest(
     return;
   }
 
-  // === DvP liquidity (DEX-53) — two-call: request then settle ===========
+  // === DvP liquidity =====================================================
 
   if (method === "POST" && path === "/v1/pools/add-liquidity/request") {
     const body = await readJson<

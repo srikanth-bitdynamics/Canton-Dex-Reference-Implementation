@@ -206,10 +206,8 @@ template Allocation with
     numIterations : Int
   where
     -- For a normal allocation the authorizer's owner co-signs. For a
-    -- mint/burn allocation the authorizer is a special account
-    -- (`owner = None`, mintAccount/burnAccount) authorized by the admin
-    -- alone — `accountOwner` would panic, so include the owner only when
-    -- present (DEX-48).
+    -- mint/burn allocation the authorizer is a special account with no
+    -- owner, so only the admin signs.
     signatory admin :: optional [] (\o -> [o]) spec.authorizer.owner
     observer settlement.executors
 
@@ -256,15 +254,8 @@ template Allocation with
         let expectedActors = settlement.executors ++ [admin]
         unless (all (\p -> p `elem` arg.actors) expectedActors) $
           abort "Allocation_Settle: missing required actor (executors + admin)"
-        -- For receiver-side legs (this authorizer is receiver), mint a
-        -- holding for this authorizer — but ONLY for real accounts.
-        -- A mint allocation (authorizer = mintAccount, owner None) carries
-        -- sender-side legs, and a burn-receipt allocation (authorizer =
-        -- burnAccount, owner None) must NOT mint (the burn destroys), so
-        -- skip crediting when the authorizer is a special account
-        -- (DEX-48). The mint into the real recipient happens via THEIR
-        -- receipt allocation; the burn happens by archiving the holder's
-        -- locked holdings below.
+        -- Receiver-side crediting only applies to real accounts. Mint and
+        -- burn special accounts do not receive holdings themselves.
         let allSides = spec.transferLegSides ++ arg.extraTransferLegSides
         case spec.authorizer.owner of
           None -> pure ()
@@ -599,21 +590,14 @@ template Registry with
         let spec = arg.allocation
         assertMsg "AllocationFactory: spec admin must match registry"
           (spec.admin == admin)
-        -- A mint/burn allocation names a special account (`owner = None`,
-        -- mintAccount/burnAccount) authorized by the admin; it locks no
-        -- holdings and has no funding-coverage to validate (DEX-48). A
-        -- normal allocation locks the authorizer's input holdings and must
-        -- cover its sender-side outflow + reserved next-iteration funding.
+        -- A mint/burn allocation names a special account (`owner = None`)
+        -- authorized by the admin. It locks no holdings and does not go
+        -- through normal funding coverage.
         lockedCids <- case spec.authorizer.owner of
           None -> do
-            -- SECURITY (DEX-48): a mint/burn allocation must be EXACTLY the
-            -- standard mint or burn account, authored by the admin, with
-            -- only the legal leg sides. Without these checks an `owner=None`
-            -- authorizer would be an unrestricted mint/burn backdoor that
-            -- bypasses LPTokenPolicy. `AllocationFactory_Allocate` is
-            -- `controller actors`, so `admin `elem` arg.actors` requires the
-            -- submitter to actually `actAs admin` — a real authorization
-            -- check, not just a data assertion.
+            -- Special accounts must be exactly the standard mint or burn
+            -- accounts, authored by the admin, with only the legal leg
+            -- sides.
             let isMint = Utils.isMintAccount spec.authorizer
                 isBurn = Utils.isBurnAccount spec.authorizer
             assertMsg "owner-None authorizer must be the standard mint/burn account"

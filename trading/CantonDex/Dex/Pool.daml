@@ -1,34 +1,14 @@
 module CantonDex.Dex.Pool where
 
--- Immutable pool configuration (DEX-41).
+-- Immutable pool configuration.
 --
--- The pool is split into three contracts following the Amulet
--- state-vs-rules pattern:
---
---   - `Pool`       — this module: immutable configuration. Carries no
---                    reserves, no slice list, no status, so trading ops
---                    never rewrite it.
---   - `PoolState`  — CantonDex.Dex.PoolState: the minimal hot contract
---                    (reserves, totalLpSupply, status, operator-fee
---                    accrual). This is the single contract a swap
---                    rewrites; keeping it small is the point.
---   - `PoolSlice`  — CantonDex.Dex.PoolSlice: one committed allocation
---                    backing a side of the pool, as its own contract.
---
--- The operational choices live on `PoolRules` (CantonDex.Dex.PoolRules),
--- one per venue. Contracts are addressed by `ContractId` supplied by the
--- operator-backend indexer; there are no contract keys (matching DA's
--- token-standard, which uses none). Rules choices instead take an
--- `expectedPoolId` and assert it against the fetched config — the same
--- contract-swap guard Amulet's `expectedDso` provides.
+-- Mutable pool data lives on `PoolState` and `PoolSlice`. Pool operations
+-- live on `PoolRules`. This contract is the stable identifier that ties
+-- those pieces together.
 
 import Splice.Api.Token.HoldingV2 qualified as V2
 
--- | Stable identifier correlating a `Pool` config with its `PoolState`
--- and `PoolSlice` contracts. Not a contract key — purely a value used
--- for the `expectedPoolId` guard and for the operator-backend to group
--- contracts by pool. A plain `Text` so it serializes transparently over
--- the JSON ledger API.
+-- | Stable identifier shared by the pool config, state, and slices.
 type PoolId = Text
 
 data PoolStatus
@@ -48,9 +28,7 @@ data Side
   | QuoteSide
   deriving (Eq, Show)
 
--- | Immutable pool configuration. No trading choices, no mutable state:
--- trading ops operate on `PoolState` + `PoolSlice` and never rewrite
--- this contract.
+-- | Immutable pool configuration.
 template Pool with
     poolId : PoolId
     operator : Party

@@ -1,11 +1,9 @@
 module CantonDex.Lp.Instrument where
 
--- LP-token issuance as DvP over the V2 allocation surface. The LP token is a
--- V2 instrument administered by the lpRegistrar via Registry.V2 (no parallel
--- registry): a mint is a leg from mintAccount to the recipient, a burn the
--- symmetric leg from the holder to burnAccount, both settling atomically in
--- the pool's add/remove batch. Pure leg/spec construction; the choreography
--- lives in LpDvpRules.
+-- LP-token legs and allocation specs on the V2 allocation surface.
+--
+-- This module is pure construction. The request/settle flow lives in
+-- `CantonDex.Dex.LpDvpRules`.
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
@@ -13,8 +11,8 @@ import Splice.Api.Token.MetadataV1 (emptyMetadata)
 
 import CantonDex.Trading.Utils qualified as Utils
 
--- The standard owner-None mint/burn accounts Registry.V2 recognises as
--- admin-authorized sources (lpRegistrar is the admin; not encoded in the id).
+-- | Standard mint/burn accounts. `Registry.V2` recognizes exactly these as
+-- admin-authorized mint/burn sources.
 mintAccount : Party -> V2.Account
 mintAccount _lpRegistrar = Utils.mintAccount
 
@@ -39,8 +37,7 @@ lpBurnLeg _lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
   instrumentId = lpInstrumentId
   meta = emptyMetadata
 
--- | One-leg allocation spec for an authorizer; admin is the LP instrument
--- admin (= lpRegistrar).
+-- | Project one leg to one author's side.
 mkSpec : Party -> V2.Account -> V2.TransferLeg -> V2.AllocationSpecification
 mkSpec admin authorizer leg = V2.AllocationSpecification with
   admin
@@ -51,9 +48,8 @@ mkSpec admin authorizer leg = V2.AllocationSpecification with
   committed = False
   meta = emptyMetadata
 
--- Mint: registrar authors the sender side (from mintAccount), recipient the
--- receiver side. Burn: holder authors the sender side (locking the LP
--- holding), registrar the receiver side (into burnAccount).
+-- Mint: registrar authors the sender side, recipient the receiver side.
+-- Burn: holder authors the sender side, registrar the receiver side.
 mintSenderSpec : Party -> V2.TransferLeg -> V2.AllocationSpecification
 mintSenderSpec lpRegistrar leg = mkSpec lpRegistrar (mintAccount lpRegistrar) leg
 

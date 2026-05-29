@@ -1,17 +1,14 @@
 module CantonDex.Dex.Pool where
 
--- Immutable pool configuration. The pool is split (Amulet state-vs-rules
--- pattern) into Pool (this config), PoolState (the hot reserves/supply/status
--- contract a swap rewrites), and PoolSlice (one committed allocation per
--- side). Operational choices live on PoolRules. Contracts are addressed by
--- ContractId (no keys, like the token standard); a contract-swap guard comes
--- from the expectedPoolId asserted against the fetched config.
+-- Immutable pool configuration.
+--
+-- Mutable pool data lives on `PoolState` and `PoolSlice`. Pool operations
+-- live on `PoolRules`. This contract is the stable identifier that ties
+-- those pieces together.
 
 import Splice.Api.Token.HoldingV2 qualified as V2
 
--- | Stable id correlating a Pool config with its PoolState/PoolSlice
--- contracts. Not a contract key — a value for the expectedPoolId guard and
--- for grouping contracts by pool.
+-- | Stable identifier shared by the pool config, state, and slices.
 type PoolId = Text
 
 data PoolStatus
@@ -30,6 +27,7 @@ data Side
   | QuoteSide
   deriving (Eq, Show)
 
+-- | Immutable pool configuration.
 template Pool with
     poolId : PoolId
     operator : Party

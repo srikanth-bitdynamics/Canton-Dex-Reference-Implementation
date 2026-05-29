@@ -1,9 +1,7 @@
 // Exact fixed-point decimal arithmetic matching Daml's `Decimal` (10
-// fractional digits, round-half-even) for the DvP liquidity quotes. The
-// pool add/remove flows need the operator-computed amounts to agree with
-// the on-ledger Daml computation to the last digit — IEEE-754
-// doubles cannot do this once amounts exceed ~15 significant digits (a
-// large pool's reserves easily do), so we work in scaled BigInt.
+// fractional digits, round-half-even) for liquidity quotes. The operator's
+// computed amounts must agree with the on-ledger computation to the last
+// digit, so we use scaled `BigInt` instead of IEEE-754 doubles.
 //
 // Representation: a value `v` is stored as the BigInt `round(v * 1e10)`.
 // All ops below preserve that scale and use round-half-even, the same mode

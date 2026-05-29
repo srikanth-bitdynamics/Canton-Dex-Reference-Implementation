@@ -27,6 +27,7 @@ import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.MetadataV1
+import Splice.Testing.Utils (emptyExtraArgs)
 
 import CantonDex.Dex.LPToken qualified as LP
 import CantonDex.Dex.MatchedTrade qualified as MT
@@ -41,13 +42,6 @@ import CantonDex.Dex.Rfq qualified as Rfq
 import CantonDex.Trading.Utils qualified as Utils
 import CantonDex.Trading.WorkflowConstructors qualified as WC
 import CantonDex.Testing.MockRegistry qualified as Mock
-
--- Shared fixtures --------------------------------------------------------
-
-emptyExtraArgs : ExtraArgs
-emptyExtraArgs = ExtraArgs with
-  context = emptyChoiceContext
-  meta = emptyMetadata
 
 -- Create the split pool contracts (config + Unfunded state + rules) the
 -- operator can then initialize via PoolRules. Returns everything keyed by
@@ -588,7 +582,7 @@ testMatchedTradeFullSettle = do
         let reqIface : ContractId V2.AllocationRequest = toInterfaceContractId cid
         _ <- submit party $ exerciseCmd reqIface V2.AllocationRequest_Accept with
           actors = [party]
-          extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+          extraArgs = emptyExtraArgs
         -- Build allocation for this party using the trade's settlement.
         let acct = Utils.basicAccount party
             settlement = MT.mkTradeSettlementInfo tradeCid
@@ -612,7 +606,7 @@ testMatchedTradeFullSettle = do
               requestedAt = now
               inputHoldingCids = []
               actors = [party]
-              extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+              extraArgs = emptyExtraArgs
         instr <- submit party $ exerciseCmd factoryCid allocateArg
         case instr.output of
           V2.AllocationInstructionResult_Completed allocCid -> pure allocCid
@@ -642,7 +636,7 @@ testMatchedTradeFullSettle = do
             , Utils.finalAllocation bobAllocCid
             ]
           factoryCid = settleCid
-          extraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata)
+          extraArgs = emptyExtraArgs)
       ]
     allocationRequests = []  -- already consumed via Accept
     dexPairCid = None

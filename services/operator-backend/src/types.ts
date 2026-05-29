@@ -1,6 +1,4 @@
-// Shared types across operator backend modules. Mirror the Daml templates
-// one-to-one. Field names match the on-ledger shape so the JSON wire
-// form deserializes directly.
+// Shared types across operator-backend modules.
 
 import type {
   ContractId,
@@ -16,10 +14,7 @@ export interface V2Reference {
   cid: string | null;
 }
 
-// `owner` is nullable: the canonical Token-Standard mint/burn accounts
-// (cip-112/mint, cip-112/burn) carry `owner = null` (and `provider =
-// null`). DvP LP mint/burn specs reference those accounts, so the wire
-// type must allow a null owner rather than assuming a real party.
+// `owner` is nullable so the wire shape can represent mint/burn accounts.
 export interface V2Account {
   owner: Party | null;
   provider: Party | null;
@@ -37,9 +32,7 @@ export interface V2TransferLeg {
 
 export type V2TransferLegSideKind = "SenderSide" | "ReceiverSide";
 
-// One authorizer's projected side of a transfer leg, mirroring the Daml
-// `AllocationV2.TransferLegSide`. The backend projects legs to sides at
-// the spec-construction boundary (same as `Utils.legsToSides`).
+// One authorizer's projected side of a transfer leg.
 export interface V2TransferLegSide {
   transferLegId: string;
   side: V2TransferLegSideKind;
@@ -49,9 +42,7 @@ export interface V2TransferLegSide {
   meta: Record<string, string>;
 }
 
-// Mirrors Daml `AllocationV2.AllocationSpecification`. The backend builds
-// these for the LiquidityAllocationRequest the LP/holder accepts; the
-// on-ledger settle validates supplied allocations against this exact shape.
+// Mirrors Daml `AllocationV2.AllocationSpecification`.
 export interface V2AllocationSpecification {
   admin: Party;
   authorizer: V2Account;
@@ -62,9 +53,6 @@ export interface V2AllocationSpecification {
   meta: Record<string, string>;
 }
 
-// As of the V2 pre-freeze API, SettlementInfo carries the settlement
-// reference inline (id/cid) and no longer holds settlementDeadline,
-// which moved onto AllocationSpecification.
 export interface V2SettlementInfo {
   executors: Party[];
   id: string;
@@ -105,16 +93,12 @@ export interface PoolSlice {
   side: "BaseSide" | "QuoteSide";
 }
 
-/** Token Standard V2 instrument identity: registry admin + textual id. */
 export interface InstrumentId {
   admin: Party;
   id: string;
 }
 
-// Raw on-ledger contract shapes for the split pool. The Pool is
-// immutable config; reserves/status/supply live on PoolState; each
-// committed allocation is its own PoolSlice contract; the operational
-// choices live on a per-venue PoolRules.
+// Raw on-ledger contract shapes.
 export interface PoolConfigContract {
   contractId: ContractId<"Pool">;
   poolId: string;
@@ -153,16 +137,12 @@ export interface PoolRulesContract {
   operator: Party;
 }
 
-// The co-controlled DvP rules contract (operator + lpRegistrar), one per
-// venue. Hosts the LpDvpRules_Request*/Settle* choices.
 export interface LpDvpRulesContract {
   contractId: ContractId<"LpDvpRules">;
   operator: Party;
   lpRegistrar: Party;
 }
 
-// The on-ledger LiquidityAllocationRequest, read back after /request so the
-// dApp wallet can author the exact specs the settle validates against.
 export interface LiquidityAllocationRequestContract {
   contractId: ContractId<"LiquidityAllocationRequest">;
   operator: Party;
@@ -173,9 +153,7 @@ export interface LiquidityAllocationRequestContract {
   settleAt: Time | null;
 }
 
-// Combined API view assembled by PoolService from the split contracts.
-// Keeps the wire shape the dApp + http layer consume, plus the cids the
-// PoolRules choices need.
+// Combined API view assembled from the split pool contracts.
 export interface Pool {
   contractId: ContractId<"Pool">;
   poolId: string;

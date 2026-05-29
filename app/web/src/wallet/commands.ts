@@ -166,7 +166,7 @@ function composeRequestSwap(
   };
 }
 
-// DvP add (DEX-54): author the three allocations the request named, in one
+// DvP add: author the three allocations the request named, in one
 // submission. Canonical order [base deposit, quote deposit, LP receipt]:
 // the two deposits are committed sender-side under the deposit (pool.admin)
 // factory and lock the trader's base/quote holdings; the LP receipt is the
@@ -194,7 +194,7 @@ function composeAddLiquidity(
   };
 }
 
-// DvP remove (DEX-54): author [base receipt, quote receipt, LP burn-sender].
+// DvP remove: author [base receipt, quote receipt, LP burn-sender].
 // The two receipts are receiver-side under the deposit (pool.admin) factory
 // (no input holdings — they receive the returned base/quote); the burn-
 // sender is the committed sender side under the lpRegistrar factory and

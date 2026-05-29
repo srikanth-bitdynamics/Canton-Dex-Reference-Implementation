@@ -20,6 +20,7 @@ import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
+import Splice.Testing.Utils (emptyExtraArgs)
 
 import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState qualified as PS
@@ -31,9 +32,6 @@ import CantonDex.Dex.LPToken qualified as LP
 import CantonDex.Lp.Instrument qualified as Lp
 import CantonDex.Registry.V2 qualified as RegV2
 import CantonDex.Trading.Utils qualified as Utils
-
-emptyExtraArgs : ExtraArgs
-emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
 
 lpId : Text
 lpId = "BTC-USDC-LP"

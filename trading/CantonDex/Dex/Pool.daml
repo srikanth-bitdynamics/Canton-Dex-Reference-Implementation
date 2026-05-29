@@ -1,34 +1,17 @@
 module CantonDex.Dex.Pool where
 
--- Immutable pool configuration (DEX-41).
---
--- The pool is split into three contracts following the Amulet
--- state-vs-rules pattern:
---
---   - `Pool`       — this module: immutable configuration. Carries no
---                    reserves, no slice list, no status, so trading ops
---                    never rewrite it.
---   - `PoolState`  — CantonDex.Dex.PoolState: the minimal hot contract
---                    (reserves, totalLpSupply, status, operator-fee
---                    accrual). This is the single contract a swap
---                    rewrites; keeping it small is the point.
---   - `PoolSlice`  — CantonDex.Dex.PoolSlice: one committed allocation
---                    backing a side of the pool, as its own contract.
---
--- The operational choices live on `PoolRules` (CantonDex.Dex.PoolRules),
--- one per venue. Contracts are addressed by `ContractId` supplied by the
--- operator-backend indexer; there are no contract keys (matching DA's
--- token-standard, which uses none). Rules choices instead take an
--- `expectedPoolId` and assert it against the fetched config — the same
--- contract-swap guard Amulet's `expectedDso` provides.
+-- Immutable pool configuration. The pool is split (Amulet state-vs-rules
+-- pattern) into Pool (this config), PoolState (the hot reserves/supply/status
+-- contract a swap rewrites), and PoolSlice (one committed allocation per
+-- side). Operational choices live on PoolRules. Contracts are addressed by
+-- ContractId (no keys, like the token standard); a contract-swap guard comes
+-- from the expectedPoolId asserted against the fetched config.
 
 import Splice.Api.Token.HoldingV2 qualified as V2
 
--- | Stable identifier correlating a `Pool` config with its `PoolState`
--- and `PoolSlice` contracts. Not a contract key — purely a value used
--- for the `expectedPoolId` guard and for the operator-backend to group
--- contracts by pool. A plain `Text` so it serializes transparently over
--- the JSON ledger API.
+-- | Stable id correlating a Pool config with its PoolState/PoolSlice
+-- contracts. Not a contract key — a value for the expectedPoolId guard and
+-- for grouping contracts by pool.
 type PoolId = Text
 
 data PoolStatus
@@ -42,32 +25,25 @@ data PoolReserves = PoolReserves with
     quoteAmount : Decimal
   deriving (Eq, Show)
 
--- | Which side of the pair a slice (or leg) belongs to.
 data Side
   = BaseSide
   | QuoteSide
   deriving (Eq, Show)
 
--- | Immutable pool configuration. No trading choices, no mutable state:
--- trading ops operate on `PoolState` + `PoolSlice` and never rewrite
--- this contract.
 template Pool with
     poolId : PoolId
     operator : Party
     lpRegistrar : Party
-      -- ^ Party that owns the LP instrument and accepts mint/burn
-      --   requests. Logically separate from `operator`.
+      -- ^ Owns the LP instrument and accepts mint/burn; separate from operator.
     admin : Party
       -- ^ Asset admin (registrar) for the base + quote instruments.
     baseInstrumentId : Text
     quoteInstrumentId : Text
     lpInstrumentId : V2.InstrumentId
     feeBps : Int
-      -- ^ Total swap fee in basis points. The operator's share is
-      --   `operatorFeeBps`; LPs receive the rest.
+      -- ^ Total swap fee in bps; operator takes operatorFeeBps, LPs the rest.
     operatorFeeBps : Int
-      -- ^ Operator's share of the swap fee in basis points
-      --   (`<= feeBps`). 0 = LPs receive all fees.
+      -- ^ Operator's share of the swap fee in bps (<= feeBps). 0 = all to LPs.
   where
     signatory operator
     observer lpRegistrar

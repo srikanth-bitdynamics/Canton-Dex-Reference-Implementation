@@ -1,43 +1,13 @@
 module CantonDex.Testing.MockRegistry where
 
--- Minimal V2 token-standard mock for Daml Script tests.
+-- Minimal V2 mock for Daml Script tests: implements Allocation,
+-- AllocationFactory, and SettlementFactory only. Holdings are NOT tracked
+-- and authority is simplified (MockAllocation is signatory admin alone), so
+-- this exercises flows that COMPOSE the V2 calls, not the V2 authorization
+-- model itself. Settle rolls forward when the spec has nextIterationFunding,
+-- which covers the Pool swap iterated-settlement path.
 --
--- Implements the three interfaces the DEX contracts call into:
---   - V2.Allocation
---   - V2.AllocationFactory
---   - V2.SettlementFactory
---
--- Scope and limitations (be honest):
---
---   - Holdings are NOT tracked. The mock allocation carries no
---     `holdingCids` and the mock settle/cancel/withdraw return empty
---     `authorizerHoldingCids`. The DEX contracts under test don't read
---     those values during the workflows we care about, so this is enough
---     for end-to-end script coverage of the DEX flows.
---
---   - Authority is simplified. `MockAllocation` is signatory the
---     `admin` party only. A real V2 allocation has both authorizer.owner
---     and admin as signatories; the mock accepts whatever the factory
---     gives it. This makes the mock unsuitable for testing the V2
---     authorization model itself, only for testing flows that COMPOSE
---     the V2 calls.
---
---   - `Allocation_Settle` archives self and conditionally creates a
---     next-iteration allocation if the original spec has
---     `nextIterationFunding`. That is enough to exercise the iterated-
---     settlement roll-forward in the Pool swap path.
---
---   - `Allocation_Adjust` enforces funding conservation in Daml: the
---     net per-instrument outflow from the authorizer across the
---     additional transfer legs must be covered by the current
---     `nextIterationFunding` budget, and the budget is reduced
---     accordingly on the next-state allocation. This makes a malicious
---     adjustment (executor trying to spend more funds than the
---     authorizer granted) require an INVALID Daml transaction, not just
---     a policy breach. Production registries MUST do the same.
---
--- This file lives under `CantonDex/Testing/` to make its scope clear.
--- Production code MUST NOT import from this module.
+-- Testing-only. Production code MUST NOT import this module.
 
 import DA.Action (when)
 import DA.Foldable (forA_)
@@ -56,10 +26,8 @@ emptyExtraArgs = ExtraArgs with
   context = emptyChoiceContext
   meta = emptyMetadata
 
--- Marker key a context-requiring mock looks for. Stands in for the
--- real registry choice-context payload (disclosed config, app rights)
--- so a test can prove the DEX threads caller-supplied context through
--- to the factory choice rather than hardcoding an empty one.
+-- Marker key a context-requiring mock looks for, so a test can prove the
+-- DEX threads caller-supplied context through to the factory choice.
 dexChoiceContextKey : Text
 dexChoiceContextKey = "dex.choiceContext"
 
@@ -70,12 +38,8 @@ assertContextPresent requireContext extraArgs =
       "choice context required but absent (caller passed empty context)"
       (TextMap.member dexChoiceContextKey extraArgs.context.values)
 
--- | Mock V2.Allocation. Carries the spec verbatim; settlement/cancel/
--- withdraw archive self; adjust archives + recreates with combined legs;
--- settle conditionally creates a next-iteration allocation.
 template MockAllocation with
     admin : Party
-      -- ^ The asset admin / mock registrar. Sole signatory.
     settlement : V2.SettlementInfo
     spec : V2.AllocationSpecification
     createdAt : Time
@@ -100,8 +64,6 @@ template MockAllocation with
       allocation_cancelExtraObservers _ = []
       allocation_withdrawExtraObservers _ = []
 
-      -- The arg carries extraTransferLegSides + nextIterationFunding;
-      -- there is no separate adjust step.
       allocation_settleImpl self arg = do
         archive self
         nextCid <- case arg.nextIterationFunding of
@@ -133,22 +95,13 @@ template MockAllocation with
           authorizerHoldingCids = TextMap.empty
           meta = emptyMetadata
 
--- | Mock V2.AllocationFactory. Creates a `MockAllocation` and returns
--- `AllocationInstructionResult_Completed` immediately. Real registries
--- may take multiple steps via `AllocationInstruction`; the mock skips
--- that.
---
--- `users` is the observer list. In production this would be replaced by
--- explicit-disclosure on the factory CID; for the mock we just put any
--- party that needs to exercise on it (operators, traders, LPs) into
--- `users`.
+-- Creates a MockAllocation and completes immediately (no AllocationInstruction
+-- step). `users` is the observer list standing in for explicit disclosure.
 template MockAllocationFactory with
     admin : Party
     users : [Party]
     requireContext : Bool
-      -- ^ When True, allocate asserts the caller supplied a non-empty
-      --   choice context. Lets a test prove the DEX threads context
-      --   through; default-False keeps lenient mocks for other tests.
+      -- ^ When True, allocate asserts a non-empty choice context was supplied.
   where
     signatory admin
     observer users
@@ -179,8 +132,6 @@ template MockAllocationFactory with
           admin
           meta = emptyMetadata
 
--- | Mock V2.SettlementFactory. For each allocation in the batch,
--- exercise its `Allocation_Settle` choice and collect the results.
 template MockSettlementFactory with
     admin : Party
     users : [Party]
@@ -213,8 +164,6 @@ template MockSettlementFactory with
         pure V2.SettlementFactoryView with
           admin
           meta = emptyMetadata
-
--- Convenience factories for tests ------------------------------------------
 
 createMockAllocationFactory : Party -> [Party] -> Update (ContractId V2.AllocationFactory)
 createMockAllocationFactory admin users = do

@@ -1,19 +1,9 @@
 module CantonDex.Dex.OrderMatchExecution where
 
--- Order matching and settlement execution.
---
--- Implements the prefunded trade pattern:
---   1. both orders already have prefunded allocations (no transfer
---      legs, just nextIterationFunding)
---   2. the matcher builds FinalizedAllocation entries carrying the
---      concrete transfer leg sides + residual next-iteration funding
---   3. the settle batch consumes the allocations in one call
---   4. next-iteration allocations are either stored on
---      partially-filled orders or cancelled to release unused funds
---
--- The concrete transfer leg sides flow through the SettleBatch call
--- via FinalizedAllocation.extraTransferLegSides; there is no separate
--- adjust step.
+-- Order matching settlement: both orders are already prefunded (no legs, just
+-- nextIterationFunding); the matcher builds FinalizedAllocations carrying the
+-- concrete leg sides + residual funding, and one settle batch consumes them.
+-- Next-iteration allocations are stored on partially-filled orders or cancelled.
 
 import DA.TextMap qualified as TextMap
 
@@ -22,7 +12,7 @@ import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
 import CantonDex.Trading.Utils qualified as Utils
-import CantonDex.Trading.WorkflowConstructors qualified as WC
+import CantonDex.Trading.WorkflowConstructors (emptyExtraArgs)
 
 data MatchedOrderPair = MatchedOrderPair with
     buyerAccount : V2.Account
@@ -61,11 +51,6 @@ mkMatchTransferLegs match =
           meta = emptyMetadata
       ]
 
-emptyExtraArgs : ExtraArgs
-emptyExtraArgs = ExtraArgs with
-  context = emptyChoiceContext
-  meta = emptyMetadata
-
 template OrderMatchExecution with
     operator : Party
     matchId : Text
@@ -89,14 +74,9 @@ template OrderMatchExecution with
               cid = None
               meta = emptyMetadata
 
-        -- Build per-allocation FinalizedAllocations. Each side
-        -- authorizes both legs (buyer is receiver of base + sender of
-        -- quote; seller is sender of base + receiver of quote). The
-        -- side projection in Utils.legsToSides filters legs each
-        -- account participates in. nextIterationFunding is left to the
-        -- registry-side accounting layer (the registry rebuilds the
-        -- next iteration allocation when `*HasRemainder` is True; we
-        -- signal this by passing `Some empty` vs `None`).
+        -- Each side authorizes both legs; legsToSides projects each account's
+        -- own sides. `Some empty` vs `None` funding signals whether the
+        -- registry rebuilds a next-iteration allocation for the remainder.
         let buyerFunding = if buyerHasRemainder then Some TextMap.empty else None
             sellerFunding = if sellerHasRemainder then Some TextMap.empty else None
             buyerFinalized = Utils.mkFinalizedAllocation

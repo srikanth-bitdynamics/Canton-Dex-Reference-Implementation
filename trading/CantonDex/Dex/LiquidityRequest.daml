@@ -1,14 +1,7 @@
 module CantonDex.Dex.LiquidityRequest where
 
--- LP-initiated pool deposit and withdrawal requests.
---
--- Traffic-cost split:
---   - LP pays for creating this request (their own intent)
---   - LP pays for accepting the downstream allocation requests for the
---     deposit assets, or for the LP-burn allocation on withdraw
---   - operator pays for binding the request into Pool state and the
---     downstream Pool_AddLiquidity / Pool_RemoveLiquidity orchestration
---   - lpRegistrar pays for the LP holding mint/burn on the registry side
+-- LP-initiated pool deposit and withdrawal requests: the LP signs its intent,
+-- the operator binds it into the downstream Pool orchestration.
 
 template LiquidityDepositRequest with
     operator : Party
@@ -37,9 +30,8 @@ template LiquidityDepositRequest with
         debug $ "LiquidityDepositRequest rejected: " <> reason
         pure ()
 
-    -- After binding, the operator drives the allocation-request creation
-    -- targeted at this LP. This choice archives the deposit intent so it
-    -- cannot be double-bound.
+    -- Archives the deposit intent so it cannot be double-bound; the operator
+    -- then drives the allocation-request creation for this LP.
     choice LiquidityDepositRequest_Bind : ()
       controller operator
       do pure ()

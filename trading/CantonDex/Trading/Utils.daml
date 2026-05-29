@@ -1,24 +1,7 @@
 module CantonDex.Trading.Utils where
 
--- Helper layer over the AllocationV2 API (vendored from splice).
---
--- Key API deltas absorbed here:
---   - `HoldingV2.Account.owner : Optional Party` (was `Party`). Special
---     accounts (mint source, burn target) can have `None`. DEX flows
---     never authorize against special accounts, so we expose
---     `accountOwner` that panics on `None`.
---   - `AllocationSpecification.transferLegs : [TransferLeg]`
---       → `transferLegSides : [TransferLegSide]`. We project legs to
---     sides at the construction boundary via `legToSide` / `legsToSides`.
---   - `Allocation_Adjust` choice removed. Its semantics (attach extra
---     transfer legs to an open allocation) now flow through
---     `SettlementFactory_SettleBatch.allocations :
---     [FinalizedAllocation { allocationCid, extraTransferLegSides,
---     nextIterationFunding }]`.
---   - `Allocation_*Result` types unified into
---     `AllocationResult { output, authorizerHoldingCids, meta }` with
---     `AllocationResult_Output` as a sum
---     (Pending / Settled / Cancelled / Withdrawn).
+-- Helper layer over the AllocationV2 surface: account shims, the
+-- leg -> leg-side projection, funding arithmetic, and allocation/spec builders.
 
 import DA.Map qualified as Map
 import DA.Optional (isNone)
@@ -30,12 +13,8 @@ import Splice.Api.Token.MetadataV1 (emptyMetadata)
 
 type Funding = TextMap.TextMap Decimal
 
--- Account.owner shim ----------------------------------------------------
-
--- Force-unwrap an Account.owner; panics on `None` (a special account
--- managed by an instrument admin, e.g. the source of a mint). DEX
--- flows never authorize against special accounts, so any caller path
--- that hits `None` is a programming error.
+-- | Account.owner, panicking on the owner-None special accounts. DEX flows
+-- never authorize against those, so hitting None is a programming error.
 accountOwner : HoldingV2.Account -> Party
 accountOwner account = case account.owner of
   Some owner -> owner
@@ -44,12 +23,8 @@ accountOwner account = case account.owner of
 basicAccount : Party -> HoldingV2.Account
 basicAccount owner = HoldingV2.Account (Some owner) None ""
 
--- Canonical Token-Standard-V2 mint/burn account identities. These mirror
--- `Splice.TokenStandard.Utils` (which our `trading` package does not
--- depend on): a special account with `owner = None` and the standard id.
--- They are the ONLY accounts a registry treats as admin-authorized
--- mint/burn sources — see the shape + actor checks in
--- `CantonDex.Registry.V2`.
+-- Canonical Token-Standard mint/burn accounts (owner None + standard id):
+-- the ONLY accounts Registry.V2 treats as admin-authorized mint/burn sources.
 mintAccountId : Text
 mintAccountId = "cip-112/mint"
 
@@ -62,9 +37,6 @@ mintAccount = HoldingV2.Account None None mintAccountId
 burnAccount : HoldingV2.Account
 burnAccount = HoldingV2.Account None None burnAccountId
 
--- True for exactly the two standard mint/burn accounts (owner None + the
--- canonical id). A registry must NOT treat any other `owner = None`
--- account as a mint/burn source.
 isMintAccount : HoldingV2.Account -> Bool
 isMintAccount a = isNone a.owner && a.id == mintAccountId
 
@@ -77,8 +49,6 @@ accountParties account =
   in case account.provider of
     Some provider | provider /= ownerParty -> [ownerParty, provider]
     _ -> [ownerParty]
-
--- Allocation helpers ---------------------------------------------------
 
 allocationAdmin : V2.AllocationSpecification -> Party
 allocationAdmin allocation = allocation.admin
@@ -133,9 +103,7 @@ adjustedNextIterationFunding authorizer currentFunding additionalTransferLegs =
       currentFunding
       (netFundingDelta authorizer additionalTransferLegs)
 
--- Project a leg into the leg-side relevant to the given authorizer
--- account. Returns `None` when the authorizer is neither sender nor
--- receiver of the leg.
+-- | Project a leg into the authorizer's side, or None if it is neither end.
 legToSide : HoldingV2.Account -> V2.TransferLeg -> Optional V2.TransferLegSide
 legToSide authorizer leg
   | leg.sender == authorizer = Some V2.TransferLegSide with
@@ -154,17 +122,11 @@ legToSide authorizer leg
       meta = leg.meta
   | otherwise = None
 
--- Project a list of legs into the leg-sides authorized by an account
--- (dropping any leg the account is not part of).
 legsToSides : HoldingV2.Account -> [V2.TransferLeg] -> [V2.TransferLegSide]
 legsToSides authorizer = mapOptional (legToSide authorizer)
   where
     mapOptional f = foldr (\a acc -> case f a of Some b -> b :: acc; None -> acc) []
 
--- Note: as of the V2 pre-freeze API, `settlement` is no longer carried
--- inside `AllocationSpecification` (it is passed separately to
--- `AllocationFactory_Allocate`), and the per-allocation
--- `settlementDeadline` lives on the spec.
 mkIteratedAllocationSpecification
   : Party
   -> HoldingV2.Account
@@ -183,7 +145,7 @@ mkIteratedAllocationSpecification admin authorizer settlementDeadline transferLe
     committed
     meta = emptyMetadata
 
--- Prefunded allocation: no transfer legs, only next-iteration funding.
+-- | Prefunded allocation: no transfer legs, only next-iteration funding.
 mkPrefundedAllocationSpecification
   : Party
   -> HoldingV2.Account
@@ -214,10 +176,8 @@ mkCommittedPoolAllocationSpecification admin authorizer settlementDeadline nextI
     (Some nextIterationFunding)
     True
 
--- Construct a FinalizedAllocation for SettlementFactory_SettleBatch
--- that adds extra transfer-leg sides (the iterated-settlement
--- equivalent of the retired Allocation_Adjust choice) and optionally
--- reserves funding for the next iteration.
+-- | FinalizedAllocation carrying extra leg-sides (the iterated-settlement
+-- replacement for Allocation_Adjust) and optional next-iteration funding.
 mkFinalizedAllocation
   : ContractId V2.Allocation
   -> [V2.TransferLegSide]
@@ -229,15 +189,13 @@ mkFinalizedAllocation allocationCid extraTransferLegSides nextIterationFunding =
     extraTransferLegSides
     nextIterationFunding
 
--- Bare FinalizedAllocation: settle as-is, no extra legs, no next iter.
+-- | Settle as-is: no extra legs, no next iteration.
 finalAllocation : ContractId V2.Allocation -> V2.FinalizedAllocation
 finalAllocation allocationCid =
   mkFinalizedAllocation allocationCid [] None
 
--- Extract the next-iteration allocation cids from a batch settle
--- result, paired with the allocations passed in (same order). Returns
--- `Some cid` for allocations that produced a next iteration; `None`
--- for fully-settled allocations.
+-- | Per-allocation next-iteration cids (order-preserving, Some when the
+-- allocation rolled forward, None when fully settled).
 nextIterationAllocationCids : V2.SettlementFactory_SettleBatchResult -> [Optional (ContractId V2.Allocation)]
 nextIterationAllocationCids result =
   map nextIterFromResult result.allocationSettleResults

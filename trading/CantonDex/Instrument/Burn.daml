@@ -1,15 +1,8 @@
 module CantonDex.Instrument.Burn where
 
--- Burn request / accept / reject / cancel.
---
--- The registry user guide says: at request time, holdings are
--- selected to cover the amount and locked. On accept, the locked
--- holdings are archived. On reject or cancel, they are unlocked.
---
--- For simplicity the prototype takes a SINGLE holding CID (already
--- equal to or larger than `amount`) and only handles the equal case
--- (Holding_Split would be the production answer for the larger case).
--- The operator backend selects holdings off-chain to cover the burn.
+-- Burn request workflow: the requestor locks a covering holding and signs;
+-- accept archives it, reject/cancel unlock it. The prototype takes a single
+-- holding equal to `amount` (the backend selects holdings off-chain).
 
 import CantonDex.Instrument.Credentials qualified as Cred
 import CantonDex.Instrument.Holding qualified as H
@@ -35,7 +28,6 @@ template BurnRequest with
     choice BurnRequest_Cancel : ()
       controller requestor
       do
-        -- Unlock the holding so the requestor can use it again.
         _ <- exercise lockedHoldingCid H.Holding_Unlock
         pure ()
 

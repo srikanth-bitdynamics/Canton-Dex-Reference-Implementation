@@ -217,7 +217,7 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
     assert.equal(cmd.argument.lpAmount, "1414.2135623730", "floored quote is passed on-ledger");
   });
 
-  it("settleAddLiquidity is co-signed and threads requestCid + both registries' factories", async () => {
+  it("settleAddLiquidity is co-signed and threads requestCid + both registries' factories + per-admin contexts", async () => {
     const pool = mkPool(0, 0);
     const ledger = new CapturingLedger(pool, mkLpPolicy());
     const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
@@ -251,6 +251,10 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
     assert.ok(cmd.argument.baseFactoryCid, "base/quote factory present");
     assert.ok(cmd.argument.lpFactoryCid, "LP factory present");
     assert.ok(cmd.argument.lpSettleCid, "LP settlement factory present");
+    // Split-admin contexts threaded separately, not collapsed (DEX-73).
+    assert.ok(cmd.argument.poolAdminExtraArgs, "pool.admin choice context threaded");
+    assert.ok(cmd.argument.lpRegistrarExtraArgs, "lpRegistrar choice context threaded");
+    assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");
   });
 
   // A pool whose 15 BTC / 300k USDC reserves are split across two slices
@@ -324,6 +328,10 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
     assert.deepEqual(ledger.lastSubmit!.actAs, ["op", "lp"]);
     assert.equal(cmd.argument.requestCid, "#req:1");
     assert.equal(cmd.argument.holderBurnSenderCid, "#burn:0");
+    // Split-admin contexts threaded separately, not collapsed (DEX-73).
+    assert.ok(cmd.argument.poolAdminExtraArgs, "pool.admin choice context threaded");
+    assert.ok(cmd.argument.lpRegistrarExtraArgs, "lpRegistrar choice context threaded");
+    assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");
   });
 
   it("requireDvpRules fails loudly when the venue has no PoolLiquidityRules", async () => {

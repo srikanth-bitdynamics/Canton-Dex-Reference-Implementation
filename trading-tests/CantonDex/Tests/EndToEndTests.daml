@@ -156,7 +156,8 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
       minLpTokens = 0.0
       knownTotalLpSupply = 0.0
       requestedAt = now
-      extraArgs
+      poolAdminExtraArgs = extraArgs
+      lpRegistrarExtraArgs = extraArgs
 
 -- 1. DvP add on an Unfunded pool keeps reserves backed ------------------
 

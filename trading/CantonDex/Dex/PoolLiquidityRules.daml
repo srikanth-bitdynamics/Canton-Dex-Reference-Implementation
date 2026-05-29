@@ -261,7 +261,11 @@ template PoolLiquidityRules with
         minLpTokens : Decimal
         knownTotalLpSupply : Decimal
         requestedAt : Time
-        extraArgs : ExtraArgs
+        -- Split-admin DvP: the base/quote batch settles under pool.admin and
+        -- the LP mint/burn batch under pool.lpRegistrar, so each authority
+        -- boundary carries its own registry choice context (DEX-73).
+        poolAdminExtraArgs : ExtraArgs
+        lpRegistrarExtraArgs : ExtraArgs
       controller operator, lpRegistrar
       do
         -- Every LP-authored allocation must be unexpired (the registry does
@@ -312,16 +316,16 @@ template PoolLiquidityRules with
             lpMintLeg = Lp.lpMintLeg lpRegistrar recipientAcct pool.lpInstrumentId.id lpAmount
 
         opBaseRecv <- exercise baseFactoryCid
-          (mkOperatorReceiver operator pool.admin settlement baseDepositLeg requestedAt extraArgs)
+          (mkOperatorReceiver operator pool.admin settlement baseDepositLeg requestedAt poolAdminExtraArgs)
           >>= PM.extractCompleted
         opQuoteRecv <- exercise quoteFactoryCid
-          (mkOperatorReceiver operator pool.admin settlement quoteDepositLeg requestedAt extraArgs)
+          (mkOperatorReceiver operator pool.admin settlement quoteDepositLeg requestedAt poolAdminExtraArgs)
           >>= PM.extractCompleted
         regMint <- exercise lpFactoryCid
           (V2.AllocationFactory_Allocate with
              settlement
              allocation = Lp.mintSenderSpec lpRegistrar lpMintLeg
-             requestedAt; inputHoldingCids = []; actors = [lpRegistrar]; extraArgs)
+             requestedAt; inputHoldingCids = []; actors = [lpRegistrar]; extraArgs = lpRegistrarExtraArgs)
           >>= PM.extractCompleted
 
         -- base/quote batch (pool.admin): deposits in, operator receivers roll
@@ -338,7 +342,7 @@ template PoolLiquidityRules with
                 (Some (TextMap.fromList [(pool.quoteInstrumentId, quoteAmount)]))
             ]
           actors = [operator]
-          extraArgs
+          extraArgs = poolAdminExtraArgs
         (nextBaseAllocCid, nextQuoteAllocCid) <-
           case Utils.nextIterationAllocationCids bqResult of
             [_, _, Some b, Some q] -> pure (b, q)
@@ -350,7 +354,7 @@ template PoolLiquidityRules with
           transferLegs = [lpMintLeg]
           allocations = [Utils.finalAllocation regMint, Utils.finalAllocation lpReceiptCid]
           actors = [operator]
-          extraArgs
+          extraArgs = lpRegistrarExtraArgs
 
         baseSliceCid <- create PSlice.PoolSlice with
           poolId = pool.poolId; operator; side = BaseSide
@@ -402,7 +406,9 @@ template PoolLiquidityRules with
         baseQuoteSettleCid : ContractId V2.SettlementFactory
         lpSettleCid : ContractId V2.SettlementFactory
         requestedAt : Time
-        extraArgs : ExtraArgs
+        -- Per-authority registry choice contexts (see SettleAdd / DEX-73).
+        poolAdminExtraArgs : ExtraArgs
+        lpRegistrarExtraArgs : ExtraArgs
       controller operator, lpRegistrar
       do
         forA_ [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
@@ -447,7 +453,7 @@ template PoolLiquidityRules with
           (V2.AllocationFactory_Allocate with
              settlement
              allocation = Lp.burnReceiptSpec lpRegistrar burnLeg
-             requestedAt; inputHoldingCids = []; actors = [lpRegistrar]; extraArgs)
+             requestedAt; inputHoldingCids = []; actors = [lpRegistrar]; extraArgs = lpRegistrarExtraArgs)
           >>= PM.extractCompleted
 
         -- base/quote batch (pool.admin): per-slice delivery legs to the holder
@@ -462,7 +468,7 @@ template PoolLiquidityRules with
               ++ quoteDel.sliceFinalizeds
               ++ [Utils.finalAllocation holderQuoteReceiptCid]
           actors = [operator]
-          extraArgs
+          extraArgs = poolAdminExtraArgs
         -- Roll-forward (Some) entries are the boundary slices, in order:
         -- base boundary then quote boundary.
         let someNexts = [ c | Some c <- Utils.nextIterationAllocationCids bqResult ]
@@ -481,7 +487,7 @@ template PoolLiquidityRules with
           transferLegs = [burnLeg]
           allocations = [Utils.finalAllocation holderBurnSenderCid, Utils.finalAllocation regBurn]
           actors = [operator]
-          extraArgs
+          extraArgs = lpRegistrarExtraArgs
 
         forA_ (baseDel.drainedSliceCids ++ quoteDel.drainedSliceCids) archive
         -- Re-wrap each boundary slice: archive the old; create a fresh one for

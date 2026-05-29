@@ -1,29 +1,20 @@
 module CantonDex.Instrument.Transfer where
 
--- Transfer offer / accept / reject / withdraw + TransferPreapproval.
---
--- Mirrors the Registry Utility user guide. Two paths:
---   - offer/accept (default): sender locks holding; receiver accepts
---     to take ownership.
---   - direct (preapproved): if the receiver has a TransferPreapproval
---     for this admin (and optionally for this instrument id), the
---     sender's offer is treated as immediately accepted by the
---     registry. The prototype models this as a separate
---     TransferPreapproved choice the sender can take when the
---     preapproval contract is in scope.
+-- Transfer offer/accept/reject/withdraw plus TransferPreapproval. Two paths:
+-- offer/accept (sender locks, receiver accepts) and direct (a receiver
+-- preapproval lets the sender deliver without an explicit accept).
 
 import CantonDex.Instrument.Credentials qualified as Cred
 import CantonDex.Instrument.Holding qualified as H
 import CantonDex.Instrument.InstrumentConfiguration qualified as IC
 
--- | A receiver-issued preapproval that lets specific admins (and
--- optionally specific instrument ids) deliver to the receiver without
--- an explicit accept step.
+-- | Receiver-issued preapproval letting an admin (optionally scoped to
+-- instrument ids) deliver without an accept step.
 template TransferPreapproval with
     receiver : Party
     admin : Party
     instrumentIds : [Text]
-      -- ^ Empty list = preapproval for all instruments under `admin`.
+      -- ^ Empty = all instruments under `admin`.
   where
     signatory receiver
     observer admin
@@ -32,14 +23,11 @@ template TransferPreapproval with
       controller receiver
       do pure ()
 
--- | Result of accepting a transfer.
 data TransferOffer_AcceptResult = TransferOffer_AcceptResult with
     receiverHoldingCid : ContractId H.Holding
   deriving (Eq, Show)
 
--- | Sender-signed transfer offer. Sender's holding is pre-locked.
--- Receiver accepts to take ownership; receiver rejects to release;
--- sender withdraws to release.
+-- | Sender-signed offer over a pre-locked holding.
 template TransferOffer with
     sender : Party
     receiver : Party
@@ -80,7 +68,7 @@ template TransferOffer with
         assertMsg "config instrumentId mismatch" (config.instrumentId == instrumentId)
         assertMsg "config admin mismatch" (config.admin == admin)
 
-        -- Both sender and receiver must satisfy the holder requirements.
+        -- Both ends must satisfy the holder requirements.
         let senderOk = null config.holderRequirements
                     || Cred.verifyCredentials sender config.holderRequirements senderClaims
             receiverOk = null config.holderRequirements
@@ -100,9 +88,7 @@ template TransferOffer with
           locked = False
         pure TransferOffer_AcceptResult with receiverHoldingCid
 
-    -- Direct (preapproved) acceptance: the sender exercises this when
-    -- a matching TransferPreapproval is in scope. The receiver's
-    -- preapproval contract authorizes the implicit accept.
+    -- Direct acceptance against a matching receiver preapproval.
     choice TransferOffer_AcceptPreapproved : TransferOffer_AcceptResult
       with
         preapprovalCid : ContractId TransferPreapproval

@@ -68,6 +68,10 @@ class CapturingLedger implements LedgerSubmitter {
         return [];
       case "CantonDex.Dex.PoolRules:PoolRules":
         return [{ contractId: p.rulesCid, operator: p.operator } as unknown as T];
+      case "CantonDex.Dex.LpDvpRules:LpDvpRules":
+        return [{
+          contractId: "#dvp:0", operator: p.operator, lpRegistrar: p.lpRegistrar,
+        } as unknown as T];
       case "CantonDex.Dex.LPToken:LPTokenPolicy":
         return this.servePolicy ? [this.policy as unknown as T] : [];
       default:
@@ -220,6 +224,151 @@ describe("PoolService.initialize (DEX-46)", () => {
           requestedAt: "1970-01-01T00:00:00Z" as never,
         }),
       /no active LPTokenPolicy/,
+    );
+  });
+});
+
+describe("PoolService DvP liquidity (DEX-53)", () => {
+  const requestedAt = "1970-01-01T00:00:00Z" as never;
+
+  it("requestAddLiquidity creates the LiquidityAllocationRequest with a floored LP quote", async () => {
+    const pool = mkPool(0, 0); // unfunded → first-funding sqrt quote
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    const out = await svc.requestAddLiquidity({
+      poolCid: pool.contractId,
+      recipient: "lp" as never,
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as {
+      kind: string; templateId: string; contractId: string; choice: string;
+      argument: Record<string, unknown>;
+    };
+    assert.equal(cmd.templateId, "CantonDex.Dex.LpDvpRules:LpDvpRules");
+    assert.equal(cmd.choice, "LpDvpRules_RequestAddLiquidity");
+    assert.equal(cmd.contractId, "#dvp:0", "drives the venue LpDvpRules contract");
+    assert.deepEqual(ledger.lastSubmit!.actAs, ["op"], "request is operator-only");
+    assert.equal(cmd.argument.recipient, "lp");
+    assert.equal(cmd.argument.baseAmount, "10.0");
+    // sqrt(10 * 200000) = sqrt(2_000_000) ≈ 1414.2135623..., floored to 10dp.
+    assert.equal(out.lpAmount, "1414.2135623730");
+    assert.equal(cmd.argument.lpAmount, "1414.2135623730", "floored quote is passed on-ledger");
+  });
+
+  it("settleAddLiquidity is co-signed and threads requestCid + both registries' factories", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    await svc.settleAddLiquidity({
+      poolCid: pool.contractId,
+      requestCid: "#req:0" as never,
+      recipient: "lp" as never,
+      lpBaseDepositCid: "#b:0" as never,
+      lpQuoteDepositCid: "#q:0" as never,
+      lpReceiptCid: "#r:0" as never,
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      minLpTokens: "0.0",
+      knownTotalLpSupply: "0.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as {
+      choice: string; argument: Record<string, unknown>;
+    };
+    assert.equal(cmd.choice, "LpDvpRules_SettleAddLiquidity");
+    assert.deepEqual(
+      ledger.lastSubmit!.actAs,
+      ["op", "lp"],
+      "settle is co-signed [operator, lpRegistrar]",
+    );
+    assert.equal(cmd.argument.requestCid, "#req:0");
+    assert.equal(cmd.argument.lpBaseDepositCid, "#b:0");
+    assert.equal(cmd.argument.lpReceiptCid, "#r:0");
+    assert.ok(cmd.argument.baseFactoryCid, "base/quote factory present");
+    assert.ok(cmd.argument.lpFactoryCid, "LP factory present");
+    assert.ok(cmd.argument.lpSettleCid, "LP settlement factory present");
+  });
+
+  it("requestRemoveLiquidity passes per-slice out amounts", async () => {
+    const pool = mkPool(10, 200_000);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    await svc.requestRemoveLiquidity({
+      poolCid: pool.contractId,
+      holder: "lp" as never,
+      baseOuts: ["10.0", "5.0"],
+      quoteOuts: ["200000.0", "100000.0"],
+      lpBurnAmount: "100.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as {
+      choice: string; argument: Record<string, unknown>;
+    };
+    assert.equal(cmd.choice, "LpDvpRules_RequestRemoveLiquidity");
+    assert.deepEqual(cmd.argument.baseOuts, ["10.0", "5.0"]);
+    assert.deepEqual(cmd.argument.quoteOuts, ["200000.0", "100000.0"]);
+    assert.equal(cmd.argument.lpBurnAmount, "100.0");
+  });
+
+  it("settleRemoveLiquidity is co-signed and threads the holder allocation cids", async () => {
+    const pool = mkPool(10, 200_000);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    await svc.settleRemoveLiquidity({
+      poolCid: pool.contractId,
+      requestCid: "#req:1" as never,
+      holder: "lp" as never,
+      lpTokensToRedeem: "100.0",
+      knownTotalLpSupply: "1414.2135623730",
+      minBaseOut: "0.0",
+      minQuoteOut: "0.0",
+      baseSliceCids: ["#bs:0" as never],
+      quoteSliceCids: ["#qs:0" as never],
+      holderBaseReceiptCid: "#br:0" as never,
+      holderQuoteReceiptCid: "#qr:0" as never,
+      holderBurnSenderCid: "#burn:0" as never,
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as {
+      choice: string; argument: Record<string, unknown>;
+    };
+    assert.equal(cmd.choice, "LpDvpRules_SettleRemoveLiquidity");
+    assert.deepEqual(ledger.lastSubmit!.actAs, ["op", "lp"]);
+    assert.equal(cmd.argument.requestCid, "#req:1");
+    assert.equal(cmd.argument.holderBurnSenderCid, "#burn:0");
+    assert.deepEqual(cmd.argument.baseSliceCids, ["#bs:0"]);
+  });
+
+  it("requireDvpRules fails loudly when the venue has no LpDvpRules", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    // Suppress the LpDvpRules row so lpDvpRulesCid resolves to null.
+    const origQuery = ledger.query.bind(ledger);
+    ledger.query = (async (filter) => {
+      if (filter.templateId === "CantonDex.Dex.LpDvpRules:LpDvpRules") return [];
+      return origQuery(filter);
+    }) as typeof ledger.query;
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+    await assert.rejects(
+      () =>
+        svc.requestAddLiquidity({
+          poolCid: pool.contractId,
+          recipient: "lp" as never,
+          baseAmount: "10.0",
+          quoteAmount: "200000.0",
+          requestedAt,
+        }),
+      /no LpDvpRules/,
     );
   });
 });

@@ -15,6 +15,7 @@ import { toFloat } from "../policy/index.js";
 import * as dec from "./decimal.js";
 import type {
   Decimal,
+  LiquidityAllocationRequestContract,
   LpDvpRulesContract,
   LPTokenPolicy,
   Party,
@@ -26,6 +27,8 @@ import type {
   PoolStateContract,
   Time,
   V2Account,
+  V2AllocationSpecification,
+  V2SettlementInfo,
 } from "../types.js";
 
 export interface PoolInitializeInput {
@@ -86,6 +89,12 @@ export interface PoolRequestAddLiquidityResult {
   knownTotalLpSupply: Decimal;
   baseAmount: Decimal;
   quoteAmount: Decimal;
+  // The on-ledger specs (built by the choice) the wallet must author, in
+  // canonical order [base deposit, quote deposit, LP receipt], plus the
+  // settlement they settle under. The dApp wallet authors AllocationFactory
+  // _Allocate from these and posts the resulting cids back to /settle.
+  allocations: V2AllocationSpecification[];
+  settlement: V2SettlementInfo;
 }
 
 export interface PoolSettleAddLiquidityInput {
@@ -124,6 +133,10 @@ export interface PoolRequestRemoveLiquidityResult {
   quoteSliceCids: ContractId<"PoolSlice">[];
   baseOuts: Decimal[];
   quoteOuts: Decimal[];
+  // The on-ledger specs the holder authors [base receipt, quote receipt,
+  // LP burn-sender] + the settlement, for the wallet (see add result).
+  allocations: V2AllocationSpecification[];
+  settlement: V2SettlementInfo;
 }
 
 export interface PoolSettleRemoveLiquidityInput {
@@ -489,6 +502,23 @@ export class PoolService {
   }
 
   /**
+   * Read back the just-created LiquidityAllocationRequest so /request can
+   * hand the dApp the exact on-ledger specs (built by the choice) the
+   * wallet must author.
+   */
+  private async fetchRequest(
+    cid: ContractId<"LiquidityAllocationRequest">,
+  ): Promise<LiquidityAllocationRequestContract> {
+    const reqs = await this.ledger.query<LiquidityAllocationRequestContract>({
+      templateId: "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationRequest",
+      observingParty: this.operatorParty,
+    });
+    const found = reqs.find((r) => r.contractId === cid);
+    if (!found) throw new Error(`LiquidityAllocationRequest ${cid} not found after create`);
+    return found;
+  }
+
+  /**
    * LP-token quote in EXACT fixed-point decimal (matches Daml's `Decimal`
    * mul/div round-half-even; sqrt floored). Binary floats lose precision
    * once reserves exceed ~15 significant digits, which would make the quote
@@ -545,12 +575,15 @@ export class PoolService {
         },
       }),
     );
+    const req = await this.fetchRequest(requestCid);
     return {
       requestCid,
       lpAmount,
       knownTotalLpSupply: pool.totalLpSupply,
       baseAmount: input.baseAmount,
       quoteAmount: input.quoteAmount,
+      allocations: req.allocations,
+      settlement: req.settlement,
     };
   }
 
@@ -684,6 +717,7 @@ export class PoolService {
         },
       }),
     );
+    const req = await this.fetchRequest(requestCid);
     return {
       requestCid,
       knownTotalLpSupply: pool.totalLpSupply,
@@ -691,6 +725,8 @@ export class PoolService {
       quoteSliceCids: plan.quote.sliceCids,
       baseOuts: plan.base.outs,
       quoteOuts: plan.quote.outs,
+      allocations: req.allocations,
+      settlement: req.settlement,
     };
   }
 

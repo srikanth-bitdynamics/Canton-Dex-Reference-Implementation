@@ -19,7 +19,7 @@ import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState qualified as PS
 import CantonDex.Dex.PoolSlice qualified as PSlice
 import CantonDex.Dex.PoolRules qualified as PR
-import CantonDex.Dex.LPToken qualified as LP
+import CantonDex.Lp.Policy qualified as LP
 import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
 import CantonDex.Lp.Instrument qualified as Lp
 import CantonDex.Trading.Utils qualified as Utils

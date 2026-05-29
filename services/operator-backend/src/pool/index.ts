@@ -417,7 +417,7 @@ export class PoolService {
   /** Settle a DvP add. */
   async settleAddLiquidity(input: PoolSettleAddLiquidityInput): Promise<unknown> {
     const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
-    const lpPolicyCid = await this.fetchLpPolicy(pool);
+    const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
     const { depositFactories, lpFactories, depositContext, lpContext } =
       await this.loadDvpSurface(pool);
     // One `extraArgs` value is threaded through the Daml choice. That is
@@ -546,7 +546,7 @@ export class PoolService {
     const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
     // Re-derive from current state; drift since /request aborts at settle.
     const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, input.knownTotalLpSupply);
-    const lpPolicyCid = await this.fetchLpPolicy(pool);
+    const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
     const { depositFactories, lpFactories, depositContext, lpContext } =
       await this.loadDvpSurface(pool);
     // One `extraArgs` value is threaded through the Daml choice. That is
@@ -603,9 +603,9 @@ export class PoolService {
     return found;
   }
 
-  private async fetchLpPolicy(pool: Pool): Promise<ContractId<"LPTokenPolicy">> {
+  private async fetchLpAssetPolicy(pool: Pool): Promise<ContractId<"LPTokenPolicy">> {
     const policies = await this.ledger.query<LPTokenPolicy>({
-      templateId: "CantonDex.Dex.LPToken:LPTokenPolicy",
+      templateId: "CantonDex.Lp.Policy:LPTokenPolicy",
       observingParty: this.operatorParty,
     });
     const found = policies.find(

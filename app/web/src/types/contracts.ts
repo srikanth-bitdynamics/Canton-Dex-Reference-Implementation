@@ -92,8 +92,6 @@ export interface LPTokenPolicy {
   lpRegistrar: string;
   operator: string;
   lpInstrumentId: InstrumentId;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
   totalSupply: number;
   active: boolean;
 }

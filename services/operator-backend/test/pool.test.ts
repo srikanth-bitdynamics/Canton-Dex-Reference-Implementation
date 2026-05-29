@@ -86,7 +86,7 @@ class CapturingLedger implements LedgerSubmitter {
           settlement: { executors: [p.operator], id: "s", cid: null, meta: {} },
           allocations: [], requestedAt: "1970-01-01T00:00:00Z", settleAt: null,
         } as unknown as T];
-      case "CantonDex.Dex.LPToken:LPTokenPolicy":
+      case "CantonDex.Lp.Policy:LPTokenPolicy":
         return this.servePolicy ? [this.policy as unknown as T] : [];
       default:
         return [];
@@ -100,8 +100,6 @@ function mkLpPolicy(): LPTokenPolicy {
     lpRegistrar: "lp" as never,
     operator: "op" as never,
     lpInstrumentId: LP_ID,
-    baseInstrumentId: "BTC",
-    quoteInstrumentId: "USDC",
     totalSupply: "0.0",
     active: true,
   };

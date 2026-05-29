@@ -182,8 +182,6 @@ export interface LPTokenPolicy {
   lpRegistrar: Party;
   operator: Party;
   lpInstrumentId: InstrumentId;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
   totalSupply: Decimal;
   active: boolean;
 }

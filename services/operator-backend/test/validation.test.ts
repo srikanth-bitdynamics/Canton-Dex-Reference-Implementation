@@ -9,7 +9,7 @@ import { InMemoryLedger } from "../src/ledger/in-memory.js";
 import { OperatorBackend } from "../src/index.js";
 import { startHttpServer } from "../src/http/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
-import type { ContractId } from "@canton-dex/registry-client";
+import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
 
 class StubRegistry extends RegistryClient {
   constructor() {
@@ -21,6 +21,9 @@ class StubRegistry extends RegistryClient {
       settlementFactoryCid: "#settle:0" as ContractId<"SettlementFactory">,
       disclosure: [] as never[],
     };
+  }
+  override async getChoiceContext(): Promise<ChoiceContextRef> {
+    return { context: { values: {} }, disclosure: [] };
   }
 }
 

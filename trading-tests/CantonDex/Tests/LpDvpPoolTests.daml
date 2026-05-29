@@ -26,6 +26,7 @@ import CantonDex.Dex.PoolState qualified as PS
 import CantonDex.Dex.PoolSlice qualified as PSlice
 import CantonDex.Dex.PoolRules qualified as PR
 import CantonDex.Dex.LpDvpRules qualified as Dvp
+import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
 import CantonDex.Dex.LPToken qualified as LP
 import CantonDex.Lp.Instrument qualified as Lp
 import CantonDex.Registry.V2 qualified as RegV2
@@ -111,6 +112,23 @@ mkSpecDeadline : Party -> V2.Account -> [V2.TransferLeg] -> Bool -> Time -> V2.A
 mkSpecDeadline admin authorizer legs committed deadline =
   (mkSpec admin authorizer legs committed) with settlementDeadline = Some deadline
 
+-- Operator creates the directional LiquidityAllocationRequest the LP/holder
+-- accepts; `Settle*` is bound to it (3b.0). `allocations` must be exactly
+-- the specs the wallet then authors, in any order.
+requestAdd
+  : Fixture -> Party -> V2.SettlementInfo -> [V2.AllocationSpecification]
+  -> Optional Time -> Time -> Script (ContractId LAR.LiquidityAllocationRequest)
+requestAdd fx lp settlement allocations settleAt now =
+  submit fx.operator $ exerciseCmd fx.dvpCid Dvp.LpDvpRules_RequestAddLiquidity with
+    poolCid = fx.poolCid; lp; settlement; allocations; requestedAt = now; settleAt
+
+requestRemove
+  : Fixture -> Party -> V2.SettlementInfo -> [V2.AllocationSpecification]
+  -> Optional Time -> Time -> Script (ContractId LAR.LiquidityAllocationRequest)
+requestRemove fx holder settlement allocations settleAt now =
+  submit fx.operator $ exerciseCmd fx.dvpCid Dvp.LpDvpRules_RequestRemoveLiquidity with
+    poolCid = fx.poolCid; holder; settlement; allocations; requestedAt = now; settleAt
+
 -- Drive a DvP add of `baseAmount` BTC + `quoteAmount` USDC by `lp`,
 -- returning the settle result. Builds the LP's deposit + receipt
 -- allocations matching the legs LpDvpRules settles.
@@ -134,18 +152,19 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
         else min ((baseAmount * knownSupply) / reserveBase)
                  ((quoteAmount * knownSupply) / reserveQuote)
       lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
+      baseSpec = mkSpec fx.registry lpAcct [baseDepositLeg] True
+      quoteSpec = mkSpec fx.registry lpAcct [quoteDepositLeg] True
+      receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry lp "BTC" baseAmount
   quoteHold <- mintHolding fx.registry lp "USDC" quoteAmount
-  lpBaseDeposit <- mkAlloc fx.factoryCid lp settlement
-    (mkSpec fx.registry lpAcct [baseDepositLeg] True) [toInterfaceContractId baseHold] now
-  lpQuoteDeposit <- mkAlloc fx.factoryCid lp settlement
-    (mkSpec fx.registry lpAcct [quoteDepositLeg] True) [toInterfaceContractId quoteHold] now
-  lpReceipt <- mkAlloc fx.factoryCid lp settlement
-    (mkSpec fx.registry lpAcct [lpMintLeg] False) [] now
+  reqCid <- requestAdd fx lp settlement [baseSpec, quoteSpec, receiptSpec] None now
+  lpBaseDeposit <- mkAlloc fx.factoryCid lp settlement baseSpec [toInterfaceContractId baseHold] now
+  lpQuoteDeposit <- mkAlloc fx.factoryCid lp settlement quoteSpec [toInterfaceContractId quoteHold] now
+  lpReceipt <- mkAlloc fx.factoryCid lp settlement receiptSpec [] now
   submitMulti [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
-      lpPolicyCid = policyCid; recipient = lp
+      lpPolicyCid = policyCid; requestCid = reqCid; recipient = lp
       lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
@@ -210,17 +229,19 @@ testDvpRemoveDeliversToHolder = do
   aliceHs <- query @RegV2.Holding alice
   let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) aliceHs)
 
-  baseReceipt <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [baseOutLeg] False) [] now
-  quoteReceipt <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [quoteOutLeg] False) [] now
-  burnSender <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [burnLeg] True) [toInterfaceContractId lpHoldCid] now
+  let baseReceiptSpec = mkSpec fx.registry aliceAcct [baseOutLeg] False
+      quoteReceiptSpec = mkSpec fx.registry aliceAcct [quoteOutLeg] False
+      burnSpec = mkSpec fx.registry aliceAcct [burnLeg] True
+  reqCid <- requestRemove fx alice settlement [baseReceiptSpec, quoteReceiptSpec, burnSpec] None now
+  baseReceipt <- mkAlloc fx.factoryCid alice settlement baseReceiptSpec [] now
+  quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
+  burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec [toInterfaceContractId lpHoldCid] now
 
   remRes <- submitMulti [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+      requestCid = reqCid
       holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
       minBaseOut = 0.0; minQuoteOut = 0.0
       baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
@@ -268,16 +289,20 @@ testStaleQuoteRejected = do
         transferLegId = "lp-quote-deposit"; sender = bobAcct; receiver = opAcct
         amount = 20000.0; instrumentId = "USDC"; meta = emptyMetadata
       lpMintLeg = Lp.lpMintLeg fx.registry bobAcct lpId 100.0
+      bBaseSpec = mkSpec fx.registry bobAcct [baseDepositLeg] True
+      bQuoteSpec = mkSpec fx.registry bobAcct [quoteDepositLeg] True
+      bRcptSpec = mkSpec fx.registry bobAcct [lpMintLeg] False
   bBtc <- mintHolding fx.registry bob "BTC" 1.0
   bUsdc <- mintHolding fx.registry bob "USDC" 20000.0
-  bBase <- mkAlloc fx.factoryCid bob settlement (mkSpec fx.registry bobAcct [baseDepositLeg] True) [toInterfaceContractId bBtc] now
-  bQuote <- mkAlloc fx.factoryCid bob settlement (mkSpec fx.registry bobAcct [quoteDepositLeg] True) [toInterfaceContractId bUsdc] now
-  bRcpt <- mkAlloc fx.factoryCid bob settlement (mkSpec fx.registry bobAcct [lpMintLeg] False) [] now
+  bReq <- requestAdd fx bob settlement [bBaseSpec, bQuoteSpec, bRcptSpec] None now
+  bBase <- mkAlloc fx.factoryCid bob settlement bBaseSpec [toInterfaceContractId bBtc] now
+  bQuote <- mkAlloc fx.factoryCid bob settlement bQuoteSpec [toInterfaceContractId bUsdc] now
+  bRcpt <- mkAlloc fx.factoryCid bob settlement bRcptSpec [] now
   submitMultiMustFail [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      recipient = bob
+      requestCid = bReq; recipient = bob
       lpBaseDepositCid = bBase; lpQuoteDepositCid = bQuote; lpReceiptCid = bRcpt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
@@ -299,6 +324,7 @@ testSettleRequiresCoControl = do
     exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+      requestCid = coerceContractId addRes.baseSliceCid
       holder = alice; lpTokensToRedeem = PR.sqrtDecimal 2000000.0
       knownTotalLpSupply = PR.sqrtDecimal 2000000.0
       minBaseOut = 0.0; minQuoteOut = 0.0
@@ -347,17 +373,19 @@ testDvpMultiSliceRemove = do
   let lpCids = [cid | (cid, h) <- aliceHs, h.instrumentId == lpId && not h.locked]
   length lpCids === 2
 
-  baseReceipt <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [bLeg0, bLeg1] False) [] now
-  quoteReceipt <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [qLeg0, qLeg1] False) [] now
-  burnSender <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [burnLeg] True) (map toInterfaceContractId lpCids) now
+  let baseReceiptSpec = mkSpec fx.registry aliceAcct [bLeg0, bLeg1] False
+      quoteReceiptSpec = mkSpec fx.registry aliceAcct [qLeg0, qLeg1] False
+      burnSpec = mkSpec fx.registry aliceAcct [burnLeg] True
+  reqCid <- requestRemove fx alice settlement [baseReceiptSpec, quoteReceiptSpec, burnSpec] None now
+  baseReceipt <- mkAlloc fx.factoryCid alice settlement baseReceiptSpec [] now
+  quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
+  burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec (map toInterfaceContractId lpCids) now
 
   remRes <- submitMulti [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = add2.poolStateCid; lpPolicyCid = add2.lpPolicyCid
+      requestCid = reqCid
       holder = alice; lpTokensToRedeem = total; knownTotalLpSupply = total
       minBaseOut = 0.0; minQuoteOut = 0.0
       baseSliceCids = [add1.baseSliceCid, add2.baseSliceCid]
@@ -425,19 +453,19 @@ testExpiredAddRejected = do
   -- The QUOTE-deposit allocation carries an already-expired deadline; the
   -- base deposit is fresh. The settle must still abort, proving every
   -- LP-authored allocation is deadline-checked, not just the base leg.
-  lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [baseDepositLeg] True) [toInterfaceContractId baseHold] now
-  lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement
-    (mkSpecDeadline fx.registry aliceAcct [quoteDepositLeg] True pastDeadline)
-    [toInterfaceContractId quoteHold] now
-  lpReceipt <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [lpMintLeg] False) [] now
+  let baseSpec = mkSpec fx.registry aliceAcct [baseDepositLeg] True
+      quoteSpec = mkSpecDeadline fx.registry aliceAcct [quoteDepositLeg] True pastDeadline
+      receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
+  reqCid <- requestAdd fx alice settlement [baseSpec, quoteSpec, receiptSpec] None now
+  lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
+  lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
+  lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
   -- Even with a fresh `requestedAt`, the settle must abort on the expired
   -- ledger-anchored deadline.
   submitMultiMustFail [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; recipient = alice
+      lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = alice
       lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
@@ -472,16 +500,18 @@ testExpiredRemoveRejected = do
   aliceHs <- query @RegV2.Holding alice
   let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) aliceHs)
   -- The BASE-receipt allocation is expired; the burn-sender is fresh.
-  baseReceipt <- mkAlloc fx.factoryCid alice settlement
-    (mkSpecDeadline fx.registry aliceAcct [baseOutLeg] False pastDeadline) [] now
-  quoteReceipt <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [quoteOutLeg] False) [] now
-  burnSender <- mkAlloc fx.factoryCid alice settlement
-    (mkSpec fx.registry aliceAcct [burnLeg] True) [toInterfaceContractId lpHoldCid] now
+  let baseReceiptSpec = mkSpecDeadline fx.registry aliceAcct [baseOutLeg] False pastDeadline
+      quoteReceiptSpec = mkSpec fx.registry aliceAcct [quoteOutLeg] False
+      burnSpec = mkSpec fx.registry aliceAcct [burnLeg] True
+  reqCid <- requestRemove fx alice settlement [baseReceiptSpec, quoteReceiptSpec, burnSpec] None now
+  baseReceipt <- mkAlloc fx.factoryCid alice settlement baseReceiptSpec [] now
+  quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
+  burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec [toInterfaceContractId lpHoldCid] now
   submitMultiMustFail [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+      requestCid = reqCid
       holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
       minBaseOut = 0.0; minQuoteOut = 0.0
       baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
@@ -490,5 +520,90 @@ testExpiredRemoveRejected = do
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      requestedAt = now; extraArgs = emptyExtraArgs
+  pure ()
+
+-- 3b.0 (request-bound settle): a supplied allocation whose spec is NOT one
+-- the accepted request named must be rejected — the operator cannot
+-- substitute a different allocation shape than the LP authored.
+testSettleRejectsForeignAllocation : Script ()
+testSettleRejectsForeignAllocation = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  let aliceAcct = Utils.basicAccount alice
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PR.poolSettlement fx.poolCid fx.operator
+      baseDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = aliceAcct; receiver = opAcct
+        amount = 10.0; instrumentId = "BTC"; meta = emptyMetadata
+      quoteDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
+        amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
+      lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId (PR.sqrtDecimal 2000000.0)
+      baseSpec = mkSpec fx.registry aliceAcct [baseDepositLeg] True
+      quoteSpec = mkSpec fx.registry aliceAcct [quoteDepositLeg] True
+      receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
+      forgedBaseLeg = baseDepositLeg with amount = 999.0
+      forgedSpec = mkSpec fx.registry aliceAcct [forgedBaseLeg] True
+  baseHold <- mintHolding fx.registry alice "BTC" 999.0
+  quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
+  reqCid <- requestAdd fx alice settlement [baseSpec, quoteSpec, receiptSpec] None now
+  lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement forgedSpec [toInterfaceContractId baseHold] now
+  lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
+  lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
+  submitMultiMustFail [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+      lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = alice
+      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+      lpReceiptCid = lpReceipt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+      knownTotalLpSupply = 0.0
+      requestedAt = now; extraArgs = emptyExtraArgs
+  pure ()
+
+-- 3b.0 (request-bound settle): the request's `settleAt` is the single
+-- authoritative deadline. A request whose settleAt is already past must be
+-- rejected even when every supplied allocation is itself fresh.
+testSettleRejectsExpiredRequest : Script ()
+testSettleRejectsExpiredRequest = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  let pastDeadline = addRelTime now (hours (-1))
+      aliceAcct = Utils.basicAccount alice
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PR.poolSettlement fx.poolCid fx.operator
+      baseDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = aliceAcct; receiver = opAcct
+        amount = 10.0; instrumentId = "BTC"; meta = emptyMetadata
+      quoteDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
+        amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
+      lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId (PR.sqrtDecimal 2000000.0)
+      baseSpec = mkSpec fx.registry aliceAcct [baseDepositLeg] True
+      quoteSpec = mkSpec fx.registry aliceAcct [quoteDepositLeg] True
+      receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
+  baseHold <- mintHolding fx.registry alice "BTC" 10.0
+  quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
+  reqCid <- requestAdd fx alice settlement [baseSpec, quoteSpec, receiptSpec] (Some pastDeadline) now
+  lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
+  lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
+  lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
+  submitMultiMustFail [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+      lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = alice
+      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+      lpReceiptCid = lpReceipt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+      knownTotalLpSupply = 0.0
       requestedAt = now; extraArgs = emptyExtraArgs
   pure ()

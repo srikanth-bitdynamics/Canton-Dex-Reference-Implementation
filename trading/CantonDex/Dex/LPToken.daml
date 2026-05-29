@@ -8,10 +8,6 @@ module CantonDex.Dex.LPToken where
 import CantonDex.Registry.V2 qualified as RegV2
 import Splice.Api.Token.HoldingV2 qualified as V2
 
-data LPTokenPolicy_BurnResult = LPTokenPolicy_BurnResult with
-    policyCid : ContractId LPTokenPolicy
-  deriving (Eq, Show)
-
 data LPMintResultV2 = LPMintResultV2 with
     policyCid : ContractId LPTokenPolicy
     holdingCid : ContractId RegV2.Holding
@@ -93,41 +89,3 @@ template LPMintRequest with
         pure LPMintResultV2 with
           policyCid = newPolicyCid
           holdingCid
-
--- | Legacy compatibility path for LP burning.
-template LPBurnRequest with
-    operator : Party
-    lpRegistrar : Party
-    lpInstrumentId : V2.InstrumentId
-    holder : Party
-    amount : Decimal
-    policyCid : ContractId LPTokenPolicy
-  where
-    signatory operator
-    observer lpRegistrar, holder
-
-    ensure amount > 0.0
-
-    choice LPBurnRequest_Cancel : ()
-      controller operator
-      do pure ()
-
-    choice LPBurnRequest_Consume : ()
-      controller lpRegistrar
-      do pure ()
-
-    choice LPBurnRequest_AcceptAndBurn : LPTokenPolicy_BurnResult
-      with
-        holderHoldingCid : ContractId RegV2.Holding
-      controller holder, lpRegistrar
-      do
-        h <- fetch holderHoldingCid
-        assertMsg "Holding owner mismatch" (h.owner == holder)
-        -- Compare the full (admin, id) instrument identity, not just the
-        -- textual id — two registrars can reuse the same text id.
-        let heldId = V2.InstrumentId with admin = h.admin; id = h.instrumentId
-        assertMsg "Holding instrument mismatch" (heldId == lpInstrumentId)
-        assertMsg "Holding amount must equal burn amount" (h.amount == amount)
-        archive holderHoldingCid
-        newPolicyCid <- exercise policyCid LPTokenPolicy_RecordBurn with amount
-        pure LPTokenPolicy_BurnResult with policyCid = newPolicyCid

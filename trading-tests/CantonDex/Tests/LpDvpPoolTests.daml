@@ -177,6 +177,44 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
       baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = knownSupply
       requestedAt = now; extraArgs = emptyExtraArgs
 
+-- First-funding add with an EXPLICIT receipt LP amount (overriding the
+-- fair-share quote) — used to exercise the symmetric dust bound.
+dvpAddWithLp
+  : Fixture -> ContractId PS.PoolState -> ContractId LP.LPTokenPolicy -> Party
+  -> Decimal -> Decimal -> Decimal -> Time
+  -> Script Dvp.LpDvpRules_SettleAddResult
+dvpAddWithLp fx stateCid policyCid lp baseAmount quoteAmount lpAmount now = do
+  let lpAcct = Utils.basicAccount lp
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PR.poolSettlement fx.poolCid fx.operator
+      baseDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = lpAcct; receiver = opAcct
+        amount = baseAmount; instrumentId = "BTC"; meta = emptyMetadata
+      quoteDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
+        amount = quoteAmount; instrumentId = "USDC"; meta = emptyMetadata
+      lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
+      baseSpec = mkSpec fx.registry lpAcct [baseDepositLeg] True
+      quoteSpec = mkSpec fx.registry lpAcct [quoteDepositLeg] True
+      receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
+  baseHold <- mintHolding fx.registry lp "BTC" baseAmount
+  quoteHold <- mintHolding fx.registry lp "USDC" quoteAmount
+  reqCid <- requestAdd fx lp baseAmount quoteAmount lpAmount None now
+  lpBaseDeposit <- mkAlloc fx.factoryCid lp settlement baseSpec [toInterfaceContractId baseHold] now
+  lpQuoteDeposit <- mkAlloc fx.factoryCid lp settlement quoteSpec [toInterfaceContractId quoteHold] now
+  lpReceipt <- mkAlloc fx.factoryCid lp settlement receiptSpec [] now
+  submitMulti [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
+      lpPolicyCid = policyCid; requestCid = reqCid; recipient = lp
+      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+      lpReceiptCid = lpReceipt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = 0.0
+      requestedAt = now; extraArgs = emptyExtraArgs
+
 testDvpAddLiquidity : Script ()
 testDvpAddLiquidity = do
   alice <- allocateParty "alice"
@@ -653,4 +691,21 @@ testAddRejectsOverMint = do
       baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0
       requestedAt = now; extraArgs = emptyExtraArgs
+  pure ()
+
+-- 3b review #1: the over-mint bound is symmetric with the dust tolerance.
+-- A receipt a hair (< dust) above the on-ledger fair share is ACCEPTED —
+-- this is the cross-language sqrt rounding the bound defends, and a strict
+-- `<= fairLp` would wrongly abort it.
+testAddAcceptsWithinDust : Script ()
+testAddAcceptsWithinDust = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  let fairLp = PR.sqrtDecimal 2000000.0
+      nearLp = fairLp + 0.0000005   -- half the 1e-6 dust tolerance, above fair
+  res <- dvpAddWithLp fx fx.stateCid fx.policyCid alice 10.0 200000.0 nearLp now
+  res.lpTokensMinted === nearLp
+  Some state <- queryContractId fx.operator res.poolStateCid
+  state.totalLpSupply === nearLp
   pure ()

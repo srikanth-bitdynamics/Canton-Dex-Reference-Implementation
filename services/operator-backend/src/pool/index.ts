@@ -79,6 +79,18 @@ export interface PoolRequestAddLiquidityResult {
   requestCid: ContractId<"LiquidityAllocationRequest">;
   /** The LP-token amount the operator quoted (floored; the settle bounds it). */
   lpAmount: Decimal;
+  // Echoed so the dApp's settle call is self-consistent: the settle
+  // validates `knownTotalLpSupply == state.totalLpSupply`, so it must use
+  // the supply the quote was computed against.
+  knownTotalLpSupply: Decimal;
+  baseAmount: Decimal;
+  quoteAmount: Decimal;
+}
+
+export interface PoolRequestRemoveLiquidityResult {
+  requestCid: ContractId<"LiquidityAllocationRequest">;
+  /** Echoed for a self-consistent settle (see add result). */
+  knownTotalLpSupply: Decimal;
 }
 
 export interface PoolSettleAddLiquidityInput {
@@ -508,7 +520,13 @@ export class PoolService {
         },
       }),
     );
-    return { requestCid, lpAmount };
+    return {
+      requestCid,
+      lpAmount,
+      knownTotalLpSupply: pool.totalLpSupply,
+      baseAmount: input.baseAmount,
+      quoteAmount: input.quoteAmount,
+    };
   }
 
   /**
@@ -526,6 +544,11 @@ export class PoolService {
     const bqFactories = await this.registry.getFactories(pool.admin);
     const lpFactories = await this.registry.getFactories(pool.lpRegistrar);
     const bqCtx = await this.choiceContext(pool.admin);
+    // Point A: the Daml choice accepts a single `extraArgs`, threaded to
+    // both the base/quote and the LP factory/settle exercises. We use only
+    // lpCtx.disclosure here and pass bqCtx.extraArgs — correct for the
+    // self-registry (empty context). An external context-requiring LP
+    // registry would need per-admin extraArgs at both layers (deferred).
     const lpCtx = await this.choiceContext(pool.lpRegistrar);
     return retryOnContention(() =>
       this.ledger.submit({
@@ -572,10 +595,10 @@ export class PoolService {
   /** Operator half of the two-call DvP remove: create the request. */
   async requestRemoveLiquidity(
     input: PoolRequestRemoveLiquidityInput,
-  ): Promise<ContractId<"LiquidityAllocationRequest">> {
+  ): Promise<PoolRequestRemoveLiquidityResult> {
     const pool = await this.fetchPool(input.poolCid);
     const dvpRulesCid = this.requireDvpRules(pool);
-    return retryOnContention(() =>
+    const requestCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"LiquidityAllocationRequest">>({
         actAs: [this.operatorParty],
         commandId: `lp-remove-req:${input.poolCid}:${input.requestedAt}`,
@@ -596,6 +619,7 @@ export class PoolService {
         },
       }),
     );
+    return { requestCid, knownTotalLpSupply: pool.totalLpSupply };
   }
 
   /** Operator + lpRegistrar settle the accepted remove. */
@@ -606,6 +630,11 @@ export class PoolService {
     const bqFactories = await this.registry.getFactories(pool.admin);
     const lpFactories = await this.registry.getFactories(pool.lpRegistrar);
     const bqCtx = await this.choiceContext(pool.admin);
+    // Point A: the Daml choice accepts a single `extraArgs`, threaded to
+    // both the base/quote and the LP factory/settle exercises. We use only
+    // lpCtx.disclosure here and pass bqCtx.extraArgs — correct for the
+    // self-registry (empty context). An external context-requiring LP
+    // registry would need per-admin extraArgs at both layers (deferred).
     const lpCtx = await this.choiceContext(pool.lpRegistrar);
     return retryOnContention(() =>
       this.ledger.submit({

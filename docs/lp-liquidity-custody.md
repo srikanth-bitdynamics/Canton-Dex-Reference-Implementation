@@ -1,15 +1,14 @@
-# DEX-42 / DEX-43 — LP liquidity custody: operator-custodied, DvP at the boundary
+# LP liquidity custody: operator-custodied, DvP at the boundary
 
-Status: **decided** (reviewer-confirmed 2026-05-28). Spec for the Step-3a
-Daml cutover (DvP LP mint/burn + the `Lp/` component carve-out), landing
-additively beside the existing operator-only path.
+Status: **decided** (2026-05-28). This document defines the
+operator-custodied model for LP liquidity and the boundary DvP flow.
 
 ## The model
 
 **Operator-custodied between operations, DvP at the boundary.**
 
 - Between operations, pool reserves are operator-authored committed
-  `PoolSlice` allocations — exactly as today (DEX-40/41). Slices are
+  `PoolSlice` allocations. Slices are
   **locality units, not LP entitlement units**: they exist so add/remove/
   swap touch only the slices they source, not so a slice "belongs to" an
   LP.
@@ -63,9 +62,9 @@ two-admin settle in one transaction:
   `holder → burnAccount lpRegistrar`, against the holder's burn-sender
   allocation.
 
-Then `LPTokenPolicy_RecordBurn` + a single `PoolState` rewrite. This is
-the fix for finding #3 (funds reach the **holder**, not the operator's
-pool account).
+Then `LPTokenPolicy_RecordBurn` + a single `PoolState` rewrite. The key
+correctness point is that funds reach the **holder**, not the operator's
+pool account.
 
 ## Choreography & authority
 
@@ -103,10 +102,10 @@ pool account).
   changed: add/remove now run exclusively through the DvP request/settle
   flow.
 
-## Registry prerequisite (DEX-48)
+## Registry prerequisite
 
 The LP-token mint/burn legs use the special `mintAccount`/`burnAccount`
 (`owner = None`). `Registry.V2` must support them at all three sites that
 currently assume a real owner: the `Allocation` signatory, the settle
-credit loop, and the allocate factory. (`RealRegistry` already does, via
-the #24 DvP mechanism work.)
+credit loop, and the allocate factory. `RealRegistry` already supports
+these semantics.

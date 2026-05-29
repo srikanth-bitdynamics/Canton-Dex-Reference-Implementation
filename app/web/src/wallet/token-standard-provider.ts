@@ -11,8 +11,8 @@
 //   place-order             →  CreateCommand OrderFundingRequest
 //   accept-allocation-request → AllocationFactory_Allocate + AllocationRequest_Accept
 //   request-swap            →  AllocationFactory_Allocate + CreateCommand SwapRequest
-//   add-liquidity           →  2× AllocationFactory_Allocate + CreateCommand AddLiquidityRequest
-//   accept-lp-burn          →  Exercise LPTokenPolicy_AcceptBurn
+//   add-liquidity           →  3× AllocationFactory_Allocate from a LiquidityAllocationRequest
+//   remove-liquidity        →  3× AllocationFactory_Allocate from a LiquidityAllocationRequest
 //   post-rfq-quote          →  CreateCommand RfqQuote
 //   accept-rfq              →  Exercise Rfq_Accept (joint trader + operator)
 //

@@ -16,7 +16,7 @@ import type {
   LedgerEvent,
 } from "../src/ledger/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
-import type { ContractId } from "@canton-dex/registry-client";
+import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
 import type { LPTokenPolicy, Pool } from "../src/types.js";
 
 class StubRegistry extends RegistryClient {
@@ -29,6 +29,9 @@ class StubRegistry extends RegistryClient {
       settlementFactoryCid: "#settle:0" as ContractId<"SettlementFactory">,
       disclosure: [] as never[],
     };
+  }
+  override async getChoiceContext(): Promise<ChoiceContextRef> {
+    return { context: { values: {} }, disclosure: [] };
   }
 }
 

@@ -6,6 +6,7 @@
 //   GET  /registry/credentials?holder=:p
 //   GET  /registry/factories/:admin
 //   GET  /registry/preapprovals?receiver=:p&admin=:a
+//   GET  /registry/choice-context/:admin
 //
 // The client owns its caches; consumers (operator backend modules)
 // MUST go through the client and never call the registry HTTP API
@@ -28,6 +29,7 @@ export interface RegistryClientConfig {
   baseUrl: string;
   authToken?: string;
   credentialsTtlMs?: number;
+  choiceContextTtlMs?: number;
   /** Override fetch for tests. */
   fetchImpl?: typeof fetch;
 }
@@ -43,6 +45,9 @@ export class RegistryClient {
     { receiver: Party; admin: Party },
     TransferPreapproval[]
   >((k) => `pre:${k.receiver}:${k.admin}`);
+  private readonly choiceContextCache = new TtlCache<Party, ChoiceContextRef>(
+    (a) => `ctx:${a}`,
+  );
   private readonly credCache: TtlCache<Party, Credential[]>;
   private readonly fetchImpl: typeof fetch;
 
@@ -90,12 +95,18 @@ export class RegistryClient {
    * Off-ledger choice context for token-standard factory choices.
    * Token-standard registries compute this (disclosed config contracts,
    * featured-app rights, …) and the caller threads it into the choice's
-   * ExtraArgs. Our own CantonDex registry needs none, so the default is
-   * empty; a context-requiring registry overrides this to fetch real
-   * context + disclosed contracts.
+   * ExtraArgs. Registries that need no context may return 404; callers
+   * treat that as empty context + no disclosure.
    */
-  async getChoiceContext(_admin: Party): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
+  async getChoiceContext(admin: Party): Promise<ChoiceContextRef> {
+    const cached = this.choiceContextCache.get(admin);
+    if (cached) return cached;
+    const ctx =
+      (await this.fetchJson<ChoiceContextRef>(
+        `/registry/choice-context/${encodeURIComponent(admin)}`,
+      )) ?? { context: { values: {} }, disclosure: [] };
+    this.choiceContextCache.set(admin, ctx, this.config.choiceContextTtlMs);
+    return ctx;
   }
 
   async getCredentials(holder: Party): Promise<Credential[]> {
@@ -141,6 +152,7 @@ export class RegistryClient {
     this.configCache.invalidateAll();
     this.factoryCache.invalidateAll();
     this.preapprovalCache.invalidateAll();
+    this.choiceContextCache.invalidateAll();
     this.credCache.invalidateAll();
   }
 

@@ -7,10 +7,9 @@
 //   - Seeds: one DexPair (BTC/USDC), one Pool (BTC/USDC, Active, two
 //     slices per side), some Holdings for a demo trader.
 //   - Registers ledger choice handlers needed by the HTTP endpoints the
-//     dApp calls today (Pool_Initialize, Pool_AddLiquidity,
-//     Pool_RemoveLiquidity, Pool_Swap, Order_Fund/Cancel,
-//     OrderFundingRequest_Bind, Rfq_Accept, MatchedTrade_* are
-//     stubbed minimally; admin/* re-use built-in create).
+//     dApp calls today (PoolRules_Swap, the DvP add/remove settles,
+//     Order_Fund/Cancel, OrderFundingRequest_Bind, Rfq_Accept,
+//     MatchedTrade_* are stubbed minimally; admin/* re-use built-in create).
 //
 // This is NOT a production server. It is the smallest amount of
 // scaffolding that lets the UI demo end-to-end without a Canton
@@ -27,6 +26,7 @@ import type {
   Pool,
   PoolSlice,
 } from "./types.js";
+import type { ChoiceContextRef } from "@canton-dex/registry-client";
 
 // Stub registry that returns canned factory CIDs for any admin party.
 class StubRegistry extends RegistryClient {
@@ -43,6 +43,9 @@ class StubRegistry extends RegistryClient {
       settlementFactoryCid: "#settle-fac:0" as ContractId<"SettlementFactory">,
       disclosure: [],
     };
+  }
+  override async getChoiceContext(): Promise<ChoiceContextRef> {
+    return { context: { values: {} }, disclosure: [] };
   }
 }
 

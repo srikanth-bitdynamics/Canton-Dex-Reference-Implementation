@@ -1,10 +1,10 @@
 # Operator Notes
 
-This is the M2 deliverable: deployment, recovery, and observability guidance
-for the operator role(s) defined by the reference DEX. It is descriptive of the
-contract surface and the off-chain responsibilities the contract surface
-implies. Specific cluster topology (cantond / participants / synchronizer
-config) lives in your Canton operational documentation, not here.
+Deployment, recovery, and observability guidance for the operator roles
+defined by the reference DEX. It describes the contract surface and the
+off-chain responsibilities that follow from it. Specific cluster topology
+(cantond / participants / synchronizer config) belongs in your Canton
+operational documentation, not here.
 
 ## Roles and party model
 
@@ -114,7 +114,7 @@ operators do not need a parallel database to explain a trade.
 | What's the current head slice / boundary candidate?   | `Pool.baseSlices` and `Pool.quoteSlices`, list head and tail                                            |
 | Did this trader's funding accept?                     | The `OrderAllocationRequest` archive event plus the corresponding `Allocation` create event           |
 | Why is this `Pool_Swap` failing slippage?             | `Pool_ComputeSwapOut` choice is nonconsuming — call it before the swap to read the current quote      |
-| Did this LP mint actually run?                        | `LPTokenPolicy_AcceptMint` result includes the registry-side LP `Holding` CID                          |
+| Did this LP mint actually run?                        | `LpDvpRules_SettleAddLiquidity` mints against the LP receipt allocation and records the resulting supply on `LPTokenPolicy` |
 
 Off-chain telemetry the operator should also collect:
 

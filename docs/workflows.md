@@ -303,14 +303,14 @@ Primary contracts:
 
 On-ledger flow:
 
-1. LP submits deposit amounts and minimum LP shares
-2. DEX requests funding from the LP for both pool assets
-3. deposit settlement moves the assets into pool-controlled accounts
-4. pool reserve state is updated
-5. pool-managed committed allocations are created or refreshed to represent the
-   reserves available for future swaps
-6. LP token is minted to the provider
-7. deposit action is finalized
+1. operator creates a `LiquidityAllocationRequest` for the deposit amounts and
+   minimum LP shares (the add-liquidity request step)
+2. the trader's wallet authors the base-deposit, quote-deposit, and LP-receipt
+   allocations via `AllocationFactory_Allocate`
+3. operator and `lpRegistrar` settle with `LpDvpRules_SettleAddLiquidity`:
+   funds enter the pool, reserve state is updated, pool-managed committed
+   allocations are refreshed, and LP tokens are minted to the provider —
+   atomically in one settlement
 
 Important note:
 
@@ -324,20 +324,21 @@ Purpose:
 
 On-ledger flow:
 
-1. LP submits amount of LP token to redeem and minimum asset outputs
-2. LP token is burned
-3. pool computes the share of reserves owed
-4. pool reserve allocations are adjusted down
-5. settlement transfers the owed assets from pool-controlled accounts to the LP
-6. reserve references are rolled forward
-7. withdraw action is finalized
+1. operator creates a `LiquidityAllocationRequest` for the LP amount to redeem
+   and minimum asset outputs (the remove-liquidity request step)
+2. the wallet authors the holder's base-receipt and quote-receipt allocations
+   plus the LP burn-sender allocation via `AllocationFactory_Allocate`
+3. operator and `lpRegistrar` settle with `LpDvpRules_SettleRemoveLiquidity`:
+   base and quote are delivered to the holder, the LP tokens burn to the burn
+   account, pool reserve allocations are adjusted down, and reserve references
+   are rolled forward — atomically in one settlement
 
 Required invariants:
 
 - no over-redemption
 - reserve updates and LP burn must stay atomic
 - routine withdrawals must not touch every reserve allocation. `Pool` holds a
-  list of `PoolSlice` per side and `Pool_RemoveLiquidity` walks slices from
+  list of `PoolSlice` per side and removal settlement walks slices from
   the front. Only slices needed to cover the redemption are cancelled; the
   boundary slice (if any) is re-allocated for its leftover; all slices beyond
   the boundary are untouched. Operator pays for at most ONE re-allocation per

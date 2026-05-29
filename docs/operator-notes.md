@@ -200,12 +200,10 @@ upgrade" section.
 ### LP supply drift
 
 `LPTokenPolicy.totalSupply` and `PoolState.totalLpSupply` are kept in
-lock-step: first-pool funding records supply via `PoolState_RecordLPSupply`
-after the `LPMintRequest` mint, and the DvP settles
+lock-step: the DvP liquidity settles
 (`LpDvpRules_SettleAddLiquidity`/`_SettleRemoveLiquidity`) rewrite both
-inline and assert they match on entry. If they diverge (e.g. an operator
-skipped the record step after first funding), the DvP settle's supply-sync
-guard aborts. Recovery: query the policy supply and re-run
+inline and assert they match on entry. If they diverge, the settle's
+supply-sync guard aborts. Recovery: query the policy supply and re-run
 `PoolState_RecordLPSupply` with `newSupply = policy.totalSupply`.
 
 ### Lost trader holdings

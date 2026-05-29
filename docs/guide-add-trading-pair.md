@@ -94,24 +94,24 @@ curl -X POST http://localhost:8080/v1/pools \
   }'
 ```
 
-Pool starts in `PS_Unfunded`. No reserves until the first LP calls
-`Pool_Initialize`.
+Pool starts in `PS_Unfunded`. No reserves until the first LP completes the
+same add-liquidity DvP flow used for later funding.
 
 ## Step 4. Optional: seed the first LP
 
 The first LP needs to:
 
 1. Hold V2 base and quote holdings of the amounts they want to deposit.
-2. Call `Pool_Initialize` (via the operator-backend's wallet handoff,
-   so the trader signs as `recipient`). This:
-   - locks both holdings into V2 allocations via `AllocationFactory_Allocate`
-   - creates the initial pool slices
-   - emits an `LPMintRequest` for `sqrt(baseAmount * quoteAmount)` LP tokens
-3. Recipient + lpRegistrar jointly call `LPMintRequest_AcceptAndMint`
-   (multi-actAs `[recipient, lpRegistrar]`). This creates the V2 LP
-   holding under both signatures.
-4. lpRegistrar calls `Pool_RecordLPSupply` to sync `Pool.totalLpSupply`
-   with `LPTokenPolicy.totalSupply`.
+2. Call `POST /v1/pools/add-liquidity/request`.
+3. Have the wallet author the three requested allocations via
+   `AllocationFactory_Allocate`:
+   - base deposit
+   - quote deposit
+   - LP receipt
+4. Call `POST /v1/pools/add-liquidity/settle`. The operator and
+   `lpRegistrar` co-settle the request via `LpDvpRules_SettleAddLiquidity`,
+   which seeds the first pool slices, transitions the pool to `PS_Active`,
+   and mints `sqrt(baseAmount * quoteAmount)` LP tokens atomically.
 
 ## Step 5. Surface in the dApp
 
@@ -139,8 +139,8 @@ curl -s 'http://localhost:8080/v1/swaps?pair=ETH/USDT&limit=10'
 
 | Symptom | Cause |
 |---|---|
-| `Pool_Initialize` fails with "Allocation_Adjust: instrument X net consumption exceeds budget" | Caller pre-funded the wrong amount; reconcile holding balances vs `nextIterationFunding`. |
-| `LPMintRequest_AcceptAndMint` fails with "missing required actor" | Submission only included `lpRegistrar`; needs both `[recipient, lpRegistrar]`. |
+| `/v1/pools/add-liquidity/request` or `/settle` fails with an allocation mismatch | The wallet-authored allocation triple does not match the request's expected specs; recreate the request and re-author the allocations from that payload. |
+| `/v1/pools/add-liquidity/settle` fails with a quote/supply guard | The pool moved or the request expired before settle; recreate the request and have the wallet re-author fresh allocations. |
 | `DexPair` created but doesn't show in `/v1/pairs` | Operator backend wasn't observing the new contract; check the backend's `operator` party matches the pair's `operator` signatory. |
 | Pool created but `/v1/pools` is empty | Pool is operator + lpRegistrar observed only. The backend observes as `operator`, but if you used a different signing party the read won't see it. |
 

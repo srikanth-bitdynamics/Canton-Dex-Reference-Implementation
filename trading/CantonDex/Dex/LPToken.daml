@@ -8,11 +8,6 @@ module CantonDex.Dex.LPToken where
 import CantonDex.Registry.V2 qualified as RegV2
 import Splice.Api.Token.HoldingV2 qualified as V2
 
-data LPMintResultV2 = LPMintResultV2 with
-    policyCid : ContractId LPTokenPolicy
-    holdingCid : ContractId RegV2.Holding
-  deriving (Eq, Show)
-
 template LPTokenPolicy with
     lpRegistrar : Party
     operator : Party
@@ -53,39 +48,3 @@ template LPTokenPolicy with
       do
         assertMsg "Cannot deactivate with outstanding supply" (totalSupply == 0.0)
         create this with active = False
-
--- | Legacy compatibility path for LP minting.
-template LPMintRequest with
-    operator : Party
-    lpRegistrar : Party
-    lpInstrumentId : V2.InstrumentId
-    recipient : Party
-    amount : Decimal
-    policyCid : ContractId LPTokenPolicy
-  where
-    signatory operator
-    observer lpRegistrar, recipient
-
-    ensure amount > 0.0
-
-    choice LPMintRequest_Cancel : ()
-      controller operator
-      do pure ()
-
-    choice LPMintRequest_Consume : ()
-      controller lpRegistrar
-      do pure ()
-
-    choice LPMintRequest_AcceptAndMint : LPMintResultV2
-      controller recipient, lpRegistrar
-      do
-        newPolicyCid <- exercise policyCid LPTokenPolicy_RecordMint with amount
-        holdingCid <- create RegV2.Holding with
-          admin = lpInstrumentId.admin
-          owner = recipient
-          instrumentId = lpInstrumentId.id
-          amount
-          locked = False
-        pure LPMintResultV2 with
-          policyCid = newPolicyCid
-          holdingCid

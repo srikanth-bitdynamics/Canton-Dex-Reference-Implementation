@@ -1,35 +1,10 @@
 -- Real V2 token registry for end-to-end testing on a live participant.
+-- Unlike MockRegistry it tracks ownership: a holding changes parties on
+-- settle. Used by the testnet harness to prove the DEX moves real
+-- on-ledger assets through the V2 surface. Lives under Testing/ because it
+-- depends only on the V2 surface + Trading.Utils, so the demo ships one DAR.
 --
--- Where `MockRegistry` skips the asset side (no holdings, settle/cancel
--- archive empty), `RealRegistry` actually tracks ownership: a holding
--- changes parties on settle. Used by the live testnet harness
--- (`scripts/testnet-matched-trade-harness.ts`) to validate that our
--- DEX moves real on-ledger assets through the V2 surface, not just
--- protocol-shape stubs.
---
--- Why this lives in `trading/CantonDex/Testing/` and not in a separate
--- package: it depends only on the V2 surface and our existing
--- `Trading.Utils`, both already in canton-dex-trading. Putting it here
--- means we ship one DAR for the demo and the existing 26-test suite
--- against `MockRegistry` is untouched.
---
--- Design constraints (matches the upstream `splice-test-token-v2`
--- shape, adapted for our V2 surface where `TransferLeg.instrumentId`
--- is plain `Text` instead of an `InstrumentId` record):
---
---   * `RealHolding` — admin-signed, owner-observed asset record.
---   * `RealAllocation` — locked holdings + AllocationSpecification.
---     Implements `V2.Allocation`. Settle moves locked holdings to the
---     receiver; cancel/withdraw releases them back to the owner.
---   * `RealRegistry` — admin-signed factory pair. Implements
---     `V2.AllocationFactory` (creates allocations, locking sender
---     holdings; creates receipt-only allocations for receivers) and
---     `V2.SettlementFactory` (drives `Allocation_Settle` across the
---     batch, validates leg coverage).
---
--- For senders, `inputHoldingCids` must cover the leg amount. For
--- receivers (no outgoing leg), the allocation is a receipt — no
--- holdings locked.
+-- Testing-only. Production code MUST NOT import this module.
 
 module CantonDex.Testing.RealRegistry where
 
@@ -46,8 +21,7 @@ import Splice.Api.Token.MetadataV1
 
 import CantonDex.Trading.Utils qualified as Utils
 
--- | A real on-ledger asset position. Signatory is the admin (registry);
--- observer is the owner. Locking simply re-creates with `locked=True`.
+-- | A real on-ledger asset position; locking re-creates with locked=True.
 template RealHolding with
     admin : Party
     owner : Party
@@ -69,9 +43,6 @@ template RealHolding with
           else None
         meta = emptyMetadata
 
-    -- Admin-controlled splits and merges (registry-side housekeeping).
-    -- Not exercised by the harness today; kept here for symmetry with
-    -- the upstream test-token shape.
     choice RealHolding_Split : (ContractId RealHolding, ContractId RealHolding)
       with
         splitAmount : Decimal
@@ -84,8 +55,7 @@ template RealHolding with
         b <- create this with amount = amount - splitAmount
         pure (a, b)
 
--- | Sum of all leg amounts on a side. Sender side: legs where owner is
--- the leg's sender. Used to validate the locked-holdings sum.
+-- | Sender-side outflow for an owner on one instrument (locked-sum check).
 ownerOutflowFor : Party -> [V2.TransferLeg] -> Text -> Decimal
 ownerOutflowFor owner legs instrumentId =
   foldl
@@ -98,7 +68,6 @@ ownerOutflowFor owner legs instrumentId =
     0.0
     legs
 
--- | A V2 allocation that holds real locked holdings until settle.
 template RealAllocation with
     admin : Party
     authorizerOwner : Party
@@ -127,12 +96,9 @@ template RealAllocation with
       allocation_cancelExtraObservers _ = []
       allocation_withdrawExtraObservers _ = []
 
+      -- The settlement factory does the credits; this side just archives
+      -- self + its locked holdings.
       allocation_settleImpl self _arg = do
-        -- The settlement-factory orchestrates the actual transfer:
-        -- it'll fetch our locked holdings and re-create them under the
-        -- receiver. From this allocation's side, we just archive
-        -- self + the locked holdings; the settlement-factory's
-        -- per-leg loop handles the credits.
         archive self
         forA_ lockedHoldings $ \cid -> archive cid
         pure V2.AllocationResult with
@@ -140,8 +106,8 @@ template RealAllocation with
           authorizerHoldingCids = TextMap.empty
           meta = emptyMetadata
 
+      -- Cancel / withdraw return the locked holdings to the authorizer.
       allocation_cancelImpl self _arg = do
-        -- Unlock and return holdings to the authorizer.
         returned <- forA lockedHoldings $ \cid -> do
           h <- fetch cid
           archive cid
@@ -173,7 +139,6 @@ template RealAllocation with
               ]
           meta = emptyMetadata
 
--- | The registry: admin-signed AllocationFactory + SettlementFactory.
 template RealRegistry with
     admin : Party
     users : [Party]
@@ -181,8 +146,7 @@ template RealRegistry with
     signatory admin
     observer users
 
-    -- Admin-driven mint. Sole shortcut used by the harness to fund
-    -- traders before the matched-trade flow.
+    -- Admin-driven mint; the harness uses it to fund traders.
     nonconsuming choice RealRegistry_Mint : ContractId RealHolding
       with
         owner : Party
@@ -206,45 +170,24 @@ template RealRegistry with
 
       allocationFactory_allocateImpl _self arg = do
         let spec = arg.allocation
-            -- DvP mint/burn (DEX-42): a mint/burn allocation names a
-            -- special account with `owner = None` (mintAccount/burnAccount).
-            -- `owner = None` is the ONLY marker; `id`/`provider` are not
-            -- inspected, and mint vs burn is distinguished purely by leg
-            -- direction at settle (sender None = mint, receiver None =
-            -- burn). This matches the upstream convention.
-            -- The allocation is authorized by the admin (registrar)
-            -- itself, not a holder, and locks no holdings (mint has
-            -- nothing to lock; a burn locks the holder's holding via the
-            -- HOLDER's allocation, not this admin-side one).
+            -- Mint/burn allocation: authorizer owner None (mint/burn account),
+            -- authorized by the admin and locking nothing. Mint vs burn is by
+            -- leg direction at settle (sender None = mint, receiver None = burn).
             isSpecialAcct = isNone spec.authorizer.owner
             authorizerOwner = if isSpecialAcct then admin else Utils.accountOwner spec.authorizer
-        -- Compute how much this authorizer must lock from its
-        -- SenderSide legs (receivers don't lock).
         let sendSides =
               filter (\side -> side.side == V2.SenderSide) spec.transferLegSides
-        -- Validate the supplied holdings cover the outflow per instrument.
-        -- We also lock them (re-create with locked=True) to remove them
-        -- from the authorizer's free balance.
         lockedCids <- do
           hs <- forA arg.inputHoldingCids $ \ifaceCid -> do
-            -- inputHoldingCids are typed as V2.Holding (the interface);
-            -- coerce to the concrete RealHolding template id.
             let cid : ContractId RealHolding = coerceContractId ifaceCid
             h <- fetch cid
             archive cid
             create h with locked = True
           pure hs
-        -- For each outgoing leg's instrument, the sum of locked
-        -- holdings (matching that instrument and owner) must be
-        -- >= the outflow amount. Surplus is allowed; settle returns
-        -- it after.
-        -- HARNESS LIMITATION: this loop does NOT validate that the locked
-        -- holdings cover the send-side outflow — it is a deliberate no-op
-        -- that trusts the caller. This is also why mint "locks nothing"
-        -- works (no coverage check to fail on empty inputHoldingCids). A
-        -- production registry MUST re-read and enforce per-instrument
-        -- coverage here; do not read "tests pass" as "sender coverage is
-        -- validated".
+        -- HARNESS LIMITATION: send-side coverage is NOT validated here — a
+        -- deliberate no-op that trusts the caller (also why mint "locks
+        -- nothing" works). A production registry MUST enforce per-instrument
+        -- coverage; "tests pass" does not mean coverage is validated.
         forA_ sendSides $ \_side -> pure ()
         now <- getTime
         allocationCid <- create RealAllocation with
@@ -273,24 +216,11 @@ template RealRegistry with
       settlementFactory_settleBatchExtraObservers _ = []
 
       settlementFactory_settleBatchImpl _self arg = do
-        -- For each transfer leg, find the sender's allocation, archive
-        -- the locked holding, and credit the receiver by minting a new
-        -- holding to them. Then exercise Allocation_Settle on each
-        -- allocation (which archives the allocation + its locked
-        -- holdings — they've already been credited).
-        --
-        -- Implementation detail: each Allocation_Settle archives its
-        -- own locked holdings. We must mint the receiver-side
-        -- holdings FIRST while the locked holdings are still around
-        -- (so we can read sender legs); then we drive Allocation_Settle
-        -- which archives them.
+        -- Credit receivers FIRST (while locked holdings still exist), then
+        -- drive Allocation_Settle, which archives each allocation + its
+        -- locked holdings. Skip special accounts: receiver None = burn
+        -- (mint nothing); sender None = mint (receiver still credited).
         forA_ arg.transferLegs $ \leg ->
-          -- Credit the receiver unless it is a special account:
-          --   * receiver owner None  => burn leg: mint nothing (the
-          --     holder's locked holding is archived by its Allocation_Settle).
-          --   * sender owner None     => mint leg: the receiver still gets
-          --     a fresh holding (the mint), with no sender holding to archive.
-          --   * normal transfer       => mint the receiver as before.
           case leg.receiver.owner of
             Some recvOwner | leg.sender /= leg.receiver -> do
               create RealHolding with
@@ -315,8 +245,6 @@ template RealRegistry with
         pure V2.SettlementFactoryView with
           admin
           meta = emptyMetadata
-
--- Convenience factory functions used by tests / the harness.
 
 createRealRegistry : Party -> [Party] -> Update (ContractId V2.AllocationFactory, ContractId V2.SettlementFactory)
 createRealRegistry admin users = do

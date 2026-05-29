@@ -1,24 +1,11 @@
 module CantonDex.Tests.DvpMintBurnTests where
 
--- DEX-42 (step 1): prove the delivery-versus-mint/burn mechanism on the
--- V2 allocation surface, in isolation, against the real (holding-tracking)
--- registry. Mirrors the upstream
--- `Splice.Tests.TestDeliveryVersusBurnMint`:
---
---   - A MINT is a transfer leg `mintAccount registrar -> recipient`,
---     authorized by the registrar's own allocation (authorizer is a
---     special account with `owner = None`) and settled atomically with
---     the recipient's receipt allocation. No holding is locked on the
---     mint side; the settle credits the recipient.
---   - A BURN is the symmetric leg `holder -> burnAccount registrar`: the
---     holder's allocation locks the holding, the registrar's burn
---     allocation authorizes receipt into the burn account, and settle
---     archives the holding (no receiver credited).
---
--- This is the conceptually risky half of DEX-42 (multi-party
--- authorization + registry mint/burn-account semantics), proven without
--- touching the pool flow. The existing LPMintRequest path stays in place
--- until the pool add/remove cutover.
+-- Proves the delivery-versus-mint/burn mechanism on the V2 allocation
+-- surface against the holding-tracking RealRegistry (mirrors upstream
+-- TestDeliveryVersusBurnMint): a mint is a leg mintAccount -> recipient
+-- (registrar-authorized, owner-None authorizer; settle credits the
+-- recipient), a burn is holder -> burnAccount (holder locks; settle archives
+-- with no credit).
 --
 -- AUTHORIZATION CAVEAT (read before trusting "tests pass"): this harness
 -- does NOT enforce mint authorization. `RealAllocation` is signatory

@@ -1,13 +1,7 @@
 module CantonDex.Dex.MatchedTrade where
 
--- Matched trade settlement on the V2 token standard.
---
--- Adapted from the upstream TradingAppV2 pattern but simplified to V2-only
--- and using the PR 5333 allocation surface:
---   - SettlementInfo without requestedAt/settleAt
---   - TransferLeg.instrumentId as Text
---   - AllocationSpecification with top-level admin
---   - SettlementFactory_SettleBatchResult with allocationSettleResults
+-- Matched-trade settlement on the V2 token standard (adapted from the
+-- upstream TradingAppV2, V2-only).
 
 import DA.Foldable (forA_)
 import DA.Map qualified as Map
@@ -65,17 +59,9 @@ template TradeAllocationRequest with
       allocationRequest_rejectExtraObservers = \_ -> []
       allocationRequest_withdrawExtraObservers = \_ -> []
 
+      -- Accept consumes the request; the wallet composes it with the matching
+      -- AllocationFactory_Allocate in the same transaction.
       allocationRequest_acceptImpl = \self _arg -> do
-        -- Per the V2.AllocationRequest interface contract, Accept signals
-        -- the trader's intent to create the allocation; the wallet composes
-        -- this choice with the corresponding AllocationFactory_Allocate call
-        -- in the same transaction. The interface comment is explicit:
-        --   "Wallets SHOULD call this choice in the same transaction as the
-        --    creation of the requested allocation to protect from creating
-        --    the same allocation multiple times."
-        -- and:
-        --   "implementations MUST ensure that the allocation request is
-        --    consumed by the body of this choice."
         archive self
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
       allocationRequest_rejectImpl = \self arg -> do
@@ -106,12 +92,8 @@ mkTradeSettlementInfo tradeCid trade = V2.SettlementInfo with
   cid = Some (coerceContractId tradeCid)
   meta = PR.foldPolicyReceiptIntoMetadata trade.policyReceipt emptyMetadata
 
--- | Collect every account party that appears as sender or receiver across
--- the trade's transfer legs. These parties become observers on the
--- MatchedTrade so a counterparty can see the trade they're a party to
--- without having to wait for an AllocationRequest to be issued. Without
--- this, the trade is operator-private and only becomes visible to a
--- counterparty when the corresponding TradeAllocationRequest reaches them.
+-- | Every account party appearing on the trade's legs, so a counterparty can
+-- see the trade directly rather than waiting for an AllocationRequest.
 legParties : [V2.TransferLeg] -> [Party]
 legParties legs = dedupParties $ do
   leg <- legs
@@ -125,23 +107,14 @@ template MatchedTrade with
     transferLegs : [V2.TransferLeg]
     settlementDeadline : Optional Time
     policyReceipt : Optional PR.PolicyReceipt
-      -- ^ Optional operator-signed RFQ-policy attestation. When present,
-      --   it is folded into `SettlementInfo.meta` so it travels on-ledger
-      --   with every allocation request and settlement keyed off this
-      --   trade. See `CantonDex.Dex.PolicyReceipt` for the shape.
+      -- ^ Optional operator-signed RFQ-policy attestation, folded into
+      --   SettlementInfo.meta so it travels on-ledger with the trade.
   where
     signatory venue
     observer legParties transferLegs
-      -- ^ Counterparties on the trade's legs see the trade directly.
-      --   Without this they would only learn of the trade via the
-      --   downstream AllocationRequest disclosure, which delays
-      --   visibility and breaks the audit story when a counterparty
-      --   wants to confirm trade existence before accepting.
 
+    -- The receipt's claimed signer must equal the trade's signatory.
     ensure
-      -- Receipt's claimed signer must equal the contract's signatory.
-      -- Without this, an operator could attach a receipt that names a
-      -- different party as the policy authority.
       case policyReceipt of
         None -> True
         Some r -> r.signedBy == venue && PR.isWellFormed r
@@ -166,10 +139,7 @@ template MatchedTrade with
         batchesByAdmin : Map.Map Party SettlementBatchV2
         allocationRequests : [ContractId TradeAllocationRequest]
         dexPairCid : Optional (ContractId DexPair.DexPair)
-          -- ^ When provided, this trade's fees accrue against the pair.
-          --   When None, no fee accrual (e.g. fee-free dev mode).
-          --   The choice is forward-compatible: existing callers can
-          --   pass None and get the prior behavior.
+          -- ^ When provided, fees accrue against the pair; None = no accrual.
       controller venue
       do
         let settlement = mkTradeSettlementInfo self this
@@ -187,7 +157,6 @@ template MatchedTrade with
             extraArgs = batch.extraArgs
           pure (batchAdmin, result)
 
-        -- Accrue fees against the DexPair if one was supplied.
         forA_ dexPairCid $ \pairCid -> do
           let legNotionals : TextMap.TextMap Decimal =
                 foldl

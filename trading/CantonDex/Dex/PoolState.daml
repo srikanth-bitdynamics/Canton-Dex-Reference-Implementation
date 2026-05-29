@@ -29,7 +29,8 @@ template PoolState with
     signatory operator
     observer (lpRegistrar :: publicReaders)
 
-    -- The lpRegistrar records post-mint/burn LP supply back onto the pool state.
+    -- The lpRegistrar records post-mint/burn LP supply back onto the pool
+    -- state.
     choice PoolState_RecordLPSupply : ContractId PoolState
       with
         newSupply : Decimal

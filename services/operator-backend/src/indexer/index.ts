@@ -38,8 +38,8 @@ interface MatchedTradeContract {
   } | null;
 }
 
-// The contract that rotates on every pool op is `PoolState`. We track its
-// transitions for swap detection and join pool config by `poolId`.
+// PoolState rotates on every pool op. We track its transitions for swap
+// detection and join pool config by poolId.
 interface PoolConfigRow {
   contractId: string;
   poolId: string;

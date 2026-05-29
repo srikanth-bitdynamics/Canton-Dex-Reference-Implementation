@@ -88,8 +88,8 @@ poolSettlement poolCid operator = V2.SettlementInfo with
   cid = Some (coerceContractId poolCid)
   meta = emptyMetadata
 
--- Fetch the config + state and assert they are the expected pool and are
--- jointly consistent. This is the `expectedPoolId` contract-swap guard.
+-- Fetch config + state and assert they are the expected, mutually consistent
+-- pool (the expectedPoolId contract-swap guard).
 fetchPoolContext
   : Party -> PoolId -> ContractId Pool -> ContractId PoolState
   -> Update (Pool, PoolState)
@@ -104,11 +104,9 @@ fetchPoolContext operator expectedPoolId poolCid poolStateCid = do
   assertMsg "PoolState operator mismatch" (state.operator == operator)
   pure (pool, state)
 
--- Walk an ordered list of (sliceCid, slice) fetched output slices,
--- drawing `target` from the front. Returns the fully-consumed slices,
--- the boundary slice (partially consumed) with the amount drawn from it,
--- and the leftover the boundary slice retains. Aborts if the provided
--- slices cannot cover `target`.
+-- Draw `target` from the front of an ordered (cid, slice) list: the
+-- fully-consumed slices, plus the boundary slice (drawn + leftover). Aborts
+-- if the slices cannot cover `target`.
 data SliceDraw = SliceDraw with
     fullyConsumed : [(ContractId PoolSlice, PoolSlice)]
     boundary : Optional (ContractId PoolSlice, PoolSlice, Decimal, Decimal)
@@ -142,9 +140,8 @@ template PoolRules with
   where
     signatory operator
 
-    -- Fund a freshly-created (Unfunded) pool: lock the initial base +
-    -- quote as committed allocations, create one slice per side, mint the
-    -- initial LP tokens, and flip the state to Active.
+    -- Fund an Unfunded pool: lock the initial base + quote as committed
+    -- allocations, create one slice per side, mint initial LP, go Active.
     nonconsuming choice PoolRules_Initialize : PoolRules_InitializeResult
       with
         expectedPoolId : PoolId
@@ -232,16 +229,13 @@ template PoolRules with
         assertMsg "Base amount must be positive" (baseAmount > 0.0)
         assertMsg "Quote amount must be positive" (quoteAmount > 0.0)
         assertMsg "Known LP supply must be positive" (knownTotalLpSupply > 0.0)
-        -- The registrar owns circulating supply and records it onto
-        -- PoolState; require the operator's `knownTotalLpSupply` to agree
-        -- with the recorded value so the LP math is convincing by
-        -- inspection rather than trusting operator input.
+        -- Require the operator's knownTotalLpSupply to match the registrar-
+        -- recorded value so the LP math is convincing by inspection.
         assertMsg "knownTotalLpSupply must match recorded PoolState supply"
           (knownTotalLpSupply == state.totalLpSupply)
 
-        -- Proportional mint on the scarcer side; any excess on the richer
-        -- side is donated to the pool (standard protection for existing
-        -- LPs against imbalanced deposits — intentionally not refunded).
+        -- Proportional mint on the scarcer side; excess on the richer side is
+        -- donated to the pool (standard protection against imbalanced deposits).
         let lpByBase = (baseAmount * knownTotalLpSupply) / state.reserves.baseAmount
             lpByQuote = (quoteAmount * knownTotalLpSupply) / state.reserves.quoteAmount
             lpToMint = min lpByBase lpByQuote
@@ -325,8 +319,8 @@ template PoolRules with
 
         baseItems <- forA baseSliceCids (\cid -> do s <- fetch cid; pure (cid, s))
         quoteItems <- forA quoteSliceCids (\cid -> do s <- fetch cid; pure (cid, s))
-        -- Clean, in-Update guard so a short slice set aborts with a
-        -- message rather than falling through to drawFromSlices' `error`.
+        -- In-Update guard so a short slice set aborts cleanly rather than
+        -- hitting drawFromSlices' `error`.
         assertMsg "Provided base slices cannot cover the redemption"
           (foldl (\a (_, s) -> a + s.amount) 0.0 baseItems >= baseOut)
         assertMsg "Provided quote slices cannot cover the redemption"
@@ -374,11 +368,9 @@ template PoolRules with
           baseSlicesConsumed = consumedCount baseDraw
           quoteSlicesConsumed = consumedCount quoteDraw
 
-    -- Constant-product swap (C1, multi-slice). Prices against the global
-    -- reserves on PoolState; sources `amountOut` from an ordered list of
-    -- output-side slices, draining fully-consumed ones and re-allocating
-    -- the boundary slice's leftover. The pool's chosen input slice grows
-    -- by `inputAmount`.
+    -- Constant-product swap (multi-slice): prices against global reserves,
+    -- sources amountOut from an ordered output-slice prefix (draining full
+    -- ones, re-allocating the boundary leftover); the input slice grows.
     nonconsuming choice PoolRules_Swap : PoolRules_SwapResult
       with
         expectedPoolId : PoolId
@@ -421,13 +413,11 @@ template PoolRules with
             poolAccount = Utils.basicAccount operator
             settlement = poolSettlement poolCid operator
 
-        -- swapper -> pool input leg
         let swapInLeg = V2.TransferLeg with
               transferLegId = "swap-in"
               sender = swapperAccount; receiver = poolAccount
               amount = inputAmount; instrumentId = inputInstrumentId
               meta = emptyMetadata
-        -- one pool -> swapper output leg per sourced output slice
         let mkOutLeg idx amount = V2.TransferLeg with
               transferLegId = "swap-out-" <> show (idx : Int)
               sender = poolAccount; receiver = swapperAccount
@@ -442,11 +432,9 @@ template PoolRules with
                 Some (cid, s, drawn, leftover, mkOutLeg boundaryIdx drawn)
               None -> None
 
-        -- Finalized allocations:
-        --   swapper: provides input, fully consumed.
-        --   input slice: receives input, rolls forward (grows).
-        --   each fully-consumed output slice: sends its full amount, drained.
-        --   boundary output slice: sends `drawn`, rolls forward with leftover.
+        -- Finalized: swapper provides input (consumed); input slice receives
+        -- it and rolls forward (grows); each full output slice sends + drains;
+        -- the boundary output slice sends `drawn` and rolls forward leftover.
         let allOutLegs =
               map (\(_, _, leg) -> leg) fullyOutLegs
                 ++ optional [] (\(_, _, _, _, leg) -> [leg]) boundaryOutLeg
@@ -474,9 +462,8 @@ template PoolRules with
           extraArgs
 
         let nextIterCids = Utils.nextIterationAllocationCids settleResult
-        -- order passed to SettleBatch: [swapper, input, fully…, boundary?].
-        -- Guard the positional reads (head for input, reverse-head for
-        -- boundary) against future leg-ordering changes.
+        -- SettleBatch order: [swapper, input, fully…, boundary?]. Guard the
+        -- positional reads against future leg-ordering changes.
         let boundaryCount = case draw.boundary of Some _ -> 1; None -> 0
         assertMsg "swap: unexpected next-iteration allocation count"
           (length nextIterCids == 2 + length draw.fullyConsumed + boundaryCount)
@@ -484,18 +471,13 @@ template PoolRules with
               (_swapper :: Some inNext :: _) -> inNext
               _ -> error "swap: pool input slice must produce a next-iteration allocation"
 
-        -- Archive the consumed output PoolSlice contracts; their
-        -- allocations were drained by the settle (no next iteration).
         forA_ draw.fullyConsumed $ \(cid, _) -> archive cid
 
-        -- Rewrite the input slice contract to its rolled-forward allocation.
         archive inputSliceCid
         newInputSliceCid <- create inputSlice with
           allocationCid = inputNextCid
           amount = inputSlice.amount + inputAmount
 
-        -- The boundary output slice: archive the old PoolSlice and create
-        -- a new one for the leftover, pointing at its rolled allocation.
         boundaryOutputSliceCid <- case (draw.boundary, reverse nextIterCids) of
           (Some (cid, s, _drawn, leftover), boundaryNext :: _) ->
             case boundaryNext of
@@ -507,13 +489,11 @@ template PoolRules with
           (None, _) -> pure None
           _ -> abort "swap: missing boundary next-iteration allocation"
 
-        -- The whole fee (including the operator's `operatorFeeBps` share)
-        -- stays in the pool and accrues to LPs through x*y=k: the input
-        -- slice and reserves grow by the full `inputAmount`. There is
-        -- deliberately no operator-fee accrual counter — carving the
-        -- operator's share out would require a dedicated collection path
-        -- (a separate allocation draining reserves LPs already own), which
-        -- is future work. A counter without that path would mislead.
+        -- The whole fee (incl. the operator's operatorFeeBps share) stays in
+        -- the pool and accrues to LPs via x*y=k: the input slice and reserves
+        -- grow by the full inputAmount. Carving out the operator's share needs
+        -- a dedicated collection path (future work), so there is no accrual
+        -- counter here — one without that path would mislead.
         let (newBaseReserve, newQuoteReserve) =
               if inputIsBase
               then (state.reserves.baseAmount + inputAmount, state.reserves.quoteAmount - amountOut)
@@ -556,7 +536,7 @@ template PoolRules with
         create state with status = PS_Active
 
 -- Redeem one side: cancel fully-consumed slices, re-allocate the boundary
--- leftover. Returns the new boundary slice cid (if any).
+-- leftover; returns the new boundary slice cid (if any).
 redeemSide
   : Party -> PoolId -> Side -> Party -> Text -> V2.Account -> V2.SettlementInfo
   -> ContractId V2.AllocationFactory -> [ContractId V2.Holding] -> Time -> ExtraArgs

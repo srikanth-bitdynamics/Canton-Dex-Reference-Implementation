@@ -22,7 +22,6 @@ data PoolReserves = PoolReserves with
     quoteAmount : Decimal
   deriving (Eq, Show)
 
--- | Which side of the pair a slice (or leg) belongs to.
 data Side
   = BaseSide
   | QuoteSide
@@ -33,19 +32,16 @@ template Pool with
     poolId : PoolId
     operator : Party
     lpRegistrar : Party
-      -- ^ Party that owns the LP instrument and accepts mint/burn
-      --   requests. Logically separate from `operator`.
+      -- ^ Owns the LP instrument and accepts mint/burn; separate from operator.
     admin : Party
       -- ^ Asset admin (registrar) for the base + quote instruments.
     baseInstrumentId : Text
     quoteInstrumentId : Text
     lpInstrumentId : V2.InstrumentId
     feeBps : Int
-      -- ^ Total swap fee in basis points. The operator's share is
-      --   `operatorFeeBps`; LPs receive the rest.
+      -- ^ Total swap fee in bps; operator takes operatorFeeBps, LPs the rest.
     operatorFeeBps : Int
-      -- ^ Operator's share of the swap fee in basis points
-      --   (`<= feeBps`). 0 = LPs receive all fees.
+      -- ^ Operator's share of the swap fee in bps (<= feeBps). 0 = all to LPs.
   where
     signatory operator
     observer lpRegistrar

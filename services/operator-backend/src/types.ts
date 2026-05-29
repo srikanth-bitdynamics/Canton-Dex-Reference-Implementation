@@ -161,6 +161,18 @@ export interface LpDvpRulesContract {
   lpRegistrar: Party;
 }
 
+// The on-ledger LiquidityAllocationRequest, read back after /request so the
+// dApp wallet can author the exact specs the settle validates against.
+export interface LiquidityAllocationRequestContract {
+  contractId: ContractId<"LiquidityAllocationRequest">;
+  operator: Party;
+  lp: Party;
+  settlement: V2SettlementInfo;
+  allocations: V2AllocationSpecification[];
+  requestedAt: Time;
+  settleAt: Time | null;
+}
+
 // Combined API view assembled by PoolService from the split contracts.
 // Keeps the wire shape the dApp + http layer consume, plus the cids the
 // PoolRules choices need.

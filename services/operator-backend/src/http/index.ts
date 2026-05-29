@@ -941,19 +941,6 @@ async function routeRequest(
     return;
   }
 
-  if (method === "POST" && path === "/v1/pools/remove-liquidity") {
-    // @deprecated (DEX-53): legacy operator-driven remove via
-    // PoolRules_RemoveLiquidity + LPBurnRequest. Superseded by the DvP
-    // two-call flow (/v1/pools/remove-liquidity/{request,settle}); retired
-    // in 3c once the dApp cuts over.
-    const body = await readJson<
-      Parameters<typeof backend.pool.removeLiquidity>[0]
-    >(req);
-    const result = await backend.pool.removeLiquidity(body);
-    respondJson(res, 200, result);
-    return;
-  }
-
   // === DvP liquidity (DEX-53) — two-call: request then settle ===========
 
   if (method === "POST" && path === "/v1/pools/add-liquidity/request") {

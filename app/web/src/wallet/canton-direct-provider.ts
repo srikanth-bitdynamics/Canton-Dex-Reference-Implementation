@@ -21,6 +21,7 @@ import type {
   WalletProvider,
   WalletResult,
 } from "./types";
+import { LpDvpUnsupportedError } from "./types";
 
 const LS_KEY = "canton-dex:direct:session";
 
@@ -111,6 +112,11 @@ export class CantonDirectProvider implements WalletProvider {
   async submit(intent: WalletIntent): Promise<WalletResult> {
     if (this.status.kind !== "connected" || !this.session) {
       throw new Error("canton-direct: not connected");
+    }
+    if (intent.kind === "add-liquidity" || intent.kind === "remove-liquidity") {
+      // Operator-relay path cannot surface the created allocation cids the
+      // DvP /settle needs; LP DvP requires a CIP-0103 wallet (SDK provider).
+      throw new LpDvpUnsupportedError(this.id);
     }
     // The Direct provider forwards the intent verbatim to the operator
     // backend's intent-execution endpoint. The backend resolves it into

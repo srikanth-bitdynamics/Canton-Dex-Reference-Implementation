@@ -149,81 +149,88 @@ describe('composeCommands', () => {
     );
   });
 
-  it('add-liquidity', () => {
-    const intent: WalletIntent = {
-      kind: 'add-liquidity',
-      poolId: 'poolABCDEFGH12',
-      baseAmount: '0.1',
-      quoteAmount: '3000.0',
-      baseHoldingCids: ['b1'],
-      quoteHoldingCids: ['q1', 'q2'],
-      minLpTokens: '0.0',
-      factoryCid: 'factory1',
-      operator: 'op::1',
-      admin: 'ad::1',
-    };
-    expect(composeCommands(intent, ctx)).toMatchInlineSnapshot(`
-      {
-        "actAs": [
-          "alice::1220a",
-        ],
-        "commandId": "add-lp-poolABCDEFGH-1779192000000",
-        "commands": [
-          {
-            "CreateCommand": {
-              "createArguments": {
-                "admin": "ad::1",
-                "baseAmount": "0.1",
-                "baseHoldingCids": [
-                  "b1",
-                ],
-                "factoryCid": "factory1",
-                "minLpTokens": "0.0",
-                "operator": "op::1",
-                "poolCid": "poolABCDEFGH12",
-                "quoteAmount": "3000.0",
-                "quoteHoldingCids": [
-                  "q1",
-                  "q2",
-                ],
-                "requestedAt": "2026-05-19T12:00:00.000Z",
-                "trader": "alice::1220a",
-              },
-              "templateId": "#canton-dex-trading:CantonDex.Dex.LiquidityRequest:AddLiquidityRequest",
-            },
-          },
-        ],
-      }
-    `);
+  // DvP add/remove (DEX-54): the wallet authors one AllocationFactory_Allocate
+  // per spec, in canonical order, mapping the right factory + holdings.
+  const ALLOC_FACTORY_IID =
+    '#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory';
+  const settlement = { executors: ['op::1'], id: 's1', cid: null, meta: {} };
+  const mkSpec = (
+    legId: string,
+    instrumentId: string,
+    side: 'SenderSide' | 'ReceiverSide',
+    committed: boolean,
+  ) => ({
+    admin: 'reg::1',
+    authorizer: { owner: 'alice::1220a', provider: null, id: '' },
+    transferLegSides: [
+      { transferLegId: legId, side, otherside: { owner: null, provider: null, id: '' }, amount: '1.0', instrumentId, meta: {} },
+    ],
+    settlementDeadline: null,
+    nextIterationFunding: null,
+    committed,
+    meta: {},
   });
 
-  it('accept-lp-burn', () => {
+  it('add-liquidity authors 3 allocations (base+quote deposits, LP receipt)', () => {
+    const baseSpec = mkSpec('lp-base-deposit', 'BTC', 'SenderSide', true);
+    const quoteSpec = mkSpec('lp-quote-deposit', 'USDC', 'SenderSide', true);
+    const receiptSpec = mkSpec('lp-mint', 'BTC-USDC-LP', 'ReceiverSide', false);
     const intent: WalletIntent = {
-      kind: 'accept-lp-burn',
-      burnRequestCid: 'burnreq1234567890',
-      holderHoldingCid: 'lpholding1',
-      hint: { lpInstrumentId: 'BTC-USDC-LP', amount: '10.0' },
+      kind: 'add-liquidity',
+      requestCid: 'reqABCDEFGH12',
+      settlement,
+      allocations: [baseSpec, quoteSpec, receiptSpec],
+      depositFactoryCid: 'depF',
+      lpFactoryCid: 'lpF',
+      baseHoldingCids: ['b1'],
+      quoteHoldingCids: ['q1', 'q2'],
     };
-    expect(composeCommands(intent, ctx)).toMatchInlineSnapshot(`
-      {
-        "actAs": [
-          "alice::1220a",
-        ],
-        "commandId": "lp-burn-burnreq12345-1779192000000",
-        "commands": [
-          {
-            "ExerciseCommand": {
-              "choice": "LPTokenPolicy_AcceptBurn",
-              "choiceArgument": {
-                "holderHoldingCid": "lpholding1",
-              },
-              "contractId": "burnreq1234567890",
-              "templateId": "#canton-dex-trading:CantonDex.Dex.LPToken:LPTokenPolicy",
-            },
-          },
-        ],
-      }
-    `);
+    const out = composeCommands(intent, ctx);
+    expect(out.actAs).toEqual(['alice::1220a']);
+    expect(out.commands).toHaveLength(3);
+    const cmds = out.commands.map((c) => (c as { ExerciseCommand: { contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand);
+    expect(cmds.every((c) => c.choice === 'AllocationFactory_Allocate')).toBe(true);
+    // base deposit → deposit factory, base holdings
+    expect(cmds[0].contractId).toBe('depF');
+    expect(cmds[0].choiceArgument.inputHoldingCids).toEqual(['b1']);
+    expect(cmds[0].choiceArgument.allocation).toEqual(baseSpec);
+    // quote deposit → deposit factory, quote holdings
+    expect(cmds[1].contractId).toBe('depF');
+    expect(cmds[1].choiceArgument.inputHoldingCids).toEqual(['q1', 'q2']);
+    // LP receipt → LP factory, no input holdings
+    expect(cmds[2].contractId).toBe('lpF');
+    expect(cmds[2].choiceArgument.inputHoldingCids).toEqual([]);
+    expect(cmds[2].choiceArgument.allocation).toEqual(receiptSpec);
+    // interface-targeted exercise + actors threaded
+    expect((out.commands[0] as { ExerciseCommand: { templateId: string } }).ExerciseCommand.templateId).toBe(ALLOC_FACTORY_IID);
+    expect(cmds[0].choiceArgument.actors).toEqual(['alice::1220a']);
+  });
+
+  it('remove-liquidity authors 3 allocations (base+quote receipts, LP burn-sender)', () => {
+    const baseRcpt = mkSpec('lp-base-out-0', 'BTC', 'ReceiverSide', false);
+    const quoteRcpt = mkSpec('lp-quote-out-0', 'USDC', 'ReceiverSide', false);
+    const burnSpec = mkSpec('lp-burn', 'BTC-USDC-LP', 'SenderSide', true);
+    const intent: WalletIntent = {
+      kind: 'remove-liquidity',
+      requestCid: 'reqREMOVE1234',
+      settlement,
+      allocations: [baseRcpt, quoteRcpt, burnSpec],
+      depositFactoryCid: 'depF',
+      lpFactoryCid: 'lpF',
+      lpHoldingCids: ['lp1', 'lp2'],
+    };
+    const out = composeCommands(intent, ctx);
+    expect(out.commands).toHaveLength(3);
+    const cmds = out.commands.map((c) => (c as { ExerciseCommand: { contractId: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand);
+    expect(cmds[0].contractId).toBe('depF');
+    expect(cmds[0].choiceArgument.inputHoldingCids).toEqual([]);
+    expect(cmds[1].contractId).toBe('depF');
+    expect(cmds[1].choiceArgument.inputHoldingCids).toEqual([]);
+    // burn-sender locks ALL the LP holdings under the LP factory (fragmented
+    // LP positions must be redeemable).
+    expect(cmds[2].contractId).toBe('lpF');
+    expect(cmds[2].choiceArgument.inputHoldingCids).toEqual(['lp1', 'lp2']);
+    expect(cmds[2].choiceArgument.allocation).toEqual(burnSpec);
   });
 
   it('post-rfq-quote', () => {

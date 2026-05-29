@@ -99,9 +99,9 @@ pool account).
 - Pricing / share math (`x*y=k` on aggregate reserves; pro-rata shares).
 - `PoolSlice` shape (still operator-authored, no `owner`).
 - `PoolRules_Swap` (already settles delivery to the swapper).
-- The existing operator-only `PoolRules_AddLiquidity`/`_RemoveLiquidity` +
-  `LPMintRequest`/`LPBurnRequest` — kept and marked deprecated; retired in
-  3b/3c (named step), so 3a lands additively and green.
+- The existing pricing and reserve model. Only the liquidity entrypoints
+  changed: add/remove now run exclusively through the DvP request/settle
+  flow.
 
 ## Registry prerequisite (DEX-48)
 

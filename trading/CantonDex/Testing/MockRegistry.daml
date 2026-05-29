@@ -38,6 +38,11 @@ assertContextPresent requireContext extraArgs =
       "choice context required but absent (caller passed empty context)"
       (TextMap.member dexChoiceContextKey extraArgs.context.values)
 
+mockAuthorizerParties : V2.Account -> [Party]
+mockAuthorizerParties account = case account.owner of
+  Some _ -> Utils.accountParties account
+  None -> []
+
 template MockAllocation with
     admin : Party
     settlement : V2.SettlementInfo
@@ -46,7 +51,7 @@ template MockAllocation with
     numIterations : Int
   where
     signatory admin
-    observer Utils.accountParties spec.authorizer ++ settlement.executors
+    observer mockAuthorizerParties spec.authorizer ++ settlement.executors
 
     interface instance V2.Allocation for MockAllocation where
       view = V2.AllocationView with

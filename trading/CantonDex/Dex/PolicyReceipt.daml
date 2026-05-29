@@ -1,82 +1,47 @@
 module CantonDex.Dex.PolicyReceipt where
 
 -- Operator-signed attestation of which ranking policy was applied to an RFQ
--- accept, and where the chosen quote ranked under that policy.
---
--- Stored on `MatchedTrade.policyReceipt` and folded into `SettlementInfo.meta`
--- via `foldPolicyReceiptIntoMetadata` so the receipt rides on-ledger
--- atomically with the trade and its allocations.
---
--- Authority model:
---
---   - `MatchedTrade` is signatory-controlled by the venue (operator).
---     The contract's existence under that signatory IS the operator's
---     attestation that the receipt is genuine -- there is no separate
---     cryptographic signature to verify on-ledger.
---   - The `signature` field is a digest of (policyHash, rankedDealers,
---     acceptedDealer, acceptedRank, signedAt) for OFF-CHAIN replay
---     verification: a regulator or a losing dealer can recompute it from
---     the receipt's other fields and check it matches.
---   - `MatchedTrade` enforces `receipt.signedBy == venue` via an `ensure`
---     clause so the receipt cannot claim a different signer than the
---     contract's authority.
---
--- Why it lives in metadata: it must travel with the trade across the
--- token-standard settlement boundary so the registries that countersign
--- the settlement see it too. `SettlementInfo.meta` is the canonical
--- channel for that.
+-- accept and where the chosen quote ranked. Stored on MatchedTrade and folded
+-- into SettlementInfo.meta so it travels on-ledger with the trade. The trade
+-- being signed by the venue IS the attestation; `signature` is an off-chain
+-- replay digest, and MatchedTrade enforces signedBy == venue.
 
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.MetadataV1
 
--- | One row of the operator's ranking. The full list, in policy order,
--- goes onto the receipt so an auditor can replay the ranking off-chain
--- against the published policy config.
+-- | One row of the operator's ranking, in policy order.
 data RankedDealer = RankedDealer with
     party : Party
     rank : Int
-      -- ^ 1-based position in `PolicyReceipt.rankedDealers`.
+      -- ^ 1-based position in PolicyReceipt.rankedDealers.
     price : Decimal
     tier : Text
-      -- ^ "trusted" or "whitelist". Free-form so additional tiers can be
-      --   added without breaking parsers; receipt consumers MUST tolerate
-      --   unknown values.
+      -- ^ Free-form ("trusted"/"whitelist"); consumers must tolerate unknowns.
   deriving (Eq, Show, Ord)
 
--- | Operator-signed attestation that the accepted quote was ranked
--- according to the named policy at the time of accept.
 data PolicyReceipt = PolicyReceipt with
     policyVersion : Text
-      -- ^ Human-readable version, e.g. "v1.4".
     policyHash : Text
-      -- ^ Hash of the policy config that was applied. Off-chain replay
-      --   of the policy MUST produce the same `rankedDealers` order.
+      -- ^ Hash of the applied policy config; off-chain replay must reproduce
+      --   the same rankedDealers order.
     rfqId : Text
-      -- ^ Off-ledger RFQ identifier the receipt covers.
     rankedDealers : [RankedDealer]
-      -- ^ The full ranking the operator considered, in policy order, after
-      --   filtering out invalid (expired) quotes.
+      -- ^ Full ranking considered, in policy order, after the validity filter.
     acceptedDealer : Party
-      -- ^ The dealer the trader accepted. MUST appear in `rankedDealers`.
+      -- ^ The accepted dealer; must appear in rankedDealers.
     acceptedRank : Int
-      -- ^ 1-based rank of `acceptedDealer` in `rankedDealers`.
     consideredCount : Int
-      -- ^ Length of `rankedDealers` after the validity filter.
+      -- ^ length rankedDealers.
     signedBy : Party
-      -- ^ The operator party. Enforced by `MatchedTrade.ensure` to equal
-      --   the trade's `venue`.
+      -- ^ The operator; enforced by MatchedTrade.ensure to equal the venue.
     signedAt : Time
-      -- ^ When the receipt was constructed and signed.
     signature : Text
-      -- ^ Digest of the receipt inputs for off-chain replay verification.
-      --   The format is implementation-defined; consumers MUST treat this
-      --   as opaque text and only compare against their own re-derivation.
+      -- ^ Opaque off-chain replay digest of the receipt inputs.
   deriving (Eq, Show)
 
--- | Sanity-check a receipt against itself. Cheap structural validity:
--- ranks are 1..N, accepted dealer is in the ranking at the claimed rank,
--- considered count matches the list length.
+-- | Cheap structural check: ranks are 1..N, the accepted dealer sits at the
+-- claimed rank, and the considered count matches the list length.
 isWellFormed : PolicyReceipt -> Bool
 isWellFormed r =
   let n = length r.rankedDealers
@@ -89,12 +54,8 @@ isWellFormed r =
       r.acceptedRank >= 1 && r.acceptedRank <= n &&
       acceptedHit
 
--- | Encode a receipt into metadata key/value pairs with a stable
--- `dex.policy.*` key prefix. Keys are flat and the values are simple
--- `Text` so off-chain consumers (registry indexers, regulators) can parse
--- them without a Daml decoder. The full `rankedDealers` list is encoded
--- as numbered keys (`dex.policy.ranked.N.{party,price,tier}`) so the
--- ordering is preserved through the TextMap.
+-- | Flat dex.policy.* key/value encoding so off-chain consumers can parse
+-- without a Daml decoder; the rankedDealers list is numbered to preserve order.
 policyReceiptValues : PolicyReceipt -> [(Text, Text)]
 policyReceiptValues r =
   let header =
@@ -117,15 +78,11 @@ policyReceiptValues r =
           ]
   in  header <> rankedRows
 
--- | Produce a fresh metadata bundle holding only the receipt values.
 policyReceiptMetadata : PolicyReceipt -> Metadata
 policyReceiptMetadata r =
   emptyMetadata with values = TextMap.fromList (policyReceiptValues r)
 
--- | Fold a receipt into an existing metadata bundle. Existing keys are
--- preserved; receipt keys overwrite on collision. Used by `MatchedTrade`
--- to attach the receipt to `SettlementInfo.meta` without losing other
--- metadata an operator may already be carrying on the trade.
+-- | Fold a receipt into existing metadata; receipt keys overwrite on collision.
 foldPolicyReceiptIntoMetadata
   : Optional PolicyReceipt -> Metadata -> Metadata
 foldPolicyReceiptIntoMetadata None meta = meta

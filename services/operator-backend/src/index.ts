@@ -12,8 +12,8 @@
 //       Order_Fund, Order_Adjust, Order_Cancel
 //       OrderFundingRequest_Bind
 //       Pool_Swap
-//       LpDvpRules_RequestAddLiquidity, LpDvpRules_SettleAddLiquidity
-//       LpDvpRules_RequestRemoveLiquidity, LpDvpRules_SettleRemoveLiquidity
+//       PoolLiquidityRules_RequestAddLiquidity, PoolLiquidityRules_SettleAddLiquidity
+//       PoolLiquidityRules_RequestRemoveLiquidity, PoolLiquidityRules_SettleRemoveLiquidity
 //       MatchedTrade_RequestAllocations, MatchedTrade_Settle, MatchedTrade_Cancel
 //       DexPair_UpdateFeeModel, DexPair_SetActive, DexPair_UpdateTradingMode
 //     Plus operator-signed creates of DexPair and Pool (admin seeding).

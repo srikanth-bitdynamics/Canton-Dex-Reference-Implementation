@@ -137,8 +137,8 @@ export interface PoolRulesContract {
   operator: Party;
 }
 
-export interface LpDvpRulesContract {
-  contractId: ContractId<"LpDvpRules">;
+export interface PoolLiquidityRulesContract {
+  contractId: ContractId<"PoolLiquidityRules">;
   operator: Party;
   lpRegistrar: Party;
 }
@@ -159,7 +159,7 @@ export interface Pool {
   poolId: string;
   poolStateCid: ContractId<"PoolState">;
   rulesCid: ContractId<"PoolRules">;
-  lpDvpRulesCid: ContractId<"LpDvpRules"> | null;
+  lpDvpRulesCid: ContractId<"PoolLiquidityRules"> | null;
   operator: Party;
   lpRegistrar: Party;
   admin: Party;

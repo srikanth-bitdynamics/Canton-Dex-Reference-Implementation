@@ -405,6 +405,31 @@ export class PoolService {
     return pool.lpDvpRulesCid;
   }
 
+  private async fetchDvpPool(
+    cid: ContractId<"Pool">,
+  ): Promise<{ pool: Pool; dvpRulesCid: ContractId<"LpDvpRules"> }> {
+    const pool = await this.fetchPool(cid);
+    return { pool, dvpRulesCid: this.requireDvpRules(pool) };
+  }
+
+  private async loadLiquidityFactories(pool: Pool) {
+    const [depositFactories, lpFactories] = await Promise.all([
+      this.registry.getFactories(pool.admin),
+      this.registry.getFactories(pool.lpRegistrar),
+    ]);
+    return { depositFactories, lpFactories };
+  }
+
+  private async loadDvpSurface(pool: Pool) {
+    const [{ depositFactories, lpFactories }, depositContext, lpContext] =
+      await Promise.all([
+        this.loadLiquidityFactories(pool),
+        this.choiceContext(pool.admin),
+        this.choiceContext(pool.lpRegistrar),
+      ]);
+    return { depositFactories, lpFactories, depositContext, lpContext };
+  }
+
   /**
    * Read back the just-created LiquidityAllocationRequest so /request can
    * hand the dApp the exact on-ledger specs (built by the choice) the
@@ -455,8 +480,7 @@ export class PoolService {
   async requestAddLiquidity(
     input: PoolRequestAddLiquidityInput,
   ): Promise<PoolRequestAddLiquidityResult> {
-    const pool = await this.fetchPool(input.poolCid);
-    const dvpRulesCid = this.requireDvpRules(pool);
+    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
     const lpAmount = this.lpQuote(pool, input.baseAmount, input.quoteAmount);
     const requestCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"LiquidityAllocationRequest">>({
@@ -480,10 +504,7 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
-    const [bqFactories, lpFactories] = await Promise.all([
-      this.registry.getFactories(pool.admin),
-      this.registry.getFactories(pool.lpRegistrar),
-    ]);
+    const { depositFactories, lpFactories } = await this.loadLiquidityFactories(pool);
     return {
       requestCid,
       lpAmount,
@@ -492,7 +513,7 @@ export class PoolService {
       quoteAmount: input.quoteAmount,
       allocations: req.allocations,
       settlement: req.settlement,
-      depositFactoryCid: bqFactories.allocationFactoryCid,
+      depositFactoryCid: depositFactories.allocationFactoryCid,
       lpFactoryCid: lpFactories.allocationFactoryCid,
     };
   }
@@ -505,28 +526,24 @@ export class PoolService {
    * lpRegistrar-controlled mint.
    */
   async settleAddLiquidity(input: PoolSettleAddLiquidityInput): Promise<unknown> {
-    const pool = await this.fetchPool(input.poolCid);
-    const dvpRulesCid = this.requireDvpRules(pool);
+    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
     const lpPolicyCid = await this.fetchLpPolicy(pool);
-    // Two admins: base/quote under pool.admin, LP tokens under lpRegistrar.
-    const bqFactories = await this.registry.getFactories(pool.admin);
-    const lpFactories = await this.registry.getFactories(pool.lpRegistrar);
-    const bqCtx = await this.choiceContext(pool.admin);
+    const { depositFactories, lpFactories, depositContext, lpContext } =
+      await this.loadDvpSurface(pool);
     // Point A: the Daml choice accepts a single `extraArgs`, threaded to
     // both the base/quote and the LP factory/settle exercises. We use only
-    // lpCtx.disclosure here and pass bqCtx.extraArgs — correct for the
+    // lpContext.disclosure here and pass depositContext.extraArgs — correct for the
     // self-registry (empty context). An external context-requiring LP
     // registry would need per-admin extraArgs at both layers (deferred).
-    const lpCtx = await this.choiceContext(pool.lpRegistrar);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-add-settle:${input.requestCid}`,
         disclosure: [
-          ...bqFactories.disclosure,
+          ...depositFactories.disclosure,
           ...lpFactories.disclosure,
-          ...bqCtx.disclosure,
-          ...lpCtx.disclosure,
+          ...depositContext.disclosure,
+          ...lpContext.disclosure,
         ],
         command: {
           kind: "exercise",
@@ -543,17 +560,17 @@ export class PoolService {
             lpBaseDepositCid: input.lpBaseDepositCid,
             lpQuoteDepositCid: input.lpQuoteDepositCid,
             lpReceiptCid: input.lpReceiptCid,
-            baseFactoryCid: bqFactories.allocationFactoryCid,
-            quoteFactoryCid: bqFactories.allocationFactoryCid,
+            baseFactoryCid: depositFactories.allocationFactoryCid,
+            quoteFactoryCid: depositFactories.allocationFactoryCid,
             lpFactoryCid: lpFactories.allocationFactoryCid,
-            baseQuoteSettleCid: bqFactories.settlementFactoryCid,
+            baseQuoteSettleCid: depositFactories.settlementFactoryCid,
             lpSettleCid: lpFactories.settlementFactoryCid,
             baseAmount: input.baseAmount,
             quoteAmount: input.quoteAmount,
             minLpTokens: input.minLpTokens,
             knownTotalLpSupply: input.knownTotalLpSupply,
             requestedAt: input.requestedAt,
-            extraArgs: bqCtx.extraArgs,
+            extraArgs: depositContext.extraArgs,
           },
         },
       }),
@@ -603,8 +620,7 @@ export class PoolService {
   async requestRemoveLiquidity(
     input: PoolRequestRemoveLiquidityInput,
   ): Promise<PoolRequestRemoveLiquidityResult> {
-    const pool = await this.fetchPool(input.poolCid);
-    const dvpRulesCid = this.requireDvpRules(pool);
+    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
     const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, pool.totalLpSupply);
     const requestCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"LiquidityAllocationRequest">>({
@@ -628,10 +644,7 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
-    const [bqFactories, lpFactories] = await Promise.all([
-      this.registry.getFactories(pool.admin),
-      this.registry.getFactories(pool.lpRegistrar),
-    ]);
+    const { depositFactories, lpFactories } = await this.loadLiquidityFactories(pool);
     return {
       requestCid,
       knownTotalLpSupply: pool.totalLpSupply,
@@ -641,38 +654,35 @@ export class PoolService {
       quoteOuts: plan.quote.outs,
       allocations: req.allocations,
       settlement: req.settlement,
-      depositFactoryCid: bqFactories.allocationFactoryCid,
+      depositFactoryCid: depositFactories.allocationFactoryCid,
       lpFactoryCid: lpFactories.allocationFactoryCid,
     };
   }
 
   /** Operator + lpRegistrar settle the accepted remove. */
   async settleRemoveLiquidity(input: PoolSettleRemoveLiquidityInput): Promise<unknown> {
-    const pool = await this.fetchPool(input.poolCid);
-    const dvpRulesCid = this.requireDvpRules(pool);
+    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
     // Re-derive the slice prefix from CURRENT state. If reserves/slices
     // drifted since /request, the recomputed delivery legs won't match the
     // wallet's request-time receipt legs and the SettleBatch aborts.
     const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, input.knownTotalLpSupply);
     const lpPolicyCid = await this.fetchLpPolicy(pool);
-    const bqFactories = await this.registry.getFactories(pool.admin);
-    const lpFactories = await this.registry.getFactories(pool.lpRegistrar);
-    const bqCtx = await this.choiceContext(pool.admin);
+    const { depositFactories, lpFactories, depositContext, lpContext } =
+      await this.loadDvpSurface(pool);
     // Point A: the Daml choice accepts a single `extraArgs`, threaded to
     // both the base/quote and the LP factory/settle exercises. We use only
-    // lpCtx.disclosure here and pass bqCtx.extraArgs — correct for the
+    // lpContext.disclosure here and pass depositContext.extraArgs — correct for the
     // self-registry (empty context). An external context-requiring LP
     // registry would need per-admin extraArgs at both layers (deferred).
-    const lpCtx = await this.choiceContext(pool.lpRegistrar);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-remove-settle:${input.requestCid}`,
         disclosure: [
-          ...bqFactories.disclosure,
+          ...depositFactories.disclosure,
           ...lpFactories.disclosure,
-          ...bqCtx.disclosure,
-          ...lpCtx.disclosure,
+          ...depositContext.disclosure,
+          ...lpContext.disclosure,
         ],
         command: {
           kind: "exercise",
@@ -695,13 +705,13 @@ export class PoolService {
             holderBaseReceiptCid: input.holderBaseReceiptCid,
             holderQuoteReceiptCid: input.holderQuoteReceiptCid,
             holderBurnSenderCid: input.holderBurnSenderCid,
-            baseFactoryCid: bqFactories.allocationFactoryCid,
-            quoteFactoryCid: bqFactories.allocationFactoryCid,
+            baseFactoryCid: depositFactories.allocationFactoryCid,
+            quoteFactoryCid: depositFactories.allocationFactoryCid,
             lpFactoryCid: lpFactories.allocationFactoryCid,
-            baseQuoteSettleCid: bqFactories.settlementFactoryCid,
+            baseQuoteSettleCid: depositFactories.settlementFactoryCid,
             lpSettleCid: lpFactories.settlementFactoryCid,
             requestedAt: input.requestedAt,
-            extraArgs: bqCtx.extraArgs,
+            extraArgs: depositContext.extraArgs,
           },
         },
       }),

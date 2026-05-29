@@ -150,7 +150,6 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       refreshOnComplete,
     );
     await ledger.addLiquidity({
-      context,
       poolId: pool.contractId,
       baseAmount: parseFloat(baseAmt),
       quoteAmount: parseFloat(quoteAmt),
@@ -175,7 +174,6 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       refreshOnComplete,
     );
     await ledger.removeLiquidity({
-      context,
       poolId: pool.contractId,
       holder: party,
       lpTokens: (lpHeld * removePct) / 100,

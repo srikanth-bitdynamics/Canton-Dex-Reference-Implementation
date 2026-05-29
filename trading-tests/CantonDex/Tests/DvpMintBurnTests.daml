@@ -42,12 +42,10 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
+import Splice.Testing.Utils (emptyExtraArgs)
 
 import CantonDex.Testing.RealRegistry qualified as RR
 import CantonDex.Trading.Utils qualified as Utils
-
-emptyExtraArgs : ExtraArgs
-emptyExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
 
 -- Special mint/burn accounts: owner None marks them to the registry.
 mintAcct : V2.Account

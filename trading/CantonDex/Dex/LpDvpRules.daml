@@ -138,6 +138,57 @@ validateAgainstRequest requestCid expectedParty settlement allocCids = do
     assertMsg "supplied allocation does not match any spec in the request"
       (v.allocation `elem` req.allocations)
 
+-- Canonical leg + spec builders, shared by the Request choices, the tests,
+-- and (via the request view) the wallet — so all three agree on the exact
+-- spec shape the Settle choices validate. The operator passes only scalars;
+-- the specs are built on-ledger (single source of truth), mirroring how the
+-- Settle choices build their own legs.
+
+dvpLeg : Text -> V2.Account -> V2.Account -> Decimal -> Text -> V2.TransferLeg
+dvpLeg legId sender receiver amount instrumentId = V2.TransferLeg with
+  transferLegId = legId; sender; receiver; amount; instrumentId; meta = emptyMetadata
+
+dvpSpec : Party -> V2.Account -> [V2.TransferLeg] -> Bool -> V2.AllocationSpecification
+dvpSpec admin authorizer legs committed = V2.AllocationSpecification with
+  admin; authorizer
+  transferLegSides = Utils.legsToSides authorizer legs
+  settlementDeadline = None; nextIterationFunding = None; committed
+  meta = emptyMetadata
+
+-- The three add specs the LP authors, in the canonical order the settle
+-- consumes: committed base deposit, committed quote deposit, LP-mint
+-- receipt (receiver side, uncommitted).
+addLiquiditySpecs
+  : Pool -> Party -> Party -> Decimal -> Decimal -> Decimal -> [V2.AllocationSpecification]
+addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount =
+  let lpAcct = Utils.basicAccount recipient
+      opAcct = Utils.basicAccount operator
+      baseLeg = dvpLeg "lp-base-deposit" lpAcct opAcct baseAmount pool.baseInstrumentId
+      quoteLeg = dvpLeg "lp-quote-deposit" lpAcct opAcct quoteAmount pool.quoteInstrumentId
+      mintLeg = Lp.lpMintLeg pool.lpRegistrar lpAcct pool.lpInstrumentId.id lpAmount
+  in [ dvpSpec pool.admin lpAcct [baseLeg] True
+     , dvpSpec pool.admin lpAcct [quoteLeg] True
+     , Lp.mintReceiptSpec pool.lpRegistrar lpAcct mintLeg ]
+
+-- The three remove specs the holder authors: base receipt + quote receipt
+-- (receiver side, one leg per drawn slice — `baseOuts`/`quoteOuts` are the
+-- per-slice out amounts the operator computed) + committed LP-burn sender
+-- (locks the holder's LP holding).
+removeLiquiditySpecs
+  : Pool -> Party -> Party -> [Decimal] -> [Decimal] -> Decimal -> [V2.AllocationSpecification]
+removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount =
+  let holderAcct = Utils.basicAccount holder
+      opAcct = Utils.basicAccount operator
+      outLegs prefix instrumentId amounts =
+        [ dvpLeg (prefix <> show (i : Int)) opAcct holderAcct amt instrumentId
+        | (i, amt) <- zip [0 .. length amounts - 1] amounts ]
+      baseLegs = outLegs "lp-base-out-" pool.baseInstrumentId baseOuts
+      quoteLegs = outLegs "lp-quote-out-" pool.quoteInstrumentId quoteOuts
+      burnLeg = Lp.lpBurnLeg pool.lpRegistrar holderAcct pool.lpInstrumentId.id lpBurnAmount
+  in [ dvpSpec pool.admin holderAcct baseLegs False
+     , dvpSpec pool.admin holderAcct quoteLegs False
+     , dvpSpec pool.lpRegistrar holderAcct [burnLeg] True ]
+
 -- The per-side result of drawing a redemption across an ordered slice
 -- prefix: the delivery legs (one per sourced slice), the finalized slice
 -- allocations, the fully-consumed slice cids to archive, and the boundary
@@ -190,26 +241,37 @@ template LpDvpRules with
     nonconsuming choice LpDvpRules_RequestAddLiquidity : ContractId LAR.LiquidityAllocationRequest
       with
         poolCid : ContractId Pool
-        lp : Party
-        settlement : V2.SettlementInfo
-        allocations : [V2.AllocationSpecification]
+        recipient : Party
+        baseAmount : Decimal
+        quoteAmount : Decimal
+        lpAmount : Decimal
+          -- ^ The operator's off-ledger LP-amount quote; the settle bounds
+          --   it (minLpTokens <= it <= fair share, within dust).
         requestedAt : Time
         settleAt : Optional Time
       controller operator
       do
+        pool <- fetch poolCid
+        let settlement = PR.poolSettlement poolCid operator
+            allocations = addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount
         create LAR.LiquidityAllocationRequest with
-          operator; lp; settlement; allocations; requestedAt; settleAt
+          operator; lp = recipient; settlement; allocations; requestedAt; settleAt
 
     nonconsuming choice LpDvpRules_RequestRemoveLiquidity : ContractId LAR.LiquidityAllocationRequest
       with
         poolCid : ContractId Pool
         holder : Party
-        settlement : V2.SettlementInfo
-        allocations : [V2.AllocationSpecification]
+        baseOuts : [Decimal]
+          -- ^ Per-slice base out amounts (operator's slice draw), in order.
+        quoteOuts : [Decimal]
+        lpBurnAmount : Decimal
         requestedAt : Time
         settleAt : Optional Time
       controller operator
       do
+        pool <- fetch poolCid
+        let settlement = PR.poolSettlement poolCid operator
+            allocations = removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount
         create LAR.LiquidityAllocationRequest with
           operator; lp = holder; settlement; allocations; requestedAt; settleAt
 

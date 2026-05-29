@@ -16,6 +16,7 @@ Per registry, the operator backend fetches:
 | `GET /registry/instrument-config/:id`      | `InstrumentConfiguration` + disclosure    | Order, Pool, MatchedTrade, Rfq |
 | `GET /registry/credentials?holder=:p`      | `Credential[]` for that party             | MintRequest_Accept, TransferOffer_Accept |
 | `GET /registry/factories/:admin`           | `(AllocationFactory, SettlementFactory)` CIDs + disclosure | Pool_Swap, OTCTrade_Settle |
+| `GET /registry/choice-context/:admin`      | `ChoiceContextRef` (`context` + disclosure) | Pool, MatchedTrade, any registry-touching token-standard choice |
 | `GET /registry/transfer-rule/:id`          | `TransferRule` (if any)                   | TransferOffer_Accept |
 | `GET /registry/preapprovals?receiver=:p`   | `TransferPreapproval[]` for that receiver | TransferOffer_AcceptPreapproved |
 
@@ -73,7 +74,8 @@ Required inputs:
   whose authorizer participates in the legs, plus any "missing"
   receipt allocations the venue created.
 - `actors : [Party]` — `[venue/operator]`.
-- `extraArgs.context` — empty.
+- `extraArgs.context` — registry-supplied choice context for the
+  allocation admin. Self-registries may return empty context.
 
 ### Allocation adjustment (draft V2 only; retired in the released V2 API)
 
@@ -88,7 +90,8 @@ Required inputs:
 - `allowFutureIterations : Bool` — `True` for partial-fill orders and
   pool swaps (so the next iteration is created); `False` to terminate
   an iterated allocation on this settlement.
-- `extraArgs.context` — empty.
+- `extraArgs.context` — registry-supplied choice context for the
+  settlement admin. Self-registries may return empty context.
 
 ### Mint accept
 

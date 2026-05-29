@@ -94,6 +94,9 @@ if (e2eEnabled) {
         disclosure: [],
       };
     }
+    override async getChoiceContext() {
+      return { context: { values: {} }, disclosure: [] };
+    }
   })();
 
   const backend = new OperatorBackend({

@@ -22,6 +22,7 @@ import type {
   PolicyReceipt,
 } from "../src/types.ts";
 import { RegistryClient } from "@canton-dex/registry-client";
+import type { ChoiceContextRef } from "@canton-dex/registry-client";
 
 class StubRegistry extends RegistryClient {
   constructor() {
@@ -37,6 +38,9 @@ class StubRegistry extends RegistryClient {
       settlementFactoryCid: "#settle-fac:0" as ContractId<"SettlementFactory">,
       disclosure: [],
     };
+  }
+  override async getChoiceContext(): Promise<ChoiceContextRef> {
+    return { context: { values: {} }, disclosure: [] };
   }
 }
 

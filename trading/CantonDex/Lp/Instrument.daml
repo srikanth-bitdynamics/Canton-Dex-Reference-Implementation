@@ -3,7 +3,7 @@ module CantonDex.Lp.Instrument where
 -- LP-token legs and allocation specs on the V2 allocation surface.
 --
 -- This module is pure construction. The request/settle flow lives in
--- `CantonDex.Dex.LpDvpRules`.
+-- `CantonDex.Dex.PoolLiquidityRules`.
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2

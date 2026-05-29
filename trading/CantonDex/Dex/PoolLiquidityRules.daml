@@ -1,4 +1,4 @@
-module CantonDex.Dex.LpDvpRules where
+module CantonDex.Dex.PoolLiquidityRules where
 
 -- Liquidity add/remove at the pool boundary.
 --
@@ -18,13 +18,13 @@ import Splice.Api.Token.MetadataV1
 import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState qualified as PS
 import CantonDex.Dex.PoolSlice qualified as PSlice
-import CantonDex.Dex.PoolRules qualified as PR
-import CantonDex.Dex.LPToken qualified as LP
+import CantonDex.Dex.PoolModel qualified as PM
+import CantonDex.Lp.Policy qualified as LP
 import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
 import CantonDex.Lp.Instrument qualified as Lp
 import CantonDex.Trading.Utils qualified as Utils
 
-data LpDvpRules_SettleAddResult = LpDvpRules_SettleAddResult with
+data PoolLiquidityRules_SettleAddResult = PoolLiquidityRules_SettleAddResult with
     poolStateCid : ContractId PS.PoolState
     baseSliceCid : ContractId PSlice.PoolSlice
     quoteSliceCid : ContractId PSlice.PoolSlice
@@ -32,7 +32,7 @@ data LpDvpRules_SettleAddResult = LpDvpRules_SettleAddResult with
     lpTokensMinted : Decimal
   deriving (Eq, Show)
 
-data LpDvpRules_SettleRemoveResult = LpDvpRules_SettleRemoveResult with
+data PoolLiquidityRules_SettleRemoveResult = PoolLiquidityRules_SettleRemoveResult with
     poolStateCid : ContractId PS.PoolState
     boundaryBaseSliceCid : Optional (ContractId PSlice.PoolSlice)
     boundaryQuoteSliceCid : Optional (ContractId PSlice.PoolSlice)
@@ -164,7 +164,7 @@ data SideDelivery = SideDelivery with
   deriving (Eq, Show)
 
 buildSideDelivery
-  : Text -> V2.Account -> V2.Account -> Text -> PR.SliceDraw -> SideDelivery
+  : Text -> V2.Account -> V2.Account -> Text -> PM.SliceDraw -> SideDelivery
 buildSideDelivery prefix opAcct holderAcct instrumentId draw =
   let mkLeg i amt = V2.TransferLeg with
         transferLegId = prefix <> show (i : Int)
@@ -193,7 +193,7 @@ buildSideDelivery prefix opAcct holderAcct instrumentId draw =
        drainedSliceCids = [ cid | (cid, _, _) <- fullyTriples ]
        boundary = fmap (\(cid, _, leftover, _) -> (cid, leftover)) bTriple
 
-template LpDvpRules with
+template PoolLiquidityRules with
     operator : Party
     lpRegistrar : Party
   where
@@ -201,7 +201,7 @@ template LpDvpRules with
 
     -- Create the directional request the LP/holder accepts to author the
     -- boundary allocations; the substance is in the Settle choices.
-    nonconsuming choice LpDvpRules_RequestAddLiquidity : ContractId LAR.LiquidityAllocationRequest
+    nonconsuming choice PoolLiquidityRules_RequestAddLiquidity : ContractId LAR.LiquidityAllocationRequest
       with
         poolCid : ContractId Pool
         recipient : Party
@@ -214,12 +214,12 @@ template LpDvpRules with
       controller operator
       do
         pool <- fetch poolCid
-        let settlement = PR.poolSettlement poolCid operator
+        let settlement = PM.poolSettlement poolCid operator
             allocations = addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount
         create LAR.LiquidityAllocationRequest with
           operator; lp = recipient; settlement; allocations; requestedAt; settleAt
 
-    nonconsuming choice LpDvpRules_RequestRemoveLiquidity : ContractId LAR.LiquidityAllocationRequest
+    nonconsuming choice PoolLiquidityRules_RequestRemoveLiquidity : ContractId LAR.LiquidityAllocationRequest
       with
         poolCid : ContractId Pool
         holder : Party
@@ -232,7 +232,7 @@ template LpDvpRules with
       controller operator
       do
         pool <- fetch poolCid
-        let settlement = PR.poolSettlement poolCid operator
+        let settlement = PM.poolSettlement poolCid operator
             allocations = removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount
         create LAR.LiquidityAllocationRequest with
           operator; lp = holder; settlement; allocations; requestedAt; settleAt
@@ -240,7 +240,7 @@ template LpDvpRules with
     -- DvP add: the LP's committed deposits + LP-mint receipt settle
     -- atomically; the operator's receiver allocations roll forward into the
     -- two new slices; the registrar mints LP tokens to the LP.
-    nonconsuming choice LpDvpRules_SettleAddLiquidity : LpDvpRules_SettleAddResult
+    nonconsuming choice PoolLiquidityRules_SettleAddLiquidity : PoolLiquidityRules_SettleAddResult
       with
         expectedPoolId : PoolId
         poolCid : ContractId Pool
@@ -267,9 +267,9 @@ template LpDvpRules with
         -- Every LP-authored allocation must be unexpired (the registry does
         -- not enforce settlementDeadline per-settle).
         forA_ [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] enforceAllocationDeadline
-        validateAgainstRequest requestCid recipient (PR.poolSettlement poolCid operator)
+        validateAgainstRequest requestCid recipient (PM.poolSettlement poolCid operator)
           [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid]
-        (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        (pool, state) <- PM.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         -- First-funding (Unfunded) or a funded pool (Active); paused rejects.
         assertMsg "Pool must not be paused" (state.status /= PS_Paused)
         assertMsg "Base amount must be positive" (baseAmount > 0.0)
@@ -281,11 +281,11 @@ template LpDvpRules with
           (knownTotalLpSupply == state.totalLpSupply)
 
         let recipientAcct = Utils.basicAccount recipient
-            settlement = PR.poolSettlement poolCid operator
+            settlement = PM.poolSettlement poolCid operator
             -- Fair LP entitlement: sqrt(k) at first funding, else pro-rata.
             fairLp =
               if state.totalLpSupply == 0.0
-              then PR.sqrtDecimal (baseAmount * quoteAmount)
+              then PM.sqrtDecimal (baseAmount * quoteAmount)
               else min ((baseAmount * state.totalLpSupply) / state.reserves.baseAmount)
                        ((quoteAmount * state.totalLpSupply) / state.reserves.quoteAmount)
         -- Mint exactly the receipt amount, bounded symmetrically within dust:
@@ -313,16 +313,16 @@ template LpDvpRules with
 
         opBaseRecv <- exercise baseFactoryCid
           (mkOperatorReceiver operator pool.admin settlement baseDepositLeg requestedAt extraArgs)
-          >>= PR.extractCompleted
+          >>= PM.extractCompleted
         opQuoteRecv <- exercise quoteFactoryCid
           (mkOperatorReceiver operator pool.admin settlement quoteDepositLeg requestedAt extraArgs)
-          >>= PR.extractCompleted
+          >>= PM.extractCompleted
         regMint <- exercise lpFactoryCid
           (V2.AllocationFactory_Allocate with
              settlement
              allocation = Lp.mintSenderSpec lpRegistrar lpMintLeg
              requestedAt; inputHoldingCids = []; actors = [lpRegistrar]; extraArgs)
-          >>= PR.extractCompleted
+          >>= PM.extractCompleted
 
         -- base/quote batch (pool.admin): deposits in, operator receivers roll
         -- forward with nextIterationFunding on the finalized step.
@@ -370,7 +370,7 @@ template LpDvpRules with
             quoteAmount = state.reserves.quoteAmount + quoteAmount
           totalLpSupply = state.totalLpSupply + lpAmount
 
-        pure LpDvpRules_SettleAddResult with
+        pure PoolLiquidityRules_SettleAddResult with
           poolStateCid = newStateCid
           baseSliceCid; quoteSliceCid
           lpPolicyCid = newPolicyCid
@@ -379,7 +379,7 @@ template LpDvpRules with
     -- DvP remove: pro-rata over aggregate reserves; sourced operator slices
     -- deliver base+quote to the holder (symmetric to swap) and the holder's
     -- LP tokens burn to burnAccount.
-    nonconsuming choice LpDvpRules_SettleRemoveLiquidity : LpDvpRules_SettleRemoveResult
+    nonconsuming choice PoolLiquidityRules_SettleRemoveLiquidity : PoolLiquidityRules_SettleRemoveResult
       with
         expectedPoolId : PoolId
         poolCid : ContractId Pool
@@ -407,9 +407,9 @@ template LpDvpRules with
       do
         forA_ [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
           enforceAllocationDeadline
-        validateAgainstRequest requestCid holder (PR.poolSettlement poolCid operator)
+        validateAgainstRequest requestCid holder (PM.poolSettlement poolCid operator)
           [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
-        (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        (pool, state) <- PM.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         assertMsg "Pool must be Active to remove liquidity" (state.status == PS_Active)
         assertMsg "LP tokens must be positive" (lpTokensToRedeem > 0.0)
         assertMsg "Cannot redeem more than supply" (lpTokensToRedeem <= knownTotalLpSupply)
@@ -436,10 +436,10 @@ template LpDvpRules with
 
         let holderAcct = Utils.basicAccount holder
             operatorAcct = Utils.basicAccount operator
-            settlement = PR.poolSettlement poolCid operator
+            settlement = PM.poolSettlement poolCid operator
             burnLeg = Lp.lpBurnLeg lpRegistrar holderAcct pool.lpInstrumentId.id lpTokensToRedeem
-            baseDraw = PR.drawFromSlices baseOut baseItems
-            quoteDraw = PR.drawFromSlices quoteOut quoteItems
+            baseDraw = PM.drawFromSlices baseOut baseItems
+            quoteDraw = PM.drawFromSlices quoteOut quoteItems
             baseDel = buildSideDelivery "lp-base-out-" operatorAcct holderAcct pool.baseInstrumentId baseDraw
             quoteDel = buildSideDelivery "lp-quote-out-" operatorAcct holderAcct pool.quoteInstrumentId quoteDraw
 
@@ -448,7 +448,7 @@ template LpDvpRules with
              settlement
              allocation = Lp.burnReceiptSpec lpRegistrar burnLeg
              requestedAt; inputHoldingCids = []; actors = [lpRegistrar]; extraArgs)
-          >>= PR.extractCompleted
+          >>= PM.extractCompleted
 
         -- base/quote batch (pool.admin): per-slice delivery legs to the holder
         -- (receiver = holder's receipt allocations); boundary slices roll
@@ -511,7 +511,7 @@ template LpDvpRules with
           reserves = PoolReserves with baseAmount = newBase; quoteAmount = newQuote
           totalLpSupply = state.totalLpSupply - lpTokensToRedeem
 
-        pure LpDvpRules_SettleRemoveResult with
+        pure PoolLiquidityRules_SettleRemoveResult with
           poolStateCid = newStateCid
           boundaryBaseSliceCid; boundaryQuoteSliceCid
           lpPolicyCid = newPolicyCid

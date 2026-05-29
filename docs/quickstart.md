@@ -87,19 +87,24 @@ optional `src/`-stack analog.
 
 ### D. Constant-product pool with committed allocations
 
-- `trading/CantonDex/Dex/Pool.daml` — `Pool_Initialize`,
-  `Pool_AddLiquidity`, `Pool_RemoveLiquidity` (slice-local), `Pool_Swap`
-  (iterated-settlement roll-forward of the head slice), plus
-  `Pool_ComputeSwapOut`, `Pool_Pause`, `Pool_Resume`, `Pool_RecordLPSupply`.
+- `trading/CantonDex/Dex/Pool.daml` + `PoolState.daml` + `PoolSlice.daml` —
+  the split pool: immutable config, the hot reserves/supply/status state, and
+  one committed allocation per slice.
+- `trading/CantonDex/Dex/PoolRules.daml` — the operational choices:
+  `PoolRules_Initialize` (first-pool funding), `PoolRules_Swap`
+  (iterated-settlement roll-forward of the sourced slices), `PoolRules_Pause`,
+  `PoolRules_Resume`.
+- `trading/CantonDex/Dex/LpDvpRules.daml` + `LiquidityAllocationRequest.daml` —
+  the delivery-vs-payment add/remove path: `LpDvpRules_RequestAddLiquidity`/
+  `_SettleAddLiquidity` and `_RequestRemoveLiquidity`/`_SettleRemoveLiquidity`,
+  co-controlled by operator + lpRegistrar.
 - `trading/CantonDex/Dex/LPToken.daml` — `LPTokenPolicy` owned by an
-  `lpRegistrar` party (distinct from the DEX `operator`), plus
-  `LPMintRequest` and `LPBurnRequest`. Accept exercises produce registry-side
-  `Holding` records, so the LP token is a real token-standard-native instrument.
+  `lpRegistrar` party (distinct from the DEX `operator`), with
+  `LPTokenPolicy_RecordMint`/`_RecordBurn`, plus `LPMintRequest` for first-pool
+  funding. The LP token is a real registry-native instrument.
 - `trading/CantonDex/Dex/SwapExecution.daml` — trader-facing `SwapRequest`.
-- `trading/CantonDex/Dex/LiquidityRequest.daml` — LP-initiated deposit and
-  withdraw intents (traffic-cost split: LP pays for their own funding actions).
-- Tests: `EndToEndTests.daml::testPoolFullLifecycle`, `testPoolSwapEndToEnd`,
-  `testPoolRemoveLiquidityConsolidates`, `testPoolRemoveLiquiditySliceLocal`.
+- Tests: `EndToEndTests.daml::testPoolFullLifecycle`, `testPoolSwapEndToEnd`;
+  `LpDvpPoolTests.daml` (DvP add, remove-to-holder, boundary slice).
 
 ## What to read first
 

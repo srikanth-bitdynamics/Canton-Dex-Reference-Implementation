@@ -111,8 +111,8 @@ export interface InstrumentId {
   id: string;
 }
 
-// Raw on-ledger contract shapes after the DEX-40/41 split. The Pool is
-// now immutable config; reserves/status/supply live on PoolState; each
+// Raw on-ledger contract shapes for the split pool. The Pool is
+// immutable config; reserves/status/supply live on PoolState; each
 // committed allocation is its own PoolSlice contract; the operational
 // choices live on a per-venue PoolRules.
 export interface PoolConfigContract {

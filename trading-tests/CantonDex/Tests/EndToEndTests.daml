@@ -37,7 +37,7 @@ import CantonDex.Dex.Pool qualified as Pool
 import CantonDex.Dex.PoolState qualified as PState
 import CantonDex.Dex.PoolSlice qualified as PSlice
 import CantonDex.Dex.PoolRules qualified as PRules
-import CantonDex.Dex.LpDvpRules qualified as Dvp
+import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Dex.Rfq qualified as Rfq
 import CantonDex.Trading.Utils qualified as Utils
@@ -53,7 +53,7 @@ setupPool
        , ContractId Pool.Pool
        , ContractId PState.PoolState
        , ContractId PRules.PoolRules
-       , ContractId Dvp.LpDvpRules
+       , ContractId Dvp.PoolLiquidityRules
        , ContractId LP.LPTokenPolicy
        )
 setupPool operator lpRegistrar admin = do
@@ -79,7 +79,7 @@ setupPool operator lpRegistrar admin = do
     publicReaders = []
   rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
   dvpCid <- submitMulti [operator, lpRegistrar] [] $
-    createCmd Dvp.LpDvpRules with operator; lpRegistrar
+    createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar
     operator
@@ -105,16 +105,16 @@ dvpFundPool
   -> ContractId Pool.Pool
   -> ContractId PState.PoolState
   -> ContractId LP.LPTokenPolicy
-  -> ContractId Dvp.LpDvpRules
+  -> ContractId Dvp.PoolLiquidityRules
   -> Party
   -> Decimal
   -> Decimal
   -> Time
   -> ExtraArgs
-  -> Script Dvp.LpDvpRules_SettleAddResult
+  -> Script Dvp.PoolLiquidityRules_SettleAddResult
 dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid policyCid dvpCid recipient baseAmount quoteAmount now extraArgs = do
   let lpAmount = PRules.sqrtDecimal (baseAmount * quoteAmount)
-  reqCid <- submit operator $ exerciseCmd dvpCid Dvp.LpDvpRules_RequestAddLiquidity with
+  reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid; recipient; baseAmount; quoteAmount; lpAmount; requestedAt = now; settleAt = None
   Some req <- queryContractId operator reqCid
   let baseSpec = head req.allocations
@@ -135,7 +135,7 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
   quoteAllocCid <- mkOne quoteSpec
   receiptAllocCid <- mkOne receiptSpec
   submitMulti [operator, lpRegistrar] [] $
-    exerciseCmd dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
+    exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = poolId
       poolCid
       poolStateCid = stateCid
@@ -623,7 +623,7 @@ mkPoolFixture
        ( Pool.PoolId
        , ContractId Pool.Pool
        , ContractId PState.PoolState
-       , ContractId Dvp.LpDvpRules
+       , ContractId Dvp.PoolLiquidityRules
        , ContractId LP.LPTokenPolicy
        , ContractId V2.AllocationFactory
        , ContractId V2.SettlementFactory
@@ -645,7 +645,7 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
     totalLpSupply = 0.0; publicReaders = []
   dvpCid <- submitMulti [operator, lpRegistrar] [] $
-    createCmd Dvp.LpDvpRules with operator; lpRegistrar
+    createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = lpId
     totalSupply = 0.0; active = True
@@ -675,7 +675,7 @@ testDvpAddRejectsEmptyContext = do
   admin <- allocateParty "admin"
   now <- getTime
   (_poolId, poolCid, _stateCid, dvpCid, _policyCid, factoryCid, _settleCid) <- mkPoolFixture operator lpRegistrar admin True
-  reqCid <- submit operator $ exerciseCmd dvpCid Dvp.LpDvpRules_RequestAddLiquidity with
+  reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid; recipient = lpRegistrar
     baseAmount = 10.0; quoteAmount = 200000.0
     lpAmount = PRules.sqrtDecimal 2000000.0

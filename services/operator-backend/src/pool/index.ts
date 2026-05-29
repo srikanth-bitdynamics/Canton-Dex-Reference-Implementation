@@ -10,7 +10,7 @@ import * as dec from "./decimal.js";
 import type {
   Decimal,
   LiquidityAllocationRequestContract,
-  LpDvpRulesContract,
+  PoolLiquidityRulesContract,
   LPTokenPolicy,
   Party,
   Pool,
@@ -166,20 +166,20 @@ export class PoolService {
     return found.contractId;
   }
 
-  private async lpDvpRules(): Promise<LpDvpRulesContract[]> {
-    return this.ledger.query<LpDvpRulesContract>({
-      templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+  private async lpDvpRules(): Promise<PoolLiquidityRulesContract[]> {
+    return this.ledger.query<PoolLiquidityRulesContract>({
+      templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
       observingParty: this.operatorParty,
     });
   }
 
-  async dvpRulesCid(lpRegistrar: Party): Promise<ContractId<"LpDvpRules">> {
+  async dvpRulesCid(lpRegistrar: Party): Promise<ContractId<"PoolLiquidityRules">> {
     const all = await this.lpDvpRules();
     const found = all.find(
       (r) => r.operator === this.operatorParty && r.lpRegistrar === lpRegistrar,
     );
     if (!found) {
-      throw new Error(`no LpDvpRules contract for operator + lpRegistrar=${lpRegistrar}`);
+      throw new Error(`no PoolLiquidityRules contract for operator + lpRegistrar=${lpRegistrar}`);
     }
     return found.contractId;
   }
@@ -207,7 +207,7 @@ export class PoolService {
       rulesCid = undefined;
     }
     const dvpRules = await this.lpDvpRules();
-    const dvpCidFor = (lpRegistrar: Party): ContractId<"LpDvpRules"> | null =>
+    const dvpCidFor = (lpRegistrar: Party): ContractId<"PoolLiquidityRules"> | null =>
       dvpRules.find(
         (r) => r.operator === this.operatorParty && r.lpRegistrar === lpRegistrar,
       )?.contractId ?? null;
@@ -311,16 +311,16 @@ export class PoolService {
 
   // === DvP liquidity ==========================================
 
-  private requireDvpRules(pool: Pool): ContractId<"LpDvpRules"> {
+  private requireDvpRules(pool: Pool): ContractId<"PoolLiquidityRules"> {
     if (!pool.lpDvpRulesCid) {
-      throw new Error(`pool ${pool.poolId} has no LpDvpRules; run admin bootstrap`);
+      throw new Error(`pool ${pool.poolId} has no PoolLiquidityRules; run admin bootstrap`);
     }
     return pool.lpDvpRulesCid;
   }
 
   private async fetchDvpPool(
     cid: ContractId<"Pool">,
-  ): Promise<{ pool: Pool; dvpRulesCid: ContractId<"LpDvpRules"> }> {
+  ): Promise<{ pool: Pool; dvpRulesCid: ContractId<"PoolLiquidityRules"> }> {
     const pool = await this.fetchPool(cid);
     return { pool, dvpRulesCid: this.requireDvpRules(pool) };
   }
@@ -384,9 +384,9 @@ export class PoolService {
         commandId: `lp-add-req:${input.poolCid}:${input.requestedAt}`,
         command: {
           kind: "exercise",
-          templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+          templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
           contractId: dvpRulesCid,
-          choice: "LpDvpRules_RequestAddLiquidity",
+          choice: "PoolLiquidityRules_RequestAddLiquidity",
           argument: {
             poolCid: input.poolCid,
             recipient: input.recipient,
@@ -435,9 +435,9 @@ export class PoolService {
         ],
         command: {
           kind: "exercise",
-          templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+          templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
           contractId: dvpRulesCid,
-          choice: "LpDvpRules_SettleAddLiquidity",
+          choice: "PoolLiquidityRules_SettleAddLiquidity",
           argument: {
             expectedPoolId: pool.poolId,
             poolCid: input.poolCid,
@@ -510,9 +510,9 @@ export class PoolService {
         commandId: `lp-remove-req:${input.poolCid}:${input.requestedAt}`,
         command: {
           kind: "exercise",
-          templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+          templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
           contractId: dvpRulesCid,
-          choice: "LpDvpRules_RequestRemoveLiquidity",
+          choice: "PoolLiquidityRules_RequestRemoveLiquidity",
           argument: {
             poolCid: input.poolCid,
             holder: input.holder,
@@ -564,9 +564,9 @@ export class PoolService {
         ],
         command: {
           kind: "exercise",
-          templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+          templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
           contractId: dvpRulesCid,
-          choice: "LpDvpRules_SettleRemoveLiquidity",
+          choice: "PoolLiquidityRules_SettleRemoveLiquidity",
           argument: {
             expectedPoolId: pool.poolId,
             poolCid: input.poolCid,

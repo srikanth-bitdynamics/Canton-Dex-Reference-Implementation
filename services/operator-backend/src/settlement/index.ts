@@ -2,11 +2,7 @@
 
 import type { Party, V2TransferLeg } from "../types.js";
 
-/**
- * Group transfer legs by admin. Stable surface: admin from
- * instrumentId.admin. PR 5333: caller-supplied since admin moved to
- * AllocationSpecification.
- */
+/** Group transfer legs by admin (caller supplies the per-leg admin). */
 export function groupLegsByAdmin(
   legs: V2TransferLeg[],
   adminOfLeg: (leg: V2TransferLeg) => Party,

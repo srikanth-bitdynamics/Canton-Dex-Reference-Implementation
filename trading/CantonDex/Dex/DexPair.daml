@@ -22,16 +22,12 @@ template DexPair with
     tradingMode : TradingMode
     feeModel : FeeModel
     active : Bool
-    -- Optional so an empty value means operator-private.
     publicReaders : Optional [Party]
-      -- ^ Parties allowed to observe the pair listing on-ledger.
-      --   None / [] = pair is operator-private except for admin.
+      -- ^ Parties allowed to observe the listing; None/[] = operator-private
+      --   except for admin.
     accumulatedMakerFees : Optional (TextMap.TextMap Decimal)
-      -- ^ Per-instrument running total of maker-side fee accrual,
-      --   keyed by `instrumentId`. Bumped by
-      --   `DexPair_RecordMatchedTrade` from `MatchedTrade_Settle`.
+      -- ^ Per-instrument maker-side fee accrual, bumped by RecordMatchedTrade.
     accumulatedTakerFees : Optional (TextMap.TextMap Decimal)
-      -- ^ Per-instrument running total of taker-side fee accrual.
   where
     signatory operator
     observer admin :: optional [] identity publicReaders
@@ -60,17 +56,12 @@ template DexPair with
       controller operator
       do create this with publicReaders = Some newReaders
 
-    -- Called from `MatchedTrade_Settle` to record fees for one trade.
-    -- `legAmounts` is the per-instrument notional touched by the trade
-    -- (we don't currently distinguish maker vs taker on which leg —
-    -- in our matched-trade model, sender is taker and receiver is
-    -- maker; the choice splits the bps accordingly).
+    -- Record fees for one matched trade (sender = taker, receiver = maker);
+    -- bumps both accrual counters at their respective bps.
     nonconsuming choice DexPair_RecordMatchedTrade : ContractId DexPair
       with
         legNotionals : TextMap.TextMap Decimal
-          -- ^ Total notional touched per instrument id by the
-          --   matched trade. We bump both maker and taker accrual
-          --   counters at their respective bps.
+          -- ^ Notional touched per instrument id by the matched trade.
       controller operator
       do
         let curMaker = optional TextMap.empty identity accumulatedMakerFees
@@ -94,11 +85,9 @@ template DexPair with
           accumulatedMakerFees = Some bumpedMaker
           accumulatedTakerFees = Some bumpedTaker
 
-    -- Operator's "collect" workflow. STUB: zeroes out the accrual
-    -- counters and returns the cleared totals. Asset emission (actually
-    -- creating operator-side holdings for the accrued amounts) is the
-    -- next-level workstream and requires a registry-side allocation
-    -- against the operator-treasury account.
+    -- Operator collect. STUB: zeroes the accrual counters and returns the
+    -- cleared totals; actual asset emission (operator-side holdings for the
+    -- accrued amounts) is future work.
     choice DexPair_CollectFees : DexPair_CollectFeesResult
       controller operator
       do

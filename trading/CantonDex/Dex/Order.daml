@@ -1,15 +1,9 @@
 module CantonDex.Dex.Order where
 
--- Resting order backed by a prefunded V2.Allocation.
---
--- Uses the PR 5333 iterated settlement pattern:
---   - order placement creates an allocation with no transfer legs and
---     nextIterationFunding covering the locked amount
---   - matching adjusts the allocation with concrete transfer legs
---   - settlement settles the adjusted allocation
---   - partial fills roll forward the next-iteration allocation for the
---     remaining quantity
---   - cancellation releases the prefunded allocation
+-- Resting order backed by a prefunded V2.Allocation: placement creates an
+-- allocation with no legs and nextIterationFunding covering the locked
+-- amount; matching carries the concrete legs through SettleBatch; partial
+-- fills roll the next-iteration allocation forward; cancel releases it.
 
 import DA.Map qualified as Map
 import DA.Optional (fromSomeNote)
@@ -52,10 +46,9 @@ data Order_CancelResult = Order_CancelResult with
     releasedHoldings : TextMap.TextMap [ContractId V2.Holding]
   deriving (Eq, Show)
 
--- The V2 pre-freeze API retired the `Reference` type and inlined its
--- `id` / `cid` onto `SettlementInfo`. We keep a small local record so
--- that templates can still carry a settlement reference as a field and
--- expand it into `SettlementInfo` at the construction boundary.
+-- Small local record carrying a settlement reference as a field, expanded
+-- into SettlementInfo at the construction boundary (the V2 API inlined the
+-- old Reference type's id/cid onto SettlementInfo).
 data SettlementRef = SettlementRef with
     id : Text
     cid : Optional AnyContractId
@@ -90,22 +83,10 @@ template Order with
 
     ensure remainingQty > 0.0
 
-    -- Order_Fund binds an already-trader-funded allocation onto the
-    -- order. The trader is the authorizer of that allocation -- this
-    -- choice does NOT call the AllocationFactory, because doing so under
-    -- the operator's authority cannot move the trader's holdings. The
-    -- correct flow is:
-    --
-    --   1. Operator's _Bind on OrderFundingRequest creates the Order
-    --      (Pending) and an OrderAllocationRequest the trader can accept.
-    --   2. Trader exercises the V2.AllocationRequest_Accept choice on
-    --      that request (signaling intent + archiving the request) AND
-    --      composes V2.AllocationFactory_Allocate in the same transaction.
-    --      Both happen under the trader's submission authority, so the
-    --      trader's holdings are the input to the new allocation.
-    --   3. Operator observes the new allocation and exercises Order_Fund
-    --      with its CID to bind it to the Pending order, transitioning
-    --      to Funded.
+    -- Bind an already-trader-funded allocation onto the order. This does NOT
+    -- call the factory: the trader authors the allocation (so their holdings
+    -- fund it) when accepting the OrderAllocationRequest; the operator then
+    -- binds the resulting cid here, Pending -> Funded.
     nonconsuming choice Order_Fund : Order_FundResult
       with
         allocationCid : ContractId V2.Allocation
@@ -126,20 +107,13 @@ template Order with
         allowFutureIterations : Bool
       controller operator
       do
-        -- There is no separate adjust step. The match's transfer legs
-        -- are carried through to SettlementFactory_SettleBatch via
-        -- FinalizedAllocation.extraTransferLegSides at the settlement
-        -- call site (MatchedTrade_Settle or OrderMatchExecution_Execute).
-        -- This choice now just validates state and returns the
-        -- existing allocation cid unchanged; the legs travel with the
-        -- match flow rather than being committed onto the allocation
-        -- in a separate step.
+        -- No separate adjust step: the match's legs travel to SettleBatch via
+        -- FinalizedAllocation.extraTransferLegSides. This validates state and
+        -- returns the existing allocation cid unchanged.
         assertMsg "Order must be Funded or PartiallyFilled to match" $
           status == OS_Funded || status == OS_PartiallyFilled
         let allocCid = fromSomeNote "Order has no allocation to adjust" allocationCid
         let _ = (matchTransferLegs, allowFutureIterations)
-              -- Reserved for future use: passed through to the caller
-              -- to thread into the SettleBatch FinalizedAllocation.
         pure Order_MatchResult with
           adjustedAllocationCid = allocCid
 
@@ -195,18 +169,10 @@ template Order with
           status = OS_PartiallyFilled
           allocationCid = newAllocationCid
 
--- | Trader-observed allocation request issued by the operator to fund a
--- specific Order. Mirrors the TradeAllocationRequest pattern in
--- MatchedTrade but specialized for the resting-order shape: it carries
--- the lock instrument + amount the trader needs to allocate, and the
--- order's settlement reference so the resulting allocation is bound to
--- this order.
---
--- Trader exercises the V2.AllocationRequest_Accept interface choice on
--- this template (which archives self) and composes a
--- V2.AllocationFactory_Allocate call in the same transaction. The
--- resulting allocation CID is then handed to Order_Fund (operator-
--- driven) to transition the Order from Pending to Funded.
+-- | Trader-observed request issued by the operator to fund a specific Order.
+-- The trader accepts (AllocationRequest_Accept, archiving self) and composes
+-- AllocationFactory_Allocate in the same transaction; the resulting cid is
+-- handed to Order_Fund.
 template OrderAllocationRequest with
     operator : Party
     trader : Party
@@ -229,10 +195,8 @@ template OrderAllocationRequest with
           cid = orderRef.cid
           meta = emptyMetadata
         allocations =
-          -- Prefunded order: no transfer legs at request time; the
-          -- trader locks `lockAmount` of `lockInstrumentId` as
-          -- next-iteration funding. Concrete legs travel with the
-          -- match flow into SettleBatch.extraTransferLegSides.
+          -- Prefunded: no legs at request time; the trader locks lockAmount as
+          -- next-iteration funding, concrete legs travel with the match flow.
           [ V2.AllocationSpecification with
               admin
               authorizer = Utils.basicAccount trader

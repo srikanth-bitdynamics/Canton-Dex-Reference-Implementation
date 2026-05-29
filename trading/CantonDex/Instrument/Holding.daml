@@ -1,14 +1,8 @@
 module CantonDex.Instrument.Holding where
 
--- Registry-side Holding. Conceptually corresponds to a V2.HoldingV2
--- holding but lives in the local registry namespace so we can reason
--- about supply changes (mint/burn) without re-implementing the V2
--- interface.
---
--- A real registry would have the Holding implement V2.HoldingV2
--- (interface) so the DEX layer's allocation factories can move it.
--- For the prototype this is a plain template; tests don't move actual
--- holdings (they go through the MockRegistry).
+-- Registry-side Holding in the local namespace (so supply changes are easy to
+-- reason about). A real registry would have this implement V2.Holding; the
+-- prototype keeps it a plain template (tests move holdings via MockRegistry).
 
 template Holding with
     admin : Party
@@ -16,9 +10,7 @@ template Holding with
     instrumentId : Text
     amount : Decimal
     locked : Bool
-      -- ^ True while the holding is referenced by an open
-      --   AllocationRequest, MintRequest accept-pending, or BurnRequest.
-      --   The registry is the authority on locking.
+      -- ^ True while referenced by an open request; the registry locks.
   where
     signatory admin
     observer owner

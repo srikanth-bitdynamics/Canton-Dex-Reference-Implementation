@@ -1,10 +1,9 @@
 module CantonDex.Tests.LpDvpPoolTests where
 
--- DEX-42/43 Step 3a: DvP liquidity at the boundary, against Registry.V2
--- (holding-tracking + iterated settlement + mint/burn accounts). Proves:
+-- DvP liquidity at the boundary, against Registry.V2 (holding-tracking +
+-- iterated settlement + mint/burn accounts). Proves:
 --   - atomic add: LP funds base+quote and receives LP tokens in one flow;
---   - remove delivers base+quote to the HOLDER (finding #3) and burns LP
---     tokens via burnAccount;
+--   - remove delivers base+quote to the HOLDER and burns LP via burnAccount;
 --   - stale-quote rejection;
 --   - the settle is co-controlled (operator + lpRegistrar).
 --
@@ -237,17 +236,16 @@ testDvpAddLiquidity = do
   baseSlice.amount === 10.0
   quoteSlice.amount === 200000.0
 
-  -- Alice received the freshly-minted LP holding (DvP, finding #4).
+  -- Alice received the freshly-minted LP holding (DvP).
   aliceHoldings <- query @RegV2.Holding alice
   let lpHoldings = filter (\(_, h) -> h.instrumentId == lpId && h.owner == alice && not h.locked) aliceHoldings
   length lpHoldings === 1
   (snd (head lpHoldings)).amount === expectedLp
   pure ()
 
--- Remove (full redemption): base+quote are delivered to the HOLDER
--- (finding #3) and the LP tokens are burned (finding #4). Full redemption
--- keeps the burn clean (the whole LP holding is consumed; partial-burn
--- change is a documented harness follow-up).
+-- Remove (full redemption): base+quote are delivered to the HOLDER and the
+-- LP tokens are burned. Full redemption keeps the burn clean (the whole LP
+-- holding is consumed; partial-burn change is a documented harness follow-up).
 testDvpRemoveDeliversToHolder : Script ()
 testDvpRemoveDeliversToHolder = do
   alice <- allocateParty "alice"

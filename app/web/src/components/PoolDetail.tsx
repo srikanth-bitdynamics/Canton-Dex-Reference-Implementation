@@ -53,10 +53,23 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   };
   const balanceOf = (s: string) =>
     holdings.find((h) => h.instrumentId === s && !h.locked)?.amount ?? 0;
-  // Unlocked holding cids for an instrument — the wallet locks these in the
-  // DvP deposit allocations (DEX-54).
-  const holdingCidsFor = (s: string) =>
-    holdings.filter((h) => h.instrumentId === s && !h.locked).map((h) => h.contractId);
+  // The minimal head-first prefix of unlocked holdings whose cumulative
+  // amount covers `target`. The wallet locks exactly these in the DvP
+  // allocation; passing ALL holdings would over-lock and — since the
+  // settle consumes every locked holding — over-burn / over-deposit a
+  // fragmented position on a partial action (DEX-54 review). Best-effort:
+  // returns the covering prefix (or all unlocked if it can't cover, so the
+  // on-ledger allocate fails loudly rather than silently under-funding).
+  const coveringHoldingCids = (s: string, target: number): string[] => {
+    const out: string[] = [];
+    let acc = 0;
+    for (const h of holdings.filter((h) => h.instrumentId === s && !h.locked)) {
+      if (acc >= target) break;
+      out.push(h.contractId);
+      acc += h.amount;
+    }
+    return out;
+  };
   const ratio = pool.reserves.quoteAmount / pool.reserves.baseAmount;
 
   const [baseAmt, setBaseAmt] = useState('');
@@ -142,8 +155,8 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       baseAmount: parseFloat(baseAmt),
       quoteAmount: parseFloat(quoteAmt),
       minLpTokens: minLpTokensWithSlippage,
-      baseHoldingCids: holdingCidsFor(pool.baseInstrumentId),
-      quoteHoldingCids: holdingCidsFor(pool.quoteInstrumentId),
+      baseHoldingCids: coveringHoldingCids(pool.baseInstrumentId, parseFloat(baseAmt)),
+      quoteHoldingCids: coveringHoldingCids(pool.quoteInstrumentId, parseFloat(quoteAmt)),
     });
     setBaseAmt('');
     setQuoteAmt('');
@@ -152,8 +165,9 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   const onRemove = async () => {
     if (!party) throw new Error('connect a wallet to remove liquidity');
     if (!context) throw new Error('dApp context not loaded yet');
-    // An LP position can be fragmented across several holdings; lock them all.
-    const lpHoldingCids = holdingCidsFor(pool.lpInstrumentId.id);
+    // Lock only the minimal LP-holding prefix that covers the redeem amount —
+    // a partial remove must not burn the trader's whole fragmented position.
+    const lpHoldingCids = coveringHoldingCids(pool.lpInstrumentId.id, (lpHeld * removePct) / 100);
     if (lpHoldingCids.length === 0) throw new Error('no unlocked LP holding to burn');
     toast.push(
       `Remove ${removePct}% LP from ${pool.baseInstrumentId}/${pool.quoteInstrumentId}`,

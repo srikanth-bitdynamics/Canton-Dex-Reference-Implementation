@@ -158,12 +158,9 @@ export const ledger = {
 
   // === write endpoints =====================================================
   //
-  // All trader-authority writes take a `context` argument carrying the
-  // operator party, asset admin, and allocation factory cid. The page
-  // gets these from useQuery({ queryKey: ['context'], queryFn:
-  // ledger.getContext }) and threads them through. No write function
-  // here is allowed to ship blank operator/admin/factoryCid — the
-  // wallet relies on those fields to build the Daml command tree.
+  // Swap/order writes still take a `context` argument carrying the operator
+  // party, asset admin, and allocation factory cid. DvP add/remove fetch
+  // the factories they need from `/request`.
 
   /**
    * Trader-authority swap. Resolves the output instrument from the pool
@@ -231,7 +228,6 @@ export const ledger = {
   // For the self-registry admin == lpRegistrar, so one factory backs both
   // the deposit (pool.admin) and LP-receipt (pool.lpRegistrar) legs.
   addLiquidity: async (params: {
-    context: DexContext;
     poolId: string;
     baseAmount: number;
     quoteAmount: number;
@@ -294,7 +290,6 @@ export const ledger = {
   // burning the LP tokens. `holderLpHoldingCid` is required — the wallet
   // must lock a concrete LP holding for the burn.
   removeLiquidity: async (params: {
-    context: DexContext;
     poolId: string;
     holder: string;
     lpTokens: number;

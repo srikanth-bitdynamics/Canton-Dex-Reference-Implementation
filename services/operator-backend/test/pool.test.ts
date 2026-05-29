@@ -99,6 +99,7 @@ function mkPool(
     poolId: "BTC-USDC",
     poolStateCid: "#ps:0" as never,
     rulesCid: "#rules:0" as never,
+    lpDvpRulesCid: "#dvp:0" as never,
     operator: "op" as never,
     lpRegistrar: "lp" as never,
     admin: "ad" as never,

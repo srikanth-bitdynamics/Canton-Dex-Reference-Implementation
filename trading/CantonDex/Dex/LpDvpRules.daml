@@ -88,6 +88,38 @@ enforceAllocationDeadline cid = do
       now <- getTime
       assertMsg "liquidity request quote has expired" (now <= deadline)
 
+-- Bind the settle to the accepted `LiquidityAllocationRequest` (the
+-- single authoritative source). The operator drives the settle but cannot
+-- substitute a different settlement, party, deadline, or allocation shape
+-- than the LP/holder accepted: every supplied allocation's spec must be
+-- one the request named, the settlement + party must match, and the
+-- request's `settleAt` is the binding deadline. Returns unit; the caller
+-- archives the request once the settle commits (3b.0 / DEX-53).
+validateAgainstRequest
+  : ContractId LAR.LiquidityAllocationRequest
+  -> Party                       -- ^ expected lp/holder
+  -> V2.SettlementInfo           -- ^ the settle's settlement
+  -> [ContractId V2.Allocation]  -- ^ supplied participant allocations
+  -> Update ()
+validateAgainstRequest requestCid expectedParty settlement allocCids = do
+  req <- fetch requestCid
+  assertMsg "settle settlement must match the accepted request"
+    (req.settlement == settlement)
+  assertMsg "request party must match the settle recipient/holder"
+    (req.lp == expectedParty)
+  -- Authoritative deadline: the request's settleAt (not a caller arg, not
+  -- only a per-allocation field).
+  case req.settleAt of
+    None -> pure ()
+    Some deadline -> do
+      now <- getTime
+      assertMsg "liquidity request has expired" (now <= deadline)
+  -- Every supplied allocation must match a spec the request named.
+  forA_ allocCids $ \cid -> do
+    v <- view <$> fetch cid
+    assertMsg "supplied allocation does not match any spec in the request"
+      (v.allocation `elem` req.allocations)
+
 -- The per-side result of drawing a redemption across an ordered slice
 -- prefix: the delivery legs (one per sourced slice), the finalized slice
 -- allocations, the fully-consumed slice cids to archive, and the boundary
@@ -173,6 +205,7 @@ template LpDvpRules with
         poolCid : ContractId Pool
         poolStateCid : ContractId PS.PoolState
         lpPolicyCid : ContractId LP.LPTokenPolicy
+        requestCid : ContractId LAR.LiquidityAllocationRequest
         recipient : Party
         lpBaseDepositCid : ContractId V2.Allocation
         lpQuoteDepositCid : ContractId V2.Allocation
@@ -195,6 +228,9 @@ template LpDvpRules with
         -- `settlementDeadline` per-settle, so an expired deposit or receipt
         -- leg could otherwise ride along behind a fresh one.
         forA_ [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] enforceAllocationDeadline
+        -- Bind to the accepted request: settlement/party/deadline/specs.
+        validateAgainstRequest requestCid recipient (PR.poolSettlement poolCid operator)
+          [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid]
         (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         -- Allowed: first-funding (Unfunded) or a funded pool (Active);
         -- a paused pool rejects liquidity changes (matches the old path).
@@ -281,6 +317,8 @@ template LpDvpRules with
 
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordMint with amount = lpAmount
 
+        -- Consume the accepted request now that it has settled.
+        archive requestCid
         archive poolStateCid
         newStateCid <- create state with
           status = PS_Active
@@ -306,6 +344,7 @@ template LpDvpRules with
         poolCid : ContractId Pool
         poolStateCid : ContractId PS.PoolState
         lpPolicyCid : ContractId LP.LPTokenPolicy
+        requestCid : ContractId LAR.LiquidityAllocationRequest
         holder : Party
         lpTokensToRedeem : Decimal
         knownTotalLpSupply : Decimal
@@ -330,6 +369,9 @@ template LpDvpRules with
         -- all be unexpired, not merely the one checked allocation.
         forA_ [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
           enforceAllocationDeadline
+        -- Bind to the accepted request: settlement/party/deadline/specs.
+        validateAgainstRequest requestCid holder (PR.poolSettlement poolCid operator)
+          [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
         (pool, state) <- PR.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         assertMsg "Pool must be Active to remove liquidity" (state.status == PS_Active)
         assertMsg "LP tokens must be positive" (lpTokensToRedeem > 0.0)
@@ -424,6 +466,9 @@ template LpDvpRules with
         boundaryQuoteSliceCid <- rewrapBoundary QuoteSide quoteRollCid quoteDel.boundary
 
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordBurn with amount = lpTokensToRedeem
+
+        -- Consume the accepted request now that it has settled.
+        archive requestCid
 
         let newBase = state.reserves.baseAmount - baseOut
             newQuote = state.reserves.quoteAmount - quoteOut

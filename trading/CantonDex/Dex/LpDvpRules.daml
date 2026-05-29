@@ -1,20 +1,10 @@
 module CantonDex.Dex.LpDvpRules where
 
--- DvP liquidity at the boundary (DEX-42/43), co-controlled by operator +
--- lpRegistrar. Additive: the operator-only PoolRules add/remove path is
--- left intact (deprecated) and retired in 3b/3c.
+-- Liquidity add/remove at the pool boundary.
 --
--- Model (see docs/dex-42-lp-funded-custody.md): the pool stays
--- operator-custodied between operations; at the add/remove boundary a DvP
--- settle moves assets. Slices stay operator-authored locality units;
--- LP entitlement is pro-rata over aggregate reserves. Because settlement
--- is admin-scoped, each op is two per-admin SettleBatches in one
--- transaction — base/quote under `pool.admin`, LP mint/burn under
--- `pool.lpRegistrar` (they collapse to one when admin == lpRegistrar).
---
--- LpDvpRules is co-controlled `operator, lpRegistrar` so its choices can
--- both rewrite the operator-signed PoolState/PoolSlice and drive the
--- lpRegistrar-controlled LPTokenPolicy + mint/burn.
+-- The pool stays operator-custodied between operations. Add/remove settle
+-- as DvP: base and quote under `pool.admin`, LP mint/burn under
+-- `pool.lpRegistrar`.
 
 import DA.Foldable (forA_)
 import DA.List (find)
@@ -75,11 +65,7 @@ mkOperatorReceiver operator admin settlement leg requestedAt extraArgs =
        actors = [operator]
        extraArgs
 
--- Enforce the quote deadline carried ON the LP/holder's allocation — i.e.
--- read it from ledger state (the `settlementDeadline` the authorizer set
--- when creating the allocation), NOT from a caller-supplied argument. The
--- operator drives the settle but cannot relax a deadline the LP committed
--- to; an expired quote cannot be settled (P1 review).
+-- Enforce the deadline carried on an allocation.
 enforceAllocationDeadline : ContractId V2.Allocation -> Update ()
 enforceAllocationDeadline cid = do
   v <- view <$> fetch cid
@@ -89,16 +75,11 @@ enforceAllocationDeadline cid = do
       now <- getTime
       assertMsg "liquidity request quote has expired" (now <= deadline)
 
--- The minted LP amount is taken from the LP's receipt allocation rather
--- than recomputed off-ledger, so the LP-mint batch balances without the
--- operator-backend having to replicate Daml's Decimal sqrt. The on-ledger
--- bounds (see SettleAddLiquidity) prevent over-minting; this is the dust
--- tolerance for the unavoidable cross-language rounding shortfall.
+-- Small tolerance for conservative off-ledger quotes.
 lpMintDustTolerance : Decimal
 lpMintDustTolerance = 0.000001
 
--- The amount on the named transfer-leg side of an allocation (ledger
--- state). Used to read the LP's intended mint/receipt amount.
+-- The amount on one named transfer-leg side.
 allocationLegAmount : Text -> ContractId V2.Allocation -> Update Decimal
 allocationLegAmount legId cid = do
   v <- view <$> fetch cid
@@ -106,13 +87,7 @@ allocationLegAmount legId cid = do
     Some s -> pure s.amount
     None -> abort ("allocation missing expected leg: " <> legId)
 
--- Bind the settle to the accepted `LiquidityAllocationRequest` (the
--- single authoritative source). The operator drives the settle but cannot
--- substitute a different settlement, party, deadline, or allocation shape
--- than the LP/holder accepted: every supplied allocation's spec must be
--- one the request named, the settlement + party must match, and the
--- request's `settleAt` is the binding deadline. Returns unit; the caller
--- archives the request once the settle commits (3b.0 / DEX-53).
+-- Bind the settle to one `LiquidityAllocationRequest`.
 validateAgainstRequest
   : ContractId LAR.LiquidityAllocationRequest
   -> Party                       -- ^ expected lp/holder
@@ -125,30 +100,18 @@ validateAgainstRequest requestCid expectedParty settlement allocCids = do
     (req.settlement == settlement)
   assertMsg "request party must match the settle recipient/holder"
     (req.lp == expectedParty)
-  -- Authoritative deadline: the request's settleAt (not a caller arg, not
-  -- only a per-allocation field).
   case req.settleAt of
     None -> pure ()
     Some deadline -> do
       now <- getTime
       assertMsg "liquidity request has expired" (now <= deadline)
-  -- Every supplied allocation must match a spec the request named. This is
-  -- a membership check, not a bijection: it does not by itself prove the
-  -- supplied allocations are distinct or cover every request spec. The
-  -- binding is completed downstream — `allocationLegAmount "lp-mint"` reads
-  -- the receipt by leg id and the per-admin SettleBatch fails unless each
-  -- leg is covered by exactly the right allocation — so a duplicated or
-  -- mis-slotted allocation still aborts. This check is the cheap first line.
+  -- Every supplied allocation must match one requested spec.
   forA_ allocCids $ \cid -> do
     v <- view <$> fetch cid
     assertMsg "supplied allocation does not match any spec in the request"
       (v.allocation `elem` req.allocations)
 
--- Canonical leg + spec builders, shared by the Request choices, the tests,
--- and (via the request view) the wallet — so all three agree on the exact
--- spec shape the Settle choices validate. The operator passes only scalars;
--- the specs are built on-ledger (single source of truth), mirroring how the
--- Settle choices build their own legs.
+-- Canonical leg + spec builders shared by request creation, tests, and wallet flows.
 
 dvpLeg : Text -> V2.Account -> V2.Account -> Decimal -> Text -> V2.TransferLeg
 dvpLeg legId sender receiver amount instrumentId = V2.TransferLeg with
@@ -161,9 +124,7 @@ dvpSpec admin authorizer legs committed = V2.AllocationSpecification with
   settlementDeadline = None; nextIterationFunding = None; committed
   meta = emptyMetadata
 
--- The three add specs the LP authors, in the canonical order the settle
--- consumes: committed base deposit, committed quote deposit, LP-mint
--- receipt (receiver side, uncommitted).
+-- The three add specs the LP authors.
 addLiquiditySpecs
   : Pool -> Party -> Party -> Decimal -> Decimal -> Decimal -> [V2.AllocationSpecification]
 addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount =
@@ -176,10 +137,7 @@ addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount =
      , dvpSpec pool.admin lpAcct [quoteLeg] True
      , Lp.mintReceiptSpec pool.lpRegistrar lpAcct mintLeg ]
 
--- The three remove specs the holder authors: base receipt + quote receipt
--- (receiver side, one leg per drawn slice — `baseOuts`/`quoteOuts` are the
--- per-slice out amounts the operator computed) + committed LP-burn sender
--- (locks the holder's LP holding).
+-- The three remove specs the holder authors.
 removeLiquiditySpecs
   : Pool -> Party -> Party -> [Decimal] -> [Decimal] -> Decimal -> [V2.AllocationSpecification]
 removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount =

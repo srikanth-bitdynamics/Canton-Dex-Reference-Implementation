@@ -1,7 +1,6 @@
 module CantonDex.Dex.PoolSlice where
 
--- One committed allocation backing a side of a pool, as its own contract
--- (DEX-40).
+-- One committed allocation backing one side of a pool.
 --
 -- Moving slices out of the `Pool` contract is what removes the
 -- unbounded-growth / hot-singleton problem: add creates a new slice
@@ -28,10 +27,7 @@ template PoolSlice with
   where
     signatory operator
 
--- | Archive a slice and cancel its underlying committed allocation in
--- one step (C3). A `PoolSlice` and its allocation must always be retired
--- together or the pool leaks committed funds; every call site that
--- removes a slice goes through this helper.
+-- | Archive a slice and cancel its underlying committed allocation together.
 resolveSlice : Party -> ContractId PoolSlice -> ExtraArgs -> Update ()
 resolveSlice operator sliceCid extraArgs = do
   slice <- fetch sliceCid

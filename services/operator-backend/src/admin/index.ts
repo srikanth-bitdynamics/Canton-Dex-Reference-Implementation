@@ -1,18 +1,4 @@
-// Admin flow.
-//
-// The operator's administrative actions: list/create DexPairs, toggle
-// active state, update fee or trading-mode, and seed Pool contracts in
-// PS_Unfunded state ready for first-touch initialization.
-//
-// Choice vocabulary:
-//   - DexPair (create) — operator-signed
-//   - DexPair_UpdateFeeModel
-//   - DexPair_SetActive
-//   - DexPair_UpdateTradingMode
-//   - Pool (create) — operator-signed, status defaults to PS_Unfunded
-//
-// Every choice in this module is operator-controlled; no wallet
-// handoff is involved.
+// Operator-controlled administrative actions.
 
 import type { ContractId } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
@@ -138,13 +124,11 @@ export class AdminService {
 
   async createPool(input: CreatePoolInput): Promise<ContractId<"Pool">> {
     const zero: Decimal = "0.0";
-    // LP instrument is administered by the lpRegistrar; build the
-    // structured V2 InstrumentId from the supplied textual id.
+    // LP instrument identity.
     const lpInstrumentId = { admin: input.lpRegistrar, id: input.lpInstrumentId };
     const poolId = `${input.baseInstrumentId}-${input.quoteInstrumentId}`;
 
-    // DEX-40/41 split: create the immutable config, the Unfunded state,
-    // and (idempotently) the per-venue rules contract.
+    // Create the pool config, its initial state, and the rules contracts.
     const poolCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"Pool">>({
         actAs: [this.operatorParty],
@@ -190,10 +174,7 @@ export class AdminService {
     await this.ensurePoolRules();
     await this.ensureLpDvpRules(input.lpRegistrar);
 
-    // Create the matching LPTokenPolicy (lpRegistrar-signed) so the pool's
-    // mint/burn flow has a policy to reference. Pool_Initialize /
-    // _AddLiquidity / _RemoveLiquidity require its cid; PoolService looks
-    // it up by lpInstrumentId.
+    // Create the matching LPTokenPolicy.
     await retryOnContention(() =>
       this.ledger.submit({
         actAs: [input.lpRegistrar],

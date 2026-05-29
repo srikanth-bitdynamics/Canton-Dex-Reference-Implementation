@@ -1,6 +1,6 @@
 module CantonDex.Dex.PoolState where
 
--- The minimal hot contract for a pool (DEX-40/41).
+-- The minimal hot contract for a pool.
 --
 -- A constant-product swap needs the *global* reserves to price (`x*y=k`),
 -- so there is an irreducible serialization point: every add / remove /
@@ -24,17 +24,12 @@ template PoolState with
     reserves : PoolReserves
     totalLpSupply : Decimal
     publicReaders : [Party]
-      -- ^ Parties allowed to observe pool state on-ledger (indexers,
-      --   off-chain pricers, dashboards). Empty = operator + lpRegistrar
-      --   only.
+      -- ^ Extra observers for pool state.
   where
     signatory operator
     observer (lpRegistrar :: publicReaders)
 
-    -- The lpRegistrar owns the LP instrument's circulating supply, so it
-    -- (not the operator) records the post-mint/burn supply back onto the
-    -- state. Kept here rather than on PoolRules because the authority is
-    -- the registrar's, not the operator's.
+    -- The lpRegistrar records post-mint/burn LP supply back onto the pool state.
     choice PoolState_RecordLPSupply : ContractId PoolState
       with
         newSupply : Decimal

@@ -53,6 +53,23 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   };
   const balanceOf = (s: string) =>
     holdings.find((h) => h.instrumentId === s && !h.locked)?.amount ?? 0;
+  // The minimal head-first prefix of unlocked holdings whose cumulative
+  // amount covers `target`. The wallet locks exactly these in the DvP
+  // allocation; passing ALL holdings would over-lock and — since the
+  // settle consumes every locked holding — over-burn / over-deposit a
+  // fragmented position on a partial action (DEX-54 review). Best-effort:
+  // returns the covering prefix (or all unlocked if it can't cover, so the
+  // on-ledger allocate fails loudly rather than silently under-funding).
+  const coveringHoldingCids = (s: string, target: number): string[] => {
+    const out: string[] = [];
+    let acc = 0;
+    for (const h of holdings.filter((h) => h.instrumentId === s && !h.locked)) {
+      if (acc >= target) break;
+      out.push(h.contractId);
+      acc += h.amount;
+    }
+    return out;
+  };
   const ratio = pool.reserves.quoteAmount / pool.reserves.baseAmount;
 
   const [baseAmt, setBaseAmt] = useState('');
@@ -138,6 +155,8 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       baseAmount: parseFloat(baseAmt),
       quoteAmount: parseFloat(quoteAmt),
       minLpTokens: minLpTokensWithSlippage,
+      baseHoldingCids: coveringHoldingCids(pool.baseInstrumentId, parseFloat(baseAmt)),
+      quoteHoldingCids: coveringHoldingCids(pool.quoteInstrumentId, parseFloat(quoteAmt)),
     });
     setBaseAmt('');
     setQuoteAmt('');
@@ -145,19 +164,24 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
 
   const onRemove = async () => {
     if (!party) throw new Error('connect a wallet to remove liquidity');
+    if (!context) throw new Error('dApp context not loaded yet');
+    // Lock only the minimal LP-holding prefix that covers the redeem amount —
+    // a partial remove must not burn the trader's whole fragmented position.
+    const lpHoldingCids = coveringHoldingCids(pool.lpInstrumentId.id, (lpHeld * removePct) / 100);
+    if (lpHoldingCids.length === 0) throw new Error('no unlocked LP holding to burn');
     toast.push(
       `Remove ${removePct}% LP from ${pool.baseInstrumentId}/${pool.quoteInstrumentId}`,
       'removeLp',
       refreshOnComplete,
     );
     await ledger.removeLiquidity({
+      context,
       poolId: pool.contractId,
       holder: party,
       lpTokens: (lpHeld * removePct) / 100,
-      knownTotalLpSupply: pool.totalLpSupply,
       minBaseOut: minBaseOutWithSlippage,
       minQuoteOut: minQuoteOutWithSlippage,
-      lpInstrumentId: pool.lpInstrumentId.id,
+      holderLpHoldingCids: lpHoldingCids,
     });
   };
 
@@ -522,12 +546,11 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                 </div>
                 <div className="sp-12" />
                 <div style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.5, padding: '6px 8px', background: 'var(--bg-2)', borderRadius: 6 }}>
-                  Two on-ledger steps:
-                  <span className="mono"> Pool_RemoveLiquidity</span> by the operator
-                  (creates an LPBurnRequest) →{' '}
-                  <span className="mono">LPTokenPolicy_AcceptBurn</span> by your
-                  wallet (archives the locked LP holding). The toast shows both
-                  phases.
+                  Delivery-versus-payment in three steps: the operator creates a{' '}
+                  <span className="mono">LiquidityAllocationRequest</span> → your
+                  wallet authors the base/quote receipt + LP burn-sender
+                  allocations → the operator and lpRegistrar settle, delivering
+                  the underlying to you and burning your LP tokens atomically.
                 </div>
                 <div className="sp-12" />
                 <button

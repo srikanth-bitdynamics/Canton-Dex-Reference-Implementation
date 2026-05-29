@@ -115,7 +115,7 @@ export interface RequestSwapIntent {
 }
 
 /**
- * Trader provides liquidity (DvP, DEX-54). The operator has created a
+ * Trader provides liquidity (DvP). The operator has created a
  * LiquidityAllocationRequest; the wallet authors the three allocations it
  * names — base deposit + quote deposit (under `depositFactoryCid` =
  * pool.admin) and the LP-token receipt (under `lpFactoryCid` =
@@ -136,7 +136,7 @@ export interface AddLiquidityIntent {
 }
 
 /**
- * Trader removes liquidity (DvP, DEX-54). Symmetric to add: the wallet
+ * Trader removes liquidity (DvP). Symmetric to add: the wallet
  * authors the three allocations the request names — base receipt + quote
  * receipt (under `depositFactoryCid` = pool.admin) and the LP burn-sender
  * (under `lpFactoryCid` = pool.lpRegistrar, locking `lpHoldingCid`) — in

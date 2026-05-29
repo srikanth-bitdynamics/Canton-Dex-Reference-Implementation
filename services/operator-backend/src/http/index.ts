@@ -979,7 +979,7 @@ async function routeRequest(
       Parameters<typeof backend.pool.requestRemoveLiquidity>[0]
     >(req);
     const result = await backend.pool.requestRemoveLiquidity(body);
-    respondJson(res, 200, { requestCid: result });
+    respondJson(res, 200, result);
     return;
   }
 

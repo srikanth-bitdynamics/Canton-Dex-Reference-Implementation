@@ -132,7 +132,13 @@ validateAgainstRequest requestCid expectedParty settlement allocCids = do
     Some deadline -> do
       now <- getTime
       assertMsg "liquidity request has expired" (now <= deadline)
-  -- Every supplied allocation must match a spec the request named.
+  -- Every supplied allocation must match a spec the request named. This is
+  -- a membership check, not a bijection: it does not by itself prove the
+  -- supplied allocations are distinct or cover every request spec. The
+  -- binding is completed downstream — `allocationLegAmount "lp-mint"` reads
+  -- the receipt by leg id and the per-admin SettleBatch fails unless each
+  -- leg is covered by exactly the right allocation — so a duplicated or
+  -- mis-slotted allocation still aborts. This check is the cheap first line.
   forA_ allocCids $ \cid -> do
     v <- view <$> fetch cid
     assertMsg "supplied allocation does not match any spec in the request"
@@ -340,7 +346,13 @@ template LpDvpRules with
         -- is only rounding dust (anti arbitrary under-claim).
         lpAmount <- allocationLegAmount "lp-mint" lpReceiptCid
         assertMsg "LP tokens below minimum" (lpAmount >= minLpTokens)
-        assertMsg "LP receipt exceeds fair share" (lpAmount <= fairLp)
+        -- Both bounds carry the dust tolerance symmetrically: the backend's
+        -- floored JS-double quote and Daml's Newton `sqrtDecimal` are two
+        -- different sqrt implementations, so the receipt can land up to one
+        -- 1e-10 bucket on EITHER side of `fairLp`. A strict `<= fairLp` would
+        -- abort an otherwise-fair add when the quote rounds a hair high.
+        assertMsg "LP receipt exceeds fair share beyond dust tolerance"
+          (lpAmount - fairLp <= lpMintDustTolerance)
         assertMsg "LP receipt shortfall beyond dust tolerance"
           (fairLp - lpAmount <= lpMintDustTolerance)
 

@@ -32,3 +32,6 @@ services/*/data/
 *.bak.*
 *.orig
 *.log
+
+# local-only: fully-commented originals kept during the DEX-44 simplification pass
+.refactor-archive/

@@ -1,4 +1,4 @@
-// Pool flow (DEX-40/41).
+// Pool flow.
 //
 // The on-chain pool is split into Pool (immutable config), PoolState
 // (reserves/status/supply), PoolSlice (one committed allocation each) and
@@ -50,7 +50,7 @@ export interface PoolSwapInput {
   swapperAllocationCid: ContractId<"Allocation">;
 }
 
-// === DvP liquidity (DEX-53) — two-call: request then settle ===========
+// === DvP liquidity — two-call: request then settle ===========
 
 export interface PoolRequestAddLiquidityInput {
   poolCid: ContractId<"Pool">;
@@ -80,7 +80,7 @@ export interface PoolRequestAddLiquidityResult {
   settlement: V2SettlementInfo;
   // Distinct factories the wallet must use: deposits + receipts under
   // pool.admin, the LP mint/burn under pool.lpRegistrar. Equal only in the
-  // self-registry case; split-admin venues need both (3c review P2).
+  // self-registry case; split-admin venues need both.
   depositFactoryCid: ContractId<"AllocationFactory">;
   lpFactoryCid: ContractId<"AllocationFactory">;
 }
@@ -396,7 +396,7 @@ export class PoolService {
     );
   }
 
-  // === DvP liquidity (DEX-53) ==========================================
+  // === DvP liquidity ==========================================
 
   private requireDvpRules(pool: Pool): ContractId<"LpDvpRules"> {
     if (!pool.lpDvpRulesCid) {
@@ -512,7 +512,7 @@ export class PoolService {
     const bqFactories = await this.registry.getFactories(pool.admin);
     const lpFactories = await this.registry.getFactories(pool.lpRegistrar);
     const bqCtx = await this.choiceContext(pool.admin);
-    // Point A: the Daml choice accepts a single `extraArgs`, threaded to
+    // The Daml choice accepts a single `extraArgs`, threaded to
     // both the base/quote and the LP factory/settle exercises. We use only
     // lpCtx.disclosure here and pass bqCtx.extraArgs — correct for the
     // self-registry (empty context). An external context-requiring LP
@@ -658,7 +658,7 @@ export class PoolService {
     const bqFactories = await this.registry.getFactories(pool.admin);
     const lpFactories = await this.registry.getFactories(pool.lpRegistrar);
     const bqCtx = await this.choiceContext(pool.admin);
-    // Point A: the Daml choice accepts a single `extraArgs`, threaded to
+    // The Daml choice accepts a single `extraArgs`, threaded to
     // both the base/quote and the LP factory/settle exercises. We use only
     // lpCtx.disclosure here and pass bqCtx.extraArgs — correct for the
     // self-registry (empty context). An external context-requiring LP

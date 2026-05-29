@@ -941,7 +941,7 @@ async function routeRequest(
     return;
   }
 
-  // === DvP liquidity (DEX-53) — two-call: request then settle ===========
+  // === DvP liquidity — two-call: request then settle ===========
 
   if (method === "POST" && path === "/v1/pools/add-liquidity/request") {
     const body = await readJson<

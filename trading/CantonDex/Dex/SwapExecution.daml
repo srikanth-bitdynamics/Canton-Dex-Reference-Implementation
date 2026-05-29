@@ -1,13 +1,11 @@
 module CantonDex.Dex.SwapExecution where
 
--- Swap request lifecycle for pool-based trades.
---
--- A swap request is the trader-facing contract that captures swap intent,
--- validates slippage, and delegates execution to the Pool contract. The
--- trader pre-funds the swap with a standard V2.Allocation.
+-- Swap request lifecycle: the trader-facing contract that captures swap
+-- intent, validates slippage, and delegates execution to the pool. The trader
+-- pre-funds with a standard V2.Allocation.
 
 import Splice.Api.Token.AllocationV2 qualified as V2
-import Splice.Api.Token.MetadataV1
+import CantonDex.Trading.WorkflowConstructors (emptyExtraArgs)
 
 data SwapDirection
   = BaseToQuote
@@ -67,8 +65,3 @@ template SwapRequest with
     choice SwapRequest_Consume : ContractId V2.Allocation
       controller operator
       do pure traderAllocationCid
-
-emptyExtraArgs : ExtraArgs
-emptyExtraArgs = ExtraArgs with
-  context = emptyChoiceContext
-  meta = emptyMetadata

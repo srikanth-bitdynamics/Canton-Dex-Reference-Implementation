@@ -23,7 +23,7 @@ import type {
 
 export type {
   AcceptAllocationRequestIntent,
-  AcceptLpBurnIntent,
+  RemoveLiquidityIntent,
   AcceptRfqIntent,
   AddLiquidityIntent,
   PlaceOrderIntent,

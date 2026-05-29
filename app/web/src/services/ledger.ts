@@ -11,12 +11,41 @@
 
 import { OperatorApi } from './operator-api';
 import { handToWallet } from '@/wallet/handoff';
+import { useWalletStore } from '@/wallet/store';
+import type { V2AllocationSpecification, V2SettlementInfo } from '@/wallet/types';
 import type {
   Order,
   Holding,
   DexPair,
   Pool as PoolType,
 } from '@/types/contracts';
+
+// Shapes of the operator-backend DvP /request responses (DEX-53/54).
+interface RequestAddResult {
+  requestCid: string;
+  lpAmount: string;
+  knownTotalLpSupply: string;
+  baseAmount: string;
+  quoteAmount: string;
+  allocations: V2AllocationSpecification[];
+  settlement: V2SettlementInfo;
+}
+interface RequestRemoveResult {
+  requestCid: string;
+  knownTotalLpSupply: string;
+  baseSliceCids: string[];
+  quoteSliceCids: string[];
+  baseOuts: string[];
+  quoteOuts: string[];
+  allocations: V2AllocationSpecification[];
+  settlement: V2SettlementInfo;
+}
+
+function connectedParty(): string {
+  const party = useWalletStore.getState().account?.party;
+  if (!party) throw new Error('connect a wallet before providing liquidity');
+  return party;
+}
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
 
@@ -191,6 +220,12 @@ export const ledger = {
       method: 'POST',
     }),
 
+  // DvP add (DEX-54), two calls around one wallet submission:
+  //   1. operator creates the LiquidityAllocationRequest (/request);
+  //   2. the trader's wallet authors the 3 allocations the request names;
+  //   3. operator + lpRegistrar settle with the created cids (/settle).
+  // For the self-registry admin == lpRegistrar, so one factory backs both
+  // the deposit (pool.admin) and LP-receipt (pool.lpRegistrar) legs.
   addLiquidity: async (params: {
     context: DexContext;
     poolId: string;
@@ -200,92 +235,108 @@ export const ledger = {
     baseHoldingCids?: string[];
     quoteHoldingCids?: string[];
   }) => {
-    const result = await handToWallet({
+    const recipient = connectedParty();
+    const requestedAt = new Date().toISOString();
+    const req = await fetchJson<RequestAddResult>('/v1/pools/add-liquidity/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        poolCid: params.poolId,
+        recipient,
+        baseAmount: params.baseAmount.toString(),
+        quoteAmount: params.quoteAmount.toString(),
+        requestedAt,
+      }),
+    });
+    const walletRes = await handToWallet({
       kind: 'add-liquidity',
-      poolId: params.poolId,
-      baseAmount: params.baseAmount.toString(),
-      quoteAmount: params.quoteAmount.toString(),
+      requestCid: req.requestCid,
+      settlement: req.settlement,
+      allocations: req.allocations,
+      depositFactoryCid: params.context.allocationFactoryCid,
+      lpFactoryCid: params.context.allocationFactoryCid,
       baseHoldingCids: params.baseHoldingCids ?? [],
       quoteHoldingCids: params.quoteHoldingCids ?? [],
-      minLpTokens: params.minLpTokens.toString(),
-      factoryCid: params.context.allocationFactoryCid,
-      operator: params.context.operator,
-      admin: params.context.admin,
     });
-    return { lpTokensMinted: 0, primaryCid: result.primaryCid };
+    const cids = walletRes.createdAllocationCids;
+    if (!cids || cids.length !== 3) {
+      throw new Error('wallet did not return the 3 created allocation cids for add-liquidity');
+    }
+    const [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] = cids;
+    await fetchJson('/v1/pools/add-liquidity/settle', {
+      method: 'POST',
+      body: JSON.stringify({
+        poolCid: params.poolId,
+        requestCid: req.requestCid,
+        recipient,
+        lpBaseDepositCid,
+        lpQuoteDepositCid,
+        lpReceiptCid,
+        baseAmount: req.baseAmount,
+        quoteAmount: req.quoteAmount,
+        minLpTokens: params.minLpTokens.toString(),
+        knownTotalLpSupply: req.knownTotalLpSupply,
+        requestedAt,
+      }),
+    });
+    return { lpTokensMinted: Number(req.lpAmount), primaryCid: req.requestCid };
   },
 
-  // Operator-driven via /v1/pools/remove-liquidity. Slice-local: walks
-  // the pool's slices from the front, cancels only the slices needed to
-  // cover the redemption, and re-allocates at most ONE boundary slice
-  // per side for the leftover. Creates an LPBurnRequest that the
-  // trader's wallet then signs against the lpRegistrar's
-  // LPTokenPolicy_AcceptBurn choice.
-  //
-  // Holding selection (boundaryBaseHoldingCids / boundaryQuoteHoldingCids)
-  // is the operator's responsibility for the boundary-slice
-  // re-allocation. Empty arrays let the operator default to discovering
-  // the pool account's holdings; production deployments may want to
-  // pass an explicit selection for determinism.
+  // DvP remove (DEX-54), symmetric to add: the operator derives the slice
+  // draw + creates the request; the trader's wallet authors the base/quote
+  // receipts + the LP burn-sender (locking `holderLpHoldingCid`); the
+  // operator + lpRegistrar settle, delivering base+quote to the holder and
+  // burning the LP tokens. `holderLpHoldingCid` is required — the wallet
+  // must lock a concrete LP holding for the burn.
   removeLiquidity: async (params: {
+    context: DexContext;
     poolId: string;
     holder: string;
     lpTokens: number;
-    knownTotalLpSupply: number;
     minBaseOut: number;
     minQuoteOut: number;
-    /** LP holding the trader's wallet should lock for the burn. */
-    holderLpHoldingCid?: string;
-    /** LP instrument id, used in the wallet handoff hint. */
-    lpInstrumentId?: string;
-    boundaryBaseHoldingCids?: string[];
-    boundaryQuoteHoldingCids?: string[];
+    /** LP holding the trader's wallet locks for the burn (required). */
+    holderLpHoldingCid: string;
   }) => {
-    const result = await fetchJson<{
-      poolCid: string;
-      boundaryBaseAllocationCid: string | null;
-      boundaryQuoteAllocationCid: string | null;
-      lpBurnRequestCid: string;
-      baseReturned: number;
-      quoteReturned: number;
-      baseSlicesConsumed: number;
-      quoteSlicesConsumed: number;
-    }>('/v1/pools/remove-liquidity', {
+    const requestedAt = new Date().toISOString();
+    const req = await fetchJson<RequestRemoveResult>('/v1/pools/remove-liquidity/request', {
       method: 'POST',
       body: JSON.stringify({
         poolCid: params.poolId,
         holder: params.holder,
         lpTokensToRedeem: params.lpTokens.toString(),
-        knownTotalLpSupply: params.knownTotalLpSupply.toString(),
-        minBaseOut: params.minBaseOut.toString(),
-        minQuoteOut: params.minQuoteOut.toString(),
-        boundaryBaseHoldingCids: params.boundaryBaseHoldingCids ?? [],
-        boundaryQuoteHoldingCids: params.boundaryQuoteHoldingCids ?? [],
-        requestedAt: new Date().toISOString(),
+        requestedAt,
       }),
     });
-
-    // Trader-side LP burn handoff: the wallet exercises
-    // LPBurnRequest_AcceptAndBurn against the request the operator just
-    // created, archiving the trader's locked LP holding. If the caller
-    // didn't supply a holding cid the dApp can't drive this leg; fall
-    // back to surfacing the burn-request cid so the trader can complete
-    // it from their wallet manually.
-    if (params.holderLpHoldingCid && params.lpInstrumentId) {
-      await handToWallet(
-        {
-          kind: 'accept-lp-burn',
-          burnRequestCid: result.lpBurnRequestCid,
-          holderHoldingCid: params.holderLpHoldingCid,
-          hint: {
-            lpInstrumentId: params.lpInstrumentId,
-            amount: params.lpTokens.toString(),
-          },
-        },
-        { preferPostMessage: true },
-      );
+    const walletRes = await handToWallet({
+      kind: 'remove-liquidity',
+      requestCid: req.requestCid,
+      settlement: req.settlement,
+      allocations: req.allocations,
+      depositFactoryCid: params.context.allocationFactoryCid,
+      lpFactoryCid: params.context.allocationFactoryCid,
+      lpHoldingCid: params.holderLpHoldingCid,
+    });
+    const cids = walletRes.createdAllocationCids;
+    if (!cids || cids.length !== 3) {
+      throw new Error('wallet did not return the 3 created allocation cids for remove-liquidity');
     }
-    return result;
+    const [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid] = cids;
+    return fetchJson<{ result: unknown }>('/v1/pools/remove-liquidity/settle', {
+      method: 'POST',
+      body: JSON.stringify({
+        poolCid: params.poolId,
+        requestCid: req.requestCid,
+        holder: params.holder,
+        lpTokensToRedeem: params.lpTokens.toString(),
+        knownTotalLpSupply: req.knownTotalLpSupply,
+        minBaseOut: params.minBaseOut.toString(),
+        minQuoteOut: params.minQuoteOut.toString(),
+        holderBaseReceiptCid,
+        holderQuoteReceiptCid,
+        holderBurnSenderCid,
+        requestedAt,
+      }),
+    });
   },
 };
 

@@ -20,9 +20,9 @@
 //   Operator-driven write:
 //     POST /v1/pools/swap               -> Pool_Swap result
 //     POST /v1/pools/add-liquidity/request  -> LiquidityAllocationRequest payload
-//     POST /v1/pools/add-liquidity/settle   -> LpDvpRules_SettleAddLiquidity result
+//     POST /v1/pools/add-liquidity/settle   -> PoolLiquidityRules_SettleAddLiquidity result
 //     POST /v1/pools/remove-liquidity/request -> LiquidityAllocationRequest payload
-//     POST /v1/pools/remove-liquidity/settle  -> LpDvpRules_SettleRemoveLiquidity result
+//     POST /v1/pools/remove-liquidity/settle  -> PoolLiquidityRules_SettleRemoveLiquidity result
 //     POST /v1/orders/bind              -> { orderCid, allocationRequestCid }
 //     POST /v1/orders/fund              -> { orderCid }
 //     POST /v1/orders/:cid/cancel       -> {}

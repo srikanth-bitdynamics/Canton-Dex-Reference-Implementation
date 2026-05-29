@@ -74,7 +74,7 @@ class CapturingLedger implements LedgerSubmitter {
         })) as unknown as T[];
       case "CantonDex.Dex.PoolRules:PoolRules":
         return [{ contractId: p.rulesCid, operator: p.operator } as unknown as T];
-      case "CantonDex.Dex.LpDvpRules:LpDvpRules":
+      case "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules":
         return [{
           contractId: "#dvp:0", operator: p.operator, lpRegistrar: p.lpRegistrar,
         } as unknown as T];
@@ -86,7 +86,7 @@ class CapturingLedger implements LedgerSubmitter {
           settlement: { executors: [p.operator], id: "s", cid: null, meta: {} },
           allocations: [], requestedAt: "1970-01-01T00:00:00Z", settleAt: null,
         } as unknown as T];
-      case "CantonDex.Dex.LPToken:LPTokenPolicy":
+      case "CantonDex.Lp.Policy:LPTokenPolicy":
         return this.servePolicy ? [this.policy as unknown as T] : [];
       default:
         return [];
@@ -100,8 +100,6 @@ function mkLpPolicy(): LPTokenPolicy {
     lpRegistrar: "lp" as never,
     operator: "op" as never,
     lpInstrumentId: LP_ID,
-    baseInstrumentId: "BTC",
-    quoteInstrumentId: "USDC",
     totalSupply: "0.0",
     active: true,
   };
@@ -208,9 +206,9 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
       kind: string; templateId: string; contractId: string; choice: string;
       argument: Record<string, unknown>;
     };
-    assert.equal(cmd.templateId, "CantonDex.Dex.LpDvpRules:LpDvpRules");
-    assert.equal(cmd.choice, "LpDvpRules_RequestAddLiquidity");
-    assert.equal(cmd.contractId, "#dvp:0", "drives the venue LpDvpRules contract");
+    assert.equal(cmd.templateId, "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules");
+    assert.equal(cmd.choice, "PoolLiquidityRules_RequestAddLiquidity");
+    assert.equal(cmd.contractId, "#dvp:0", "drives the venue PoolLiquidityRules contract");
     assert.deepEqual(ledger.lastSubmit!.actAs, ["op"], "request is operator-only");
     assert.equal(cmd.argument.recipient, "lp");
     assert.equal(cmd.argument.baseAmount, "10.0");
@@ -241,7 +239,7 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
     const cmd = ledger.lastSubmit!.command as {
       choice: string; argument: Record<string, unknown>;
     };
-    assert.equal(cmd.choice, "LpDvpRules_SettleAddLiquidity");
+    assert.equal(cmd.choice, "PoolLiquidityRules_SettleAddLiquidity");
     assert.deepEqual(
       ledger.lastSubmit!.actAs,
       ["op", "lp"],
@@ -287,7 +285,7 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
     const cmd = ledger.lastSubmit!.command as {
       choice: string; argument: Record<string, unknown>;
     };
-    assert.equal(cmd.choice, "LpDvpRules_RequestRemoveLiquidity");
+    assert.equal(cmd.choice, "PoolLiquidityRules_RequestRemoveLiquidity");
     // Full slices are passed verbatim (no float round-trip); lpBurnAmount = redeem.
     assert.deepEqual(cmd.argument.baseOuts, ["10.0000000000", "5.0000000000"]);
     assert.deepEqual(cmd.argument.quoteOuts, ["200000.0000000000", "100000.0000000000"]);
@@ -322,19 +320,19 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
     // Slice cids are operator-derived, not caller-supplied.
     assert.deepEqual(cmd.argument.baseSliceCids, ["#bs:0", "#bs:1"]);
     assert.deepEqual(cmd.argument.quoteSliceCids, ["#qs:0", "#qs:1"]);
-    assert.equal(cmd.choice, "LpDvpRules_SettleRemoveLiquidity");
+    assert.equal(cmd.choice, "PoolLiquidityRules_SettleRemoveLiquidity");
     assert.deepEqual(ledger.lastSubmit!.actAs, ["op", "lp"]);
     assert.equal(cmd.argument.requestCid, "#req:1");
     assert.equal(cmd.argument.holderBurnSenderCid, "#burn:0");
   });
 
-  it("requireDvpRules fails loudly when the venue has no LpDvpRules", async () => {
+  it("requireDvpRules fails loudly when the venue has no PoolLiquidityRules", async () => {
     const pool = mkPool(0, 0);
     const ledger = new CapturingLedger(pool, mkLpPolicy());
-    // Suppress the LpDvpRules row so lpDvpRulesCid resolves to null.
+    // Suppress the PoolLiquidityRules row so lpDvpRulesCid resolves to null.
     const origQuery = ledger.query.bind(ledger);
     ledger.query = (async (filter) => {
-      if (filter.templateId === "CantonDex.Dex.LpDvpRules:LpDvpRules") return [];
+      if (filter.templateId === "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules") return [];
       return origQuery(filter);
     }) as typeof ledger.query;
     const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
@@ -347,7 +345,7 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
           quoteAmount: "200000.0",
           requestedAt,
         }),
-      /no LpDvpRules/,
+      /no PoolLiquidityRules/,
     );
   });
 });

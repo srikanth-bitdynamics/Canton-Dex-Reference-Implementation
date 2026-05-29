@@ -17,7 +17,7 @@ operator dev instance but should not be the production posture.
 | `operator`    | `DexPair`, `Order`, `MatchedTrade`, `Pool`, `OrderMatchExecution`, `SwapRequest` | All DEX-side market state                                          |
 | `lpRegistrar` | `LPTokenPolicy`, the LP `InstrumentConfiguration`, LP `Holding` records       | Mint/burn supply, LP holding lifecycle                              |
 | `admin`       | The base/quote `InstrumentConfiguration`, `AllocationFactory`, `SettlementFactory` | Allocations, settlement batches, registry-side mint/burn/transfer  |
-| `trader` / `lp` | `OrderFundingRequest`, `LiquidityDepositRequest`, `LiquidityWithdrawRequest`, `Rfq` | Their own intents and allocation accepts                          |
+| `trader` / `lp` | `OrderFundingRequest`, `Rfq`, and the deposit/receipt/burn allocations they author against a `LiquidityAllocationRequest` | Their own intents and allocation accepts                          |
 
 The traffic-cost split (called out in module headers) follows the role
 ownership: each role pays for the transactions it submits.
@@ -45,8 +45,8 @@ In rough order of dependency:
    with empty slice lists. The first LP exercises `Pool_Initialize` to
    transition to `PS_Active`.
 6. **Open the order book / swap surface.** Once pools are funded and pairs
-   are active, traders may submit `OrderFundingRequest`, `LiquidityDeposit
-   Request`, `Rfq`, etc.
+   are active, traders may submit `OrderFundingRequest`, liquidity adds/removes
+   via the DvP `/request` flow, `Rfq`, etc.
 
 The dev / testnet path in `trading-tests/CantonDex/Tests/EndToEndTests.daml`
 walks every step above against the mock registry. Treat it as the canonical
@@ -90,14 +90,14 @@ on a schedule.
   leaving reserve allocations in place. Useful for upgrades and incident
   response.
 - `Pool_Resume` (operator) — exits Paused back to Active.
-- `Pool_RemoveLiquidity` is slice-local: a routine withdrawal touches at
-  most ONE re-allocation per side. The architecture and workflows docs
-  describe the invariant; tests in `EndToEndTests.daml` enforce it
-  (`testPoolRemoveLiquiditySliceLocal`).
+- Remove-liquidity is slice-local: the `LpDvpRules_SettleRemoveLiquidity`
+  settle sources a routine withdrawal from at most ONE boundary
+  re-allocation per side. The architecture and workflows docs describe the
+  invariant; `LpDvpPoolTests.daml` exercises the boundary case.
 
 ### LP supply reconciliation
 
-- `Pool_RecordLPSupply` (lpRegistrar) — pushes the registrar-owned LP
+- `PoolState_RecordLPSupply` (lpRegistrar) — pushes the registrar-owned LP
   supply ledger back into the pool's pricing state. Run after each
   mint/burn accept so add-liquidity quoting stays accurate.
 
@@ -125,8 +125,8 @@ Off-chain telemetry the operator should also collect:
 - **Slice-count distributions** per pool side, to flag when consolidation
   maintenance would help reduce the slice list's length.
 - **Pending request age**: how long `OrderAllocationRequest`,
-  `LiquidityDepositRequest`, and `MintRequest` records have been open without
-  a downstream accept.
+  `LiquidityAllocationRequest`, and `MintRequest` records have been open
+  without a downstream accept.
 
 ### Indexer-backed endpoints (v0.0.7+)
 
@@ -199,11 +199,14 @@ upgrade" section.
 
 ### LP supply drift
 
-`LPTokenPolicy.totalSupply` and `Pool.totalLpSupply` are kept in lock-
-step by `Pool_RecordLPSupply` after each mint/burn. If they diverge
-(e.g. an operator skipped the record step), `Pool_AddLiquidity` will
-compute the wrong LP issue amount. Recovery: query the policy supply
-and re-run `Pool_RecordLPSupply` with `newSupply = policy.totalSupply`.
+`LPTokenPolicy.totalSupply` and `PoolState.totalLpSupply` are kept in
+lock-step: first-pool funding records supply via `PoolState_RecordLPSupply`
+after the `LPMintRequest` mint, and the DvP settles
+(`LpDvpRules_SettleAddLiquidity`/`_SettleRemoveLiquidity`) rewrite both
+inline and assert they match on entry. If they diverge (e.g. an operator
+skipped the record step after first funding), the DvP settle's supply-sync
+guard aborts. Recovery: query the policy supply and re-run
+`PoolState_RecordLPSupply` with `newSupply = policy.totalSupply`.
 
 ### Lost trader holdings
 

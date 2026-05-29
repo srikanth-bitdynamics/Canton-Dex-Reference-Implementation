@@ -201,32 +201,31 @@ mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx =
     baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0; knownTotalLpSupply = 0.0
     requestedAt = now; poolAdminExtraArgs = poolAdminCtx; lpRegistrarExtraArgs = emptyExtraArgs
 
--- With the REAL TestTokenV2 context threaded as poolAdminExtraArgs, the
--- registry's context check ACCEPTS the settle (it resolves the disclosed
--- TokenRules) and proceeds into the registry's settle logic. There it hits a
--- separate, documented interop gap: TestTokenV2 requires `nextIterationFunding`
--- to be declared at ALLOCATE time, whereas our pool declares it only at SETTLE
--- (the convention our own Registry.V2 permits). The failure is therefore about
--- `nextIterationFunding`, NOT a missing context -- which proves the per-admin
--- context was accepted by the real registry. (Interop gap tracked separately.)
-testRealRegistryDvpThreadsRealContext : Script ()
-testRealRegistryDvpThreadsRealContext = do
+-- Happy path against the REAL TestTokenV2 registry: with the real per-admin
+-- context threaded as poolAdminExtraArgs, the DvP add settles end-to-end
+-- across both registries. The operator-receiver allocations are born with
+-- nextIterationFunding = Some(empty), so the standard registry accepts rolling
+-- the LP's deposit credits forward into the pool-slice allocations. Pool goes
+-- Active, reserves are backed, and the LP receives freshly-minted LP tokens.
+testRealRegistryDvpAddSettles : Script ()
+testRealRegistryDvpAddSettles = do
   lp <- allocateParty "lp"
   fx <- setup lp
   now <- getTime
   (reqCid, baseDep, quoteDep, receiptCid) <- authorAdd fx lp 10.0 200000.0 now
   settleDisc <- ttSettleDisclosures fx
   let poolAdminCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
-  result <- trySubmit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
+  res <- submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
     mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx
-  case result of
-    Right _ -> abort "expected the TestTokenV2 nextIterationFunding interop gap"
-    Left e -> do
-      let msg = show e
-      assertMsg ("context accepted; failure should be nextIterationFunding, got: " <> msg)
-        (T.isInfixOf "nextIterationFunding" msg)
-      assertMsg ("must NOT be a missing-context failure, got: " <> msg)
-        (not (T.isInfixOf "tokenRules" msg))
+  Some state <- queryContractId fx.operator res.poolStateCid
+  state.status === PS_Active
+  state.reserves.baseAmount === 10.0
+  state.reserves.quoteAmount === 200000.0
+  res.lpTokensMinted === PM.sqrtDecimal 2000000.0
+  -- LP received the freshly-minted LP holding on our registry.
+  lpHoldings <- query @RegV2.Holding lp
+  let mintedLp = filter (\(_, h) -> h.instrumentId == lpId && h.owner == lp && not h.locked) lpHoldings
+  length mintedLp === 1
 
 -- With poolAdminExtraArgs blanked, the real registry's context-requiring
 -- base/quote factory aborts FIRST at the missing `testTokenV2/tokenRules`

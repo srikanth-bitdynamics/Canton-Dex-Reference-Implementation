@@ -185,60 +185,6 @@ describe("PoolService.computeQuote", () => {
   });
 });
 
-describe("PoolService.initialize (DEX-46)", () => {
-  it("threads lpPolicyCid + extraArgs into the Pool_Initialize argument", async () => {
-    const pool = mkPool(0, 0);
-    const ledger = new CapturingLedger(pool, mkLpPolicy());
-    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
-
-    await svc.initialize({
-      poolCid: pool.contractId,
-      recipient: "lp" as never,
-      baseHoldingCids: [],
-      quoteHoldingCids: [],
-      baseAmount: "10.0",
-      quoteAmount: "200000.0",
-      requestedAt: "1970-01-01T00:00:00Z" as never,
-    });
-
-    assert.ok(ledger.lastSubmit, "a command was submitted");
-    const cmd = ledger.lastSubmit!.command;
-    assert.equal(cmd.kind, "exercise");
-    assert.equal(
-      (cmd as { templateId: string }).templateId,
-      "CantonDex.Dex.PoolRules:PoolRules",
-      "init drives the PoolRules contract",
-    );
-    assert.equal((cmd as { choice: string }).choice, "PoolRules_Initialize");
-    const arg = (cmd as { argument: Record<string, unknown> }).argument;
-    assert.equal(arg.lpPolicyCid, "#lp:0", "lpPolicyCid is the looked-up policy cid");
-    assert.equal(arg.expectedPoolId, "BTC-USDC", "expectedPoolId guard is set");
-    assert.equal(arg.poolStateCid, "#ps:0", "poolStateCid is threaded");
-    assert.ok(arg.extraArgs, "extraArgs (choice context) is present");
-  });
-
-  it("fails loudly when no LPTokenPolicy exists for the pool", async () => {
-    const pool = mkPool(0, 0);
-    // Capturing ledger that serves the pool contracts but no policy rows.
-    const ledger = new CapturingLedger(pool, mkLpPolicy());
-    ledger.servePolicy = false;
-    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
-    await assert.rejects(
-      () =>
-        svc.initialize({
-          poolCid: pool.contractId,
-          recipient: "lp" as never,
-          baseHoldingCids: [],
-          quoteHoldingCids: [],
-          baseAmount: "10.0",
-          quoteAmount: "200000.0",
-          requestedAt: "1970-01-01T00:00:00Z" as never,
-        }),
-      /no active LPTokenPolicy/,
-    );
-  });
-});
-
 describe("PoolService DvP liquidity (DEX-53)", () => {
   const requestedAt = "1970-01-01T00:00:00Z" as never;
 

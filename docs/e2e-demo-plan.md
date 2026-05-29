@@ -114,16 +114,15 @@ CANTON_LP_REGISTRAR=dexLpRegistrar$SUF \
 npx tsx scripts/localnet-pool-demo.ts
 ```
 
-`PoolRules_Initialize` (PS_Unfunded → PS_Active, first-pool funding
-via `LPMintRequest`). Subsequent liquidity adds run the two-call DvP
+First-pool funding and later liquidity adds both run the same two-call DvP
 pair: `POST /v1/pools/add-liquidity/request` creates a
 `LiquidityAllocationRequest`, the wallet authors the base-deposit,
 quote-deposit, and LP-receipt allocations via
 `AllocationFactory_Allocate`, then
 `POST /v1/pools/add-liquidity/settle` has the operator and lpRegistrar
 settle (`LpDvpRules_SettleAddLiquidity`) — funds enter the pool and LP
-tokens mint to the LP atomically. Pool reserves visible in the dApp on
-`/pools`.
+tokens mint to the LP atomically, including the initial `PS_Unfunded` →
+`PS_Active` transition. Pool reserves visible in the dApp on `/pools`.
 
 Swap and remove-liquidity over the JSON LAPI are deferred — they
 need an allocation-flow swapper that this harness doesn't include

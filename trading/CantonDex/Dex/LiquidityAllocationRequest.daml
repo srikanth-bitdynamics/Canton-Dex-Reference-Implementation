@@ -1,14 +1,10 @@
 module CantonDex.Dex.LiquidityAllocationRequest where
 
--- Directional allocation request the LP / holder accepts to pre-author
--- the boundary allocations of a DvP add or remove (DEX-42/43).
---
--- Implements `V2.AllocationRequest` (mirrors the OTC trading app's
--- `OTCTradeAllocationRequest`): the operator creates it naming the
--- `AllocationSpecification`s the LP must produce; the LP's wallet accepts
--- and creates those allocations, which `LpDvpRules` then settles. In 3a's
--- Daml tests the allocations are created directly; this template proves
--- the wallet-facing surface.
+-- The directional request the LP (add) or holder (remove) accepts to
+-- pre-author the boundary allocations of a DvP add/remove. Implements
+-- V2.AllocationRequest (mirrors the OTC trading app): the operator creates
+-- it naming the specs to produce; the wallet reads the view and authors
+-- those allocations, which LpDvpRules then settles.
 
 import DA.Map qualified as Map
 
@@ -45,18 +41,10 @@ template LiquidityAllocationRequest with
       allocationRequest_rejectExtraObservers = \_ -> []
       allocationRequest_withdrawExtraObservers = \_ -> []
 
-      -- Standard-conformant: `AllocationRequest_Accept` consumes the request
-      -- (the V2 interface MUSTs this) and signals the executors. But it is
-      -- OPTIONAL ("Apps MUST cleanup allocation requests independently of
-      -- whether this choice is called").
-      --
-      -- CHOREOGRAPHY (DEX-53/54): our DvP flow does NOT call accept. The
-      -- request stays live; the wallet reads its specs (the
-      -- AllocationRequestView) and authors the deposit/receipt allocations
-      -- directly via AllocationFactory_Allocate, then `LpDvpRules_Settle*`
-      -- binds to this still-live request and archives it. If accept IS
-      -- called out-of-band the request is consumed and the settle then
-      -- fails to fetch it — a fail-safe, not a supported path.
+      -- Accept is standard-conformant (consuming) but optional, and our DvP
+      -- flow does NOT call it: the wallet authors the allocations directly
+      -- and LpDvpRules_Settle* binds to this still-live request. An
+      -- out-of-band accept consumes it, so the settle then fails — fail-safe.
       allocationRequest_acceptImpl = \self _arg -> do
         archive self
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata

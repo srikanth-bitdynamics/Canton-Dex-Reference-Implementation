@@ -113,21 +113,25 @@ mkSpecDeadline admin authorizer legs committed deadline =
   (mkSpec admin authorizer legs committed) with settlementDeadline = Some deadline
 
 -- Operator creates the directional LiquidityAllocationRequest the LP/holder
--- accepts; `Settle*` is bound to it (3b.0). `allocations` must be exactly
--- the specs the wallet then authors, in any order.
+-- accepts; `Settle*` is bound to it (3b.0). The choice builds the canonical
+-- specs on-ledger from these scalars; the tests author matching allocations
+-- via their local `mkSpec` (byte-identical, since admin == lpRegistrar ==
+-- registry here).
 requestAdd
-  : Fixture -> Party -> V2.SettlementInfo -> [V2.AllocationSpecification]
-  -> Optional Time -> Time -> Script (ContractId LAR.LiquidityAllocationRequest)
-requestAdd fx lp settlement allocations settleAt now =
+  : Fixture -> Party -> Decimal -> Decimal -> Decimal -> Optional Time -> Time
+  -> Script (ContractId LAR.LiquidityAllocationRequest)
+requestAdd fx recipient baseAmount quoteAmount lpAmount settleAt now =
   submit fx.operator $ exerciseCmd fx.dvpCid Dvp.LpDvpRules_RequestAddLiquidity with
-    poolCid = fx.poolCid; lp; settlement; allocations; requestedAt = now; settleAt
+    poolCid = fx.poolCid; recipient; baseAmount; quoteAmount; lpAmount
+    requestedAt = now; settleAt
 
 requestRemove
-  : Fixture -> Party -> V2.SettlementInfo -> [V2.AllocationSpecification]
-  -> Optional Time -> Time -> Script (ContractId LAR.LiquidityAllocationRequest)
-requestRemove fx holder settlement allocations settleAt now =
+  : Fixture -> Party -> [Decimal] -> [Decimal] -> Decimal -> Optional Time -> Time
+  -> Script (ContractId LAR.LiquidityAllocationRequest)
+requestRemove fx holder baseOuts quoteOuts lpBurnAmount settleAt now =
   submit fx.operator $ exerciseCmd fx.dvpCid Dvp.LpDvpRules_RequestRemoveLiquidity with
-    poolCid = fx.poolCid; holder; settlement; allocations; requestedAt = now; settleAt
+    poolCid = fx.poolCid; holder; baseOuts; quoteOuts; lpBurnAmount
+    requestedAt = now; settleAt
 
 -- Drive a DvP add of `baseAmount` BTC + `quoteAmount` USDC by `lp`,
 -- returning the settle result. Builds the LP's deposit + receipt
@@ -157,7 +161,7 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
       receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry lp "BTC" baseAmount
   quoteHold <- mintHolding fx.registry lp "USDC" quoteAmount
-  reqCid <- requestAdd fx lp settlement [baseSpec, quoteSpec, receiptSpec] None now
+  reqCid <- requestAdd fx lp baseAmount quoteAmount lpAmount None now
   lpBaseDeposit <- mkAlloc fx.factoryCid lp settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid lp settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid lp settlement receiptSpec [] now
@@ -232,7 +236,7 @@ testDvpRemoveDeliversToHolder = do
   let baseReceiptSpec = mkSpec fx.registry aliceAcct [baseOutLeg] False
       quoteReceiptSpec = mkSpec fx.registry aliceAcct [quoteOutLeg] False
       burnSpec = mkSpec fx.registry aliceAcct [burnLeg] True
-  reqCid <- requestRemove fx alice settlement [baseReceiptSpec, quoteReceiptSpec, burnSpec] None now
+  reqCid <- requestRemove fx alice [10.0] [200000.0] lpAmount None now
   baseReceipt <- mkAlloc fx.factoryCid alice settlement baseReceiptSpec [] now
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec [toInterfaceContractId lpHoldCid] now
@@ -294,7 +298,7 @@ testStaleQuoteRejected = do
       bRcptSpec = mkSpec fx.registry bobAcct [lpMintLeg] False
   bBtc <- mintHolding fx.registry bob "BTC" 1.0
   bUsdc <- mintHolding fx.registry bob "USDC" 20000.0
-  bReq <- requestAdd fx bob settlement [bBaseSpec, bQuoteSpec, bRcptSpec] None now
+  bReq <- requestAdd fx bob 1.0 20000.0 100.0 None now
   bBase <- mkAlloc fx.factoryCid bob settlement bBaseSpec [toInterfaceContractId bBtc] now
   bQuote <- mkAlloc fx.factoryCid bob settlement bQuoteSpec [toInterfaceContractId bUsdc] now
   bRcpt <- mkAlloc fx.factoryCid bob settlement bRcptSpec [] now
@@ -376,7 +380,7 @@ testDvpMultiSliceRemove = do
   let baseReceiptSpec = mkSpec fx.registry aliceAcct [bLeg0, bLeg1] False
       quoteReceiptSpec = mkSpec fx.registry aliceAcct [qLeg0, qLeg1] False
       burnSpec = mkSpec fx.registry aliceAcct [burnLeg] True
-  reqCid <- requestRemove fx alice settlement [baseReceiptSpec, quoteReceiptSpec, burnSpec] None now
+  reqCid <- requestRemove fx alice [10.0, 5.0] [200000.0, 100000.0] total None now
   baseReceipt <- mkAlloc fx.factoryCid alice settlement baseReceiptSpec [] now
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec (map toInterfaceContractId lpCids) now
@@ -456,7 +460,7 @@ testExpiredAddRejected = do
   let baseSpec = mkSpec fx.registry aliceAcct [baseDepositLeg] True
       quoteSpec = mkSpecDeadline fx.registry aliceAcct [quoteDepositLeg] True pastDeadline
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
-  reqCid <- requestAdd fx alice settlement [baseSpec, quoteSpec, receiptSpec] None now
+  reqCid <- requestAdd fx alice 10.0 200000.0 (PR.sqrtDecimal 2000000.0) None now
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
@@ -503,7 +507,7 @@ testExpiredRemoveRejected = do
   let baseReceiptSpec = mkSpecDeadline fx.registry aliceAcct [baseOutLeg] False pastDeadline
       quoteReceiptSpec = mkSpec fx.registry aliceAcct [quoteOutLeg] False
       burnSpec = mkSpec fx.registry aliceAcct [burnLeg] True
-  reqCid <- requestRemove fx alice settlement [baseReceiptSpec, quoteReceiptSpec, burnSpec] None now
+  reqCid <- requestRemove fx alice [10.0] [200000.0] lpAmount None now
   baseReceipt <- mkAlloc fx.factoryCid alice settlement baseReceiptSpec [] now
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec [toInterfaceContractId lpHoldCid] now
@@ -548,7 +552,7 @@ testSettleRejectsForeignAllocation = do
       forgedSpec = mkSpec fx.registry aliceAcct [forgedBaseLeg] True
   baseHold <- mintHolding fx.registry alice "BTC" 999.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
-  reqCid <- requestAdd fx alice settlement [baseSpec, quoteSpec, receiptSpec] None now
+  reqCid <- requestAdd fx alice 10.0 200000.0 (PR.sqrtDecimal 2000000.0) None now
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement forgedSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
@@ -590,7 +594,7 @@ testSettleRejectsExpiredRequest = do
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry alice "BTC" 10.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
-  reqCid <- requestAdd fx alice settlement [baseSpec, quoteSpec, receiptSpec] (Some pastDeadline) now
+  reqCid <- requestAdd fx alice 10.0 200000.0 (PR.sqrtDecimal 2000000.0) (Some pastDeadline) now
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
@@ -633,7 +637,7 @@ testAddRejectsOverMint = do
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry alice "BTC" 10.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
-  reqCid <- requestAdd fx alice settlement [baseSpec, quoteSpec, receiptSpec] None now
+  reqCid <- requestAdd fx alice 10.0 200000.0 overLp None now
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now

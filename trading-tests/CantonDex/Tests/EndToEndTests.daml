@@ -39,6 +39,7 @@ import CantonDex.Dex.PoolSlice qualified as PSlice
 import CantonDex.Dex.PoolRules qualified as PRules
 import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
+import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Dex.Rfq qualified as Rfq
 import CantonDex.Trading.Utils qualified as Utils
@@ -691,3 +692,105 @@ testDvpAddRejectsEmptyContext = do
       inputHoldingCids = []
       actors = [lpRegistrar]
       extraArgs = emptyExtraArgs
+
+-- Per-admin choice context (DEX-73) -------------------------------------
+--
+-- The DvP settle runs two per-authority batches in one transaction:
+-- base/quote under pool.admin, LP mint/burn under pool.lpRegistrar. Each
+-- batch must carry ITS OWN registry choice context. Driven through the
+-- token-standard MockRegistry in context-requiring mode (the way upstream
+-- TradingAppV2 is tested), these prove poolAdminExtraArgs and
+-- lpRegistrarExtraArgs are wired to distinct batches: blanking either one
+-- aborts only that batch's allocate/settle.
+
+-- Author the three add allocations (base + quote deposit, LP mint receipt)
+-- the LP signs, returning the request + allocation cids so a test can drive
+-- SettleAddLiquidity with explicit per-admin choice contexts.
+authorAddAllocations
+  : Party -> ContractId V2.AllocationFactory -> ContractId Pool.Pool
+  -> ContractId Dvp.PoolLiquidityRules -> Party -> Decimal -> Decimal -> Time -> ExtraArgs
+  -> Script ( ContractId LAR.LiquidityAllocationRequest
+            , ContractId V2.Allocation, ContractId V2.Allocation, ContractId V2.Allocation )
+authorAddAllocations operator factoryCid poolCid dvpCid recipient baseAmount quoteAmount now authorCtx = do
+  reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
+    poolCid; recipient; baseAmount; quoteAmount
+    lpAmount = PM.sqrtDecimal (baseAmount * quoteAmount)
+    requestedAt = now; settleAt = None
+  Some req <- queryContractId operator reqCid
+  let mkOne spec = do
+        res <- submit recipient $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+          settlement = req.settlement; allocation = spec; requestedAt = now
+          inputHoldingCids = []; actors = [recipient]; extraArgs = authorCtx
+        case res.output of
+          V2.AllocationInstructionResult_Completed cid -> pure cid
+          _ -> abort "author add alloc must complete"
+  baseCid <- mkOne (head req.allocations)
+  quoteCid <- mkOne (head (tail req.allocations))
+  receiptCid <- mkOne (head (tail (tail req.allocations)))
+  pure (reqCid, baseCid, quoteCid, receiptCid)
+
+-- Both per-admin contexts supplied: the context-requiring base/quote and LP
+-- batches both settle, pool goes Active.
+testDvpSettleThreadsBothAdminContexts : Script ()
+testDvpSettleThreadsBothAdminContexts = do
+  operator <- allocateParty "operator"
+  lpRegistrar <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+  now <- getTime
+  (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  (reqCid, baseCid, quoteCid, receiptCid) <-
+    authorAddAllocations operator factoryCid poolCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
+  let settleAdd poolAdminCtx lpRegistrarCtx =
+        exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+          expectedPoolId = poolId; poolCid; poolStateCid = stateCid; lpPolicyCid = policyCid
+          requestCid = reqCid; recipient = lpRegistrar
+          lpBaseDepositCid = baseCid; lpQuoteDepositCid = quoteCid; lpReceiptCid = receiptCid
+          baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid; lpFactoryCid = factoryCid
+          baseQuoteSettleCid = settleCid; lpSettleCid = settleCid
+          baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0; knownTotalLpSupply = 0.0
+          requestedAt = now; poolAdminExtraArgs = poolAdminCtx; lpRegistrarExtraArgs = lpRegistrarCtx
+  res <- submitMulti [operator, lpRegistrar] [] $ settleAdd markerContext markerContext
+  Some state <- queryContractId operator res.poolStateCid
+  state.status === Pool.PS_Active
+
+-- Blanking poolAdminExtraArgs aborts the base/quote batch (its factory
+-- requires context), proving that field feeds the pool.admin batch.
+testDvpSettleRequiresPoolAdminContext : Script ()
+testDvpSettleRequiresPoolAdminContext = do
+  operator <- allocateParty "operator"
+  lpRegistrar <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+  now <- getTime
+  (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  (reqCid, baseCid, quoteCid, receiptCid) <-
+    authorAddAllocations operator factoryCid poolCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
+  submitMultiMustFail [operator, lpRegistrar] [] $
+    exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+      expectedPoolId = poolId; poolCid; poolStateCid = stateCid; lpPolicyCid = policyCid
+      requestCid = reqCid; recipient = lpRegistrar
+      lpBaseDepositCid = baseCid; lpQuoteDepositCid = quoteCid; lpReceiptCid = receiptCid
+      baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid; lpFactoryCid = factoryCid
+      baseQuoteSettleCid = settleCid; lpSettleCid = settleCid
+      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0; knownTotalLpSupply = 0.0
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = markerContext
+
+-- Blanking lpRegistrarExtraArgs aborts the LP mint batch, proving that
+-- field feeds the pool.lpRegistrar batch.
+testDvpSettleRequiresLpRegistrarContext : Script ()
+testDvpSettleRequiresLpRegistrarContext = do
+  operator <- allocateParty "operator"
+  lpRegistrar <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+  now <- getTime
+  (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  (reqCid, baseCid, quoteCid, receiptCid) <-
+    authorAddAllocations operator factoryCid poolCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
+  submitMultiMustFail [operator, lpRegistrar] [] $
+    exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+      expectedPoolId = poolId; poolCid; poolStateCid = stateCid; lpPolicyCid = policyCid
+      requestCid = reqCid; recipient = lpRegistrar
+      lpBaseDepositCid = baseCid; lpQuoteDepositCid = quoteCid; lpReceiptCid = receiptCid
+      baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid; lpFactoryCid = factoryCid
+      baseQuoteSettleCid = settleCid; lpSettleCid = settleCid
+      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0; knownTotalLpSupply = 0.0
+      requestedAt = now; poolAdminExtraArgs = markerContext; lpRegistrarExtraArgs = emptyExtraArgs

@@ -75,6 +75,14 @@ class CapturingLedger implements LedgerSubmitter {
         return [{
           contractId: "#dvp:0", operator: p.operator, lpRegistrar: p.lpRegistrar,
         } as unknown as T];
+      case "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationRequest":
+        // submit() returns "#result:0"; /request reads the created request
+        // back by that cid. Specs left empty — tests assert the choice args.
+        return [{
+          contractId: "#result:0", operator: p.operator, lp: "lp",
+          settlement: { executors: [p.operator], id: "s", cid: null, meta: {} },
+          allocations: [], requestedAt: "1970-01-01T00:00:00Z", settleAt: null,
+        } as unknown as T];
       case "CantonDex.Dex.LPToken:LPTokenPolicy":
         return this.servePolicy ? [this.policy as unknown as T] : [];
       default:

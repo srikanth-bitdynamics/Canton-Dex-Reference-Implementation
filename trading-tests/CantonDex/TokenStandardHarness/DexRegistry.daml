@@ -1,18 +1,8 @@
--- DEX-side adapter that exposes our MockRegistry through the Splice
--- token-standard test interface (`Splice.Testing.TokenStandard.RegistryApiV2`).
---
--- The upstream `splice-token-standard-test-v2` package tests TradingAppV2
--- by having a registry implement that interface and then driving the
--- trading workflow through it. Doing the same for our DEX validates
--- that our matched-trade workflow is wired into the V2 surface in
--- exactly the way upstream expects.
---
--- This module is the smallest possible RegistryApi instance: an
--- AllocationFactory + SettlementFactory pair backed by the existing
--- `CantonDex.Testing.MockRegistry` templates. We only fill in the
--- factory methods our DEX flow exercises; TransferFactory and the
--- choice-context helpers stay as `error` placeholders since the
--- MatchedTrade flow does not touch them.
+-- DEX-side adapter exposing our MockRegistry through the Splice
+-- token-standard test interface (RegistryApiV2), so the matched-trade
+-- workflow can be driven exactly the way upstream's TradingAppV2 tests
+-- expect. Minimal: only the AllocationFactory + SettlementFactory methods
+-- the flow exercises are filled in; the rest are loud `error` placeholders.
 
 module CantonDex.TokenStandardHarness.DexRegistry where
 
@@ -28,18 +18,13 @@ import Splice.Testing.TokenStandard.RegistryApiV2
 
 import CantonDex.Testing.MockRegistry qualified as Mock
 
--- | A token-standard-compatible registry backed by our MockRegistry
--- factories. The DEX operator sees both factories as observers so the
--- venue can exercise on them.
 data DexRegistry = DexRegistry
   with
     admin : Party
     allocationFactory : ContractId V2.AllocationFactory
     settlementFactory : ContractId V2.SettlementFactory
 
--- | Boot a `DexRegistry` for an admin party that has the listed parties
--- as observers on both factories. Matches the shape `AmuletRegistryV2`
--- uses for its setup.
+-- | Boot a DexRegistry whose factories observe `users`.
 initialize : Party -> [Party] -> Script DexRegistry
 initialize admin users = do
   allocFactoryCid <- submit admin $
@@ -62,11 +47,7 @@ instance RegistryApi DexRegistry where
     arg
     disclosures = mempty
 
-  -- The MatchedTrade flow does not exercise TransferFactory or the
-  -- per-allocation choice-context helpers. Leave them as errors so a
-  -- future caller that does reach for them fails loud rather than
-  -- silently with a stub. The upstream `splice-token-standard-test-v2`
-  -- registries follow the same posture for unused choices.
+  -- Unused by the MatchedTrade flow; fail loud rather than stub silently.
   getTransferFactory _ _ = error "DexRegistry: TransferFactory not implemented"
   getAllocation_WithdrawContext _ _ _ = error "DexRegistry: Allocation_Withdraw context not implemented"
   getAllocation_CancelContext _ _ _ = error "DexRegistry: Allocation_Cancel context not implemented"

@@ -14,6 +14,7 @@ import { retryOnContention } from "../ledger/submit-with-retry.js";
 import { toFloat } from "../policy/index.js";
 import type {
   Decimal,
+  LpDvpRulesContract,
   LPTokenPolicy,
   Party,
   Pool,
@@ -105,6 +106,26 @@ export class PoolService {
     return found.contractId;
   }
 
+  /** All co-controlled LpDvpRules visible to the operator, by lpRegistrar. */
+  private async lpDvpRules(): Promise<LpDvpRulesContract[]> {
+    return this.ledger.query<LpDvpRulesContract>({
+      templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+      observingParty: this.operatorParty,
+    });
+  }
+
+  /** The LpDvpRules cid for this operator + the pool's lpRegistrar, if any. */
+  async dvpRulesCid(lpRegistrar: Party): Promise<ContractId<"LpDvpRules">> {
+    const all = await this.lpDvpRules();
+    const found = all.find(
+      (r) => r.operator === this.operatorParty && r.lpRegistrar === lpRegistrar,
+    );
+    if (!found) {
+      throw new Error(`no LpDvpRules contract for operator + lpRegistrar=${lpRegistrar}`);
+    }
+    return found.contractId;
+  }
+
   /**
    * Assemble the combined `Pool` view by joining the split contracts by
    * poolId: config + state + its slices. Pools without an active state
@@ -131,6 +152,11 @@ export class PoolService {
     } catch {
       rulesCid = undefined;
     }
+    const dvpRules = await this.lpDvpRules();
+    const dvpCidFor = (lpRegistrar: Party): ContractId<"LpDvpRules"> | null =>
+      dvpRules.find(
+        (r) => r.operator === this.operatorParty && r.lpRegistrar === lpRegistrar,
+      )?.contractId ?? null;
 
     const stateByPool = new Map(states.map((s) => [s.poolId, s]));
     const combined: Pool[] = [];
@@ -151,6 +177,7 @@ export class PoolService {
         poolId: cfg.poolId,
         poolStateCid: state.contractId,
         rulesCid: rulesCid ?? ("" as ContractId<"PoolRules">),
+        lpDvpRulesCid: dvpCidFor(cfg.lpRegistrar),
         operator: cfg.operator,
         lpRegistrar: cfg.lpRegistrar,
         admin: cfg.admin,

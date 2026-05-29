@@ -143,8 +143,8 @@ export class AdminService {
     const lpInstrumentId = { admin: input.lpRegistrar, id: input.lpInstrumentId };
     const poolId = `${input.baseInstrumentId}-${input.quoteInstrumentId}`;
 
-    // DEX-40/41 split: create the immutable config, the Unfunded state,
-    // and (idempotently) the per-venue rules contract.
+    // Create the immutable config, the Unfunded state, and (idempotently)
+    // the per-venue rules contract.
     const poolCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"Pool">>({
         actAs: [this.operatorParty],

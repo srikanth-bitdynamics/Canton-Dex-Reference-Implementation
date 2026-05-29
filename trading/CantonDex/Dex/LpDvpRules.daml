@@ -17,6 +17,7 @@ module CantonDex.Dex.LpDvpRules where
 -- lpRegistrar-controlled LPTokenPolicy + mint/burn.
 
 import DA.Foldable (forA_)
+import DA.List (find)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
@@ -87,6 +88,23 @@ enforceAllocationDeadline cid = do
     Some deadline -> do
       now <- getTime
       assertMsg "liquidity request quote has expired" (now <= deadline)
+
+-- The minted LP amount is taken from the LP's receipt allocation rather
+-- than recomputed off-ledger, so the LP-mint batch balances without the
+-- operator-backend having to replicate Daml's Decimal sqrt. The on-ledger
+-- bounds (see SettleAddLiquidity) prevent over-minting; this is the dust
+-- tolerance for the unavoidable cross-language rounding shortfall.
+lpMintDustTolerance : Decimal
+lpMintDustTolerance = 0.000001
+
+-- The amount on the named transfer-leg side of an allocation (ledger
+-- state). Used to read the LP's intended mint/receipt amount.
+allocationLegAmount : Text -> ContractId V2.Allocation -> Update Decimal
+allocationLegAmount legId cid = do
+  v <- view <$> fetch cid
+  case find (\s -> s.transferLegId == legId) v.allocation.transferLegSides of
+    Some s -> pure s.amount
+    None -> abort ("allocation missing expected leg: " <> legId)
 
 -- Bind the settle to the accepted `LiquidityAllocationRequest` (the
 -- single authoritative source). The operator drives the settle but cannot
@@ -246,12 +264,23 @@ template LpDvpRules with
 
         let recipientAcct = Utils.basicAccount recipient
             settlement = PR.poolSettlement poolCid operator
-            lpAmount =
+            -- The fair LP entitlement computed on-ledger: sqrt(k) at first
+            -- funding, else pro-rata over reserves.
+            fairLp =
               if state.totalLpSupply == 0.0
               then PR.sqrtDecimal (baseAmount * quoteAmount)
               else min ((baseAmount * state.totalLpSupply) / state.reserves.baseAmount)
                        ((quoteAmount * state.totalLpSupply) / state.reserves.quoteAmount)
+        -- Mint exactly what the LP's receipt allocation authorizes (so the
+        -- LP-mint batch balances without the backend replicating Daml's
+        -- Decimal sqrt). Bound it on-ledger: at least the LP's floor, never
+        -- above the fair share (anti over-mint), and any shortfall from fair
+        -- is only rounding dust (anti arbitrary under-claim).
+        lpAmount <- allocationLegAmount "lp-mint" lpReceiptCid
         assertMsg "LP tokens below minimum" (lpAmount >= minLpTokens)
+        assertMsg "LP receipt exceeds fair share" (lpAmount <= fairLp)
+        assertMsg "LP receipt shortfall beyond dust tolerance"
+          (fairLp - lpAmount <= lpMintDustTolerance)
 
         let baseDepositLeg = V2.TransferLeg with
               transferLegId = "lp-base-deposit"

@@ -125,11 +125,29 @@ the input shapes (the HTTP shim is a thin pass-through).
 
 Operator-driven `Pool_Swap` exercise.
 
-### `POST /v1/pools/remove-liquidity`
+### `POST /v1/pools/add-liquidity/request`
 
-Operator half of the two-step remove-liquidity flow (creates
-`LPBurnRequest`; the trader's wallet then exercises
-`LPTokenPolicy_AcceptBurn`).
+Operator opens the add-liquidity flow by creating a
+`LiquidityAllocationRequest`. The trader's wallet then authors the
+base-deposit, quote-deposit, and LP-receipt allocations via
+`AllocationFactory_Allocate`.
+
+### `POST /v1/pools/add-liquidity/settle`
+
+Operator + lpRegistrar settle (`LpDvpRules_SettleAddLiquidity`): funds
+enter the pool and LP tokens are minted to the LP, atomically.
+
+### `POST /v1/pools/remove-liquidity/request`
+
+Operator opens the remove-liquidity flow by creating a
+`LiquidityAllocationRequest`. The trader's wallet then authors the
+base-receipt, quote-receipt, and LP burn-sender allocations.
+
+### `POST /v1/pools/remove-liquidity/settle`
+
+Operator + lpRegistrar settle (`LpDvpRules_SettleRemoveLiquidity`):
+base + quote are delivered to the holder and the LP tokens burn to the
+burn account, atomically.
 
 ## Admin Endpoints
 
@@ -156,8 +174,8 @@ authority writes. Instead it hands intents to the active
 | `AcceptAllocationRequestIntent` | Trader allocates holdings for an open order or swap |
 | `PlaceOrderIntent` | Trader places a new order |
 | `RequestSwapIntent` | Trader initiates a pool swap |
-| `AddLiquidityIntent` | Trader adds liquidity to a pool |
-| `AcceptLpBurnIntent` | Trader accepts an LP burn request |
+| `AddLiquidityIntent` | Trader authors the base/quote/LP-receipt allocations for an add-liquidity request |
+| `RemoveLiquidityIntent` | Trader authors the base/quote-receipt and LP burn-sender allocations for a remove-liquidity request |
 | `PostRfqQuoteIntent` | Dealer posts a quote on an RFQ |
 | `AcceptRfqIntent` | Trader accepts a dealer's quote (co-signed with operator) |
 

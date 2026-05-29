@@ -4,11 +4,12 @@ dist/
 node_modules/
 *.tsbuildinfo
 
-# OS / editor
+# OS / editor / agent harness
 .DS_Store
 .vscode/
 .idea/
 *.swp
+.claude/
 
 # Secrets & local config
 .env

@@ -224,10 +224,10 @@ flows:
 - `Pool_Swap` adjusts only the head slice on each side, settles it, and
   replaces it in place with its next-iteration roll-forward; other slices are
   untouched
-- `Pool_RemoveLiquidity` walks the slice list from the front, cancels only the
-  slices it needs to cover the redemption, and re-allocates at most ONE
-  boundary slice per side for the leftover; slices beyond the boundary are
-  untouched
+- remove-liquidity settlement (`LpDvpRules_SettleRemoveLiquidity`) walks the
+  slice list from the front, cancels only the slices it needs to cover the
+  redemption, and re-allocates at most ONE boundary slice per side for the
+  leftover; slices beyond the boundary are untouched
 - long-tail maintenance actions such as consolidation or migration stay
   explicit and exceptional
 

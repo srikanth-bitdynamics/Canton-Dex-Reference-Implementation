@@ -59,7 +59,7 @@ authorizes.
 | Action | Trader's experience |
 |---|---|
 | **Place an order** | (1) Trader composes order in dApp; (2) dApp calls operator backend to bind, which produces `OrderAllocationRequest`; (3) wallet receives the request, shows it for accept/reject; (4) on accept, wallet composes `AllocationFactory_Allocate`; (5) dApp shows the order as Funded once the operator binds |
-| **Add liquidity** | Same shape via `LiquidityDepositRequest` |
+| **Add liquidity** | (1) Trader composes the deposit in dApp; (2) dApp calls `POST /v1/pools/add-liquidity/request`, which has the operator create a `LiquidityAllocationRequest`; (3) wallet receives the request and authors the base-deposit, quote-deposit, and LP-receipt allocations via `AllocationFactory_Allocate`; (4) dApp calls `POST /v1/pools/add-liquidity/settle`, where operator + lpRegistrar settle (`LpDvpRules_SettleAddLiquidity`) so funds enter the pool and LP tokens mint to the LP atomically. Remove liquidity mirrors this via the `/request` + `/settle` pair (`LpDvpRules_SettleRemoveLiquidity`) |
 | **Pool swap** | (1) Trader composes swap in dApp; (2) dApp creates `SwapRequest` (trader-signed) with an allocation reference; (3) wallet shows the underlying allocation; (4) operator backend exercises `Pool_Swap` |
 | **Cancel order** | (1) Trader clicks Cancel in dApp; (2) operator exercises `Order_Cancel`; (3) wallet receives released-holding event, surfaces it |
 | **Accept an RFQ quote** | (1) Trader picks quote in dApp; (2) dApp + operator co-submit `Rfq_Accept`; (3) wallet receives the resulting `MatchedTrade` and the corresponding `TradeAllocationRequest`; (4) wallet asks for accept; (5) on accept, wallet composes the allocation |

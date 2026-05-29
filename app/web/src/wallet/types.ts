@@ -17,6 +17,44 @@
 export type Party = string;
 export type ContractId<_T> = string;
 
+// === Token Standard V2 wire shapes =======================================
+// Mirror the Daml AllocationV2 types. The dApp receives these (the specs the
+// wallet must author) from the operator-backend `/request` response and
+// forwards them verbatim into AllocationFactory_Allocate. `owner` is
+// nullable: the canonical mint/burn accounts carry `owner = null`.
+
+export interface V2Account {
+  owner: Party | null;
+  provider: Party | null;
+  id: string;
+}
+
+export interface V2TransferLegSide {
+  transferLegId: string;
+  side: "SenderSide" | "ReceiverSide";
+  otherside: V2Account;
+  amount: string;
+  instrumentId: string;
+  meta: Record<string, string>;
+}
+
+export interface V2AllocationSpecification {
+  admin: Party;
+  authorizer: V2Account;
+  transferLegSides: V2TransferLegSide[];
+  settlementDeadline: string | null;
+  nextIterationFunding: Record<string, string> | null;
+  committed: boolean;
+  meta: Record<string, string>;
+}
+
+export interface V2SettlementInfo {
+  executors: Party[];
+  id: string;
+  cid: string | null;
+  meta: Record<string, string>;
+}
+
 // === intent shapes ========================================================
 //
 // Each intent corresponds to a trader-authority Daml choice (or compose
@@ -76,31 +114,42 @@ export interface RequestSwapIntent {
   admin: Party;
 }
 
-/** Trader provides liquidity. */
+/**
+ * Trader provides liquidity (DvP, DEX-54). The operator has created a
+ * LiquidityAllocationRequest; the wallet authors the three allocations it
+ * names — base deposit + quote deposit (under `depositFactoryCid` =
+ * pool.admin) and the LP-token receipt (under `lpFactoryCid` =
+ * pool.lpRegistrar) — by exercising AllocationFactory_Allocate once per
+ * spec in ONE submission. `allocations` is the canonical order
+ * [base deposit, quote deposit, LP receipt]; the resulting cids come back
+ * as `WalletResult.createdAllocationCids` in the same order for /settle.
+ */
 export interface AddLiquidityIntent {
   kind: "add-liquidity";
-  poolId: string;
-  baseAmount: string;
-  quoteAmount: string;
+  requestCid: ContractId<"LiquidityAllocationRequest">;
+  settlement: V2SettlementInfo;
+  allocations: V2AllocationSpecification[];
+  depositFactoryCid: ContractId<"AllocationFactory">;
+  lpFactoryCid: ContractId<"AllocationFactory">;
   baseHoldingCids: ContractId<"Holding">[];
   quoteHoldingCids: ContractId<"Holding">[];
-  minLpTokens: string;
-  factoryCid: ContractId<"AllocationFactory">;
-  operator: Party;
-  admin: Party;
 }
 
 /**
- * Trader completes the LP-burn half of remove-liquidity. The operator
- * has already exercised Pool_RemoveLiquidity, which produced an
- * LPBurnRequest. The wallet exercises LPTokenPolicy_AcceptBurn against
- * the trader's locked LP holding cid.
+ * Trader removes liquidity (DvP, DEX-54). Symmetric to add: the wallet
+ * authors the three allocations the request names — base receipt + quote
+ * receipt (under `depositFactoryCid` = pool.admin) and the LP burn-sender
+ * (under `lpFactoryCid` = pool.lpRegistrar, locking `lpHoldingCid`) — in
+ * canonical order [base receipt, quote receipt, LP burn-sender].
  */
-export interface AcceptLpBurnIntent {
-  kind: "accept-lp-burn";
-  burnRequestCid: ContractId<"LPBurnRequest">;
-  holderHoldingCid: ContractId<"Holding">;
-  hint: { lpInstrumentId: string; amount: string };
+export interface RemoveLiquidityIntent {
+  kind: "remove-liquidity";
+  requestCid: ContractId<"LiquidityAllocationRequest">;
+  settlement: V2SettlementInfo;
+  allocations: V2AllocationSpecification[];
+  depositFactoryCid: ContractId<"AllocationFactory">;
+  lpFactoryCid: ContractId<"AllocationFactory">;
+  lpHoldingCid: ContractId<"Holding">;
 }
 
 /**
@@ -140,7 +189,7 @@ export type WalletIntent =
   | PlaceOrderIntent
   | RequestSwapIntent
   | AddLiquidityIntent
-  | AcceptLpBurnIntent
+  | RemoveLiquidityIntent
   | PostRfqQuoteIntent
   | AcceptRfqIntent;
 
@@ -153,12 +202,39 @@ export interface WalletResult {
   primaryCid: string;
   /** Optional: any auxiliary cids the wallet wants to surface. */
   auxiliaryCids?: Record<string, string>;
+  /**
+   * For multi-allocation intents (add/remove-liquidity), the created
+   * V2.Allocation cids in the SAME order as the intent's `allocations` —
+   * i.e. the order the AllocationFactory_Allocate commands were emitted. The
+   * dApp forwards these to the operator-backend `/settle` call. Providers
+   * that cannot extract created-contract cids from their submit response
+   * MUST reject those intents rather than return this empty/partial.
+   */
+  createdAllocationCids?: string[];
 }
 
 export interface WalletAccount {
   party: Party;
   /** Display label the wallet chose for the user. */
   label?: string;
+}
+
+/**
+ * Thrown by providers that cannot drive the LP DvP flow (add/remove
+ * liquidity) because they can't return the created allocation cids the
+ * `/settle` call requires — the operator-relay (`token-standard`,
+ * `canton-direct`) and the current `walletconnect` paths. LP DvP needs a
+ * CIP-0103 wallet (the `sdk` provider) or the dev `mock`.
+ */
+export class LpDvpUnsupportedError extends Error {
+  constructor(public readonly providerId: string) {
+    super(
+      `LP add/remove liquidity is not supported by the "${providerId}" wallet ` +
+        `provider (it cannot return created allocation cids for /settle). ` +
+        `Use a CIP-0103 wallet (the SDK provider).`,
+    );
+    this.name = "LpDvpUnsupportedError";
+  }
 }
 
 export type WalletConnectionStatus =

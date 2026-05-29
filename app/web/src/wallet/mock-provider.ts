@@ -67,9 +67,17 @@ export class MockWalletProvider implements WalletProvider {
     // eslint-disable-next-line no-console
     console.info("[mock wallet] submit intent", intent);
     await new Promise((r) => setTimeout(r, FAKE_DELAY_MS));
+    const id = crypto.randomUUID().slice(0, 8);
+    // LP DvP intents author 3 allocations; surface deterministic created cids
+    // so the dApp's two-call settle flow has something to forward in dev.
+    const createdAllocationCids =
+      intent.kind === "add-liquidity" || intent.kind === "remove-liquidity"
+        ? [`#mock-alloc-${id}-0:0`, `#mock-alloc-${id}-1:0`, `#mock-alloc-${id}-2:0`]
+        : undefined;
     return {
       submittedBy: this.status.account.party,
-      primaryCid: `#mock-${crypto.randomUUID().slice(0, 8)}:0`,
+      primaryCid: `#mock-${id}:0`,
+      createdAllocationCids,
     };
   }
 }

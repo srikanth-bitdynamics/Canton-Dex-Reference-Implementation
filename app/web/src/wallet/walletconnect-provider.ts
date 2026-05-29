@@ -25,6 +25,7 @@ import type {
   WalletProvider,
   WalletResult,
 } from "./types";
+import { LpDvpUnsupportedError } from "./types";
 
 // CIP-0103 method names exposed by Canton wallets over WalletConnect.
 // Listed for session permissions; the wallet must support these to
@@ -204,6 +205,11 @@ export class WalletConnectProvider implements WalletProvider {
   async submit(intent: WalletIntent): Promise<WalletResult> {
     if (this.status.kind !== "connected" || !this.connector) {
       throw new Error("wallet not connected");
+    }
+    if (intent.kind === "add-liquidity" || intent.kind === "remove-liquidity") {
+      // canton_prepareExecute returns the wallet's own WalletResult; it does
+      // not surface the created allocation cids the DvP /settle needs.
+      throw new LpDvpUnsupportedError(this.id);
     }
     const conn = this.connector;
     // The dApp does NOT construct Daml command trees here. CIP-0103's

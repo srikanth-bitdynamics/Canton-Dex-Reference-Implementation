@@ -53,6 +53,10 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   };
   const balanceOf = (s: string) =>
     holdings.find((h) => h.instrumentId === s && !h.locked)?.amount ?? 0;
+  // Unlocked holding cids for an instrument — the wallet locks these in the
+  // DvP deposit allocations (DEX-54).
+  const holdingCidsFor = (s: string) =>
+    holdings.filter((h) => h.instrumentId === s && !h.locked).map((h) => h.contractId);
   const ratio = pool.reserves.quoteAmount / pool.reserves.baseAmount;
 
   const [baseAmt, setBaseAmt] = useState('');
@@ -138,6 +142,8 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       baseAmount: parseFloat(baseAmt),
       quoteAmount: parseFloat(quoteAmt),
       minLpTokens: minLpTokensWithSlippage,
+      baseHoldingCids: holdingCidsFor(pool.baseInstrumentId),
+      quoteHoldingCids: holdingCidsFor(pool.quoteInstrumentId),
     });
     setBaseAmt('');
     setQuoteAmt('');
@@ -145,19 +151,24 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
 
   const onRemove = async () => {
     if (!party) throw new Error('connect a wallet to remove liquidity');
+    if (!context) throw new Error('dApp context not loaded yet');
+    const lpHoldingCid = holdings.find(
+      (h) => h.instrumentId === pool.lpInstrumentId.id && !h.locked,
+    )?.contractId;
+    if (!lpHoldingCid) throw new Error('no unlocked LP holding to burn');
     toast.push(
       `Remove ${removePct}% LP from ${pool.baseInstrumentId}/${pool.quoteInstrumentId}`,
       'removeLp',
       refreshOnComplete,
     );
     await ledger.removeLiquidity({
+      context,
       poolId: pool.contractId,
       holder: party,
       lpTokens: (lpHeld * removePct) / 100,
-      knownTotalLpSupply: pool.totalLpSupply,
       minBaseOut: minBaseOutWithSlippage,
       minQuoteOut: minQuoteOutWithSlippage,
-      lpInstrumentId: pool.lpInstrumentId.id,
+      holderLpHoldingCid: lpHoldingCid,
     });
   };
 
@@ -522,12 +533,11 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                 </div>
                 <div className="sp-12" />
                 <div style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.5, padding: '6px 8px', background: 'var(--bg-2)', borderRadius: 6 }}>
-                  Two on-ledger steps:
-                  <span className="mono"> Pool_RemoveLiquidity</span> by the operator
-                  (creates an LPBurnRequest) →{' '}
-                  <span className="mono">LPTokenPolicy_AcceptBurn</span> by your
-                  wallet (archives the locked LP holding). The toast shows both
-                  phases.
+                  Delivery-versus-payment in three steps: the operator creates a{' '}
+                  <span className="mono">LiquidityAllocationRequest</span> → your
+                  wallet authors the base/quote receipt + LP burn-sender
+                  allocations → the operator and lpRegistrar settle, delivering
+                  the underlying to you and burning your LP tokens atomically.
                 </div>
                 <div className="sp-12" />
                 <button

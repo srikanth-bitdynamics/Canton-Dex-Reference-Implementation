@@ -34,6 +34,7 @@ import type {
   WalletProvider,
   WalletResult,
 } from "./types";
+import { LpDvpUnsupportedError } from "./types";
 
 const LS_KEY = "canton-dex:token-standard:session";
 const SUBMIT_TIMEOUT_MS = 60_000;
@@ -181,9 +182,10 @@ export class TokenStandardProvider implements WalletProvider {
       case "request-swap":
         return this.requestSwap(intent);
       case "add-liquidity":
-        return this.addLiquidity(intent);
-      case "accept-lp-burn":
-        return this.acceptLpBurn(intent);
+      case "remove-liquidity":
+        // Operator-relay path cannot return the created allocation cids the
+        // DvP settle needs; LP DvP requires a CIP-0103 wallet (SDK provider).
+        throw new LpDvpUnsupportedError(this.id);
       case "post-rfq-quote":
         return this.postRfqQuote(intent);
       case "accept-rfq":
@@ -288,40 +290,6 @@ export class TokenStandardProvider implements WalletProvider {
     return { submittedBy: party, primaryCid: result.updateId };
   }
 
-  private async addLiquidity(
-    intent: Extract<WalletIntent, { kind: "add-liquidity" }>,
-  ): Promise<WalletResult> {
-    if (!intent.factoryCid || intent.factoryCid.startsWith("PENDING_")) {
-      throw new Error(
-        "Token Standard provider: no AllocationFactory CID configured. Seed the registry's allocation factory first.",
-      );
-    }
-    const party = this.session!.party;
-    const result = await this.submitAndWait(
-      [party],
-      `add-lp-${intent.poolId.slice(0, 12)}-${Date.now()}`,
-      {
-        CreateCommand: {
-          templateId: template("CantonDex.Dex.LiquidityRequest:AddLiquidityRequest"),
-          createArguments: {
-            trader: party,
-            operator: intent.operator,
-            admin: intent.admin,
-            poolCid: intent.poolId,
-            baseAmount: intent.baseAmount,
-            quoteAmount: intent.quoteAmount,
-            minLpTokens: intent.minLpTokens,
-            baseHoldingCids: intent.baseHoldingCids,
-            quoteHoldingCids: intent.quoteHoldingCids,
-            factoryCid: intent.factoryCid,
-            requestedAt: new Date().toISOString(),
-          },
-        },
-      },
-    );
-    return { submittedBy: party, primaryCid: result.updateId };
-  }
-
   private async acceptAllocationRequest(
     intent: Extract<WalletIntent, { kind: "accept-allocation-request" }>,
   ): Promise<WalletResult> {
@@ -339,29 +307,6 @@ export class TokenStandardProvider implements WalletProvider {
           choiceArgument: {
             factoryCid: intent.factoryCid,
             inputHoldingCids: intent.inputHoldingCids,
-          },
-        },
-      },
-    );
-    return { submittedBy: party, primaryCid: result.updateId };
-  }
-
-  private async acceptLpBurn(
-    intent: Extract<WalletIntent, { kind: "accept-lp-burn" }>,
-  ): Promise<WalletResult> {
-    const party = this.session!.party;
-    const result = await this.submitAndWait(
-      [party],
-      `lp-burn-${intent.burnRequestCid.slice(0, 12)}-${Date.now()}`,
-      {
-        ExerciseCommand: {
-          templateId: template("CantonDex.Dex.LPToken:LPTokenPolicy"),
-          // The burn-request carries the policy cid; the policy choice
-          // takes the burn-request + the trader's locked LP holding.
-          contractId: intent.burnRequestCid,
-          choice: "LPTokenPolicy_AcceptBurn",
-          choiceArgument: {
-            holderHoldingCid: intent.holderHoldingCid,
           },
         },
       },

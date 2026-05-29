@@ -1,7 +1,49 @@
 // WalletIntent → Daml command tree. Single place where trader-authority
 // writes get composed; pages emit intents, providers submit the result.
 
-import type { ContractId, Party, WalletIntent } from "./types";
+import type {
+  ContractId,
+  Party,
+  V2AllocationSpecification,
+  V2SettlementInfo,
+  WalletIntent,
+} from "./types";
+
+// AllocationFactory is a Token-Standard interface in the splice
+// allocation-instruction-v2 package (NOT our app package), so the
+// AllocationFactory_Allocate exercise targets the interface id directly.
+const ALLOCATION_FACTORY_IID =
+  "#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory";
+
+const emptyExtraArgs = { context: { values: {} }, meta: { values: {} } };
+
+// One AllocationFactory_Allocate exercise: the wallet authors the given
+// spec under `factoryCid`, locking `inputHoldingCids`. Created Allocation
+// cids are read back from the submit result in command order.
+function allocateCmd(
+  factoryCid: ContractId<"AllocationFactory">,
+  settlement: V2SettlementInfo,
+  spec: V2AllocationSpecification,
+  inputHoldingCids: ContractId<"Holding">[],
+  party: Party,
+  requestedAt: string,
+): DamlCommand {
+  return {
+    ExerciseCommand: {
+      templateId: ALLOCATION_FACTORY_IID,
+      contractId: factoryCid,
+      choice: "AllocationFactory_Allocate",
+      choiceArgument: {
+        settlement,
+        allocation: spec,
+        requestedAt,
+        inputHoldingCids,
+        actors: [party],
+        extraArgs: emptyExtraArgs,
+      },
+    },
+  };
+}
 
 export type DamlCommand =
   | { CreateCommand: CreateCommand }
@@ -43,7 +85,7 @@ export function composeCommands(
     case "place-order":                return composePlaceOrder(intent, ctx);
     case "request-swap":               return composeRequestSwap(intent, ctx);
     case "add-liquidity":              return composeAddLiquidity(intent, ctx);
-    case "accept-lp-burn":             return composeAcceptLpBurn(intent, ctx);
+    case "remove-liquidity":           return composeRemoveLiquidity(intent, ctx);
     case "post-rfq-quote":             return composePostRfqQuote(intent, ctx);
     case "accept-rfq":                 return composeAcceptRfq(intent, ctx);
   }
@@ -124,50 +166,58 @@ function composeRequestSwap(
   };
 }
 
+// DvP add (DEX-54): author the three allocations the request named, in one
+// submission. Canonical order [base deposit, quote deposit, LP receipt]:
+// the two deposits are committed sender-side under the deposit (pool.admin)
+// factory and lock the trader's base/quote holdings; the LP receipt is the
+// receiver side under the lpRegistrar factory (no input holdings — it
+// receives the minted tokens).
 function composeAddLiquidity(
   intent: Extract<WalletIntent, { kind: "add-liquidity" }>,
   ctx: ComposeContext,
 ): ComposedCommands {
-  assertFactoryReady(intent.factoryCid, "add-liquidity");
+  assertFactoryReady(intent.depositFactoryCid, "add-liquidity");
+  assertFactoryReady(intent.lpFactoryCid, "add-liquidity");
+  if (intent.allocations.length !== 3) {
+    throw new Error(`add-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
+  }
+  const requestedAt = ctx.now().toISOString();
+  const [baseSpec, quoteSpec, receiptSpec] = intent.allocations;
   return {
-    commandId: `add-lp-${shortCid(intent.poolId)}-${ctx.now().getTime()}`,
+    commandId: `add-lp-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
-    commands: [{
-      CreateCommand: {
-        templateId: tid(ctx.packagePrefix, "CantonDex.Dex.LiquidityRequest:AddLiquidityRequest"),
-        createArguments: {
-          trader: ctx.party,
-          operator: intent.operator,
-          admin: intent.admin,
-          poolCid: intent.poolId,
-          baseAmount: intent.baseAmount,
-          quoteAmount: intent.quoteAmount,
-          minLpTokens: intent.minLpTokens,
-          baseHoldingCids: intent.baseHoldingCids,
-          quoteHoldingCids: intent.quoteHoldingCids,
-          factoryCid: intent.factoryCid,
-          requestedAt: ctx.now().toISOString(),
-        },
-      },
-    }],
+    commands: [
+      allocateCmd(intent.depositFactoryCid, intent.settlement, baseSpec, intent.baseHoldingCids, ctx.party, requestedAt),
+      allocateCmd(intent.depositFactoryCid, intent.settlement, quoteSpec, intent.quoteHoldingCids, ctx.party, requestedAt),
+      allocateCmd(intent.lpFactoryCid, intent.settlement, receiptSpec, [], ctx.party, requestedAt),
+    ],
   };
 }
 
-function composeAcceptLpBurn(
-  intent: Extract<WalletIntent, { kind: "accept-lp-burn" }>,
+// DvP remove (DEX-54): author [base receipt, quote receipt, LP burn-sender].
+// The two receipts are receiver-side under the deposit (pool.admin) factory
+// (no input holdings — they receive the returned base/quote); the burn-
+// sender is the committed sender side under the lpRegistrar factory and
+// locks the trader's LP holding.
+function composeRemoveLiquidity(
+  intent: Extract<WalletIntent, { kind: "remove-liquidity" }>,
   ctx: ComposeContext,
 ): ComposedCommands {
+  assertFactoryReady(intent.depositFactoryCid, "remove-liquidity");
+  assertFactoryReady(intent.lpFactoryCid, "remove-liquidity");
+  if (intent.allocations.length !== 3) {
+    throw new Error(`remove-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
+  }
+  const requestedAt = ctx.now().toISOString();
+  const [baseReceiptSpec, quoteReceiptSpec, burnSenderSpec] = intent.allocations;
   return {
-    commandId: `lp-burn-${shortCid(intent.burnRequestCid)}-${ctx.now().getTime()}`,
+    commandId: `remove-lp-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
-    commands: [{
-      ExerciseCommand: {
-        templateId: tid(ctx.packagePrefix, "CantonDex.Dex.LPToken:LPTokenPolicy"),
-        contractId: intent.burnRequestCid,
-        choice: "LPTokenPolicy_AcceptBurn",
-        choiceArgument: { holderHoldingCid: intent.holderHoldingCid },
-      },
-    }],
+    commands: [
+      allocateCmd(intent.depositFactoryCid, intent.settlement, baseReceiptSpec, [], ctx.party, requestedAt),
+      allocateCmd(intent.depositFactoryCid, intent.settlement, quoteReceiptSpec, [], ctx.party, requestedAt),
+      allocateCmd(intent.lpFactoryCid, intent.settlement, burnSenderSpec, [intent.lpHoldingCid], ctx.party, requestedAt),
+    ],
   };
 }
 
@@ -224,6 +274,39 @@ function composeAcceptRfq(
       },
     }],
   };
+}
+
+/** The two intents whose settle needs the wallet's created allocation cids. */
+export function isLpDvpIntent(intent: WalletIntent): boolean {
+  return intent.kind === "add-liquidity" || intent.kind === "remove-liquidity";
+}
+
+/**
+ * Pull the created V2.Allocation cids (in command order) out of a provider's
+ * submit-transaction shape, for the LP DvP intents only. Fails loudly if the
+ * count doesn't match the number of allocations authored — a provider that
+ * can't surface created cids must reject these intents rather than return a
+ * partial. Returns `undefined` for non-LP intents.
+ */
+export function extractCreatedAllocationCids(
+  intent: WalletIntent,
+  expectedCount: number,
+  tx: {
+    createdEvents?: Array<{ contractId: string }>;
+    events?: Array<{ created?: { contractId: string } }>;
+  },
+): string[] | undefined {
+  if (!isLpDvpIntent(intent)) return undefined;
+  const fromCreated = tx.createdEvents?.map((e) => e.contractId);
+  const fromEvents = tx.events?.flatMap((e) => (e.created ? [e.created.contractId] : []));
+  const cids = fromCreated ?? fromEvents;
+  if (!cids || cids.length !== expectedCount) {
+    throw new Error(
+      `wallet did not return ${expectedCount} created allocation cids for ${intent.kind} ` +
+        `(got ${cids?.length ?? 0}); this provider cannot drive LP DvP`,
+    );
+  }
+  return cids;
 }
 
 function shortCid(cid: ContractId<unknown> | string): string {

@@ -31,7 +31,7 @@ import { Indexer } from "./indexer/index.js";
 import { IdempotentLedger } from "./indexer/idempotency.js";
 import { DealersService } from "./dealers/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
-import type { ContractId } from "@canton-dex/registry-client";
+import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
 import { rootLogger } from "./lib/logger.js";
 
 const log = rootLogger.child({ component: "testnet-server" });
@@ -60,6 +60,9 @@ class FixedRegistry extends RegistryClient {
       settlementFactoryCid: this.settleCid,
       disclosure: [] as never[],
     };
+  }
+  override async getChoiceContext(): Promise<ChoiceContextRef> {
+    return { context: { values: {} }, disclosure: [] };
   }
 }
 

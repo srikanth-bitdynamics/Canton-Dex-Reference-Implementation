@@ -25,16 +25,6 @@ import type {
   V2SettlementInfo,
 } from "../types.js";
 
-export interface PoolInitializeInput {
-  poolCid: ContractId<"Pool">;
-  recipient: Party;
-  baseAmount: Decimal;
-  quoteAmount: Decimal;
-  baseHoldingCids: ContractId<"Holding">[];
-  quoteHoldingCids: ContractId<"Holding">[];
-  requestedAt: Time;
-}
-
 export interface PoolSwapInput {
   poolCid: ContractId<"Pool">;
   swapperAccount: V2Account;
@@ -52,7 +42,6 @@ export interface PoolRequestAddLiquidityInput {
   baseAmount: Decimal;
   quoteAmount: Decimal;
   requestedAt: Time;
-  /** Optional request deadline. */
   settleAt?: Time | null;
 }
 
@@ -262,45 +251,6 @@ export class PoolService {
       });
     }
     return combined;
-  }
-
-  async initialize(input: PoolInitializeInput): Promise<{
-    poolCid: ContractId<"Pool">;
-    lpTokensMinted: Decimal;
-  }> {
-    const pool = await this.fetchPool(input.poolCid);
-    const factories = await this.registry.getFactories(pool.admin);
-    const ctx = await this.choiceContext(pool.admin);
-    const lpPolicyCid = await this.fetchLpPolicy(pool);
-    await retryOnContention(() =>
-      this.ledger.submit({
-        actAs: [this.operatorParty],
-        commandId: `pool-init:${input.poolCid}`,
-        disclosure: [...factories.disclosure, ...ctx.disclosure],
-        command: {
-          kind: "exercise",
-          templateId: "CantonDex.Dex.PoolRules:PoolRules",
-          contractId: pool.rulesCid,
-          choice: "PoolRules_Initialize",
-          argument: {
-            expectedPoolId: pool.poolId,
-            poolCid: input.poolCid,
-            poolStateCid: pool.poolStateCid,
-            recipient: input.recipient,
-            baseFactoryCid: factories.allocationFactoryCid,
-            quoteFactoryCid: factories.allocationFactoryCid,
-            baseHoldingCids: input.baseHoldingCids,
-            quoteHoldingCids: input.quoteHoldingCids,
-            baseAmount: input.baseAmount,
-            quoteAmount: input.quoteAmount,
-            requestedAt: input.requestedAt,
-            lpPolicyCid,
-            extraArgs: ctx.extraArgs,
-          },
-        },
-      }),
-    );
-    return { poolCid: input.poolCid, lpTokensMinted: "0.0" };
   }
 
   /** Off-chain quote computation for the constant-product pool. */

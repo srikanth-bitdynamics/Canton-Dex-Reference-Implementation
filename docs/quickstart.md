@@ -91,17 +91,17 @@ optional `src/`-stack analog.
   the split pool: immutable config, the hot reserves/supply/status state, and
   one committed allocation per slice.
 - `trading/CantonDex/Dex/PoolRules.daml` — the operational choices:
-  `PoolRules_Initialize` (first-pool funding), `PoolRules_Swap`
-  (iterated-settlement roll-forward of the sourced slices), `PoolRules_Pause`,
-  `PoolRules_Resume`.
+  `PoolRules_Swap` (iterated-settlement roll-forward of the sourced slices),
+  `PoolRules_Pause`, `PoolRules_Resume`.
 - `trading/CantonDex/Dex/LpDvpRules.daml` + `LiquidityAllocationRequest.daml` —
   the delivery-vs-payment add/remove path: `LpDvpRules_RequestAddLiquidity`/
   `_SettleAddLiquidity` and `_RequestRemoveLiquidity`/`_SettleRemoveLiquidity`,
-  co-controlled by operator + lpRegistrar.
+  co-controlled by operator + lpRegistrar. The same add-liquidity settle handles
+  both first funding from `PS_Unfunded` and later funded-pool adds.
 - `trading/CantonDex/Dex/LPToken.daml` — `LPTokenPolicy` owned by an
   `lpRegistrar` party (distinct from the DEX `operator`), with
-  `LPTokenPolicy_RecordMint`/`_RecordBurn`, plus `LPMintRequest` for first-pool
-  funding. The LP token is a real registry-native instrument.
+  `LPTokenPolicy_RecordMint`/`_RecordBurn`. The LP token is a real
+  registry-native instrument.
 - `trading/CantonDex/Dex/SwapExecution.daml` — trader-facing `SwapRequest`.
 - Tests: `EndToEndTests.daml::testPoolFullLifecycle`, `testPoolSwapEndToEnd`;
   `LpDvpPoolTests.daml` (DvP add, remove-to-holder, boundary slice).

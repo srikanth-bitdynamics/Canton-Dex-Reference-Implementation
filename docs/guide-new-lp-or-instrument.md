@@ -24,13 +24,13 @@ must present at mint time.
 
 ## Case A. Vanilla LP token (the common case)
 
-This is what `Pool_Initialize` already does. Nothing extra to write.
+This is what the add-liquidity DvP flow already does. Nothing extra to write.
 The LP token:
 
 - has `instrumentId = "<BASE>-<QUOTE>-LP"`
 - has `admin = lpRegistrar`
-- is created via `LPMintRequest_AcceptAndMint` (recipient and
-  lpRegistrar jointly accept)
+- is created when `LpDvpRules_SettleAddLiquidity` settles the LP receipt
+  against the registry-side mint allocation
 - is a real `Registry.V2.Holding`: fungible with other V2 holdings,
   usable as input to `V2.TransferInstruction`, lockable into a
   `V2.Allocation` (so LP tokens can themselves back orders or pools)

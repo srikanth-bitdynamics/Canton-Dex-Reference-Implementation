@@ -11,14 +11,16 @@
 //       Rfq_Accept
 //       Order_Fund, Order_Adjust, Order_Cancel
 //       OrderFundingRequest_Bind
-//       Pool_Initialize, Pool_AddLiquidity, Pool_RemoveLiquidity, Pool_Swap
+//       Pool_Swap
+//       LpDvpRules_RequestAddLiquidity, LpDvpRules_SettleAddLiquidity
+//       LpDvpRules_RequestRemoveLiquidity, LpDvpRules_SettleRemoveLiquidity
 //       MatchedTrade_RequestAllocations, MatchedTrade_Settle, MatchedTrade_Cancel
 //       DexPair_UpdateFeeModel, DexPair_SetActive, DexPair_UpdateTradingMode
 //     Plus operator-signed creates of DexPair and Pool (admin seeding).
 //     Plus the V2 token-standard choices the operator may compose:
 //       AllocationFactory_Allocate (only for committed pool allocations)
 //       SettlementFactory_SettleBatch (only via DEX choices)
-//       Allocation_Adjust, Allocation_Cancel (only via DEX choices)
+//       Allocation_Cancel (only via DEX choices)
 //   - Adding a NEW orchestration verb requires either a new contract
 //     choice or a composition of existing ones. The backend never
 //     synthesizes ledger state via direct create/archive of DEX

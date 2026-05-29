@@ -188,6 +188,7 @@ export class AdminService {
     );
 
     await this.ensurePoolRules();
+    await this.ensureLpDvpRules(input.lpRegistrar);
 
     // Create the matching LPTokenPolicy (lpRegistrar-signed) so the pool's
     // mint/burn flow has a policy to reference. Pool_Initialize /
@@ -232,6 +233,37 @@ export class AdminService {
           kind: "create",
           templateId: "CantonDex.Dex.PoolRules:PoolRules",
           argument: { operator: this.operatorParty },
+        },
+      }),
+    );
+  }
+
+  /**
+   * Create the per-venue co-controlled LpDvpRules (operator + lpRegistrar)
+   * if this (operator, lpRegistrar) venue doesn't have one yet. Hosts the
+   * DvP liquidity request/settle choices; created once, reused.
+   */
+  private async ensureLpDvpRules(lpRegistrar: Party): Promise<void> {
+    const existing = await this.ledger.query<{
+      contractId: ContractId<"LpDvpRules">;
+      operator: Party;
+      lpRegistrar: Party;
+    }>({
+      templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+      observingParty: this.operatorParty,
+    });
+    if (existing.some((r) => r.operator === this.operatorParty && r.lpRegistrar === lpRegistrar)) {
+      return;
+    }
+    await retryOnContention(() =>
+      this.ledger.submit({
+        // Co-signed: LpDvpRules is signatory operator, lpRegistrar.
+        actAs: [this.operatorParty, lpRegistrar],
+        commandId: `lp-dvp-rules-create:${this.operatorParty}:${lpRegistrar}`,
+        command: {
+          kind: "create",
+          templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
+          argument: { operator: this.operatorParty, lpRegistrar },
         },
       }),
     );

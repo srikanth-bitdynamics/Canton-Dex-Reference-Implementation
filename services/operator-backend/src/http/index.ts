@@ -942,16 +942,53 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/pools/remove-liquidity") {
-    // Operator-driven half of the remove-liquidity flow: cancels the
-    // pool's existing allocations, consolidates the remainder, and
-    // creates the LPBurnRequest. The trader's LP-holding burn happens
-    // separately via the wallet through LPBurnRequest_AcceptAndBurn
-    // (holder + lpRegistrar).
+    // @deprecated (DEX-53): legacy operator-driven remove via
+    // PoolRules_RemoveLiquidity + LPBurnRequest. Superseded by the DvP
+    // two-call flow (/v1/pools/remove-liquidity/{request,settle}); retired
+    // in 3c once the dApp cuts over.
     const body = await readJson<
       Parameters<typeof backend.pool.removeLiquidity>[0]
     >(req);
     const result = await backend.pool.removeLiquidity(body);
     respondJson(res, 200, result);
+    return;
+  }
+
+  // === DvP liquidity (DEX-53) — two-call: request then settle ===========
+
+  if (method === "POST" && path === "/v1/pools/add-liquidity/request") {
+    const body = await readJson<
+      Parameters<typeof backend.pool.requestAddLiquidity>[0]
+    >(req);
+    const result = await backend.pool.requestAddLiquidity(body);
+    respondJson(res, 200, result);
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/pools/add-liquidity/settle") {
+    const body = await readJson<
+      Parameters<typeof backend.pool.settleAddLiquidity>[0]
+    >(req);
+    const result = await backend.pool.settleAddLiquidity(body);
+    respondJson(res, 200, { result });
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/pools/remove-liquidity/request") {
+    const body = await readJson<
+      Parameters<typeof backend.pool.requestRemoveLiquidity>[0]
+    >(req);
+    const result = await backend.pool.requestRemoveLiquidity(body);
+    respondJson(res, 200, result);
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/pools/remove-liquidity/settle") {
+    const body = await readJson<
+      Parameters<typeof backend.pool.settleRemoveLiquidity>[0]
+    >(req);
+    const result = await backend.pool.settleRemoveLiquidity(body);
+    respondJson(res, 200, { result });
     return;
   }
 

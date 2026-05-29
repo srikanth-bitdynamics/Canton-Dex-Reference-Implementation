@@ -51,6 +51,8 @@ instance RegistryApi DexRegistry where
   getTransferFactory _ _ = error "DexRegistry: TransferFactory not implemented"
   getAllocation_WithdrawContext _ _ _ = error "DexRegistry: Allocation_Withdraw context not implemented"
   getAllocation_CancelContext _ _ _ = error "DexRegistry: Allocation_Cancel context not implemented"
+  getAllocationInstruction_WithdrawContext _ _ _ = error "DexRegistry: AllocationInstruction_Withdraw context not implemented"
+  getAllocationInstruction_AcceptContext _ _ _ = error "DexRegistry: AllocationInstruction_Accept context not implemented"
   getTransferInstruction_AcceptContext _ _ _ = error "DexRegistry: TransferInstruction_Accept context not implemented"
   getTransferInstruction_RejectContext _ _ _ = error "DexRegistry: TransferInstruction_Reject context not implemented"
   getTransferInstruction_WithdrawContext _ _ _ = error "DexRegistry: TransferInstruction_Withdraw context not implemented"

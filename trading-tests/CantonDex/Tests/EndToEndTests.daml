@@ -37,6 +37,7 @@ import CantonDex.Dex.Pool qualified as Pool
 import CantonDex.Dex.PoolState qualified as PState
 import CantonDex.Dex.PoolSlice qualified as PSlice
 import CantonDex.Dex.PoolRules qualified as PRules
+import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Dex.Rfq qualified as Rfq
@@ -113,7 +114,7 @@ dvpFundPool
   -> ExtraArgs
   -> Script Dvp.PoolLiquidityRules_SettleAddResult
 dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid policyCid dvpCid recipient baseAmount quoteAmount now extraArgs = do
-  let lpAmount = PRules.sqrtDecimal (baseAmount * quoteAmount)
+  let lpAmount = PM.sqrtDecimal (baseAmount * quoteAmount)
   reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid; recipient; baseAmount; quoteAmount; lpAmount; requestedAt = now; settleAt = None
   Some req <- queryContractId operator reqCid
@@ -188,7 +189,7 @@ testPoolFullLifecycle = do
   Some state <- queryContractId operator initRes.poolStateCid
   Some _baseSlice <- queryContractId operator initRes.baseSliceCid
   Some _quoteSlice <- queryContractId operator initRes.quoteSliceCid
-  let expectedLp = PRules.sqrtDecimal 2000000.0
+  let expectedLp = PM.sqrtDecimal 2000000.0
   initRes.lpTokensMinted === expectedLp
   state.status === Pool.PS_Active
   state.reserves.baseAmount === 10.0
@@ -678,7 +679,7 @@ testDvpAddRejectsEmptyContext = do
   reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid; recipient = lpRegistrar
     baseAmount = 10.0; quoteAmount = 200000.0
-    lpAmount = PRules.sqrtDecimal 2000000.0
+    lpAmount = PM.sqrtDecimal 2000000.0
     requestedAt = now; settleAt = None
   Some req <- queryContractId operator reqCid
   submitMustFail lpRegistrar $

@@ -1,20 +1,9 @@
 module CantonDex.Instrument.InstrumentConfiguration where
 
--- Registry-side InstrumentConfiguration template.
---
--- Mirrors the Registry Utility user guide's Workflows page:
--- https://docs.digitalasset.com/utilities/devnet/overview/registry-user-guide/workflows.html
---
--- The InstrumentConfiguration establishes:
---   - the registrar (`admin`) who maintains the instrument
---   - an `instrumentId` used as the join key into all DEX-side templates
---   - the credential requirements to hold the instrument (transfer eligibility)
---   - the credential requirements to mint or burn the instrument (issuer eligibility)
---   - optional external identifiers (ISIN, CUSIP) for off-chain integration
---
--- DEX contracts treat `instrumentId` as opaque text; the asset semantics
--- (e.g., this is a bond with these terms) live entirely in the registry
--- and are read off-chain by services that need them.
+-- Registry-side instrument configuration: the registrar (admin), the
+-- instrumentId used as the join key across DEX templates, holder/issuer
+-- credential requirements, and optional external ids. DEX contracts treat
+-- instrumentId as opaque; asset semantics live in the registry.
 
 import CantonDex.Instrument.Credentials qualified as Cred
 
@@ -22,21 +11,14 @@ template InstrumentConfiguration with
     admin : Party
     instrumentId : Text
     holderRequirements : [Cred.CredentialRequirement]
-      -- ^ Credentials the holder must present to receive or send the
-      --   instrument. Empty list = open access.
+      -- ^ Credentials to receive/send the instrument; empty = open access.
     issuerRequirements : [Cred.CredentialRequirement]
-      -- ^ Credentials the requestor must present to mint or burn.
-      --   Empty list = open issuance (typically only for test instruments).
+      -- ^ Credentials to mint/burn; empty = open issuance (test instruments).
     isin : Optional Text
     cusip : Optional Text
     description : Text
   where
     signatory admin
-
-    -- The configuration is publicly observable; the operator backend
-    -- and traders need to read it to validate eligibility before
-    -- composing transactions. In production this becomes part of the
-    -- registry's explicitly-disclosed contracts payload.
 
     choice InstrumentConfiguration_Update : ContractId InstrumentConfiguration
       with

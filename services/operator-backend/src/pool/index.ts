@@ -12,6 +12,7 @@ import { RegistryClient } from "@canton-dex/registry-client";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import { toFloat } from "../policy/index.js";
+import * as dec from "./decimal.js";
 import type {
   Decimal,
   LpDvpRulesContract,
@@ -87,12 +88,6 @@ export interface PoolRequestAddLiquidityResult {
   quoteAmount: Decimal;
 }
 
-export interface PoolRequestRemoveLiquidityResult {
-  requestCid: ContractId<"LiquidityAllocationRequest">;
-  /** Echoed for a self-consistent settle (see add result). */
-  knownTotalLpSupply: Decimal;
-}
-
 export interface PoolSettleAddLiquidityInput {
   poolCid: ContractId<"Pool">;
   requestCid: ContractId<"LiquidityAllocationRequest">;
@@ -110,12 +105,25 @@ export interface PoolSettleAddLiquidityInput {
 export interface PoolRequestRemoveLiquidityInput {
   poolCid: ContractId<"Pool">;
   holder: Party;
-  /** Per-slice base/quote out amounts (the operator's slice draw), in order. */
-  baseOuts: Decimal[];
-  quoteOuts: Decimal[];
-  lpBurnAmount: Decimal;
+  // The caller passes only intent (how much LP to redeem). The backend
+  // derives the slice prefix + per-slice out amounts from CURRENT reserves
+  // and slices — slice selection is operator-internal, not the caller's job.
+  lpTokensToRedeem: Decimal;
   requestedAt: Time;
   settleAt?: Time | null;
+}
+
+export interface PoolRequestRemoveLiquidityResult {
+  requestCid: ContractId<"LiquidityAllocationRequest">;
+  /** Echoed for a self-consistent settle. */
+  knownTotalLpSupply: Decimal;
+  // The derived plan the request was built against; the dApp wallet authors
+  // its receipt legs against these per-slice amounts and the settle re-derives
+  // (and aborts if reserves drifted, a documented fail-safe).
+  baseSliceCids: ContractId<"PoolSlice">[];
+  quoteSliceCids: ContractId<"PoolSlice">[];
+  baseOuts: Decimal[];
+  quoteOuts: Decimal[];
 }
 
 export interface PoolSettleRemoveLiquidityInput {
@@ -126,12 +134,25 @@ export interface PoolSettleRemoveLiquidityInput {
   knownTotalLpSupply: Decimal;
   minBaseOut: Decimal;
   minQuoteOut: Decimal;
-  baseSliceCids: ContractId<"PoolSlice">[];
-  quoteSliceCids: ContractId<"PoolSlice">[];
+  // No caller-supplied slice arrays: the backend re-derives the prefix from
+  // current state (so a drift since /request aborts at SettleBatch).
   holderBaseReceiptCid: ContractId<"Allocation">;
   holderQuoteReceiptCid: ContractId<"Allocation">;
   holderBurnSenderCid: ContractId<"Allocation">;
   requestedAt: Time;
+}
+
+// The operator-derived redemption plan for one side: the ordered slice
+// prefix that covers the redemption + the per-slice out amounts (full
+// slices contribute their whole amount; the boundary slice the remainder).
+export interface RemoveSidePlan {
+  sliceCids: ContractId<"PoolSlice">[];
+  outs: Decimal[];
+}
+
+export interface RemovePlan {
+  base: RemoveSidePlan;
+  quote: RemoveSidePlan;
 }
 
 // Select the ordered prefix of slices whose cumulative amount covers
@@ -468,23 +489,27 @@ export class PoolService {
   }
 
   /**
-   * Conservative LP-token quote, floored to 10dp so it never exceeds the
-   * on-ledger fair share (the Daml settle bounds it: minLpTokens <= it <=
-   * fairLp, within dust). We deliberately do NOT replicate Daml's Decimal
-   * sqrt; flooring keeps us on the safe side of the bound.
+   * LP-token quote in EXACT fixed-point decimal (matches Daml's `Decimal`
+   * mul/div round-half-even; sqrt floored). Binary floats lose precision
+   * once reserves exceed ~15 significant digits, which would make the quote
+   * miss the on-ledger dust bound for large pools — so we work in scaled
+   * BigInt. First funding: sqrt(base*quote) (floored, conservative). Else:
+   * min((base*supply)/reserveBase, (quote*supply)/reserveQuote), the same
+   * sequence the Daml settle computes for `fairLp`.
    */
   private lpQuote(pool: Pool, baseAmount: Decimal, quoteAmount: Decimal): Decimal {
-    const b = toFloat(baseAmount);
-    const q = toFloat(quoteAmount);
-    const supply = toFloat(pool.totalLpSupply);
-    const raw =
-      supply === 0
-        ? Math.sqrt(b * q)
-        : Math.min(
-            (b * supply) / toFloat(pool.reserves.baseAmount),
-            (q * supply) / toFloat(pool.reserves.quoteAmount),
-          );
-    return (Math.floor(raw * 1e10) / 1e10).toFixed(10);
+    const b = dec.parseDecimal(baseAmount);
+    const q = dec.parseDecimal(quoteAmount);
+    const supply = dec.parseDecimal(pool.totalLpSupply);
+    let lp: bigint;
+    if (supply === 0n) {
+      lp = dec.sqrt(dec.mul(b, q));
+    } else {
+      const rb = dec.parseDecimal(pool.reserves.baseAmount);
+      const rq = dec.parseDecimal(pool.reserves.quoteAmount);
+      lp = dec.min(dec.div(dec.mul(b, supply), rb), dec.div(dec.mul(q, supply), rq));
+    }
+    return dec.formatDecimal(lp);
   }
 
   /**
@@ -592,12 +617,52 @@ export class PoolService {
     );
   }
 
+  /**
+   * Derive the redemption plan from CURRENT reserves + slices, in exact
+   * decimal so the per-slice out amounts match the Daml settle to the last
+   * digit. Mirrors Daml: share = redeem / supply; out = reserve * share;
+   * then walk the head-first slice prefix — full slices contribute their
+   * whole (verbatim) amount, the boundary slice the remainder.
+   */
+  private deriveRemovePlan(
+    pool: Pool,
+    lpTokensToRedeem: Decimal,
+    knownTotalLpSupply: Decimal,
+  ): RemovePlan {
+    const share = dec.div(dec.parseDecimal(lpTokensToRedeem), dec.parseDecimal(knownTotalLpSupply));
+    const baseOut = dec.mul(dec.parseDecimal(pool.reserves.baseAmount), share);
+    const quoteOut = dec.mul(dec.parseDecimal(pool.reserves.quoteAmount), share);
+    const side = (slices: PoolSlice[], target: bigint): RemoveSidePlan => {
+      const sliceCids: ContractId<"PoolSlice">[] = [];
+      const outs: Decimal[] = [];
+      let remaining = target;
+      for (const s of slices) {
+        if (remaining <= 0n) break;
+        const amt = dec.parseDecimal(s.amount);
+        sliceCids.push(s.contractId);
+        if (remaining >= amt) {
+          outs.push(s.amount); // full slice: verbatim ledger string
+          remaining -= amt;
+        } else {
+          outs.push(dec.formatDecimal(remaining)); // boundary: the remainder
+          remaining = 0n;
+        }
+      }
+      if (remaining > 0n) {
+        throw new Error("pool slices cannot cover the redemption");
+      }
+      return { sliceCids, outs };
+    };
+    return { base: side(pool.baseSlices, baseOut), quote: side(pool.quoteSlices, quoteOut) };
+  }
+
   /** Operator half of the two-call DvP remove: create the request. */
   async requestRemoveLiquidity(
     input: PoolRequestRemoveLiquidityInput,
   ): Promise<PoolRequestRemoveLiquidityResult> {
     const pool = await this.fetchPool(input.poolCid);
     const dvpRulesCid = this.requireDvpRules(pool);
+    const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, pool.totalLpSupply);
     const requestCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"LiquidityAllocationRequest">>({
         actAs: [this.operatorParty],
@@ -610,22 +675,33 @@ export class PoolService {
           argument: {
             poolCid: input.poolCid,
             holder: input.holder,
-            baseOuts: input.baseOuts,
-            quoteOuts: input.quoteOuts,
-            lpBurnAmount: input.lpBurnAmount,
+            baseOuts: plan.base.outs,
+            quoteOuts: plan.quote.outs,
+            lpBurnAmount: input.lpTokensToRedeem,
             requestedAt: input.requestedAt,
             settleAt: input.settleAt ?? null,
           },
         },
       }),
     );
-    return { requestCid, knownTotalLpSupply: pool.totalLpSupply };
+    return {
+      requestCid,
+      knownTotalLpSupply: pool.totalLpSupply,
+      baseSliceCids: plan.base.sliceCids,
+      quoteSliceCids: plan.quote.sliceCids,
+      baseOuts: plan.base.outs,
+      quoteOuts: plan.quote.outs,
+    };
   }
 
   /** Operator + lpRegistrar settle the accepted remove. */
   async settleRemoveLiquidity(input: PoolSettleRemoveLiquidityInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
     const dvpRulesCid = this.requireDvpRules(pool);
+    // Re-derive the slice prefix from CURRENT state. If reserves/slices
+    // drifted since /request, the recomputed delivery legs won't match the
+    // wallet's request-time receipt legs and the SettleBatch aborts.
+    const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, input.knownTotalLpSupply);
     const lpPolicyCid = await this.fetchLpPolicy(pool);
     const bqFactories = await this.registry.getFactories(pool.admin);
     const lpFactories = await this.registry.getFactories(pool.lpRegistrar);
@@ -662,8 +738,8 @@ export class PoolService {
             knownTotalLpSupply: input.knownTotalLpSupply,
             minBaseOut: input.minBaseOut,
             minQuoteOut: input.minQuoteOut,
-            baseSliceCids: input.baseSliceCids,
-            quoteSliceCids: input.quoteSliceCids,
+            baseSliceCids: plan.base.sliceCids,
+            quoteSliceCids: plan.quote.sliceCids,
             holderBaseReceiptCid: input.holderBaseReceiptCid,
             holderQuoteReceiptCid: input.holderQuoteReceiptCid,
             holderBurnSenderCid: input.holderBurnSenderCid,

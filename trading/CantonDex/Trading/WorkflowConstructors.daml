@@ -1,11 +1,8 @@
 module CantonDex.Trading.WorkflowConstructors where
 
--- Workflow-step constructors over the AllocationV2 surface.
---
--- There is no Allocation_Adjust step: extra transfer legs are carried
--- on FinalizedAllocation.extraTransferLegSides and residual funding on
--- FinalizedAllocation.nextIterationFunding, both consumed by
--- SettlementFactory_SettleBatch.
+-- Workflow-step constructors over the AllocationV2 surface. There is no
+-- adjust step: extra legs + residual funding ride on FinalizedAllocation
+-- and are consumed by SettlementFactory_SettleBatch.
 
 import DA.TextMap qualified as TextMap
 
@@ -57,10 +54,8 @@ mkPrefundedAllocationFactoryAllocate admin authorizer settlement settlementDeadl
     actors
     emptyExtraArgs
 
--- The caller supplies `extraArgs`, which carries the registry's
--- off-ledger choice context. Token-standard registries may require it
--- (disclosed config contracts, featured-app rights, …); passing an
--- empty context only works against registries that don't.
+-- `extraArgs` carries the registry's off-ledger choice context; an empty
+-- one only works against registries that don't require it.
 mkCommittedPoolAllocationFactoryAllocate
   : Party
   -> HoldingV2.Account
@@ -81,9 +76,8 @@ mkCommittedPoolAllocationFactoryAllocate admin authorizer settlement settlementD
     actors
     extraArgs
 
--- Construct the FinalizedAllocation that carries the extra transfer-leg
--- sides authorized by the given authorizer (projecting legs into sides
--- via Utils.legsToSides), plus next-iteration funding if any.
+-- | FinalizedAllocation carrying the extra legs projected to the
+-- authorizer's sides, plus next-iteration funding if any.
 mkFinalizedAllocationFromLegs
   : ContractId V2.Allocation
   -> HoldingV2.Account
@@ -139,10 +133,8 @@ extractCompletedAllocationCid result = case result.output of
   AllocationInstructionV2.AllocationInstructionResult_Failed ->
     None
 
--- Next-iteration allocation cids from a batch settle, filtered to just
--- the `Some` entries. Useful when callers know each allocation
--- produced a next iteration. For per-allocation pairing use
--- `Utils.nextIterationAllocationCids` which preserves order with Optionals.
+-- | Next-iteration cids from a batch settle, dropping fully-settled (None)
+-- entries. For order-preserving pairing use Utils.nextIterationAllocationCids.
 extractNextIterationAllocationCids
   : V2.SettlementFactory_SettleBatchResult
   -> [ContractId V2.Allocation]

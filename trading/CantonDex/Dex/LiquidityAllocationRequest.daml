@@ -1,10 +1,6 @@
 module CantonDex.Dex.LiquidityAllocationRequest where
 
--- The directional request the LP (add) or holder (remove) accepts to
--- pre-author the boundary allocations of a DvP add/remove. Implements
--- V2.AllocationRequest (mirrors the OTC trading app): the operator creates
--- it naming the specs to produce; the wallet reads the view and authors
--- those allocations, which LpDvpRules then settles.
+-- Wallet-facing request for the allocations used in liquidity DvP flows.
 
 import DA.Map qualified as Map
 
@@ -41,10 +37,10 @@ template LiquidityAllocationRequest with
       allocationRequest_rejectExtraObservers = \_ -> []
       allocationRequest_withdrawExtraObservers = \_ -> []
 
-      -- Accept is standard-conformant (consuming) but optional, and our DvP
-      -- flow does NOT call it: the wallet authors the allocations directly
-      -- and LpDvpRules_Settle* binds to this still-live request. An
-      -- out-of-band accept consumes it, so the settle then fails — fail-safe.
+      -- `AllocationRequest_Accept` is standard V2 behavior, but the main
+      -- liquidity flow reads the view and creates allocations directly.
+      -- If accept is called first the later settle fails to fetch the
+      -- request, which is a deliberate fail-safe.
       allocationRequest_acceptImpl = \self _arg -> do
         archive self
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata

@@ -20,7 +20,7 @@ import type {
   Pool as PoolType,
 } from '@/types/contracts';
 
-// Shapes of the operator-backend DvP /request responses (DEX-53/54).
+// Shapes of the operator-backend DvP /request responses.
 interface RequestAddResult {
   requestCid: string;
   lpAmount: string;
@@ -158,12 +158,9 @@ export const ledger = {
 
   // === write endpoints =====================================================
   //
-  // All trader-authority writes take a `context` argument carrying the
-  // operator party, asset admin, and allocation factory cid. The page
-  // gets these from useQuery({ queryKey: ['context'], queryFn:
-  // ledger.getContext }) and threads them through. No write function
-  // here is allowed to ship blank operator/admin/factoryCid — the
-  // wallet relies on those fields to build the Daml command tree.
+  // Swap/order writes still take a `context` argument carrying the operator
+  // party, asset admin, and allocation factory cid. DvP add/remove fetch
+  // the factories they need from `/request`.
 
   /**
    * Trader-authority swap. Resolves the output instrument from the pool
@@ -224,14 +221,13 @@ export const ledger = {
       method: 'POST',
     }),
 
-  // DvP add (DEX-54), two calls around one wallet submission:
+  // DvP add, two calls around one wallet submission:
   //   1. operator creates the LiquidityAllocationRequest (/request);
   //   2. the trader's wallet authors the 3 allocations the request names;
   //   3. operator + lpRegistrar settle with the created cids (/settle).
   // For the self-registry admin == lpRegistrar, so one factory backs both
   // the deposit (pool.admin) and LP-receipt (pool.lpRegistrar) legs.
   addLiquidity: async (params: {
-    context: DexContext;
     poolId: string;
     baseAmount: number;
     quoteAmount: number;
@@ -287,14 +283,13 @@ export const ledger = {
     return { lpTokensMinted: Number(req.lpAmount), primaryCid: req.requestCid };
   },
 
-  // DvP remove (DEX-54), symmetric to add: the operator derives the slice
+  // DvP remove, symmetric to add: the operator derives the slice
   // draw + creates the request; the trader's wallet authors the base/quote
   // receipts + the LP burn-sender (locking `holderLpHoldingCid`); the
   // operator + lpRegistrar settle, delivering base+quote to the holder and
   // burning the LP tokens. `holderLpHoldingCid` is required — the wallet
   // must lock a concrete LP holding for the burn.
   removeLiquidity: async (params: {
-    context: DexContext;
     poolId: string;
     holder: string;
     lpTokens: number;

@@ -1,10 +1,6 @@
 module CantonDex.Dex.PoolRules where
 
--- Operational rules for a pool, one PoolRules per venue. Mirrors Amulet's
--- AmuletRules: a stateless operator-signed contract whose nonconsuming
--- choices operate on Pool/PoolState/PoolSlice contracts passed by ContractId.
--- No keys; the expectedPoolId guard (asserted against the fetched config)
--- gives the contract-swap protection Amulet's expectedDso does.
+-- Operational rules for one pool venue.
 
 import DA.Foldable (forA_)
 import DA.TextMap qualified as TextMap
@@ -208,10 +204,7 @@ template PoolRules with
           lpMintRequestCid
           lpTokensMinted = initialLp
 
-    -- Append liquidity: one new slice per side, bump reserves.
-    -- Deprecated: superseded by the DvP path (LpDvpRules_SettleAddLiquidity);
-    -- kept until the backend/dApp cut over. Removal is separate work. Do not
-    -- attach new callers.
+    -- Legacy compatibility path for operator-only add liquidity.
     nonconsuming choice PoolRules_AddLiquidity : PoolRules_AddLiquidityResult
       with
         expectedPoolId : PoolId
@@ -288,13 +281,7 @@ template PoolRules with
           lpMintRequestCid
           lpTokensMinted = lpToMint
 
-    -- Slice-local redemption: the operator supplies, per side, an ordered
-    -- slice prefix covering the redemption; fully-consumed slices are
-    -- cancelled, the boundary slice re-allocated for its leftover.
-    -- Deprecated: superseded by the DvP path (LpDvpRules_SettleRemoveLiquidity),
-    -- which delivers base+quote to the HOLDER (this returns them to the
-    -- operator's pool account) and burns LP via burnAccount. Removal is
-    -- separate work.
+    -- Legacy compatibility path for operator-only remove liquidity.
     nonconsuming choice PoolRules_RemoveLiquidity : PoolRules_RemoveLiquidityResult
       with
         expectedPoolId : PoolId

@@ -161,8 +161,9 @@ template Allocation with
     createdAt : Time
     numIterations : Int
   where
-    -- Normal allocations co-sign the authorizer's owner; the owner-None
-    -- mint/burn accounts are admin-authorized alone (accountOwner would panic).
+    -- Normal allocations co-sign the authorizer's owner. Mint/burn
+    -- allocations use a special account with no owner, so only the admin
+    -- signs.
     signatory admin :: optional [] (\o -> [o]) spec.authorizer.owner
     observer settlement.executors
 
@@ -191,10 +192,8 @@ template Allocation with
         let expectedActors = settlement.executors ++ [admin]
         unless (all (\p -> p `elem` arg.actors) expectedActors) $
           abort "Allocation_Settle: missing required actor (executors + admin)"
-        -- Credit only real receivers: a mint allocation (mintAccount, owner
-        -- None) carries sender-side legs, a burn-receipt (burnAccount) must
-        -- not mint, so skip owner-None authorizers. The real recipient is
-        -- credited via its own receipt allocation; the burn is the archive below.
+        -- Receiver-side crediting only applies to real accounts. Mint and
+        -- burn special accounts do not receive holdings themselves.
         let allSides = spec.transferLegSides ++ arg.extraTransferLegSides
         case spec.authorizer.owner of
           None -> pure ()
@@ -491,12 +490,14 @@ template Registry with
         let spec = arg.allocation
         assertMsg "AllocationFactory: spec admin must match registry"
           (spec.admin == admin)
+        -- A mint/burn allocation names a special account (`owner = None`)
+        -- authorized by the admin. It locks no holdings and does not go
+        -- through normal funding coverage.
         lockedCids <- case spec.authorizer.owner of
           None -> do
-            -- Security: an owner-None authorizer must be EXACTLY the standard
-            -- mint or burn account, admin-authorized (controller actors =>
-            -- real actAs admin), locking nothing and carrying only the legal
-            -- side. Otherwise it would be a mint/burn backdoor past LPTokenPolicy.
+            -- Special accounts must be exactly the standard mint or burn
+            -- accounts, authored by the admin, with only the legal leg
+            -- sides.
             let isMint = Utils.isMintAccount spec.authorizer
                 isBurn = Utils.isBurnAccount spec.authorizer
             assertMsg "owner-None authorizer must be the standard mint/burn account"

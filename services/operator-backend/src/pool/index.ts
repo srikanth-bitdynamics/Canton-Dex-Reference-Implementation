@@ -1,10 +1,4 @@
-// Pool flow.
-//
-// The on-chain pool is split into Pool (immutable config), PoolState
-// (reserves/status/supply), PoolSlice (one committed allocation each) and
-// PoolRules (one per venue, holding the operational choices). This service
-// assembles those into the combined `Pool` view the HTTP/dApp layer
-// consumes, and drives the PoolRules choices with the cids they need.
+// Pool orchestration and read models.
 
 import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
@@ -50,7 +44,7 @@ export interface PoolSwapInput {
   swapperAllocationCid: ContractId<"Allocation">;
 }
 
-// === DvP liquidity — two-call: request then settle ===========
+// === DvP liquidity ==========================================
 
 export interface PoolRequestAddLiquidityInput {
   poolCid: ContractId<"Pool">;
@@ -58,29 +52,22 @@ export interface PoolRequestAddLiquidityInput {
   baseAmount: Decimal;
   quoteAmount: Decimal;
   requestedAt: Time;
-  /** Optional quote deadline carried on the request (the authoritative deadline). */
+  /** Optional request deadline. */
   settleAt?: Time | null;
 }
 
 export interface PoolRequestAddLiquidityResult {
   requestCid: ContractId<"LiquidityAllocationRequest">;
-  /** The LP-token amount the operator quoted (floored; the settle bounds it). */
+  /** The LP-token amount quoted off-ledger. */
   lpAmount: Decimal;
-  // Echoed so the dApp's settle call is self-consistent: the settle
-  // validates `knownTotalLpSupply == state.totalLpSupply`, so it must use
-  // the supply the quote was computed against.
+  // Echoed so the later settle uses the same supply snapshot.
   knownTotalLpSupply: Decimal;
   baseAmount: Decimal;
   quoteAmount: Decimal;
-  // The on-ledger specs (built by the choice) the wallet must author, in
-  // canonical order [base deposit, quote deposit, LP receipt], plus the
-  // settlement they settle under. The dApp wallet authors AllocationFactory
-  // _Allocate from these and posts the resulting cids back to /settle.
+  // The on-ledger specs the wallet authors, in canonical order.
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
-  // Distinct factories the wallet must use: deposits + receipts under
-  // pool.admin, the LP mint/burn under pool.lpRegistrar. Equal only in the
-  // self-registry case; split-admin venues need both.
+  // Distinct factories for pool-admin vs lpRegistrar allocations.
   depositFactoryCid: ContractId<"AllocationFactory">;
   lpFactoryCid: ContractId<"AllocationFactory">;
 }
@@ -102,9 +89,7 @@ export interface PoolSettleAddLiquidityInput {
 export interface PoolRequestRemoveLiquidityInput {
   poolCid: ContractId<"Pool">;
   holder: Party;
-  // The caller passes only intent (how much LP to redeem). The backend
-  // derives the slice prefix + per-slice out amounts from CURRENT reserves
-  // and slices — slice selection is operator-internal, not the caller's job.
+  // The caller passes only intent; the backend derives the slice plan.
   lpTokensToRedeem: Decimal;
   requestedAt: Time;
   settleAt?: Time | null;
@@ -112,17 +97,14 @@ export interface PoolRequestRemoveLiquidityInput {
 
 export interface PoolRequestRemoveLiquidityResult {
   requestCid: ContractId<"LiquidityAllocationRequest">;
-  /** Echoed for a self-consistent settle. */
+  /** Echoed for the later settle. */
   knownTotalLpSupply: Decimal;
-  // The derived plan the request was built against; the dApp wallet authors
-  // its receipt legs against these per-slice amounts and the settle re-derives
-  // (and aborts if reserves drifted, a documented fail-safe).
+  // The plan the wallet authors receipt legs against.
   baseSliceCids: ContractId<"PoolSlice">[];
   quoteSliceCids: ContractId<"PoolSlice">[];
   baseOuts: Decimal[];
   quoteOuts: Decimal[];
-  // The on-ledger specs the holder authors [base receipt, quote receipt,
-  // LP burn-sender] + the settlement, for the wallet (see add result).
+  // The on-ledger specs the holder authors.
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
   depositFactoryCid: ContractId<"AllocationFactory">;
@@ -137,17 +119,14 @@ export interface PoolSettleRemoveLiquidityInput {
   knownTotalLpSupply: Decimal;
   minBaseOut: Decimal;
   minQuoteOut: Decimal;
-  // No caller-supplied slice arrays: the backend re-derives the prefix from
-  // current state (so a drift since /request aborts at SettleBatch).
+  // The backend re-derives the slice prefix from current state.
   holderBaseReceiptCid: ContractId<"Allocation">;
   holderQuoteReceiptCid: ContractId<"Allocation">;
   holderBurnSenderCid: ContractId<"Allocation">;
   requestedAt: Time;
 }
 
-// The operator-derived redemption plan for one side: the ordered slice
-// prefix that covers the redemption + the per-slice out amounts (full
-// slices contribute their whole amount; the boundary slice the remainder).
+// One side of an operator-derived redemption plan.
 export interface RemoveSidePlan {
   sliceCids: ContractId<"PoolSlice">[];
   outs: Decimal[];
@@ -158,9 +137,7 @@ export interface RemovePlan {
   quote: RemoveSidePlan;
 }
 
-// Select the ordered prefix of slices whose cumulative amount covers
-// `target` (the slice-local contention optimization: pass the rules
-// choice only the slices it actually needs, head-first).
+// Select the head-first slice prefix that covers `target`.
 function selectCoveringPrefix(slices: PoolSlice[], target: number): ContractId<"PoolSlice">[] {
   const out: ContractId<"PoolSlice">[] = [];
   let acc = 0;
@@ -190,7 +167,6 @@ export class PoolService {
     };
   }
 
-  /** The per-venue PoolRules cid for this operator. */
   private async rulesCid(): Promise<ContractId<"PoolRules">> {
     const rules = await this.ledger.query<PoolRulesContract>({
       templateId: "CantonDex.Dex.PoolRules:PoolRules",
@@ -201,7 +177,6 @@ export class PoolService {
     return found.contractId;
   }
 
-  /** All co-controlled LpDvpRules visible to the operator, by lpRegistrar. */
   private async lpDvpRules(): Promise<LpDvpRulesContract[]> {
     return this.ledger.query<LpDvpRulesContract>({
       templateId: "CantonDex.Dex.LpDvpRules:LpDvpRules",
@@ -209,7 +184,6 @@ export class PoolService {
     });
   }
 
-  /** The LpDvpRules cid for this operator + the pool's lpRegistrar, if any. */
   async dvpRulesCid(lpRegistrar: Party): Promise<ContractId<"LpDvpRules">> {
     const all = await this.lpDvpRules();
     const found = all.find(
@@ -221,11 +195,7 @@ export class PoolService {
     return found.contractId;
   }
 
-  /**
-   * Assemble the combined `Pool` view by joining the split contracts by
-   * poolId: config + state + its slices. Pools without an active state
-   * (none seeded yet) are skipped.
-   */
+  /** Assemble the combined `Pool` view from config, state, and slices. */
   async listActive(): Promise<Pool[]> {
     const [configs, states, slices] = await Promise.all([
       this.ledger.query<PoolConfigContract>({
@@ -286,8 +256,7 @@ export class PoolService {
         baseSlices: poolSlices.filter((s) => s.side === "BaseSide").map(toSlice),
         quoteSlices: poolSlices.filter((s) => s.side === "QuoteSide").map(toSlice),
         operatorFeeBps: cfg.operatorFeeBps,
-        // No operator-fee accrual on-chain (see PoolRules_Swap); the API
-        // field is retained as null for wire-shape stability.
+        // Retained for wire-shape stability.
         accumulatedOperatorFees: null,
         publicReaders: state.publicReaders,
       });
@@ -334,11 +303,7 @@ export class PoolService {
     return { poolCid: input.poolCid, lpTokensMinted: "0.0" };
   }
 
-  /**
-   * Off-chain quote computation. Mirrors the on-chain constant-product
-   * formula. The on-chain PoolRules_Swap re-validates against
-   * `minOutputAmount`, so the operator's quote is advisory not authoritative.
-   */
+  /** Off-chain quote computation for the constant-product pool. */
   computeQuote(
     pool: Pool,
     inputInstrumentId: string,
@@ -363,8 +328,6 @@ export class PoolService {
     const outputSlices = inputIsBase ? pool.quoteSlices : pool.baseSlices;
     const headInput = inputSlices[0];
     if (!headInput) throw new Error("pool has no input-side slice");
-    // Pool grows its head input slice; source output across the prefix
-    // that covers the quoted amountOut.
     const amountOut = toFloat(this.computeQuote(pool, input.inputInstrumentId, input.inputAmount));
     const outputSliceCids = selectCoveringPrefix(outputSlices, amountOut);
     return retryOnContention(() =>
@@ -405,11 +368,32 @@ export class PoolService {
     return pool.lpDvpRulesCid;
   }
 
-  /**
-   * Read back the just-created LiquidityAllocationRequest so /request can
-   * hand the dApp the exact on-ledger specs (built by the choice) the
-   * wallet must author.
-   */
+  private async fetchDvpPool(
+    cid: ContractId<"Pool">,
+  ): Promise<{ pool: Pool; dvpRulesCid: ContractId<"LpDvpRules"> }> {
+    const pool = await this.fetchPool(cid);
+    return { pool, dvpRulesCid: this.requireDvpRules(pool) };
+  }
+
+  private async loadLiquidityFactories(pool: Pool) {
+    const [depositFactories, lpFactories] = await Promise.all([
+      this.registry.getFactories(pool.admin),
+      this.registry.getFactories(pool.lpRegistrar),
+    ]);
+    return { depositFactories, lpFactories };
+  }
+
+  private async loadDvpSurface(pool: Pool) {
+    const [{ depositFactories, lpFactories }, depositContext, lpContext] =
+      await Promise.all([
+        this.loadLiquidityFactories(pool),
+        this.choiceContext(pool.admin),
+        this.choiceContext(pool.lpRegistrar),
+      ]);
+    return { depositFactories, lpFactories, depositContext, lpContext };
+  }
+
+  /** Read back a newly-created liquidity request. */
   private async fetchRequest(
     cid: ContractId<"LiquidityAllocationRequest">,
   ): Promise<LiquidityAllocationRequestContract> {
@@ -422,15 +406,7 @@ export class PoolService {
     return found;
   }
 
-  /**
-   * LP-token quote in EXACT fixed-point decimal (matches Daml's `Decimal`
-   * mul/div round-half-even; sqrt floored). Binary floats lose precision
-   * once reserves exceed ~15 significant digits, which would make the quote
-   * miss the on-ledger dust bound for large pools — so we work in scaled
-   * BigInt. First funding: sqrt(base*quote) (floored, conservative). Else:
-   * min((base*supply)/reserveBase, (quote*supply)/reserveQuote), the same
-   * sequence the Daml settle computes for `fairLp`.
-   */
+  /** LP quote in fixed-point decimal. */
   private lpQuote(pool: Pool, baseAmount: Decimal, quoteAmount: Decimal): Decimal {
     const b = dec.parseDecimal(baseAmount);
     const q = dec.parseDecimal(quoteAmount);
@@ -446,17 +422,11 @@ export class PoolService {
     return dec.formatDecimal(lp);
   }
 
-  /**
-   * Operator half of the two-call DvP add: create the
-   * LiquidityAllocationRequest the LP accepts. The wallet then authors the
-   * deposit + receipt allocations from the request's specs and the dApp
-   * calls settleAddLiquidity with their cids.
-   */
+  /** Create the wallet-facing request for a DvP add. */
   async requestAddLiquidity(
     input: PoolRequestAddLiquidityInput,
   ): Promise<PoolRequestAddLiquidityResult> {
-    const pool = await this.fetchPool(input.poolCid);
-    const dvpRulesCid = this.requireDvpRules(pool);
+    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
     const lpAmount = this.lpQuote(pool, input.baseAmount, input.quoteAmount);
     const requestCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"LiquidityAllocationRequest">>({
@@ -480,10 +450,7 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
-    const [bqFactories, lpFactories] = await Promise.all([
-      this.registry.getFactories(pool.admin),
-      this.registry.getFactories(pool.lpRegistrar),
-    ]);
+    const { depositFactories, lpFactories } = await this.loadLiquidityFactories(pool);
     return {
       requestCid,
       lpAmount,
@@ -492,41 +459,29 @@ export class PoolService {
       quoteAmount: input.quoteAmount,
       allocations: req.allocations,
       settlement: req.settlement,
-      depositFactoryCid: bqFactories.allocationFactoryCid,
+      depositFactoryCid: depositFactories.allocationFactoryCid,
       lpFactoryCid: lpFactories.allocationFactoryCid,
     };
   }
 
-  /**
-   * Operator + lpRegistrar settle the accepted add: the LP's deposit +
-   * receipt allocation cids (authored by the wallet) plus both registries'
-   * factories. Signed [operator, lpRegistrar] because the DvP choice
-   * rewrites the operator-signed pool state AND drives the
-   * lpRegistrar-controlled mint.
-   */
+  /** Settle a DvP add. */
   async settleAddLiquidity(input: PoolSettleAddLiquidityInput): Promise<unknown> {
-    const pool = await this.fetchPool(input.poolCid);
-    const dvpRulesCid = this.requireDvpRules(pool);
+    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
     const lpPolicyCid = await this.fetchLpPolicy(pool);
-    // Two admins: base/quote under pool.admin, LP tokens under lpRegistrar.
-    const bqFactories = await this.registry.getFactories(pool.admin);
-    const lpFactories = await this.registry.getFactories(pool.lpRegistrar);
-    const bqCtx = await this.choiceContext(pool.admin);
-    // The Daml choice accepts a single `extraArgs`, threaded to
-    // both the base/quote and the LP factory/settle exercises. We use only
-    // lpCtx.disclosure here and pass bqCtx.extraArgs — correct for the
-    // self-registry (empty context). An external context-requiring LP
-    // registry would need per-admin extraArgs at both layers (deferred).
-    const lpCtx = await this.choiceContext(pool.lpRegistrar);
+    const { depositFactories, lpFactories, depositContext, lpContext } =
+      await this.loadDvpSurface(pool);
+    // One `extraArgs` value is threaded through the Daml choice. That is
+    // enough for the self-registry; a split context-carrying setup would
+    // need per-admin handling.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-add-settle:${input.requestCid}`,
         disclosure: [
-          ...bqFactories.disclosure,
+          ...depositFactories.disclosure,
           ...lpFactories.disclosure,
-          ...bqCtx.disclosure,
-          ...lpCtx.disclosure,
+          ...depositContext.disclosure,
+          ...lpContext.disclosure,
         ],
         command: {
           kind: "exercise",
@@ -543,30 +498,24 @@ export class PoolService {
             lpBaseDepositCid: input.lpBaseDepositCid,
             lpQuoteDepositCid: input.lpQuoteDepositCid,
             lpReceiptCid: input.lpReceiptCid,
-            baseFactoryCid: bqFactories.allocationFactoryCid,
-            quoteFactoryCid: bqFactories.allocationFactoryCid,
+            baseFactoryCid: depositFactories.allocationFactoryCid,
+            quoteFactoryCid: depositFactories.allocationFactoryCid,
             lpFactoryCid: lpFactories.allocationFactoryCid,
-            baseQuoteSettleCid: bqFactories.settlementFactoryCid,
+            baseQuoteSettleCid: depositFactories.settlementFactoryCid,
             lpSettleCid: lpFactories.settlementFactoryCid,
             baseAmount: input.baseAmount,
             quoteAmount: input.quoteAmount,
             minLpTokens: input.minLpTokens,
             knownTotalLpSupply: input.knownTotalLpSupply,
             requestedAt: input.requestedAt,
-            extraArgs: bqCtx.extraArgs,
+            extraArgs: depositContext.extraArgs,
           },
         },
       }),
     );
   }
 
-  /**
-   * Derive the redemption plan from CURRENT reserves + slices, in exact
-   * decimal so the per-slice out amounts match the Daml settle to the last
-   * digit. Mirrors Daml: share = redeem / supply; out = reserve * share;
-   * then walk the head-first slice prefix — full slices contribute their
-   * whole (verbatim) amount, the boundary slice the remainder.
-   */
+  /** Derive the current redemption plan from reserves and slices. */
   private deriveRemovePlan(
     pool: Pool,
     lpTokensToRedeem: Decimal,
@@ -584,10 +533,10 @@ export class PoolService {
         const amt = dec.parseDecimal(s.amount);
         sliceCids.push(s.contractId);
         if (remaining >= amt) {
-          outs.push(s.amount); // full slice: verbatim ledger string
+          outs.push(s.amount);
           remaining -= amt;
         } else {
-          outs.push(dec.formatDecimal(remaining)); // boundary: the remainder
+          outs.push(dec.formatDecimal(remaining));
           remaining = 0n;
         }
       }
@@ -599,12 +548,11 @@ export class PoolService {
     return { base: side(pool.baseSlices, baseOut), quote: side(pool.quoteSlices, quoteOut) };
   }
 
-  /** Operator half of the two-call DvP remove: create the request. */
+  /** Create the wallet-facing request for a DvP remove. */
   async requestRemoveLiquidity(
     input: PoolRequestRemoveLiquidityInput,
   ): Promise<PoolRequestRemoveLiquidityResult> {
-    const pool = await this.fetchPool(input.poolCid);
-    const dvpRulesCid = this.requireDvpRules(pool);
+    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
     const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, pool.totalLpSupply);
     const requestCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"LiquidityAllocationRequest">>({
@@ -628,10 +576,7 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
-    const [bqFactories, lpFactories] = await Promise.all([
-      this.registry.getFactories(pool.admin),
-      this.registry.getFactories(pool.lpRegistrar),
-    ]);
+    const { depositFactories, lpFactories } = await this.loadLiquidityFactories(pool);
     return {
       requestCid,
       knownTotalLpSupply: pool.totalLpSupply,
@@ -641,38 +586,31 @@ export class PoolService {
       quoteOuts: plan.quote.outs,
       allocations: req.allocations,
       settlement: req.settlement,
-      depositFactoryCid: bqFactories.allocationFactoryCid,
+      depositFactoryCid: depositFactories.allocationFactoryCid,
       lpFactoryCid: lpFactories.allocationFactoryCid,
     };
   }
 
-  /** Operator + lpRegistrar settle the accepted remove. */
+  /** Settle a DvP remove. */
   async settleRemoveLiquidity(input: PoolSettleRemoveLiquidityInput): Promise<unknown> {
-    const pool = await this.fetchPool(input.poolCid);
-    const dvpRulesCid = this.requireDvpRules(pool);
-    // Re-derive the slice prefix from CURRENT state. If reserves/slices
-    // drifted since /request, the recomputed delivery legs won't match the
-    // wallet's request-time receipt legs and the SettleBatch aborts.
+    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
+    // Re-derive from current state; drift since /request aborts at settle.
     const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, input.knownTotalLpSupply);
     const lpPolicyCid = await this.fetchLpPolicy(pool);
-    const bqFactories = await this.registry.getFactories(pool.admin);
-    const lpFactories = await this.registry.getFactories(pool.lpRegistrar);
-    const bqCtx = await this.choiceContext(pool.admin);
-    // The Daml choice accepts a single `extraArgs`, threaded to
-    // both the base/quote and the LP factory/settle exercises. We use only
-    // lpCtx.disclosure here and pass bqCtx.extraArgs — correct for the
-    // self-registry (empty context). An external context-requiring LP
-    // registry would need per-admin extraArgs at both layers (deferred).
-    const lpCtx = await this.choiceContext(pool.lpRegistrar);
+    const { depositFactories, lpFactories, depositContext, lpContext } =
+      await this.loadDvpSurface(pool);
+    // One `extraArgs` value is threaded through the Daml choice. That is
+    // enough for the self-registry; a split context-carrying setup would
+    // need per-admin handling.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-remove-settle:${input.requestCid}`,
         disclosure: [
-          ...bqFactories.disclosure,
+          ...depositFactories.disclosure,
           ...lpFactories.disclosure,
-          ...bqCtx.disclosure,
-          ...lpCtx.disclosure,
+          ...depositContext.disclosure,
+          ...lpContext.disclosure,
         ],
         command: {
           kind: "exercise",
@@ -695,13 +633,13 @@ export class PoolService {
             holderBaseReceiptCid: input.holderBaseReceiptCid,
             holderQuoteReceiptCid: input.holderQuoteReceiptCid,
             holderBurnSenderCid: input.holderBurnSenderCid,
-            baseFactoryCid: bqFactories.allocationFactoryCid,
-            quoteFactoryCid: bqFactories.allocationFactoryCid,
+            baseFactoryCid: depositFactories.allocationFactoryCid,
+            quoteFactoryCid: depositFactories.allocationFactoryCid,
             lpFactoryCid: lpFactories.allocationFactoryCid,
-            baseQuoteSettleCid: bqFactories.settlementFactoryCid,
+            baseQuoteSettleCid: depositFactories.settlementFactoryCid,
             lpSettleCid: lpFactories.settlementFactoryCid,
             requestedAt: input.requestedAt,
-            extraArgs: bqCtx.extraArgs,
+            extraArgs: depositContext.extraArgs,
           },
         },
       }),

@@ -7,6 +7,11 @@ import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import type { Party } from "../types.js";
 
+const emptyExtraArgs = {
+  context: { values: {} },
+  meta: { values: {} },
+};
+
 export interface MatchedTradeRequestAllocationsInput {
   tradeCid: ContractId<"MatchedTrade">;
 }
@@ -81,7 +86,7 @@ export class MatchedTradeService {
                   tag: "SettlementBatchV2",
                   allocationCids: e.batch.allocationCids,
                   factoryCid: e.factoryCid,
-                  extraArgs: emptyExtraArgs(),
+                  extraArgs: emptyExtraArgs,
                 },
               ]),
             ),
@@ -109,7 +114,7 @@ export class MatchedTradeService {
           argument: {
             allocationsToCancel: allocationCids.map((cid) => [
               cid,
-              emptyExtraArgs(),
+              emptyExtraArgs,
             ]),
             allocationRequestCids: requestCids,
           },
@@ -117,11 +122,4 @@ export class MatchedTradeService {
       }),
     );
   }
-}
-
-function emptyExtraArgs(): unknown {
-  return {
-    context: { values: {} },
-    meta: { values: {} },
-  };
 }

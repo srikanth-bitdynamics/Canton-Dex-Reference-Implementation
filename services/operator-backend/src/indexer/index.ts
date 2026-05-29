@@ -38,9 +38,9 @@ interface MatchedTradeContract {
   } | null;
 }
 
-// DEX-40/41: the contract that rotates on every pool op is now PoolState
-// (Pool config is immutable). We track PoolState transitions for swap
-// detection, joining Pool config by poolId for the instrument ids.
+// The contract that rotates on every pool op is PoolState (Pool config is
+// immutable). We track PoolState transitions for swap detection, joining
+// Pool config by poolId for the instrument ids.
 interface PoolConfigRow {
   contractId: string;
   poolId: string;

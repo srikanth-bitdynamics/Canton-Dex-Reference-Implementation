@@ -61,6 +61,7 @@ function registerHandlers(
     "CantonDex.Dex.PoolState:PoolState",
     "CantonDex.Dex.PoolSlice:PoolSlice",
     "CantonDex.Dex.PoolRules:PoolRules",
+    "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
   ]) {
     ledger.registerCreateHandler(tid, () => ({ observers: [operator, lpRegistrar] }));
   }
@@ -305,8 +306,21 @@ async function seed(
     },
   });
 
+  // Co-controlled liquidity venue rules so add/remove-liquidity can resolve
+  // a PoolLiquidityRules cid (PoolService.listActive / requireDvpRules).
+  await ledger.submit({
+    actAs: [operator, lpRegistrar],
+    commandId: "seed-pool-liquidity-rules",
+    command: {
+      kind: "create",
+      templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
+      argument: { operator, lpRegistrar },
+    },
+  });
+
   // Matching LP token policy so add/remove-liquidity can resolve the
-  // pool's policy cid (PoolService.fetchLpPolicy).
+  // pool's policy cid (PoolService.fetchLpAssetPolicy), matched by
+  // lpInstrumentId + lpRegistrar.
   await ledger.submit({
     actAs: [lpRegistrar],
     commandId: "seed-lp-policy-btcusdc",
@@ -317,9 +331,6 @@ async function seed(
         lpRegistrar,
         operator,
         lpInstrumentId: { admin: lpRegistrar, id: "BTC-USDC-LP" },
-        baseInstrumentId: "BTC",
-        quoteInstrumentId: "USDC",
-        poolCid: "#pool-btcusdc:0",
         totalSupply: "1414.2135623731",
         active: true,
       },

@@ -1,37 +1,12 @@
--- Full V2 token-standard registry.
+-- Full CIP-0056 registry: Holding, Allocation(+Factory), SettlementFactory,
+-- TransferFactory(+Instruction), and a TransferEvents EventLog, plus the
+-- InstrumentConfig / Credential machinery. One registry serves the
+-- in-script tests, the testnet harness, and the live DEX.
 --
--- Implements every CIP-0056 on-ledger interface:
---   * V2.Holding                                 (asset)
---   * V2.AllocationFactory + V2.Allocation       (DvP-side flow)
---   * V2.SettlementFactory                       (batch settlement)
---   * V2.TransferFactory + V2.TransferInstruction (P2P transfers)
---   * TransferEventsV2.EventLog                  (wallet stream hook)
---
--- Plus the surrounding registry machinery:
---   * InstrumentConfig — per-instrument issuance policy and credentials
---   * Credential — issuer-signed claim verified at mint / transfer / allocate
---   * Registry_RegisterInstrument / Registry_Mint / Registry_Burn workflows
---
--- This replaces the prior `MockRegistry` (no asset side) and `RealRegistry`
--- (minimal asset side, no credential checks, no transfer surface).
--- One registry now serves the in-script tests, the testnet harness, and
--- the live DEX.
---
--- Authorization model:
---   * Holdings are signed by the registry admin + holder owner.
---   * Allocations are signed by admin + authorizer owner.
---   * TransferInstructions are signed by admin + sender owner.
---   * Mint / Burn / Allocate / Transfer choices validate that the
---     requester satisfies the InstrumentConfig's credential
---     requirements (empty list = open access, matches the registry
---     user-guide posture for test instruments).
---
--- V2 surface notes:
---   * `V2.TransferLeg.instrumentId` is plain `Text` (admin lookup
---     happens via the SettlementFactory's admin field on the registry).
---   * `Allocation_Adjust` is properly implemented for iterated
---     settlement (pool swaps) — adds legs, validates funding
---     conservation, rolls forward.
+-- Authority: holdings sign admin+owner; allocations sign admin+authorizer
+-- (admin alone for the owner-None mint/burn accounts); transfers sign
+-- admin+sender. Mint/burn/allocate/transfer enforce the InstrumentConfig
+-- credential requirements (empty list = open access).
 
 module CantonDex.Registry.V2 where
 
@@ -52,12 +27,9 @@ import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
 import CantonDex.Trading.Utils qualified as Utils
 
 
--- =========================================================================
--- Credentials
--- =========================================================================
+-- Credentials -------------------------------------------------------------
 
--- | A claim signed by `issuer`, asserting that `holder` satisfies
--- `(property, value)` (per the Registry Utility user guide).
+-- | An issuer-signed claim that `holder` satisfies `(property, value)`.
 template Credential with
     issuer : Party
     holder : Party
@@ -67,15 +39,13 @@ template Credential with
     signatory issuer
     observer holder
 
--- | A requirement attached to an InstrumentConfig.
 data CredentialRequirement = CredentialRequirement with
     issuer : Party
     property : Text
     value : Text
   deriving (Eq, Show, Ord)
 
--- | Verify a party satisfies all requirements via supplied Credentials.
--- Empty requirements list => open access (test instruments / dev mode).
+-- | True when `party` satisfies every requirement; empty list = open access.
 verifyCredentials
   : Party -> [CredentialRequirement] -> [Credential] -> Bool
 verifyCredentials party reqs claims =
@@ -89,19 +59,15 @@ verifyCredentials party reqs claims =
       claims
 
 
--- =========================================================================
--- InstrumentConfig
--- =========================================================================
+-- InstrumentConfig --------------------------------------------------------
 
--- | Per-instrument configuration owned by the registry admin. Sets
--- supply cap, decimal precision, holder/issuer credential requirements,
--- and external identifiers (ISIN/CUSIP).
+-- | Per-instrument issuance policy owned by the admin: supply cap,
+-- precision, holder/issuer credential requirements, external ids.
 template InstrumentConfig with
     admin : Party
     instrumentId : Text
     decimals : Int
     supplyCap : Optional Decimal
-      -- ^ When set, mints cannot push circulating supply beyond this.
     circulatingSupply : Decimal
     holderRequirements : [CredentialRequirement]
     issuerRequirements : [CredentialRequirement]
@@ -111,8 +77,6 @@ template InstrumentConfig with
     signatory admin
     ensure decimals >= 0 && decimals <= 18
 
-    -- Admin can update credential requirements without disturbing
-    -- holdings already in circulation.
     choice InstrumentConfig_UpdateCredentials : ContractId InstrumentConfig
       with
         newHolder : [CredentialRequirement]
@@ -122,7 +86,7 @@ template InstrumentConfig with
            holderRequirements = newHolder
            issuerRequirements = newIssuer
 
-    -- Internal supply bookkeeping. Called only by the Registry's mint/burn flows.
+    -- Supply bookkeeping; driven only by the registry mint/burn flows.
     choice InstrumentConfig_BumpSupply : ContractId InstrumentConfig
       with
         delta : Decimal
@@ -135,12 +99,8 @@ template InstrumentConfig with
         create this with circulatingSupply = next
 
 
--- =========================================================================
--- Holding
--- =========================================================================
+-- Holding -----------------------------------------------------------------
 
--- | A registry-issued holding. Signatory: admin + owner.
--- Implements `V2.Holding`.
 template Holding with
     admin : Party
     owner : Party
@@ -191,12 +151,8 @@ template Holding with
         create this with amount = amount + other.amount
 
 
--- =========================================================================
--- Allocation
--- =========================================================================
+-- Allocation --------------------------------------------------------------
 
--- | A V2 allocation backed by locked holdings.
--- Implements `V2.Allocation` including `Allocation_Adjust` for iterated settlement.
 template Allocation with
     admin : Party
     settlement : V2.SettlementInfo
@@ -205,11 +161,8 @@ template Allocation with
     createdAt : Time
     numIterations : Int
   where
-    -- For a normal allocation the authorizer's owner co-signs. For a
-    -- mint/burn allocation the authorizer is a special account
-    -- (`owner = None`, mintAccount/burnAccount) authorized by the admin
-    -- alone — `accountOwner` would panic, so include the owner only when
-    -- present (DEX-48).
+    -- Normal allocations co-sign the authorizer's owner; the owner-None
+    -- mint/burn accounts are admin-authorized alone (accountOwner would panic).
     signatory admin :: optional [] (\o -> [o]) spec.authorizer.owner
     observer settlement.executors
 
@@ -229,42 +182,19 @@ template Allocation with
       allocation_cancelExtraObservers _ = []
       allocation_withdrawExtraObservers _ = []
 
-      -- Settle: each allocation's settle mints the receiver-side
-      -- holdings for legs where THIS allocation's authorizer is the
-      -- RECEIVER. That works because the allocation is signed by
-      -- admin + authorizer, so creating a new Holding owned by the
-      -- authorizer (admin + owner signatories) inherits the right
-      -- authority. Sender-side legs simply archive the locked holdings
-      -- (the receiver-side allocation will mint the new ones).
-      --
-      -- This is the V2-standard pattern: per-side authority via the
-      -- allocation each side signed, not a single multi-party settle.
-      -- Settle: each allocation's settle mints the receiver-side
-      -- holdings for legs where THIS allocation's authorizer is the
-      -- RECEIVER. That works because the allocation is signed by
-      -- admin + authorizer, so creating a new Holding owned by the
-      -- authorizer (admin + owner signatories) inherits the right
-      -- authority. Sender-side legs simply archive the locked holdings
-      -- (the receiver-side allocation will mint the new ones).
-      --
-      -- The choice arg carries
-      -- `extraTransferLegSides` (additional sides settled this
-      -- iteration) and `nextIterationFunding` (residual reserved for
-      -- the next iteration). We honor both: process settle for the
-      -- spec's existing legs + arg's extras, then roll forward.
+      -- Per-side settle: this allocation mints the receiver-side holdings
+      -- for its own authorizer (inheriting admin+owner authority from its
+      -- signatories); sender-side legs just archive the locked holdings.
+      -- Honours arg.extraTransferLegSides this iteration and rolls forward
+      -- arg.nextIterationFunding into a fresh allocation.
       allocation_settleImpl self arg = do
         let expectedActors = settlement.executors ++ [admin]
         unless (all (\p -> p `elem` arg.actors) expectedActors) $
           abort "Allocation_Settle: missing required actor (executors + admin)"
-        -- For receiver-side legs (this authorizer is receiver), mint a
-        -- holding for this authorizer — but ONLY for real accounts.
-        -- A mint allocation (authorizer = mintAccount, owner None) carries
-        -- sender-side legs, and a burn-receipt allocation (authorizer =
-        -- burnAccount, owner None) must NOT mint (the burn destroys), so
-        -- skip crediting when the authorizer is a special account
-        -- (DEX-48). The mint into the real recipient happens via THEIR
-        -- receipt allocation; the burn happens by archiving the holder's
-        -- locked holdings below.
+        -- Credit only real receivers: a mint allocation (mintAccount, owner
+        -- None) carries sender-side legs, a burn-receipt (burnAccount) must
+        -- not mint, so skip owner-None authorizers. The real recipient is
+        -- credited via its own receipt allocation; the burn is the archive below.
         let allSides = spec.transferLegSides ++ arg.extraTransferLegSides
         case spec.authorizer.owner of
           None -> pure ()
@@ -280,8 +210,6 @@ template Allocation with
                 pure ()
         archive self
         forA_ lockedHoldings $ \cid -> archive cid
-        -- Roll-forward: when nextIterationFunding is set, create a
-        -- fresh allocation carrying just the residual funding.
         next <- case arg.nextIterationFunding of
           None -> pure None
           Some funding -> do
@@ -298,7 +226,7 @@ template Allocation with
           authorizerHoldingCids = TextMap.empty
           meta = emptyMetadata
 
-      -- Cancel returns locked holdings to the authorizer (unlocked).
+      -- Cancel / withdraw both release the locked holdings unlocked.
       allocation_cancelImpl self arg = do
         released <- forA lockedHoldings $ \cid -> do
           h <- fetch cid
@@ -331,19 +259,15 @@ template Allocation with
                      ]
           meta = emptyMetadata
 
--- Helper: pick the instrumentId.id from a non-empty list of holdings.
--- (After unlock, they all share the same instrumentId.)
 instrumentIdOf : [ContractId Holding] -> Text
 instrumentIdOf [] = ""
-instrumentIdOf _ = "held"  -- placeholder; specific id not needed by callers today
+instrumentIdOf _ = "held"  -- specific id not needed by callers today
 
 
--- =========================================================================
--- TransferInstruction (peer-to-peer transfers)
--- =========================================================================
+-- TransferInstruction (peer-to-peer) --------------------------------------
 
--- | An admin-mediated P2P transfer offer. Sender's holding is locked
--- until receiver accepts or sender withdraws.
+-- | Admin-mediated P2P transfer. The sender's holding stays locked until
+-- the receiver accepts or the sender withdraws.
 template TransferInstruction with
     admin : Party
     sender : Party
@@ -422,25 +346,16 @@ template TransferInstruction with
           meta = emptyMetadata
 
 
--- =========================================================================
--- Registry (the AllocationFactory + SettlementFactory + TransferFactory)
--- =========================================================================
+-- Registry: AllocationFactory + SettlementFactory + TransferFactory -------
 
--- | The registry contract. Signed by the admin. Implements every V2
--- factory interface plus a TransferEvents EventLog.
 template Registry with
     admin : Party
     users : [Party]
-      -- ^ Parties allowed to exercise factory choices and propose
-      --   mints / transfers. They become observers so they can read
-      --   the factory contract.
+      -- ^ May exercise factory choices / propose mints; observers so they
+      --   can read the factory contract.
   where
     signatory admin
     observer users
-
-    -- =====================================================================
-    -- Registry-side workflows: register / mint / burn
-    -- =====================================================================
 
     nonconsuming choice Registry_RegisterInstrument : ContractId InstrumentConfig
       with
@@ -464,11 +379,7 @@ template Registry with
           isin
           cusip
 
-    -- Mint to an owner. Admin authority required; the owner co-signs
-    -- by the Holding's signatory list. The owner's CanActAs must be
-    -- present on the submission (multi-actAs or via a delegation; we
-    -- expose this as a single choice and rely on the caller supplying
-    -- both authorities).
+    -- Mint to an owner; caller must supply both admin and owner authority.
     nonconsuming choice Registry_Mint : ContractId Holding
       with
         configCid : ContractId InstrumentConfig
@@ -483,7 +394,6 @@ template Registry with
               null config.issuerRequirements ||
               verifyCredentials admin config.issuerRequirements issuerClaims
         assertMsg "issuer credentials not satisfied for mint" credsOk
-        -- bump supply
         exercise configCid InstrumentConfig_BumpSupply with delta = amount
         create Holding with
           admin
@@ -511,25 +421,14 @@ template Registry with
         exercise configCid InstrumentConfig_BumpSupply with delta = negate h.amount
         archive holdingCid
 
-    -- =====================================================================
-    -- TransferEventsV2.EventLog
-    -- =====================================================================
-
     interface instance TransferEventsV2.EventLog for Registry where
       view = TransferEventsV2.EventLogView with
         admin
         meta = emptyMetadata
-
+      -- Per-template archive/create events suffice for the DEX; a production
+      -- registry would broadcast richer events here for wallet streaming.
       eventLog_holdingsChangeImpl _self _arg =
-        -- Minimal default: we don't surface change events through this
-        -- channel; per-template archive/create events are sufficient for
-        -- the DEX's needs. A production registry would broadcast richer
-        -- events here for wallet streaming.
         pure TransferEventsV2.EventLog_HoldingsChangeResult
-
-    -- =====================================================================
-    -- TransferFactory
-    -- =====================================================================
 
     interface instance V2.TransferFactory for Registry where
       view = V2.TransferFactoryView with
@@ -548,10 +447,8 @@ template Registry with
         let receiverOwner = Utils.accountOwner transfer.receiver
         assertMsg "TransferFactory: instrument admin must match registry"
           (transfer.instrumentId.admin == admin)
-        -- For this minimal implementation we lock the FIRST input holding
-        -- and use it as the locked-holding for the TransferInstruction.
-        -- A production registry would consolidate multiple inputs +
-        -- return change.
+        -- Minimal: lock the first input holding as the instruction's
+        -- collateral; a production registry would consolidate + return change.
         firstHoldingCid <- case transfer.inputHoldingCids of
           [] -> abort "TransferFactory: no input holdings"
           (cid :: _) -> pure (coerceContractId cid : ContractId Holding)
@@ -562,7 +459,6 @@ template Registry with
           (h.instrumentId == transfer.instrumentId.id)
         assertMsg "input holding amount must equal transfer amount"
           (h.amount == transfer.amount)
-        -- lock
         archive firstHoldingCid
         lockedCid <- create h with locked = True
         instructionCid <- create TransferInstruction with
@@ -580,10 +476,6 @@ template Registry with
           senderChangeCids = []
           meta = emptyMetadata
 
-    -- =====================================================================
-    -- AllocationFactory
-    -- =====================================================================
-
     interface instance V2.AllocationFactory for Registry where
       view = V2.AllocationFactoryView with
         admin
@@ -599,21 +491,12 @@ template Registry with
         let spec = arg.allocation
         assertMsg "AllocationFactory: spec admin must match registry"
           (spec.admin == admin)
-        -- A mint/burn allocation names a special account (`owner = None`,
-        -- mintAccount/burnAccount) authorized by the admin; it locks no
-        -- holdings and has no funding-coverage to validate (DEX-48). A
-        -- normal allocation locks the authorizer's input holdings and must
-        -- cover its sender-side outflow + reserved next-iteration funding.
         lockedCids <- case spec.authorizer.owner of
           None -> do
-            -- SECURITY (DEX-48): a mint/burn allocation must be EXACTLY the
-            -- standard mint or burn account, authored by the admin, with
-            -- only the legal leg sides. Without these checks an `owner=None`
-            -- authorizer would be an unrestricted mint/burn backdoor that
-            -- bypasses LPTokenPolicy. `AllocationFactory_Allocate` is
-            -- `controller actors`, so `admin `elem` arg.actors` requires the
-            -- submitter to actually `actAs admin` — a real authorization
-            -- check, not just a data assertion.
+            -- Security: an owner-None authorizer must be EXACTLY the standard
+            -- mint or burn account, admin-authorized (controller actors =>
+            -- real actAs admin), locking nothing and carrying only the legal
+            -- side. Otherwise it would be a mint/burn backdoor past LPTokenPolicy.
             let isMint = Utils.isMintAccount spec.authorizer
                 isBurn = Utils.isBurnAccount spec.authorizer
             assertMsg "owner-None authorizer must be the standard mint/burn account"
@@ -622,7 +505,6 @@ template Registry with
               (admin `elem` arg.actors)
             assertMsg "mint/burn allocation must lock no holdings"
               (null arg.inputHoldingCids)
-            -- Mint sends (sender-side legs); burn receives (receiver-side).
             let sideOk side =
                   if isMint then side.side == V2.SenderSide
                             else side.side == V2.ReceiverSide
@@ -630,7 +512,8 @@ template Registry with
               (all sideOk spec.transferLegSides)
             pure []
           Some authorizerOwner -> do
-            -- SenderSide legs this authorizer must fund.
+            -- The authorizer must fund its sender-side outflow + reserved
+            -- next-iteration funding from the input holdings it locks.
             let sentByAuth =
                   filter (\side -> side.side == V2.SenderSide) spec.transferLegSides
                 sideRequired : TextMap.TextMap Decimal =
@@ -642,7 +525,6 @@ template Registry with
                     sentByAuth
                 funding = optional TextMap.empty identity spec.nextIterationFunding
                 required = Utils.textMapUnionWith (+) sideRequired funding
-            -- Lock all input holdings owned by the authorizer.
             locked <- forA arg.inputHoldingCids $ \ifaceCid -> do
               let cid : ContractId Holding = coerceContractId ifaceCid
               h <- fetch cid
@@ -652,7 +534,6 @@ template Registry with
                 (h.admin == admin)
               archive cid
               create h with locked = True
-            -- Sum supplied amounts per instrument id.
             supplied <- do
               pairs <- forA locked $ \cid -> do
                 h <- fetch cid
@@ -663,7 +544,6 @@ template Registry with
                   in TextMap.insert iid (cur + amt) m)
                 TextMap.empty
                 pairs
-            -- Validate coverage per instrument.
             forA_ (TextMap.toList required) $ \(iid, needed) -> do
               let have = optional 0.0 identity (TextMap.lookup iid supplied)
               assertMsg
@@ -685,10 +565,6 @@ template Registry with
           authorizerChangeCids = TextMap.empty
           meta = emptyMetadata
 
-    -- =====================================================================
-    -- SettlementFactory
-    -- =====================================================================
-
     interface instance V2.SettlementFactory for Registry where
       view = V2.SettlementFactoryView with
         admin
@@ -701,19 +577,15 @@ template Registry with
           meta = emptyMetadata
 
       settlementFactory_settleBatchImpl _self arg = do
-        -- V2 spec requires that Allocation_Settle.actors include the
-        -- settlement executors AND the instrument admin. The caller
-        -- (MatchedTrade_Settle) typically passes only the executors;
-        -- we expand the actors list with the admin here, which the
-        -- factory ALREADY has authority for (it's signed by admin).
+        -- Allocation_Settle.actors must include the executors AND the admin;
+        -- the factory (signed by admin) expands the list when the caller
+        -- passed only the executors.
         let expandedActors =
               if admin `elem` arg.actors
                 then arg.actors
                 else admin :: arg.actors
-        -- Each allocation's settle mints receiver-side holdings under
-        -- its OWN authority (admin + that allocation's authorizer).
-        -- Each FinalizedAllocation carries its extra transfer-leg sides
-        -- + next-iteration funding to use.
+        -- Each allocation settles under its own authority, with its
+        -- FinalizedAllocation's extra sides + next-iteration funding.
         results <- forA arg.allocations $ \finalized ->
           exercise finalized.allocationCid V2.Allocation_Settle with
             actors = expandedActors
@@ -724,12 +596,8 @@ template Registry with
           allocationSettleResults = results
           meta = emptyMetadata
 
--- =========================================================================
--- Convenience helpers (used by tests + the harness)
--- =========================================================================
 
--- | Boot a Registry that exposes itself as TransferFactory,
--- AllocationFactory, and SettlementFactory via interface CIDs.
+-- | Boot a Registry and return it as Transfer/Allocation/Settlement factories.
 createRegistry
   : Party -> [Party]
   -> Update ( ContractId Registry

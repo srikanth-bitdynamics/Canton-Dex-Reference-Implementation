@@ -312,7 +312,7 @@ async function seed(
     commandId: "seed-lp-policy-btcusdc",
     command: {
       kind: "create",
-      templateId: "CantonDex.Dex.LPToken:LPTokenPolicy",
+      templateId: "CantonDex.Lp.Policy:LPTokenPolicy",
       argument: {
         lpRegistrar,
         operator,

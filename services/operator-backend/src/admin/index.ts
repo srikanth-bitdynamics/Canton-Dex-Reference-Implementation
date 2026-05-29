@@ -181,14 +181,11 @@ export class AdminService {
         commandId: `lp-policy-create:${input.lpInstrumentId}`,
         command: {
           kind: "create",
-          templateId: "CantonDex.Dex.LPToken:LPTokenPolicy",
+          templateId: "CantonDex.Lp.Policy:LPTokenPolicy",
           argument: {
             lpRegistrar: input.lpRegistrar,
             operator: this.operatorParty,
             lpInstrumentId,
-            baseInstrumentId: input.baseInstrumentId,
-            quoteInstrumentId: input.quoteInstrumentId,
-            poolCid,
             totalSupply: zero,
             active: true,
           },

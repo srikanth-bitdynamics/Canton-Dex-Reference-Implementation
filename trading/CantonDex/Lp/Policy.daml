@@ -1,29 +1,22 @@
-module CantonDex.Dex.LPToken where
+module CantonDex.Lp.Policy where
 
--- LP-token issuance policy.
---
--- `lpRegistrar` owns the LP instrument and records supply.
--- `operator` observes supply and drives the surrounding pool flow.
+-- LP-token issuance policy: the LP asset component. Owns only the LP
+-- instrument identity and its circulating supply; it knows nothing about
+-- pools (no base/quote/pool references). The liquidity venue drives mint/burn
+-- through the record choices below.
 
-import CantonDex.Registry.V2 qualified as RegV2
 import Splice.Api.Token.HoldingV2 qualified as V2
 
 template LPTokenPolicy with
     lpRegistrar : Party
     operator : Party
     lpInstrumentId : V2.InstrumentId
-    baseInstrumentId : Text
-    quoteInstrumentId : Text
-    poolCid : ContractId ()
-      -- ^ Opaque reference to the Pool contract; coerced when binding.
-      --   Kept opaque to avoid a Pool import cycle.
     totalSupply : Decimal
     active : Bool
   where
     signatory lpRegistrar
     observer operator
 
-    -- The LP instrument is administered by the lpRegistrar.
     ensure lpInstrumentId.admin == lpRegistrar
 
     choice LPTokenPolicy_RecordMint : ContractId LPTokenPolicy

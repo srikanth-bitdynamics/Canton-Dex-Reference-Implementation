@@ -29,7 +29,7 @@ import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 import Splice.Testing.Utils (emptyExtraArgs)
 
-import CantonDex.Dex.LPToken qualified as LP
+import CantonDex.Lp.Policy qualified as LP
 import CantonDex.Dex.MatchedTrade qualified as MT
 import CantonDex.Dex.Order qualified as Order
 import CantonDex.Dex.OrderFundingRequest qualified as OFR
@@ -84,9 +84,6 @@ setupPool operator lpRegistrar admin = do
     lpRegistrar
     operator
     lpInstrumentId
-    baseInstrumentId = "BTC"
-    quoteInstrumentId = "USDC"
-    poolCid = coerceContractId poolCid
     totalSupply = 0.0
     active = True
   pure (poolId, poolCid, stateCid, rulesCid, dvpCid, policyCid)
@@ -651,8 +648,7 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
     createCmd Dvp.LpDvpRules with operator; lpRegistrar
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = lpId
-    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
-    poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
+    totalSupply = 0.0; active = True
   pure (poolId, poolCid, stateCid, dvpCid, policyCid, toInterfaceContractId factory, toInterfaceContractId settle)
 
 markerContext : ExtraArgs

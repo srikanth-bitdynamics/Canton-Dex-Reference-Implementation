@@ -1,7 +1,7 @@
 // Exact fixed-point decimal arithmetic matching Daml's `Decimal` (10
 // fractional digits, round-half-even) for liquidity quotes. The operator's
-// computed amounts need to agree with the on-ledger computation to the
-// last digit, so we work in scaled `BigInt` instead of IEEE-754 doubles.
+// computed amounts must agree with the on-ledger computation to the last
+// digit, so we use scaled `BigInt` instead of IEEE-754 doubles.
 //
 // Representation: a value `v` is stored as the BigInt `round(v * 1e10)`.
 // All ops below preserve that scale and use round-half-even, the same mode

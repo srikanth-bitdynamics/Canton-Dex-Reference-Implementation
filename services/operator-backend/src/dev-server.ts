@@ -82,7 +82,7 @@ function registerHandlers(
     observers: [operator, (payload as { trader: Party }).trader],
   }));
 
-  // Minimal PoolRules_Swap handler (DEX-40/41): reads PoolState + the
+  // Minimal PoolRules_Swap handler: reads PoolState + the
   // input/output slices by cid from the ACS, recreates PoolState with the
   // new reserves, grows the input slice and shrinks the head output slice,
   // so listActive shows the post-swap state. Best-effort mock; the real
@@ -235,7 +235,7 @@ async function seed(
     },
   });
 
-  // Pool (DEX-40/41 split): immutable config + Active state + two slices
+  // Pool: immutable config + Active state + two slices
   // per side (one big + one small, so the UI shows the slice count) + the
   // per-venue rules contract.
   const poolId = "BTC-USDC";

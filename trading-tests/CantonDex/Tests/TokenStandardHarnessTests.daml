@@ -1,34 +1,8 @@
--- Token-standard-style end-to-end test of the DEX matched-trade flow.
---
--- This mirrors the pattern used by `splice-token-standard-test-v2` to
--- exercise `TradingAppV2`:
---
---   1. Initialize a `RegistryApi`-implementing registry. Upstream uses
---      `AmuletRegistryV2`; we use the smaller `CantonDex.TokenStandardHarness.DexRegistry`
---      backed by our `MockRegistry`. The interface (RegistryApi) is the
---      same in both cases.
---
---   2. Have the venue create a `MatchedTrade` and request per-authorizer
---      allocations.
---
---   3. Each trader accepts their `TradeAllocationRequest` via the
---      `V2.AllocationRequest` interface and then composes the matching
---      `V2.AllocationFactory_Allocate` call to back the allocation with
---      their holdings — driven through `getAllocationFactory` on the
---      registry, the same way upstream's `WalletClientV2.acceptAllocationRequestV2`
---      drives it.
---
---   4. Venue groups allocations by admin and calls
---      `MatchedTrade_Settle`, which delegates to
---      `SettlementFactory_SettleBatch` obtained via the registry's
---      `getSettlementFactory`.
---
--- Verifies:
---   - the registry is exercised exactly through the upstream interface
---   - the venue's settlement batch settles successfully and returns
---     a `SettlementFactory_SettleBatchResult` for the admin
---   - the `MatchedTrade` and `TradeAllocationRequest` contracts are
---     archived after settlement
+-- Token-standard-style end-to-end test of the matched-trade flow, mirroring
+-- splice-token-standard-test-v2's TradingAppV2 exercise: drive a RegistryApi
+-- registry (our DexRegistry over MockRegistry) through MatchedTrade ->
+-- per-authorizer allocation accept -> MatchedTrade_Settle, and verify the
+-- batch settles and the trade + requests are archived.
 
 module CantonDex.Tests.TokenStandardHarnessTests where
 

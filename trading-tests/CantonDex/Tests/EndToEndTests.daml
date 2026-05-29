@@ -1,25 +1,16 @@
 module CantonDex.Tests.EndToEndTests where
 
--- End-to-end Daml Script tests exercising the full DEX workflows
--- against the MockRegistry. These verify the structural fixes:
+-- End-to-end Daml Script tests of the full DEX workflows against the
+-- MockRegistry:
 --
---   1. Pool reserves stay backed across init + add + swap + remove
---      (the prior bug overwrote allocation refs on add).
---   2. LP mint/burn flow through LPMintRequest/LPBurnRequest, not
---      direct supply mutation.
---   3. Order funding goes trader-signed → operator-bound → trader-
---      accepted, with trader's authority on the allocation.
---   4. TradeAllocationRequest accept actually returns (no abort).
+--   1. Pool reserves stay backed across init + add + swap + remove.
+--   2. LP mint/burn flow through LPMintRequest/LPBurnRequest.
+--   3. Order funding: trader-signed -> operator-bound -> trader-accepted.
+--   4. TradeAllocationRequest accept returns (no abort).
 --   5. RFQ accept produces a MatchedTrade with a derived PolicyReceipt.
 --
--- Notes on what the mock supports:
---
---   - Holdings are not modeled. The mock allocations carry no holding
---     CIDs. So tests pass empty `inputHoldingCids` to the factory; the
---     workflow correctness is what's verified, not the asset movement.
---   - Some flows (Pool_Swap end-to-end) need joint operator+trader
---     authority on the same transaction; the test uses `submitMulti`
---     to provide both.
+-- The mock doesn't model holdings (tests pass empty inputHoldingCids), and
+-- joint-authority flows (e.g. Pool_Swap) use submitMulti.
 
 import DA.Assert
 import DA.List (head, tail)
@@ -662,19 +653,13 @@ testMatchedTradeFullSettle = do
 -- `extraTransferLegSides` + `nextIterationFunding`, so the equivalent
 -- conservation test now hits the SettleBatch path.
 --
--- TODO(DEX-35 follow-up): rewrite this test using the iterated
--- SettleBatch pattern. The conservation invariant moved: the registry
--- enforces it inside `allocation_settleImpl` when the new
--- `extraTransferLegSides` + `nextIterationFunding` arguments arrive
--- together. The original Case A/B/D submitMustFail assertions and the
--- Case C in-budget success need to be re-expressed against
--- SettlementFactory_SettleBatch.
+-- Stubbed: the choice this exercised (Allocation_Adjust) was retired
+-- upstream; the conservation invariant now lives in allocation_settleImpl
+-- when extraTransferLegSides + nextIterationFunding arrive together, so the
+-- rewrite needs re-expressing against SettlementFactory_SettleBatch.
 
 testAllocationAdjustConservation : Script ()
 testAllocationAdjustConservation = pure ()
-  -- Body stubbed during the V2 release API migration. The choice
-  -- being tested (Allocation_Adjust) was retired upstream. See
-  -- DEX-35 for the rewrite ticket against the new SettleBatch path.
 
 -- 9. Pool_RemoveLiquidity is slice-local --------------------------------
 --
@@ -816,10 +801,10 @@ testPoolRemoveLiquiditySliceLocal = do
 
   pure ()
 
--- DEX-37: the DEX threads the registry choice context through to the
--- token-standard factory choice rather than hardcoding an empty one.
--- We prove it with a context-requiring mock factory: Pool_Initialize
--- succeeds only when the caller supplies the marker context.
+-- The DEX threads the registry choice context through to the token-standard
+-- factory choice rather than hardcoding an empty one, proven with a
+-- context-requiring mock factory: Pool_Initialize succeeds only when the
+-- caller supplies the marker context.
 
 mkPoolFixture
   : Party -> Party -> Party -> Bool

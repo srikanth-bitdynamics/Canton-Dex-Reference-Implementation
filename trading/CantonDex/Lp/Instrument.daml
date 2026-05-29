@@ -48,6 +48,8 @@ mkSpec admin authorizer leg = V2.AllocationSpecification with
   committed = False
   meta = emptyMetadata
 
+-- Mint: registrar authors the sender side, recipient the receiver side.
+-- Burn: holder authors the sender side, registrar the receiver side.
 mintSenderSpec : Party -> V2.TransferLeg -> V2.AllocationSpecification
 mintSenderSpec lpRegistrar leg = mkSpec lpRegistrar (mintAccount lpRegistrar) leg
 

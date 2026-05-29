@@ -44,7 +44,7 @@ export interface PoolSwapInput {
   swapperAllocationCid: ContractId<"Allocation">;
 }
 
-// === DvP liquidity =====================================================
+// === DvP liquidity ==========================================
 
 export interface PoolRequestAddLiquidityInput {
   poolCid: ContractId<"Pool">;
@@ -359,7 +359,7 @@ export class PoolService {
     );
   }
 
-  // === DvP liquidity ====================================================
+  // === DvP liquidity ==========================================
 
   private requireDvpRules(pool: Pool): ContractId<"LpDvpRules"> {
     if (!pool.lpDvpRulesCid) {

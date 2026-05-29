@@ -128,7 +128,7 @@ export class AdminService {
     const lpInstrumentId = { admin: input.lpRegistrar, id: input.lpInstrumentId };
     const poolId = `${input.baseInstrumentId}-${input.quoteInstrumentId}`;
 
-    // Create the pool config, its initial state, and the rules contracts.
+    // Create the pool config, initial state, and rules contracts.
     const poolCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"Pool">>({
         actAs: [this.operatorParty],

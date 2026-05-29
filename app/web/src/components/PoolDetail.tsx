@@ -57,7 +57,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   // amount covers `target`. The wallet locks exactly these in the DvP
   // allocation; passing ALL holdings would over-lock and — since the
   // settle consumes every locked holding — over-burn / over-deposit a
-  // fragmented position on a partial action (DEX-54 review). Best-effort:
+  // fragmented position on a partial action. Best-effort:
   // returns the covering prefix (or all unlocked if it can't cover, so the
   // on-ledger allocate fails loudly rather than silently under-funding).
   const coveringHoldingCids = (s: string, target: number): string[] => {

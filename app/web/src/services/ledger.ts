@@ -20,7 +20,7 @@ import type {
   Pool as PoolType,
 } from '@/types/contracts';
 
-// Shapes of the operator-backend DvP /request responses (DEX-53/54).
+// Shapes of the operator-backend DvP /request responses.
 interface RequestAddResult {
   requestCid: string;
   lpAmount: string;
@@ -224,7 +224,7 @@ export const ledger = {
       method: 'POST',
     }),
 
-  // DvP add (DEX-54), two calls around one wallet submission:
+  // DvP add, two calls around one wallet submission:
   //   1. operator creates the LiquidityAllocationRequest (/request);
   //   2. the trader's wallet authors the 3 allocations the request names;
   //   3. operator + lpRegistrar settle with the created cids (/settle).
@@ -287,7 +287,7 @@ export const ledger = {
     return { lpTokensMinted: Number(req.lpAmount), primaryCid: req.requestCid };
   },
 
-  // DvP remove (DEX-54), symmetric to add: the operator derives the slice
+  // DvP remove, symmetric to add: the operator derives the slice
   // draw + creates the request; the trader's wallet authors the base/quote
   // receipts + the LP burn-sender (locking `holderLpHoldingCid`); the
   // operator + lpRegistrar settle, delivering base+quote to the holder and

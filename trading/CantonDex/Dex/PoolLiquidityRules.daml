@@ -56,7 +56,12 @@ mkOperatorReceiver operator admin settlement leg requestedAt extraArgs =
          authorizer = poolAccount
          transferLegSides = Utils.legsToSides poolAccount [leg]
          settlementDeadline = None
-         nextIterationFunding = None
+         -- Some(empty) (not None) enables iterated settlement with zero initial
+         -- funding: the standard `validateNextIterationArgs` gates on isSome, so
+         -- this lets the settle roll the incoming deposit credits forward into
+         -- the next-iteration (pool slice) allocation. Conforms to a reference
+         -- token-standard registry (DEX-74); None would be rejected there.
+         nextIterationFunding = Some TextMap.empty
          committed = True
          meta = emptyMetadata
        requestedAt

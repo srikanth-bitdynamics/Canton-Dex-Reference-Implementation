@@ -29,8 +29,7 @@ in forks.
 ```
 DexPair                  pair listing, fee model, optional public observers
 Pool                     constant-product pool, slice-local reserves
-LPTokenPolicy            LP instrument supply ledger, accept-mint/burn gates
-LPMintRequest            operator-issued; recipient + lpRegistrar jointly accept (first-pool funding)
+LPTokenPolicy            LP instrument supply ledger, record-mint/burn policy
 LiquidityAllocationRequest  operator-issued; carries the add/remove-liquidity DvP allocation request
 Order                    resting limit order backed by V2.Allocation
 OrderAllocationRequest   trader-observed allocation request (V2 interface)

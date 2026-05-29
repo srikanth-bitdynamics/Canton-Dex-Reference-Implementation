@@ -3,7 +3,7 @@ module CantonDex.Tests.EndToEndTests where
 -- End-to-end Daml Script tests of the full DEX workflows against the
 -- MockRegistry:
 --
---   1. Pool init keeps reserves backed; LP mint via LPMintRequest.
+--   1. Pool funding keeps reserves backed; LP supply records via DvP add.
 --   2. Order funding: trader-signed -> operator-bound -> trader-accepted.
 --   3. TradeAllocationRequest accept returns (no abort).
 --   4. RFQ accept produces a MatchedTrade with a derived PolicyReceipt.
@@ -37,20 +37,28 @@ import CantonDex.Dex.Pool qualified as Pool
 import CantonDex.Dex.PoolState qualified as PState
 import CantonDex.Dex.PoolSlice qualified as PSlice
 import CantonDex.Dex.PoolRules qualified as PRules
+import CantonDex.Dex.LpDvpRules qualified as Dvp
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Dex.Rfq qualified as Rfq
 import CantonDex.Trading.Utils qualified as Utils
 import CantonDex.Trading.WorkflowConstructors qualified as WC
 import CantonDex.Testing.MockRegistry qualified as Mock
 
--- Create the split pool contracts (config + Unfunded state + rules) the
--- operator can then initialize via PoolRules. Returns everything keyed by
--- the contract ids the rules choices need.
+-- Create the split pool contracts the operator uses for swap + DvP
+-- liquidity, plus the LP policy.
 setupPool
   : Party -> Party -> Party
-  -> Script (Pool.PoolId, ContractId Pool.Pool, ContractId PState.PoolState, ContractId PRules.PoolRules)
+  -> Script
+       ( Pool.PoolId
+       , ContractId Pool.Pool
+       , ContractId PState.PoolState
+       , ContractId PRules.PoolRules
+       , ContractId Dvp.LpDvpRules
+       , ContractId LP.LPTokenPolicy
+       )
 setupPool operator lpRegistrar admin = do
   let poolId = "BTC-USDC"
+      lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
   poolCid <- submit operator $ createCmd Pool.Pool with
     poolId
     operator
@@ -58,7 +66,7 @@ setupPool operator lpRegistrar admin = do
     admin
     baseInstrumentId = "BTC"
     quoteInstrumentId = "USDC"
-    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
+    lpInstrumentId
     feeBps = 30
     operatorFeeBps = 0
   stateCid <- submit operator $ createCmd PState.PoolState with
@@ -70,7 +78,18 @@ setupPool operator lpRegistrar admin = do
     totalLpSupply = 0.0
     publicReaders = []
   rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
-  pure (poolId, poolCid, stateCid, rulesCid)
+  dvpCid <- submitMulti [operator, lpRegistrar] [] $
+    createCmd Dvp.LpDvpRules with operator; lpRegistrar
+  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
+    lpRegistrar
+    operator
+    lpInstrumentId
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    poolCid = coerceContractId poolCid
+    totalSupply = 0.0
+    active = True
+  pure (poolId, poolCid, stateCid, rulesCid, dvpCid, policyCid)
 
 setupRegistries : Party -> [Party] -> Script ( ContractId V2.AllocationFactory
                                               , ContractId V2.SettlementFactory
@@ -80,7 +99,68 @@ setupRegistries admin users = do
   settleCid <- submit admin $ createCmd Mock.MockSettlementFactory with admin; users; requireContext = False
   pure (toInterfaceContractId factoryCid, toInterfaceContractId settleCid)
 
--- 1. Pool init + LP mint keeps reserves backed -------------------------
+dvpFundPool
+  : Party
+  -> Party
+  -> ContractId V2.AllocationFactory
+  -> ContractId V2.SettlementFactory
+  -> Pool.PoolId
+  -> ContractId Pool.Pool
+  -> ContractId PState.PoolState
+  -> ContractId LP.LPTokenPolicy
+  -> ContractId Dvp.LpDvpRules
+  -> Party
+  -> Decimal
+  -> Decimal
+  -> Time
+  -> ExtraArgs
+  -> Script Dvp.LpDvpRules_SettleAddResult
+dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid policyCid dvpCid recipient baseAmount quoteAmount now extraArgs = do
+  let lpAmount = PRules.sqrtDecimal (baseAmount * quoteAmount)
+  reqCid <- submit operator $ exerciseCmd dvpCid Dvp.LpDvpRules_RequestAddLiquidity with
+    poolCid; recipient; baseAmount; quoteAmount; lpAmount; requestedAt = now; settleAt = None
+  Some req <- queryContractId operator reqCid
+  let baseSpec = head req.allocations
+      quoteSpec = head (tail req.allocations)
+      receiptSpec = head (tail (tail req.allocations))
+      mkOne spec = do
+        res <- submit recipient $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+          settlement = req.settlement
+          allocation = spec
+          requestedAt = now
+          inputHoldingCids = []
+          actors = [recipient]
+          extraArgs
+        case res.output of
+          V2.AllocationInstructionResult_Completed cid -> pure cid
+          _ -> abort "Mock factory should complete immediately"
+  baseAllocCid <- mkOne baseSpec
+  quoteAllocCid <- mkOne quoteSpec
+  receiptAllocCid <- mkOne receiptSpec
+  submitMulti [operator, lpRegistrar] [] $
+    exerciseCmd dvpCid Dvp.LpDvpRules_SettleAddLiquidity with
+      expectedPoolId = poolId
+      poolCid
+      poolStateCid = stateCid
+      lpPolicyCid = policyCid
+      requestCid = reqCid
+      recipient
+      lpBaseDepositCid = baseAllocCid
+      lpQuoteDepositCid = quoteAllocCid
+      lpReceiptCid = receiptAllocCid
+      baseFactoryCid = factoryCid
+      quoteFactoryCid = factoryCid
+      lpFactoryCid = factoryCid
+      baseQuoteSettleCid = settleCid
+      lpSettleCid = settleCid
+      baseAmount
+      quoteAmount
+      minLpTokens = 0.0
+      knownTotalLpSupply = 0.0
+      requestedAt = now
+      extraArgs
+
+-- 1. DvP add on an Unfunded pool keeps reserves backed ------------------
 
 testPoolFullLifecycle : Script ()
 testPoolFullLifecycle = do
@@ -91,59 +171,32 @@ testPoolFullLifecycle = do
   now <- getTime
 
   (factoryCid, _settleCid) <- setupRegistries admin [operator, lpRegistrar, alice]
-
-  -- Build the split pool the operator can initialize.
-  (poolId, poolCid, stateCid, rulesCid) <- setupPool operator lpRegistrar admin
-
-  -- LP policy must exist BEFORE PoolRules_Initialize so the mint request
-  -- can reference it (the rules choice threads the policy cid through).
-  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
-    lpRegistrar
+  (poolId, poolCid, stateCid, _rulesCid, dvpCid, policyCid) <- setupPool operator lpRegistrar admin
+  initRes <- dvpFundPool
     operator
-    lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
-    baseInstrumentId = "BTC"
-    quoteInstrumentId = "USDC"
-    poolCid = coerceContractId poolCid
-    totalSupply = 0.0
-    active = True
-
-  -- Initialize: 10 BTC + 200,000 USDC. Mock factory returns immediate
-  -- completed allocations. LPMintRequest is emitted; one slice per side.
-  initRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
-    expectedPoolId = poolId
+    lpRegistrar
+    factoryCid
+    _settleCid
+    poolId
     poolCid
-    poolStateCid = stateCid
-    recipient = alice
-    baseFactoryCid = factoryCid
-    quoteFactoryCid = factoryCid
-    baseHoldingCids = []
-    quoteHoldingCids = []
-    baseAmount = 10.0
-    quoteAmount = 200000.0
-    lpPolicyCid = policyCid
-    extraArgs = emptyExtraArgs
-    requestedAt = now
+    stateCid
+    policyCid
+    dvpCid
+    alice
+    10.0
+    200000.0
+    now
+    emptyExtraArgs
 
-  Some state1 <- queryContractId operator initRes.poolStateCid
+  Some state <- queryContractId operator initRes.poolStateCid
   Some _baseSlice <- queryContractId operator initRes.baseSliceCid
   Some _quoteSlice <- queryContractId operator initRes.quoteSliceCid
-  Some _mintReq <- queryContractId operator initRes.lpMintRequestCid
-  assertMsg "LP minted is positive" (initRes.lpTokensMinted > 0.0)
-  state1.status === Pool.PS_Active
-  state1.reserves.baseAmount === 10.0
-  state1.reserves.quoteAmount === 200000.0
-
-  -- V2-standard mint: recipient (alice) + lpRegistrar jointly accept.
-  acceptRes <- submitMulti [alice, lpRegistrar] [] $
-    exerciseCmd initRes.lpMintRequestCid LP.LPMintRequest_AcceptAndMint
-  Some _ <- queryContractId lpRegistrar acceptRes.policyCid
-  state2 <- submitMulti [lpRegistrar] [operator] $
-    exerciseCmd initRes.poolStateCid PState.PoolState_RecordLPSupply with
-      newSupply = initRes.lpTokensMinted
-
-  -- The registrar's recorded supply matches what was minted.
-  Some state2View <- queryContractId operator state2
-  state2View.totalLpSupply === initRes.lpTokensMinted
+  let expectedLp = PRules.sqrtDecimal 2000000.0
+  initRes.lpTokensMinted === expectedLp
+  state.status === Pool.PS_Active
+  state.reserves.baseAmount === 10.0
+  state.reserves.quoteAmount === 200000.0
+  state.totalLpSupply === expectedLp
 
   pure ()
 
@@ -373,26 +426,23 @@ testPoolSwapEndToEnd = do
 
   (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
 
-  -- Initialize pool with 10 BTC + 200k USDC
-  (poolId, poolCid, stateCid, rulesCid) <- setupPool operator lpRegistrar admin
-  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
-    lpRegistrar; operator; lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
-    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
-    poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
-  initRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
-    expectedPoolId = poolId
+  -- Fund the pool through the live DvP add path.
+  (poolId, poolCid, stateCid, rulesCid, dvpCid, policyCid) <- setupPool operator lpRegistrar admin
+  initRes <- dvpFundPool
+    operator
+    lpRegistrar
+    factoryCid
+    settleCid
+    poolId
     poolCid
-    poolStateCid = stateCid
-    recipient = alice
-    baseFactoryCid = factoryCid
-    quoteFactoryCid = factoryCid
-    baseHoldingCids = []
-    quoteHoldingCids = []
-    baseAmount = 10.0
-    quoteAmount = 200000.0
-    lpPolicyCid = policyCid
-    extraArgs = emptyExtraArgs
-    requestedAt = now
+    stateCid
+    policyCid
+    dvpCid
+    alice
+    10.0
+    200000.0
+    now
+    emptyExtraArgs
 
   -- Bob creates a prefunded swap allocation (100 USDC -> BTC).
   -- Settlement reference matches the pool's so the legs can be settled.
@@ -565,16 +615,26 @@ testMatchedTradeFullSettle = do
 testAllocationAdjustConservation : Script ()
 testAllocationAdjustConservation = pure ()
 
--- The DEX threads the registry choice context through to the token-standard
--- factory choice rather than hardcoding an empty one, proven with a
--- context-requiring mock factory: Pool_Initialize succeeds only when the
--- caller supplies the marker context.
+-- The DEX threads registry choice context through to the token-standard
+-- factory choices rather than hardcoding an empty one, proven with a
+-- context-requiring mock factory: DvP add succeeds only when the caller
+-- supplies the marker context.
 
 mkPoolFixture
   : Party -> Party -> Party -> Bool
-  -> Script (Pool.PoolId, ContractId Pool.Pool, ContractId PState.PoolState, ContractId PRules.PoolRules, ContractId LP.LPTokenPolicy, ContractId V2.AllocationFactory)
+  -> Script
+       ( Pool.PoolId
+       , ContractId Pool.Pool
+       , ContractId PState.PoolState
+       , ContractId Dvp.LpDvpRules
+       , ContractId LP.LPTokenPolicy
+       , ContractId V2.AllocationFactory
+       , ContractId V2.SettlementFactory
+       )
 mkPoolFixture operator lpRegistrar admin requireContext = do
   factory <- submit admin $ createCmd Mock.MockAllocationFactory with
+    admin; users = [operator, lpRegistrar]; requireContext
+  settle <- submit admin $ createCmd Mock.MockSettlementFactory with
     admin; users = [operator, lpRegistrar]; requireContext
   let lpId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
       poolId = "BTC-USDC"
@@ -587,12 +647,13 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
     status = Pool.PS_Unfunded
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
     totalLpSupply = 0.0; publicReaders = []
-  rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
+  dvpCid <- submitMulti [operator, lpRegistrar] [] $
+    createCmd Dvp.LpDvpRules with operator; lpRegistrar
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = lpId
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
     poolCid = coerceContractId poolCid; totalSupply = 0.0; active = True
-  pure (poolId, poolCid, stateCid, rulesCid, policyCid, toInterfaceContractId factory)
+  pure (poolId, poolCid, stateCid, dvpCid, policyCid, toInterfaceContractId factory, toInterfaceContractId settle)
 
 markerContext : ExtraArgs
 markerContext = ExtraArgs with
@@ -600,40 +661,35 @@ markerContext = ExtraArgs with
     values = TextMap.fromList [(Mock.dexChoiceContextKey, AV_Bool True)]
   meta = emptyMetadata
 
-testPoolInitializeThreadsChoiceContext : Script ()
-testPoolInitializeThreadsChoiceContext = do
+testDvpAddThreadsChoiceContext : Script ()
+testDvpAddThreadsChoiceContext = do
   operator <- allocateParty "operator"
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   now <- getTime
-  (poolId, poolCid, stateCid, rulesCid, policyCid, factoryCid) <- mkPoolFixture operator lpRegistrar admin True
-  -- With the marker context the context-requiring factory accepts.
-  initRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
-    expectedPoolId = poolId
-    poolCid; poolStateCid = stateCid
-    recipient = lpRegistrar
-    baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid
-    baseHoldingCids = []; quoteHoldingCids = []
-    baseAmount = 10.0; quoteAmount = 200000.0
-    lpPolicyCid = policyCid; requestedAt = now
-    extraArgs = markerContext
-  Some state <- queryContractId operator initRes.poolStateCid
+  (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  res <- dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid policyCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
+  Some state <- queryContractId operator res.poolStateCid
   state.status === Pool.PS_Active
 
-testPoolInitializeRejectsEmptyContext : Script ()
-testPoolInitializeRejectsEmptyContext = do
+testDvpAddRejectsEmptyContext : Script ()
+testDvpAddRejectsEmptyContext = do
   operator <- allocateParty "operator"
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   now <- getTime
-  (poolId, poolCid, stateCid, rulesCid, policyCid, factoryCid) <- mkPoolFixture operator lpRegistrar admin True
-  -- Empty context against the context-requiring factory must fail.
-  submitMustFail operator $ exerciseCmd rulesCid PRules.PoolRules_Initialize with
-    expectedPoolId = poolId
-    poolCid; poolStateCid = stateCid
-    recipient = lpRegistrar
-    baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid
-    baseHoldingCids = []; quoteHoldingCids = []
+  (_poolId, poolCid, _stateCid, dvpCid, _policyCid, factoryCid, _settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  reqCid <- submit operator $ exerciseCmd dvpCid Dvp.LpDvpRules_RequestAddLiquidity with
+    poolCid; recipient = lpRegistrar
     baseAmount = 10.0; quoteAmount = 200000.0
-    lpPolicyCid = policyCid; requestedAt = now
-    extraArgs = emptyExtraArgs
+    lpAmount = PRules.sqrtDecimal 2000000.0
+    requestedAt = now; settleAt = None
+  Some req <- queryContractId operator reqCid
+  submitMustFail lpRegistrar $
+    exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+      settlement = req.settlement
+      allocation = head req.allocations
+      requestedAt = now
+      inputHoldingCids = []
+      actors = [lpRegistrar]
+      extraArgs = emptyExtraArgs

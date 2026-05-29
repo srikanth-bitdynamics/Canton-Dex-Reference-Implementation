@@ -13,19 +13,9 @@ import Splice.Api.Token.MetadataV1
 import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState
 import CantonDex.Dex.PoolSlice
-import CantonDex.Dex.LPToken qualified as LP
 import CantonDex.Trading.Utils qualified as Utils
-import CantonDex.Trading.WorkflowConstructors qualified as WC
 
 -- Results -----------------------------------------------------------------
-
-data PoolRules_InitializeResult = PoolRules_InitializeResult with
-    poolStateCid : ContractId PoolState
-    baseSliceCid : ContractId PoolSlice
-    quoteSliceCid : ContractId PoolSlice
-    lpMintRequestCid : ContractId LP.LPMintRequest
-    lpTokensMinted : Decimal
-  deriving (Eq, Show)
 
 data PoolRules_SwapResult = PoolRules_SwapResult with
     poolStateCid : ContractId PoolState
@@ -120,70 +110,6 @@ template PoolRules with
     operator : Party
   where
     signatory operator
-
-    -- Fund an Unfunded pool: lock the initial base + quote as committed
-    -- allocations, create one slice per side, mint initial LP, go Active.
-    nonconsuming choice PoolRules_Initialize : PoolRules_InitializeResult
-      with
-        expectedPoolId : PoolId
-        poolCid : ContractId Pool
-        poolStateCid : ContractId PoolState
-        recipient : Party
-        baseFactoryCid : ContractId V2.AllocationFactory
-        quoteFactoryCid : ContractId V2.AllocationFactory
-        baseHoldingCids : [ContractId V2.Holding]
-        quoteHoldingCids : [ContractId V2.Holding]
-        baseAmount : Decimal
-        quoteAmount : Decimal
-        requestedAt : Time
-        lpPolicyCid : ContractId LP.LPTokenPolicy
-        extraArgs : ExtraArgs
-      controller operator
-      do
-        (pool, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
-        assertMsg "Pool must be Unfunded to initialize" (state.status == PS_Unfunded)
-        assertMsg "Base amount must be positive" (baseAmount > 0.0)
-        assertMsg "Quote amount must be positive" (quoteAmount > 0.0)
-
-        let poolAccount = Utils.basicAccount operator
-            settlement = poolSettlement poolCid operator
-            baseFunding = TextMap.fromList [(pool.baseInstrumentId, baseAmount)]
-            quoteFunding = TextMap.fromList [(pool.quoteInstrumentId, quoteAmount)]
-            baseAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
-              pool.admin poolAccount settlement None baseFunding requestedAt baseHoldingCids [operator] extraArgs
-            quoteAllocArg = WC.mkCommittedPoolAllocationFactoryAllocate
-              pool.admin poolAccount settlement None quoteFunding requestedAt quoteHoldingCids [operator] extraArgs
-
-        baseAllocCid <- exercise baseFactoryCid baseAllocArg >>= extractCompleted
-        quoteAllocCid <- exercise quoteFactoryCid quoteAllocArg >>= extractCompleted
-
-        let initialLp = sqrtDecimal (baseAmount * quoteAmount)
-        lpMintRequestCid <- create LP.LPMintRequest with
-          operator
-          lpRegistrar = pool.lpRegistrar
-          lpInstrumentId = pool.lpInstrumentId
-          recipient
-          amount = initialLp
-          policyCid = lpPolicyCid
-
-        baseSliceCid <- create PoolSlice with
-          poolId = pool.poolId; operator; side = BaseSide
-          allocationCid = baseAllocCid; amount = baseAmount
-        quoteSliceCid <- create PoolSlice with
-          poolId = pool.poolId; operator; side = QuoteSide
-          allocationCid = quoteAllocCid; amount = quoteAmount
-
-        archive poolStateCid
-        newStateCid <- create state with
-          status = PS_Active
-          reserves = PoolReserves with baseAmount; quoteAmount
-
-        pure PoolRules_InitializeResult with
-          poolStateCid = newStateCid
-          baseSliceCid
-          quoteSliceCid
-          lpMintRequestCid
-          lpTokensMinted = initialLp
 
     -- Constant-product swap (multi-slice): prices against global reserves,
     -- sources amountOut from an ordered output-slice prefix (draining full

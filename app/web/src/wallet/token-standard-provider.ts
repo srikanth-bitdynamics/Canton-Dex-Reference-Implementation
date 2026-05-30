@@ -10,7 +10,7 @@
 //
 //   place-order             →  CreateCommand OrderFundingRequest
 //   accept-allocation-request → AllocationFactory_Allocate + AllocationRequest_Accept
-//   request-swap            →  AllocationFactory_Allocate + CreateCommand SwapRequest
+//   request-swap            →  AllocationFactory_Allocate (operator settles via PoolRules_Swap)
 //   add-liquidity           →  3× AllocationFactory_Allocate from a LiquidityAllocationRequest
 //   remove-liquidity        →  3× AllocationFactory_Allocate from a LiquidityAllocationRequest
 //   post-rfq-quote          →  CreateCommand RfqQuote

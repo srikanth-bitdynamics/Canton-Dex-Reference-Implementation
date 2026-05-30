@@ -148,7 +148,7 @@ async function main() {
     const tx = await submit([cfg.admin], `${RUN}-reg`, [{
       CreateCommand: {
         templateId: tid("CantonDex.Registry.V2:Registry"),
-        createArgument: { admin: cfg.admin, users: [cfg.operator, cfg.trader] },
+        createArguments: { admin: cfg.admin, users: [cfg.operator, cfg.trader] },
       },
     }]);
     return creates(tx, "CantonDex.Registry.V2:Registry")[0]!.contractId;
@@ -196,7 +196,7 @@ async function main() {
     const tx = await submit([cfg.operator], `${RUN}-pool`, [{
       CreateCommand: {
         templateId: tid("CantonDex.Dex.Pool:Pool"),
-        createArgument: {
+        createArguments: {
           poolId, operator: cfg.operator, lpRegistrar, admin: cfg.admin,
           baseInstrumentId: BASE, quoteInstrumentId: QUOTE, lpInstrumentId,
           feeBps: "30", operatorFeeBps: "0",
@@ -209,7 +209,7 @@ async function main() {
     const tx = await submit([cfg.operator], `${RUN}-state`, [{
       CreateCommand: {
         templateId: tid("CantonDex.Dex.PoolState:PoolState"),
-        createArgument: {
+        createArguments: {
           poolId, operator: cfg.operator, lpRegistrar, status: "PS_Unfunded",
           reserves: { baseAmount: "0.0", quoteAmount: "0.0" }, totalLpSupply: "0.0", publicReaders: [],
         },
@@ -219,14 +219,14 @@ async function main() {
   });
   await step("create PoolRules", async () => {
     await submit([cfg.operator], `${RUN}-rules`, [{
-      CreateCommand: { templateId: tid("CantonDex.Dex.PoolRules:PoolRules"), createArgument: { operator: cfg.operator } },
+      CreateCommand: { templateId: tid("CantonDex.Dex.PoolRules:PoolRules"), createArguments: { operator: cfg.operator } },
     }]);
   });
   const dvpCid = await step("create PoolLiquidityRules", async () => {
     const tx = await submit([cfg.operator, lpRegistrar], `${RUN}-dvp`, [{
       CreateCommand: {
         templateId: tid("CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules"),
-        createArgument: { operator: cfg.operator, lpRegistrar },
+        createArguments: { operator: cfg.operator, lpRegistrar },
       },
     }]);
     return creates(tx, "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules")[0]!.contractId;
@@ -235,7 +235,7 @@ async function main() {
     const tx = await submit([lpRegistrar], `${RUN}-policy`, [{
       CreateCommand: {
         templateId: tid("CantonDex.Lp.Policy:LPTokenPolicy"),
-        createArgument: { lpRegistrar, operator: cfg.operator, lpInstrumentId, totalSupply: "0.0", active: true },
+        createArguments: { lpRegistrar, operator: cfg.operator, lpInstrumentId, totalSupply: "0.0", active: true },
       },
     }]);
     return creates(tx, "CantonDex.Lp.Policy:LPTokenPolicy")[0]!.contractId;

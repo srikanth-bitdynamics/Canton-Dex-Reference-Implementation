@@ -40,6 +40,10 @@ const cfg = {
   operator: req("CANTON_OPERATOR"),
   admin: req("CANTON_ADMIN"),
   trader: req("CANTON_TRADER"),
+  // AllocationFactory_Allocate is a token-standard INTERFACE choice; it must
+  // be exercised against the interface id (alloc-instruction-v2 package),
+  // not the concrete Registry template.
+  pkgAllocInstr: req("CANTON_ALLOC_INSTR_PACKAGE_ID"),
 };
 const lpRegistrar = cfg.admin; // self-registry: admin issues base/quote AND LP
 
@@ -123,7 +127,7 @@ async function authorAlloc(
 ): Promise<string> {
   const tx = await submit([cfg.trader], `${RUN}-author-${label}`, [{
     ExerciseCommand: {
-      templateId: tid("CantonDex.Registry.V2:Registry"),
+      templateId: `${cfg.pkgAllocInstr}:Splice.Api.Token.AllocationInstructionV2:AllocationFactory`,
       contractId: regCid,
       choice: "AllocationFactory_Allocate",
       choiceArgument: {

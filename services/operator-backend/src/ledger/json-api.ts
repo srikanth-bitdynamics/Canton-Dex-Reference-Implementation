@@ -173,44 +173,19 @@ export class JsonApiLedger implements LedgerSubmitter {
 
   // === envelope helpers ====================================================
 
-  // Canton 3.x JSON Ledger API encodes Daml `Int` (Int64) as a JSON
-  // string, not a number. The rest of the backend builds argument
-  // objects with plain JS numbers for Int fields (e.g. feeBps), so
-  // coerce every integer-valued number to a string on the wire.
-  // Non-integer numbers are left alone (Decimal already travels as a
-  // string in this codebase; a stray float would not be a valid Int64
-  // anyway). Recurses through objects and arrays.
-  private static encodeInt64(value: unknown): unknown {
-    if (typeof value === "number") {
-      return Number.isInteger(value) ? String(value) : value;
-    }
-    if (Array.isArray(value)) {
-      return value.map((v) => JsonApiLedger.encodeInt64(v));
-    }
-    if (value !== null && typeof value === "object") {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value)) {
-        out[k] = JsonApiLedger.encodeInt64(v);
-      }
-      return out;
-    }
-    return value;
-  }
-
   private toJsonApi(req: SubmitRequest): unknown {
     const cmd = req.command;
     const tid = (id: string) => this.qualifyTemplateId(id) ?? id;
-    const enc = JsonApiLedger.encodeInt64;
     const command =
       cmd.kind === "create"
-        ? { CreateCommand: { templateId: tid(cmd.templateId), createArguments: enc(cmd.argument) } }
+        ? { CreateCommand: { templateId: tid(cmd.templateId), createArguments: cmd.argument } }
         : cmd.kind === "exercise"
           ? {
               ExerciseCommand: {
                 templateId: tid(cmd.templateId),
                 contractId: cmd.contractId,
                 choice: cmd.choice,
-                choiceArgument: enc(cmd.argument),
+                choiceArgument: cmd.argument,
               },
             }
           : cmd.kind === "exerciseInterface"
@@ -219,15 +194,15 @@ export class JsonApiLedger implements LedgerSubmitter {
                   interfaceId: tid(cmd.interfaceId),
                   contractId: cmd.contractId,
                   choice: cmd.choice,
-                  choiceArgument: enc(cmd.argument),
+                  choiceArgument: cmd.argument,
                 },
               }
             : {
                 CreateAndExerciseCommand: {
                   templateId: tid(cmd.templateId),
-                  createArguments: enc(cmd.argument),
+                  createArguments: cmd.argument,
                   choice: cmd.choice,
-                  choiceArgument: enc(cmd.choiceArgument),
+                  choiceArgument: cmd.choiceArgument,
                 },
               };
     // Canton 3 JSON API uses `userId` not `applicationId`; keep both
@@ -307,10 +282,10 @@ export class JsonApiLedger implements LedgerSubmitter {
     }
   }
 
-  private async extractResult<R>(
+  private extractResult<R>(
     body: JsonApiSubmitResponse,
     req: SubmitRequest,
-  ): Promise<R> {
+  ): R {
     // For exercise commands, JSON API returns the choice result under
     // `events[0].exercised.exerciseResult` (Daml-LF JSON form). For
     // create commands, returns the cid.
@@ -320,68 +295,17 @@ export class JsonApiLedger implements LedgerSubmitter {
         (e: { created?: unknown }) => e.created !== undefined,
       ) as { created?: { contractId: string } } | undefined;
       if (!created?.created) {
-        if (body.updateId) {
-          const tx = await this.fetchTransactionTree(body.updateId, req);
-          const createdEvent = this.firstCreatedTreeEvent(tx);
-          if (createdEvent) {
-            return createdEvent.contractId as R;
-          }
-        }
         throw new LedgerError("validation", "no Created event", false);
       }
-      return Promise.resolve(created.created.contractId as R);
+      return created.created.contractId as R;
     }
     const exercised = body.events?.find(
       (e: { exercised?: unknown }) => e.exercised !== undefined,
     ) as { exercised?: { exerciseResult: unknown } } | undefined;
     if (!exercised?.exercised) {
-      if (body.updateId) {
-        const tx = await this.fetchTransactionTree(body.updateId, req);
-        const exercisedEvent = this.firstExercisedTreeEvent(tx);
-        if (exercisedEvent) {
-          return exercisedEvent.exerciseResult as R;
-        }
-      }
       throw new LedgerError("validation", "no Exercised event", false);
     }
-    return Promise.resolve(exercised.exercised.exerciseResult as R);
-  }
-
-  private async fetchTransactionTree(
-    updateId: string,
-    req: SubmitRequest,
-  ): Promise<JsonApiTransactionTree> {
-    const url = new URL(
-      `/v2/updates/transaction-tree-by-id/${encodeURIComponent(updateId)}`,
-      this.config.baseUrl,
-    );
-    for (const party of new Set([...req.actAs, ...(req.readAs ?? [])])) {
-      url.searchParams.append("parties", party);
-    }
-    const res = await this.fetchImpl(url.toString(), { headers: this.headers() });
-    if (!res.ok) {
-      throw await this.errorFor(res);
-    }
-    const body = (await res.json()) as JsonApiTransactionTreeResponse;
-    return body.transaction;
-  }
-
-  private firstCreatedTreeEvent(
-    tx: JsonApiTransactionTree,
-  ): JsonApiCreatedTreeEvent["value"] | undefined {
-    return Object.values(tx.eventsById)
-      .map((event) => event.CreatedTreeEvent?.value)
-      .filter((event): event is JsonApiCreatedTreeEvent["value"] => event !== undefined)
-      .sort((a, b) => a.nodeId - b.nodeId)[0];
-  }
-
-  private firstExercisedTreeEvent(
-    tx: JsonApiTransactionTree,
-  ): JsonApiExercisedTreeEvent["value"] | undefined {
-    return Object.values(tx.eventsById)
-      .map((event) => event.ExercisedTreeEvent?.value)
-      .filter((event): event is JsonApiExercisedTreeEvent["value"] => event !== undefined)
-      .sort((a, b) => a.nodeId - b.nodeId)[0];
+    return exercised.exercised.exerciseResult as R;
   }
 
   private async errorFor(res: Response): Promise<LedgerError> {
@@ -412,35 +336,6 @@ interface JsonApiSubmitResponse {
     archived?: { contractId: string };
   }>;
   transactionId?: string;
-  updateId?: string;
-  completionOffset?: number;
-}
-
-interface JsonApiTransactionTreeResponse {
-  transaction: JsonApiTransactionTree;
-}
-
-interface JsonApiTransactionTree {
-  eventsById: Record<string, JsonApiTreeEvent>;
-}
-
-interface JsonApiTreeEvent {
-  CreatedTreeEvent?: JsonApiCreatedTreeEvent;
-  ExercisedTreeEvent?: JsonApiExercisedTreeEvent;
-}
-
-interface JsonApiCreatedTreeEvent {
-  value: {
-    nodeId: number;
-    contractId: string;
-  };
-}
-
-interface JsonApiExercisedTreeEvent {
-  value: {
-    nodeId: number;
-    exerciseResult: unknown;
-  };
 }
 
 interface AcsEntry {

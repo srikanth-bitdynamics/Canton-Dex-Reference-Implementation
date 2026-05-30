@@ -60,8 +60,8 @@ mkOperatorReceiver operator admin settlement leg requestedAt extraArgs =
          -- Some(empty) (not None) enables iterated settlement with zero initial
          -- funding: the standard `validateNextIterationArgs` gates on isSome, so
          -- this lets the settle roll the incoming deposit credits forward into
-         -- the next-iteration (pool slice) allocation. Conforms to a reference
-         -- token-standard registry (DEX-74); None would be rejected there.
+         -- the next-iteration (pool slice) allocation. A reference token-standard
+         -- registry rejects None here.
          nextIterationFunding = Some TextMap.empty
          committed = True
          meta = emptyMetadata
@@ -160,7 +160,7 @@ removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount =
      , dvpSpec pool.lpRegistrar holderAcct [burnLeg] True ]
 
 -- `SideDelivery` + `buildSideDelivery` moved to `CantonDex.Dex.PoolExecution`
--- (shared settlement-assembly, DEX-77); used below as `PE.buildSideDelivery`.
+-- (shared settlement-assembly); used below as `PE.buildSideDelivery`.
 
 template PoolLiquidityRules with
     operator : Party
@@ -232,7 +232,7 @@ template PoolLiquidityRules with
         requestedAt : Time
         -- Split-admin DvP: the base/quote batch settles under pool.admin and
         -- the LP mint/burn batch under pool.lpRegistrar, so each authority
-        -- boundary carries its own registry choice context (DEX-73).
+        -- boundary carries its own registry choice context.
         poolAdminExtraArgs : ExtraArgs
         lpRegistrarExtraArgs : ExtraArgs
       controller operator, lpRegistrar
@@ -375,7 +375,7 @@ template PoolLiquidityRules with
         baseQuoteSettleCid : ContractId V2.SettlementFactory
         lpSettleCid : ContractId V2.SettlementFactory
         requestedAt : Time
-        -- Per-authority registry choice contexts (see SettleAdd / DEX-73).
+        -- Per-authority registry choice contexts (see SettleAdd).
         poolAdminExtraArgs : ExtraArgs
         lpRegistrarExtraArgs : ExtraArgs
       controller operator, lpRegistrar

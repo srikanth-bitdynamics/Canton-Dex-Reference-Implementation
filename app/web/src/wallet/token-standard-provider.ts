@@ -184,14 +184,13 @@ export class TokenStandardProvider implements WalletProvider {
       case "accept-allocation-request":
         return this.acceptAllocationRequest(intent);
       case "request-swap":
-        return this.requestSwap(intent);
       case "add-liquidity":
       case "remove-liquidity":
-        // DvP add/remove: author the allocations via the shared composer and
-        // recover their created cids from the submit response (DEX-83). The
-        // backend's /v1/wallet/submit now follows the transaction tree and
-        // returns createdEvents, so the operator-relay path CAN surface the
-        // allocation cids the settle needs — no CIP-0103 wallet required.
+        // DvP swap + LP add/remove: author the allocation(s) via the shared
+        // composer and recover their created cids from the submit response
+        // (DEX-83). The backend's /v1/wallet/submit now follows the transaction
+        // tree and returns createdEvents, so the operator-relay path CAN surface
+        // the allocation cids the settle needs — no CIP-0103 wallet required.
         return this.submitComposed(intent);
       case "post-rfq-quote":
         return this.postRfqQuote(intent);
@@ -302,40 +301,6 @@ export class TokenStandardProvider implements WalletProvider {
     return { submittedBy: party, primaryCid: result.updateId };
   }
 
-  private async requestSwap(intent: Extract<WalletIntent, { kind: "request-swap" }>):
-    Promise<WalletResult> {
-    // Two-step: AllocationFactory_Allocate (creates V2.Allocation) then
-    // CreateCommand SwapRequest carrying that allocation cid. Both go
-    // through one submit-and-wait so they're atomic.
-    if (!intent.factoryCid || intent.factoryCid.startsWith("PENDING_")) {
-      throw new Error(
-        "Token Standard provider: no AllocationFactory CID configured. Operator must seed the registry's allocation factory before swap can settle.",
-      );
-    }
-    const party = this.session!.party;
-    const result = await this.submitAndWait(
-      [party],
-      `swap-${intent.poolId.slice(0, 12)}-${Date.now()}`,
-      {
-        CreateCommand: {
-          templateId: template("CantonDex.Dex.SwapRequest:SwapRequest"),
-          createArguments: {
-            trader: party,
-            operator: intent.operator,
-            admin: intent.admin,
-            poolCid: intent.poolId,
-            inputInstrumentId: intent.inputInstrumentId,
-            inputAmount: intent.inputAmount,
-            minOutputAmount: intent.minOutputAmount,
-            inputHoldingCids: intent.inputHoldingCids,
-            factoryCid: intent.factoryCid,
-            requestedAt: new Date().toISOString(),
-          },
-        },
-      },
-    );
-    return { submittedBy: party, primaryCid: result.updateId };
-  }
 
   private async acceptAllocationRequest(
     intent: Extract<WalletIntent, { kind: "accept-allocation-request" }>,

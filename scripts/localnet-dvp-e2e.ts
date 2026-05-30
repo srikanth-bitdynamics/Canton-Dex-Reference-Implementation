@@ -20,6 +20,10 @@
 //   (operator == venue; admin == instrument issuer == lpRegistrar;
 //    trader == the LP/swapper). The user token must have actAs for all
 //    three parties (a single ledger-api-user with granted rights works).
+//
+// Run (from services/operator-backend, which has tsx on its path):
+//   npm run localnet:dvp-e2e
+// with the CANTON_* env above exported.
 
 function req(name: string): string {
   const v = process.env[name];

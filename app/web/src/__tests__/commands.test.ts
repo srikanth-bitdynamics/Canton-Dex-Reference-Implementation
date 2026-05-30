@@ -149,7 +149,7 @@ describe('composeCommands', () => {
     );
   });
 
-  // DvP add/remove (DEX-54): the wallet authors one AllocationFactory_Allocate
+  // DvP add/remove: the wallet authors one AllocationFactory_Allocate
   // per spec, in canonical order, mapping the right factory + holdings.
   const ALLOC_FACTORY_IID =
     '#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory';

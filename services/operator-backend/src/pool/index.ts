@@ -422,7 +422,7 @@ export class PoolService {
       await this.loadDvpSurface(pool);
     // Split-admin DvP: the base/quote batch settles under pool.admin and the
     // LP-mint batch under pool.lpRegistrar, so each carries its own registry
-    // choice context (DEX-73). For the self-registry both contexts are empty.
+    // choice context. For the self-registry both contexts are empty.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
@@ -551,8 +551,8 @@ export class PoolService {
     const { depositFactories, lpFactories, depositContext, lpContext } =
       await this.loadDvpSurface(pool);
     // Split-admin DvP: base/quote batch under pool.admin, LP-burn batch under
-    // pool.lpRegistrar — each carries its own registry choice context
-    // (DEX-73). For the self-registry both contexts are empty.
+    // pool.lpRegistrar — each carries its own registry choice context.
+    // For the self-registry both contexts are empty.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],

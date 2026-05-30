@@ -14,6 +14,7 @@ import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState
 import CantonDex.Dex.PoolSlice
 import CantonDex.Dex.PoolModel
+import CantonDex.Dex.PoolExecution qualified as PE
 import CantonDex.Trading.Utils qualified as Utils
 
 -- Results -----------------------------------------------------------------
@@ -87,46 +88,23 @@ template PoolRules with
               sender = swapperAccount; receiver = poolAccount
               amount = inputAmount; instrumentId = inputInstrumentId
               meta = emptyMetadata
-        let mkOutLeg idx amount = V2.TransferLeg with
-              transferLegId = "swap-out-" <> show (idx : Int)
-              sender = poolAccount; receiver = swapperAccount
-              amount; instrumentId = outputInstrumentId
-              meta = emptyMetadata
-            fullyOutLegs =
-              [ (cid, s, mkOutLeg i s.amount)
-              | (i, (cid, s)) <- zip [0 .. length draw.fullyConsumed - 1] draw.fullyConsumed ]
-            boundaryIdx = length draw.fullyConsumed
-            boundaryOutLeg = case draw.boundary of
-              Some (cid, s, drawn, leftover) ->
-                Some (cid, s, drawn, leftover, mkOutLeg boundaryIdx drawn)
-              None -> None
+        -- The output-side delivery (legs pool→swapper, finalized slice
+        -- allocations, drained cids, boundary) is the same multi-slice
+        -- assembly the liquidity remove uses — shared via PoolExecution.
+        let outDel = PE.buildSideDelivery "swap-out-" poolAccount swapperAccount outputInstrumentId draw
 
-        -- Finalized: swapper provides input (consumed); input slice receives
-        -- it and rolls forward (grows); each full output slice sends + drains;
-        -- the boundary output slice sends `drawn` and rolls forward leftover.
-        let allOutLegs =
-              map (\(_, _, leg) -> leg) fullyOutLegs
-                ++ optional [] (\(_, _, _, _, leg) -> [leg]) boundaryOutLeg
-            swapperFinalized = Utils.mkFinalizedAllocation swapperAllocationCid
-              (Utils.legsToSides swapperAccount (swapInLeg :: allOutLegs)) None
+        -- Finalized: swapper provides input (consumed) + receives all output
+        -- legs; the input slice receives the input and rolls forward (grows).
+        let swapperFinalized = Utils.mkFinalizedAllocation swapperAllocationCid
+              (Utils.legsToSides swapperAccount (swapInLeg :: outDel.legs)) None
             inputFinalized = Utils.mkFinalizedAllocation inputSlice.allocationCid
               (Utils.legsToSides poolAccount [swapInLeg])
               (Some (TextMap.fromList [(inputInstrumentId, inputSlice.amount + inputAmount)]))
-            fullyFinalized =
-              [ Utils.mkFinalizedAllocation s.allocationCid
-                  (Utils.legsToSides poolAccount [leg]) None
-              | (_, s, leg) <- fullyOutLegs ]
-            boundaryFinalized = case boundaryOutLeg of
-              Some (_, s, _, leftover, leg) ->
-                [ Utils.mkFinalizedAllocation s.allocationCid
-                    (Utils.legsToSides poolAccount [leg])
-                    (Some (TextMap.fromList [(outputInstrumentId, leftover)])) ]
-              None -> []
 
         settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
           settlement
-          transferLegs = swapInLeg :: allOutLegs
-          allocations = swapperFinalized :: inputFinalized :: (fullyFinalized ++ boundaryFinalized)
+          transferLegs = swapInLeg :: outDel.legs
+          allocations = swapperFinalized :: inputFinalized :: outDel.sliceFinalizeds
           actors = [operator]
           extraArgs
 
@@ -140,19 +118,25 @@ template PoolRules with
               (_swapper :: Some inNext :: _) -> inNext
               _ -> error "swap: pool input slice must produce a next-iteration allocation"
 
-        forA_ draw.fullyConsumed $ \(cid, _) -> archive cid
+        forA_ outDel.drainedSliceCids archive
 
         archive inputSliceCid
         newInputSliceCid <- create inputSlice with
           allocationCid = inputNextCid
           amount = inputSlice.amount + inputAmount
 
-        boundaryOutputSliceCid <- case (draw.boundary, reverse nextIterCids) of
-          (Some (cid, s, _drawn, leftover), boundaryNext :: _) ->
+        -- Re-wrap the boundary output slice with its leftover. The shared
+        -- assembly hands back (cid, leftover); rebuild the slice fresh from
+        -- pool context (output side), equivalent to the remove path.
+        let outputSide = if inputIsBase then QuoteSide else BaseSide
+        boundaryOutputSliceCid <- case (outDel.boundary, reverse nextIterCids) of
+          (Some (cid, leftover), boundaryNext :: _) ->
             case boundaryNext of
               Some allocCid -> do
                 archive cid
-                newCid <- create s with allocationCid = allocCid; amount = leftover
+                newCid <- create PoolSlice with
+                  poolId = pool.poolId; operator; side = outputSide
+                  allocationCid = allocCid; amount = leftover
                 pure (Some newCid)
               None -> abort "swap: boundary output slice must produce a next-iteration allocation"
           (None, _) -> pure None

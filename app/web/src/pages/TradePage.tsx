@@ -69,6 +69,17 @@ export function TradePage() {
     return out;
   }, [holdings]);
 
+  // Hooks must run on every render (Rules of Hooks): call the price hooks
+  // BEFORE any early return. activePool may be undefined while pools load;
+  // pass empty inputs in that case so the hook count stays stable.
+  const pairKey = activePool
+    ? `${activePool.baseInstrumentId}/${activePool.quoteInstrumentId}`
+    : '';
+  const { prices: priceUsd } = useAssetPricesUsd(
+    activePool ? [activePool.baseInstrumentId, activePool.quoteInstrumentId] : [],
+  );
+  const { data: priceHistory } = usePriceHistory(pairKey, 24);
+
   if (!pools) {
     return <div className="text-text-secondary text-center py-12">Loading pools…</div>;
   }
@@ -90,12 +101,6 @@ export function TradePage() {
   const mid = pool.reserves.baseAmount > 0
     ? pool.reserves.quoteAmount / pool.reserves.baseAmount
     : 0;
-  const pairKey = `${pool.baseInstrumentId}/${pool.quoteInstrumentId}`;
-  const { prices: priceUsd } = useAssetPricesUsd([
-    pool.baseInstrumentId,
-    pool.quoteInstrumentId,
-  ]);
-  const { data: priceHistory } = usePriceHistory(pairKey, 24);
   const basePrice = priceUsd[pool.baseInstrumentId];
   const quotePrice = priceUsd[pool.quoteInstrumentId];
   const tvl =

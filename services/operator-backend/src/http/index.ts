@@ -918,6 +918,14 @@ async function routeRequest(
     return;
   }
 
+  if (method === "POST" && path === "/v1/pools/swap/request") {
+    const body =
+      await readJson<Parameters<typeof backend.pool.requestSwap>[0]>(req);
+    const result = await backend.pool.requestSwap(body);
+    respondJson(res, 200, result);
+    return;
+  }
+
   if (method === "POST" && path === "/v1/pools/swap") {
     const body = await readJson<Parameters<typeof backend.pool.swap>[0]>(req);
     const result = await backend.pool.swap(body);

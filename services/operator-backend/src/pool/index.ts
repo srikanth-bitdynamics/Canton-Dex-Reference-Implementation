@@ -34,6 +34,25 @@ export interface PoolSwapInput {
   swapperAllocationCid: ContractId<"Allocation">;
 }
 
+// The wallet-facing request for a swap: the operator builds (in Daml) the
+// single prefunded/iterated input allocation the swapper must author before
+// the swap can settle. Creates nothing on-ledger — PoolRules_Swap consumes the
+// resulting allocation cid directly — so there is no requestCid to thread.
+export interface PoolRequestSwapInput {
+  poolCid: ContractId<"Pool">;
+  swapper: Party;
+  inputInstrumentId: string;
+  inputAmount: Decimal;
+}
+
+export interface PoolRequestSwapResult {
+  // The on-ledger spec the wallet authors via AllocationFactory_Allocate.
+  allocationSpec: V2AllocationSpecification;
+  settlement: V2SettlementInfo;
+  // The pool-admin allocation factory the swapper allocates under.
+  factoryCid: ContractId<"AllocationFactory">;
+}
+
 // === DvP liquidity ==========================================
 
 export interface PoolRequestAddLiquidityInput {
@@ -308,6 +327,39 @@ export class PoolService {
         },
       }),
     );
+  }
+
+  // Build the swapper's input allocation spec + settlement descriptor (in
+  // Daml, via the nonconsuming PoolRules_RequestSwap), so the wallet authors a
+  // spec that exactly matches what PoolRules_Swap settles against. Returns the
+  // pool-admin allocation factory the wallet allocates under.
+  async requestSwap(input: PoolRequestSwapInput): Promise<PoolRequestSwapResult> {
+    const pool = await this.fetchPool(input.poolCid);
+    const factories = await this.registry.getFactories(pool.admin);
+    const result = await this.ledger.submit<{
+      settlement: V2SettlementInfo;
+      allocationSpec: V2AllocationSpecification;
+    }>({
+      actAs: [this.operatorParty],
+      commandId: `pool-swap-req:${input.poolCid}:${Date.now()}`,
+      command: {
+        kind: "exercise",
+        templateId: "CantonDex.Dex.PoolRules:PoolRules",
+        contractId: pool.rulesCid,
+        choice: "PoolRules_RequestSwap",
+        argument: {
+          poolCid: input.poolCid,
+          swapper: input.swapper,
+          inputInstrumentId: input.inputInstrumentId,
+          inputAmount: input.inputAmount,
+        },
+      },
+    });
+    return {
+      allocationSpec: result.allocationSpec,
+      settlement: result.settlement,
+      factoryCid: factories.allocationFactoryCid,
+    };
   }
 
   // === DvP liquidity ==========================================

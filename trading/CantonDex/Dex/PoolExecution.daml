@@ -1,0 +1,63 @@
+module CantonDex.Dex.PoolExecution where
+
+-- Shared pool settlement-assembly helpers.
+--
+-- Drawing a redemption/swap across an ordered slice prefix and turning it
+-- into the per-side delivery legs + FinalizedAllocations the SettleBatch
+-- consumes. The slice-draw math + SliceDraw type live in PoolModel; the
+-- request/spec construction lives in PoolLiquidityRules.
+
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Dex.PoolSlice qualified as PSlice
+import CantonDex.Dex.PoolModel qualified as PM
+import CantonDex.Trading.Utils qualified as Utils
+
+-- Per-side result of drawing a redemption/swap-out across an ordered slice
+-- prefix: delivery legs (one per sourced slice), the finalized slice
+-- allocations, the fully-drained slice cids to archive, and the boundary
+-- (cid + leftover) to re-wrap.
+data SideDelivery = SideDelivery with
+    legs : [V2.TransferLeg]
+    sliceFinalizeds : [V2.FinalizedAllocation]
+    drainedSliceCids : [ContractId PSlice.PoolSlice]
+    boundary : Optional (ContractId PSlice.PoolSlice, Decimal)
+  deriving (Eq, Show)
+
+-- Build the per-side delivery from a slice draw: one leg per sourced slice
+-- (`prefix <> index`), from the operator's pool account to the receiver.
+-- Fully-consumed slices settle as-is and drain; the boundary slice rolls its
+-- leftover forward via nextIterationFunding.
+buildSideDelivery
+  : Text -> V2.Account -> V2.Account -> Text -> PM.SliceDraw -> SideDelivery
+buildSideDelivery prefix opAcct holderAcct instrumentId draw =
+  let mkLeg i amt = V2.TransferLeg with
+        transferLegId = prefix <> show (i : Int)
+        sender = opAcct; receiver = holderAcct
+        amount = amt; instrumentId; meta = emptyMetadata
+      fullyTriples =
+        [ (cid, slice, mkLeg i slice.amount)
+        | (i, (cid, slice)) <- zip [0 .. length draw.fullyConsumed - 1] draw.fullyConsumed ]
+      bIdx = length draw.fullyConsumed
+      bTriple = case draw.boundary of
+        Some (cid, slice, drawn, leftover) -> Some (cid, slice, leftover, mkLeg bIdx drawn)
+        None -> None
+      legs = [ leg | (_, _, leg) <- fullyTriples ]
+          ++ optional [] (\(_, _, _, leg) -> [leg]) bTriple
+      sliceFinalizeds =
+        [ Utils.mkFinalizedAllocation slice.allocationCid (Utils.legsToSides opAcct [leg]) None
+        | (_, slice, leg) <- fullyTriples ]
+        ++ optional []
+             (\(_, slice, leftover, leg) ->
+                [ Utils.mkFinalizedAllocation slice.allocationCid (Utils.legsToSides opAcct [leg])
+                    (if leftover > 0.0 then Some (TextMap.fromList [(instrumentId, leftover)]) else None) ])
+             bTriple
+  in SideDelivery with
+       legs
+       sliceFinalizeds
+       drainedSliceCids = [ cid | (cid, _, _) <- fullyTriples ]
+       boundary = fmap (\(cid, _, leftover, _) -> (cid, leftover)) bTriple

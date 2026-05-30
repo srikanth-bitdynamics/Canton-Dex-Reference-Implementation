@@ -19,6 +19,7 @@ import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState qualified as PS
 import CantonDex.Dex.PoolSlice qualified as PSlice
 import CantonDex.Dex.PoolModel qualified as PM
+import CantonDex.Dex.PoolExecution qualified as PE
 import CantonDex.Lp.Policy qualified as LP
 import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
 import CantonDex.Lp.Instrument qualified as Lp
@@ -158,45 +159,8 @@ removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount =
      , dvpSpec pool.admin holderAcct quoteLegs False
      , dvpSpec pool.lpRegistrar holderAcct [burnLeg] True ]
 
--- Per-side result of drawing a redemption across an ordered slice prefix:
--- delivery legs, finalized slice allocations, fully-drained slice cids, and
--- the boundary (cid + leftover). Mirrors PoolRules_Swap's multi-slice output.
-data SideDelivery = SideDelivery with
-    legs : [V2.TransferLeg]
-    sliceFinalizeds : [V2.FinalizedAllocation]
-    drainedSliceCids : [ContractId PSlice.PoolSlice]
-    boundary : Optional (ContractId PSlice.PoolSlice, Decimal)
-  deriving (Eq, Show)
-
-buildSideDelivery
-  : Text -> V2.Account -> V2.Account -> Text -> PM.SliceDraw -> SideDelivery
-buildSideDelivery prefix opAcct holderAcct instrumentId draw =
-  let mkLeg i amt = V2.TransferLeg with
-        transferLegId = prefix <> show (i : Int)
-        sender = opAcct; receiver = holderAcct
-        amount = amt; instrumentId; meta = emptyMetadata
-      fullyTriples =
-        [ (cid, slice, mkLeg i slice.amount)
-        | (i, (cid, slice)) <- zip [0 .. length draw.fullyConsumed - 1] draw.fullyConsumed ]
-      bIdx = length draw.fullyConsumed
-      bTriple = case draw.boundary of
-        Some (cid, slice, drawn, leftover) -> Some (cid, slice, leftover, mkLeg bIdx drawn)
-        None -> None
-      legs = [ leg | (_, _, leg) <- fullyTriples ]
-          ++ optional [] (\(_, _, _, leg) -> [leg]) bTriple
-      sliceFinalizeds =
-        [ Utils.mkFinalizedAllocation slice.allocationCid (Utils.legsToSides opAcct [leg]) None
-        | (_, slice, leg) <- fullyTriples ]
-        ++ optional []
-             (\(_, slice, leftover, leg) ->
-                [ Utils.mkFinalizedAllocation slice.allocationCid (Utils.legsToSides opAcct [leg])
-                    (if leftover > 0.0 then Some (TextMap.fromList [(instrumentId, leftover)]) else None) ])
-             bTriple
-  in SideDelivery with
-       legs
-       sliceFinalizeds
-       drainedSliceCids = [ cid | (cid, _, _) <- fullyTriples ]
-       boundary = fmap (\(cid, _, leftover, _) -> (cid, leftover)) bTriple
+-- `SideDelivery` + `buildSideDelivery` moved to `CantonDex.Dex.PoolExecution`
+-- (shared settlement-assembly, DEX-77); used below as `PE.buildSideDelivery`.
 
 template PoolLiquidityRules with
     operator : Party
@@ -451,8 +415,8 @@ template PoolLiquidityRules with
             burnLeg = Lp.lpBurnLeg lpRegistrar holderAcct pool.lpInstrumentId.id lpTokensToRedeem
             baseDraw = PM.drawFromSlices baseOut baseItems
             quoteDraw = PM.drawFromSlices quoteOut quoteItems
-            baseDel = buildSideDelivery "lp-base-out-" operatorAcct holderAcct pool.baseInstrumentId baseDraw
-            quoteDel = buildSideDelivery "lp-quote-out-" operatorAcct holderAcct pool.quoteInstrumentId quoteDraw
+            baseDel = PE.buildSideDelivery "lp-base-out-" operatorAcct holderAcct pool.baseInstrumentId baseDraw
+            quoteDel = PE.buildSideDelivery "lp-quote-out-" operatorAcct holderAcct pool.quoteInstrumentId quoteDraw
 
         regBurn <- exercise lpFactoryCid
           (V2.AllocationFactory_Allocate with

@@ -201,6 +201,16 @@ mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx =
     baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0; knownTotalLpSupply = 0.0
     requestedAt = now; poolAdminExtraArgs = poolAdminCtx; lpRegistrarExtraArgs = emptyExtraArgs
 
+-- Run a full DvP add against the real registry and return its result -- used
+-- as a funded-pool precondition (remove test) and by the add happy path.
+addSettle : Fixture -> Party -> Time -> Script Dvp.PoolLiquidityRules_SettleAddResult
+addSettle fx lp now = do
+  (reqCid, baseDep, quoteDep, receiptCid) <- authorAdd fx lp 10.0 200000.0 now
+  settleDisc <- ttSettleDisclosures fx
+  let poolAdminCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
+  submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
+    mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx
+
 -- Happy path against the REAL TestTokenV2 registry: with the real per-admin
 -- context threaded as poolAdminExtraArgs, the DvP add settles end-to-end
 -- across both registries. The operator-receiver allocations are born with
@@ -212,11 +222,7 @@ testRealRegistryDvpAddSettles = do
   lp <- allocateParty "lp"
   fx <- setup lp
   now <- getTime
-  (reqCid, baseDep, quoteDep, receiptCid) <- authorAdd fx lp 10.0 200000.0 now
-  settleDisc <- ttSettleDisclosures fx
-  let poolAdminCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
-  res <- submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
-    mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx
+  res <- addSettle fx lp now
   Some state <- queryContractId fx.operator res.poolStateCid
   state.status === PS_Active
   state.reserves.baseAmount === 10.0
@@ -245,3 +251,69 @@ testRealRegistryDvpRejectsMissingContext = do
     Left e ->
       assertMsg ("expected missing tokenRules context, got: " <> show e)
         (T.isInfixOf "tokenRules" (show e))
+
+-- Remove against the REAL TestTokenV2 registry: after a funded add, the holder
+-- redeems the full position. base/quote are DELIVERED to the holder from the
+-- pool slices (drawn/settled via the real TestTokenV2 factory, born Some so the
+-- standard registry accepts the slice settlement), and the LP tokens are burned
+-- via our registry. Proves the slice lifecycle (not just the add) conforms.
+testRealRegistryDvpRemoveSettles : Script ()
+testRealRegistryDvpRemoveSettles = do
+  alice <- allocateParty "lp"
+  fx <- setup alice
+  now <- getTime
+  addRes <- addSettle fx alice now
+  let lpAmount = PM.sqrtDecimal 2000000.0
+      aliceAcct = Utils.basicAccount alice
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PM.poolSettlement fx.poolCid fx.operator
+      baseOutLeg = V2.TransferLeg with
+        transferLegId = "lp-base-out-0"; sender = opAcct; receiver = aliceAcct
+        amount = 10.0; instrumentId = "X"; meta = emptyMetadata
+      quoteOutLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-out-0"; sender = opAcct; receiver = aliceAcct
+        amount = 200000.0; instrumentId = "Y"; meta = emptyMetadata
+      burnLeg = Lp.lpBurnLeg fx.lpRegistrar aliceAcct lpId lpAmount
+  -- alice's LP holding, to lock for the burn (on our registry).
+  aliceHs <- query @RegV2.Holding alice
+  let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) aliceHs)
+  reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestRemoveLiquidity with
+    poolCid = fx.poolCid; holder = alice; baseOuts = [10.0]; quoteOuts = [200000.0]
+    lpBurnAmount = lpAmount; requestedAt = now; settleAt = None
+  -- base/quote receipts via the real TestTokenV2 registry; burn-sender via ours.
+  baseReceipt <- ttAlloc fx.ttReg alice settlement (mkSpec fx.ttAdmin aliceAcct [baseOutLeg] False) [] now
+  quoteReceipt <- ttAlloc fx.ttReg alice settlement (mkSpec fx.ttAdmin aliceAcct [quoteOutLeg] False) [] now
+  brres <- submit alice $ exerciseCmd (toInterfaceContractId fx.lpReg : ContractId V2.AllocationFactory)
+    V2.AllocationFactory_Allocate with
+      settlement; allocation = mkSpec fx.lpRegistrar aliceAcct [burnLeg] True; requestedAt = now
+      inputHoldingCids = [toInterfaceContractId lpHoldCid]; actors = [alice]; extraArgs = emptyExtraArgs
+  let V2.AllocationInstructionResult_Completed burnSender = brres.output
+  settleDisc <- ttSettleDisclosures fx
+  let poolAdminCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
+  remRes <- submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+      requestCid = reqCid
+      holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
+      minBaseOut = 0.0; minQuoteOut = 0.0
+      baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
+      holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
+      holderBurnSenderCid = burnSender
+      baseFactoryCid = fx.ttFactoryCid; quoteFactoryCid = fx.ttFactoryCid
+      lpFactoryCid = toInterfaceContractId fx.lpReg
+      baseQuoteSettleCid = fx.ttSettleCid; lpSettleCid = coerceContractId fx.lpReg
+      requestedAt = now; poolAdminExtraArgs = poolAdminCtx; lpRegistrarExtraArgs = emptyExtraArgs
+  Some state <- queryContractId fx.operator remRes.poolStateCid
+  state.reserves.baseAmount === 0.0
+  state.reserves.quoteAmount === 0.0
+  state.status === PS_Unfunded
+  remRes.baseReturned === 10.0
+  remRes.quoteReturned === 200000.0
+  -- LP burned; alice received base/quote back as TestTokenV2 holdings.
+  after <- query @RegV2.Holding alice
+  length (filter (\(_, h) -> h.instrumentId == lpId && h.owner == alice) after) === 0
+  baseBack <- holdingCidsFor alice "X"
+  quoteBack <- holdingCidsFor alice "Y"
+  assertMsg "alice received base (X) back" (not (null baseBack))
+  assertMsg "alice received quote (Y) back" (not (null quoteBack))

@@ -20,6 +20,7 @@ packages=(
   "splice-api-token-transfer-events-v2"
   "splice-token-standard-utils"
   "examples/splice-token-test-trading-app-v2"
+  "examples/splice-test-token-v2"
 )
 
 for rel in "${packages[@]}"; do

@@ -96,22 +96,20 @@ export interface PlaceOrderIntent {
 }
 
 /**
- * Trader requests a swap. The wallet first creates a prefunded
- * V2.Allocation against the pool's settlement reference, then creates
- * a SwapRequest carrying that allocation cid. Operator drives Pool_Swap
- * afterwards.
+ * Trader requests a swap (DvP). The operator has built (via Daml
+ * PoolRules_RequestSwap) the swapper's prefunded/iterated input-allocation
+ * spec; the wallet authors that single allocation via AllocationFactory_Allocate
+ * (locking `inputHoldingCids`), and its created cid is returned as
+ * `WalletResult.createdAllocationCids[0]` for the operator settle
+ * (PoolRules_Swap). No SwapRequest contract is created.
  */
 export interface RequestSwapIntent {
   kind: "request-swap";
   poolId: string;
-  inputInstrumentId: string;
-  inputAmount: string;
-  outputInstrumentId: string;
-  minOutputAmount: string;
-  inputHoldingCids: ContractId<"Holding">[];
+  allocationSpec: V2AllocationSpecification;
+  settlement: V2SettlementInfo;
   factoryCid: ContractId<"AllocationFactory">;
-  operator: Party;
-  admin: Party;
+  inputHoldingCids: ContractId<"Holding">[];
 }
 
 /**

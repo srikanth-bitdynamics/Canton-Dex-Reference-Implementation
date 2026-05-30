@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { composeCommands, type ComposeContext } from '@/wallet/commands';
-import type { WalletIntent } from '@/wallet/types';
+import type { WalletIntent, RequestSwapIntent } from '@/wallet/types';
 
 const FIXED_NOW = new Date('2026-05-19T12:00:00.000Z');
 
@@ -87,62 +87,49 @@ describe('composeCommands', () => {
     `);
   });
 
-  it('request-swap', () => {
+  const swapAllocationSpec = {
+    admin: 'ad::1',
+    authorizer: { owner: 'alice::1220a', provider: null, id: '' },
+    transferLegSides: [],
+    settlementDeadline: null,
+    nextIterationFunding: { USDC: '1000.0' },
+    committed: false,
+    meta: { values: {} },
+  } as unknown as RequestSwapIntent['allocationSpec'];
+  const swapSettlement = {
+    executor: 'op::1',
+    settlementRef: { id: 'DexPool', cid: 'pool1234567890' },
+  } as unknown as RequestSwapIntent['settlement'];
+
+  it('request-swap authors a single AllocationFactory_Allocate', () => {
     const intent: WalletIntent = {
       kind: 'request-swap',
       poolId: 'pool1234567890',
-      inputInstrumentId: 'USDC',
-      inputAmount: '1000.0',
-      outputInstrumentId: 'BTC',
-      minOutputAmount: '0.03',
-      inputHoldingCids: ['h1'],
+      allocationSpec: swapAllocationSpec,
+      settlement: swapSettlement,
       factoryCid: 'factory1',
-      operator: 'op::1',
-      admin: 'ad::1',
+      inputHoldingCids: ['h1'],
     };
-    expect(composeCommands(intent, ctx)).toMatchInlineSnapshot(`
-      {
-        "actAs": [
-          "alice::1220a",
-        ],
-        "commandId": "swap-pool12345678-1779192000000",
-        "commands": [
-          {
-            "CreateCommand": {
-              "createArguments": {
-                "admin": "ad::1",
-                "factoryCid": "factory1",
-                "inputAmount": "1000.0",
-                "inputHoldingCids": [
-                  "h1",
-                ],
-                "inputInstrumentId": "USDC",
-                "minOutputAmount": "0.03",
-                "operator": "op::1",
-                "poolCid": "pool1234567890",
-                "requestedAt": "2026-05-19T12:00:00.000Z",
-                "trader": "alice::1220a",
-              },
-              "templateId": "#canton-dex-trading:CantonDex.Dex.SwapRequest:SwapRequest",
-            },
-          },
-        ],
-      }
-    `);
+    const composed = composeCommands(intent, ctx);
+    expect(composed.commands).toHaveLength(1);
+    expect(composed.commands[0]).toHaveProperty(
+      'ExerciseCommand.choice',
+      'AllocationFactory_Allocate',
+    );
+    expect(composed.commands[0]).toHaveProperty(
+      'ExerciseCommand.templateId',
+      '#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory',
+    );
   });
 
   it('request-swap refuses unconfigured factory', () => {
     const intent: WalletIntent = {
       kind: 'request-swap',
       poolId: 'pool1',
-      inputInstrumentId: 'USDC',
-      inputAmount: '1.0',
-      outputInstrumentId: 'BTC',
-      minOutputAmount: '0.0',
-      inputHoldingCids: [],
+      allocationSpec: swapAllocationSpec,
+      settlement: swapSettlement,
       factoryCid: 'PENDING_FACTORY',
-      operator: 'op::1',
-      admin: 'ad::1',
+      inputHoldingCids: [],
     };
     expect(() => composeCommands(intent, ctx)).toThrowError(
       /AllocationFactory CID not configured/,

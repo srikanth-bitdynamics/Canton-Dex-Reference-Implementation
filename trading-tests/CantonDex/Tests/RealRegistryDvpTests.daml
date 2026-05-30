@@ -1,0 +1,248 @@
+module CantonDex.Tests.RealRegistryDvpTests where
+
+-- DEX-37: prove per-admin choice context against a REAL token-standard V2
+-- registry, the way TradingAppV2 is tested. A DvP add settles across TWO
+-- real registries in one transaction:
+--   * base/quote under the upstream `TestTokenV2_RegistryV2` (pool.admin) --
+--     a genuinely context-requiring registry whose choice context carries a
+--     disclosed `TokenRules` contract (not just a marker key);
+--   * the LP mint under our `Registry.V2` (pool.lpRegistrar), which supports
+--     the owner=None mint account.
+-- poolAdminExtraArgs carries the TestTokenV2 registry's real enriched context
+-- (with the TokenRules disclosure threaded through the outer submit);
+-- lpRegistrarExtraArgs is empty (our registry needs none). Dropping the real
+-- context aborts the settle -- so the per-admin split is load-bearing against
+-- a real registry.
+
+import DA.Assert
+import DA.Foldable (foldMap)
+import DA.List (head)
+import DA.Optional (isNone)
+import DA.Text qualified as T
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import Splice.Testing.Utils (discloseMany', queryDisclosure', Disclosures', emptyExtraArgs)
+import Splice.Testing.TokenStandard.RegistryApiV2 (getAllocationFactory)
+import Splice.Testing.Registries.TestTokenV2_RegistryV2 qualified as TT2
+import Splice.Testing.Tokens.TestTokenV2 qualified as TestTokenV2
+import Splice.Testing.Tokens.TestTokenV2.Holding qualified as TTHolding
+
+import CantonDex.Dex.Pool
+import CantonDex.Dex.PoolState qualified as PS
+import CantonDex.Dex.PoolModel qualified as PM
+import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
+import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
+import CantonDex.Lp.Policy qualified as LP
+import CantonDex.Lp.Instrument qualified as Lp
+import CantonDex.Registry.V2 qualified as RegV2
+import CantonDex.Trading.Utils qualified as Utils
+
+lpId : Text
+lpId = "BTC-USDC-LP"
+
+-- Collect the LP's unlocked V2 holding cids for a given instrument id.
+holdingCidsFor : Party -> Text -> Script [ContractId V2.Holding]
+holdingCidsFor owner instrId = do
+  hs <- queryInterface @V2.Holding owner
+  pure [ cid | (cid, Some v) <- hs, v.instrumentId.id == instrId, v.account.owner == Some owner, isNone v.lock ]
+
+-- Author an allocation through the TestTokenV2 registry: enrich the factory
+-- choice (real context + TokenRules disclosure) and submit it as `party`.
+ttAlloc
+  : TT2.TestTokenV2Registry -> Party -> V2.SettlementInfo -> V2.AllocationSpecification
+  -> [ContractId V2.Holding] -> Time -> Script (ContractId V2.Allocation)
+ttAlloc reg party settlement spec inputHoldingCids now = do
+  enriched <- getAllocationFactory reg V2.AllocationFactory_Allocate with
+    settlement; allocation = spec; requestedAt = now
+    inputHoldingCids; actors = [party]; extraArgs = emptyExtraArgs
+  res <- submit (actAs party <> discloseMany' enriched.disclosures) $
+    exerciseCmd enriched.factoryCid enriched.arg
+  case res.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "ttAlloc: allocation must complete"
+
+-- Disclose TokenRules + every TestTokenV2 holding the registry administers,
+-- so the settle's TT2 SettleBatch can see the locked deposit holdings it
+-- consumes (mirrors getSettlementFactory's lockedDs enrichment).
+ttSettleDisclosures : Fixture -> Script Disclosures'
+ttSettleDisclosures fx = do
+  toks <- query @TTHolding.Token fx.ttAdmin
+  ds <- forA toks (\(cid, _) -> queryDisclosure' @TTHolding.Token fx.ttAdmin cid)
+  pure (fx.ttDisclosures <> mconcat ds)
+
+mkSpec : Party -> V2.Account -> [V2.TransferLeg] -> Bool -> V2.AllocationSpecification
+mkSpec admin authorizer legs committed = V2.AllocationSpecification with
+  admin; authorizer
+  transferLegSides = Utils.legsToSides authorizer legs
+  settlementDeadline = None; nextIterationFunding = None; committed
+  meta = emptyMetadata
+
+data Fixture = Fixture with
+  operator : Party
+  lpRegistrar : Party
+  ttAdmin : Party
+  ttReg : TT2.TestTokenV2Registry
+  lpReg : ContractId RegV2.Registry      -- our V2 self-registry (LP side)
+  poolId : PoolId
+  poolCid : ContractId Pool
+  stateCid : ContractId PS.PoolState
+  policyCid : ContractId LP.LPTokenPolicy
+  dvpCid : ContractId Dvp.PoolLiquidityRules
+  ttFactoryCid : ContractId V2.AllocationFactory
+  ttSettleCid : ContractId V2.SettlementFactory
+  ttDisclosures : Disclosures'
+  ttContext : ChoiceContext
+
+-- base = "X", quote = "Y" (TestTokenV2 instruments administered by ttAdmin).
+setup : Party -> Script Fixture
+setup lp = do
+  operator <- allocateParty "operator"
+  lpRegistrar <- allocateParty "lp-registrar"
+  ttReg <- TT2.initialize TT2.defaultTestTokenV2RegistryConfig
+  let ttAdmin = ttReg.admin
+  -- LP side: our context-free, mint-capable self-registry.
+  lpRegCid <- submit lpRegistrar $ createCmd RegV2.Registry with
+    admin = lpRegistrar; users = [operator, lp]
+  -- Mint the LP's base/quote (real TestTokenV2 holdings).
+  TT2.mint ttReg (Utils.basicAccount lp) "X" 10.0
+  TT2.mint ttReg (Utils.basicAccount lp) "Y" 200000.0
+  let poolId = "X-Y"
+      lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = lpId
+  poolCid <- submit operator $ createCmd Pool with
+    poolId; operator; lpRegistrar; admin = ttAdmin
+    baseInstrumentId = "X"; quoteInstrumentId = "Y"; lpInstrumentId
+    feeBps = 30; operatorFeeBps = 0
+  stateCid <- submit operator $ createCmd PS.PoolState with
+    poolId; operator; lpRegistrar
+    status = PS_Unfunded
+    reserves = PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
+    totalLpSupply = 0.0; publicReaders = []
+  dvpCid <- submitMulti [operator, lpRegistrar] [] $
+    createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar
+  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
+    lpRegistrar; operator; lpInstrumentId
+    totalSupply = 0.0; active = True
+  -- The TestTokenV2 factory cid + its uniform choice context/disclosure
+  -- (basic accounts => one context reused across all TT2 choices).
+  now <- getTime
+  let probeSpec = mkSpec ttAdmin (Utils.basicAccount lp)
+        [ V2.TransferLeg with
+            transferLegId = "probe"; sender = Utils.basicAccount lp
+            receiver = Utils.basicAccount operator; amount = 10.0
+            instrumentId = "X"; meta = emptyMetadata ] True
+  enriched <- getAllocationFactory ttReg V2.AllocationFactory_Allocate with
+    settlement = PM.poolSettlement poolCid operator
+    allocation = probeSpec; requestedAt = now
+    inputHoldingCids = []; actors = [lp]; extraArgs = emptyExtraArgs
+  [(tokenRulesCid, _)] <- query @TestTokenV2.TokenRules ttAdmin
+  ttD <- queryDisclosure' @TestTokenV2.TokenRules ttAdmin tokenRulesCid
+  pure Fixture with
+    operator; lpRegistrar; ttAdmin; ttReg; lpReg = lpRegCid
+    poolId; poolCid; stateCid; policyCid; dvpCid
+    ttFactoryCid = enriched.factoryCid
+    ttSettleCid = coerceContractId enriched.factoryCid
+    ttDisclosures = ttD
+    ttContext = enriched.arg.extraArgs.context
+
+-- Author the LP's three add allocations and return them with the request.
+authorAdd
+  : Fixture -> Party -> Decimal -> Decimal -> Time
+  -> Script ( ContractId LAR.LiquidityAllocationRequest
+            , ContractId V2.Allocation, ContractId V2.Allocation, ContractId V2.Allocation )
+authorAdd fx lp baseAmount quoteAmount now = do
+  let lpAcct = Utils.basicAccount lp
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PM.poolSettlement fx.poolCid fx.operator
+      lpAmount = PM.sqrtDecimal (baseAmount * quoteAmount)
+      baseLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = lpAcct; receiver = opAcct
+        amount = baseAmount; instrumentId = "X"; meta = emptyMetadata
+      quoteLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
+        amount = quoteAmount; instrumentId = "Y"; meta = emptyMetadata
+      lpMintLeg = Lp.lpMintLeg fx.lpRegistrar lpAcct lpId lpAmount
+  reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
+    poolCid = fx.poolCid; recipient = lp; baseAmount; quoteAmount; lpAmount
+    requestedAt = now; settleAt = None
+  baseCids <- holdingCidsFor lp "X"
+  quoteCids <- holdingCidsFor lp "Y"
+  -- base/quote deposits via the real TestTokenV2 registry.
+  baseDep <- ttAlloc fx.ttReg lp settlement (mkSpec fx.ttAdmin lpAcct [baseLeg] True) baseCids now
+  quoteDep <- ttAlloc fx.ttReg lp settlement (mkSpec fx.ttAdmin lpAcct [quoteLeg] True) quoteCids now
+  -- LP mint receipt via our self-registry (mint account, no context).
+  let receiptSpec = mkSpec fx.lpRegistrar lpAcct [lpMintLeg] False
+  rres <- submit lp $ exerciseCmd (toInterfaceContractId fx.lpReg : ContractId V2.AllocationFactory)
+    V2.AllocationFactory_Allocate with
+      settlement; allocation = receiptSpec; requestedAt = now
+      inputHoldingCids = []; actors = [lp]; extraArgs = emptyExtraArgs
+  let V2.AllocationInstructionResult_Completed receiptCid = rres.output
+  pure (reqCid, baseDep, quoteDep, receiptCid)
+
+-- Build the DvP-add SettleAddLiquidity command, parameterized on the
+-- pool.admin (base/quote) choice context. base/quote settle via the real
+-- TestTokenV2 factory; LP mint via our self-registry.
+mkSettleAdd
+  : Fixture -> ContractId LAR.LiquidityAllocationRequest -> Party
+  -> ContractId V2.Allocation -> ContractId V2.Allocation -> ContractId V2.Allocation
+  -> Time -> ExtraArgs -> Commands Dvp.PoolLiquidityRules_SettleAddResult
+mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx =
+  exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+    expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+    lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = lp
+    lpBaseDepositCid = baseDep; lpQuoteDepositCid = quoteDep; lpReceiptCid = receiptCid
+    baseFactoryCid = fx.ttFactoryCid; quoteFactoryCid = fx.ttFactoryCid
+    lpFactoryCid = toInterfaceContractId fx.lpReg
+    baseQuoteSettleCid = fx.ttSettleCid; lpSettleCid = coerceContractId fx.lpReg
+    baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0; knownTotalLpSupply = 0.0
+    requestedAt = now; poolAdminExtraArgs = poolAdminCtx; lpRegistrarExtraArgs = emptyExtraArgs
+
+-- With the REAL TestTokenV2 context threaded as poolAdminExtraArgs, the
+-- registry's context check ACCEPTS the settle (it resolves the disclosed
+-- TokenRules) and proceeds into the registry's settle logic. There it hits a
+-- separate, documented interop gap: TestTokenV2 requires `nextIterationFunding`
+-- to be declared at ALLOCATE time, whereas our pool declares it only at SETTLE
+-- (the convention our own Registry.V2 permits). The failure is therefore about
+-- `nextIterationFunding`, NOT a missing context -- which proves the per-admin
+-- context was accepted by the real registry. (Interop gap tracked separately.)
+testRealRegistryDvpThreadsRealContext : Script ()
+testRealRegistryDvpThreadsRealContext = do
+  lp <- allocateParty "lp"
+  fx <- setup lp
+  now <- getTime
+  (reqCid, baseDep, quoteDep, receiptCid) <- authorAdd fx lp 10.0 200000.0 now
+  settleDisc <- ttSettleDisclosures fx
+  let poolAdminCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
+  result <- trySubmit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
+    mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx
+  case result of
+    Right _ -> abort "expected the TestTokenV2 nextIterationFunding interop gap"
+    Left e -> do
+      let msg = show e
+      assertMsg ("context accepted; failure should be nextIterationFunding, got: " <> msg)
+        (T.isInfixOf "nextIterationFunding" msg)
+      assertMsg ("must NOT be a missing-context failure, got: " <> msg)
+        (not (T.isInfixOf "tokenRules" msg))
+
+-- With poolAdminExtraArgs blanked, the real registry's context-requiring
+-- base/quote factory aborts FIRST at the missing `testTokenV2/tokenRules`
+-- context lookup, before any settle logic -- proving poolAdminExtraArgs
+-- carries the real per-admin context the base/quote batch requires.
+testRealRegistryDvpRejectsMissingContext : Script ()
+testRealRegistryDvpRejectsMissingContext = do
+  lp <- allocateParty "lp"
+  fx <- setup lp
+  now <- getTime
+  (reqCid, baseDep, quoteDep, receiptCid) <- authorAdd fx lp 10.0 200000.0 now
+  settleDisc <- ttSettleDisclosures fx
+  result <- trySubmit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
+    mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now emptyExtraArgs
+  case result of
+    Right _ -> abort "expected a missing-context failure"
+    Left e ->
+      assertMsg ("expected missing tokenRules context, got: " <> show e)
+        (T.isInfixOf "tokenRules" (show e))

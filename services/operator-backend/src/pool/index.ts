@@ -420,9 +420,9 @@ export class PoolService {
     const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
     const { depositFactories, lpFactories, depositContext, lpContext } =
       await this.loadDvpSurface(pool);
-    // One `extraArgs` value is threaded through the Daml choice. That is
-    // enough for the self-registry; a split context-carrying setup would
-    // need per-admin handling.
+    // Split-admin DvP: the base/quote batch settles under pool.admin and the
+    // LP-mint batch under pool.lpRegistrar, so each carries its own registry
+    // choice context (DEX-73). For the self-registry both contexts are empty.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
@@ -458,7 +458,8 @@ export class PoolService {
             minLpTokens: input.minLpTokens,
             knownTotalLpSupply: input.knownTotalLpSupply,
             requestedAt: input.requestedAt,
-            extraArgs: depositContext.extraArgs,
+            poolAdminExtraArgs: depositContext.extraArgs,
+            lpRegistrarExtraArgs: lpContext.extraArgs,
           },
         },
       }),
@@ -549,9 +550,9 @@ export class PoolService {
     const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
     const { depositFactories, lpFactories, depositContext, lpContext } =
       await this.loadDvpSurface(pool);
-    // One `extraArgs` value is threaded through the Daml choice. That is
-    // enough for the self-registry; a split context-carrying setup would
-    // need per-admin handling.
+    // Split-admin DvP: base/quote batch under pool.admin, LP-burn batch under
+    // pool.lpRegistrar — each carries its own registry choice context
+    // (DEX-73). For the self-registry both contexts are empty.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
@@ -589,7 +590,8 @@ export class PoolService {
             baseQuoteSettleCid: depositFactories.settlementFactoryCid,
             lpSettleCid: lpFactories.settlementFactoryCid,
             requestedAt: input.requestedAt,
-            extraArgs: depositContext.extraArgs,
+            poolAdminExtraArgs: depositContext.extraArgs,
+            lpRegistrarExtraArgs: lpContext.extraArgs,
           },
         },
       }),

@@ -90,6 +90,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
         inputInstrumentId,
         inputAmount: parsedInput,
         minOutputAmount: minReceived,
+        swapperParty: party ?? '',
       });
       setInputAmount('');
       onSwapComplete?.();

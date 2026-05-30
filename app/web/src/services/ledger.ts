@@ -12,7 +12,7 @@
 import { OperatorApi } from './operator-api';
 import { handToWallet } from '@/wallet/handoff';
 import { useWalletStore } from '@/wallet/store';
-import type { V2AllocationSpecification, V2SettlementInfo } from '@/wallet/types';
+import type { ContractId, V2AllocationSpecification, V2SettlementInfo } from '@/wallet/types';
 import type {
   Order,
   Holding,
@@ -172,25 +172,56 @@ export const ledger = {
     inputInstrumentId: string;
     inputAmount: number;
     minOutputAmount: number;
+    swapperParty: string;
     inputHoldingCids?: string[];
   }) => {
-    const outputInstrumentId =
-      params.inputInstrumentId === params.pool.baseInstrumentId
-        ? params.pool.quoteInstrumentId
-        : params.pool.baseInstrumentId;
-    const result = await handToWallet({
-      kind: 'request-swap',
-      poolId: params.pool.contractId,
+    // Three-call DvP swap (DEX-83): (1) the operator builds the swapper's input
+    // allocation spec in Daml (PoolRules_RequestSwap); (2) the wallet authors
+    // that single allocation, locking the trader's input holdings, and returns
+    // the created Allocation cid; (3) the operator settles via PoolRules_Swap
+    // with that cid. The promise resolves on the real settle result — no
+    // optimistic success.
+    let inputHoldingCids = params.inputHoldingCids;
+    if (!inputHoldingCids || inputHoldingCids.length === 0) {
+      const holdings = await ledger.getHoldings(params.swapperParty);
+      inputHoldingCids = holdings
+        .filter((h) => h.instrumentId === params.inputInstrumentId && !h.locked)
+        .map((h) => h.contractId);
+    }
+
+    // 1. Operator-built allocation spec + settlement.
+    const req = await operator.requestSwap({
+      poolCid: params.pool.contractId as ContractId<'Pool'>,
+      swapper: params.swapperParty,
       inputInstrumentId: params.inputInstrumentId,
       inputAmount: params.inputAmount.toString(),
-      outputInstrumentId,
-      minOutputAmount: params.minOutputAmount.toString(),
-      inputHoldingCids: params.inputHoldingCids ?? [],
-      factoryCid: params.context.allocationFactoryCid,
-      operator: params.context.operator,
-      admin: params.context.admin,
     });
-    return { swapRequestId: result.primaryCid };
+
+    // 2. Wallet authors the single prefunded input allocation.
+    const walletResult = await handToWallet({
+      kind: 'request-swap',
+      poolId: params.pool.contractId,
+      allocationSpec: req.allocationSpec as V2AllocationSpecification,
+      settlement: req.settlement as V2SettlementInfo,
+      factoryCid: req.factoryCid,
+      inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
+    });
+    const swapperAllocationCid = walletResult.createdAllocationCids?.[0];
+    if (!swapperAllocationCid) {
+      throw new Error(
+        'swap: wallet did not return the created allocation cid; this provider cannot drive the swap',
+      );
+    }
+
+    // 3. Operator settles the swap against the authored allocation.
+    return operator.swap({
+      poolCid: params.pool.contractId as ContractId<'Pool'>,
+      swapperAccount: { owner: params.swapperParty, provider: null, id: '' },
+      inputInstrumentId: params.inputInstrumentId,
+      inputAmount: params.inputAmount.toString(),
+      minOutputAmount: params.minOutputAmount.toString(),
+      swapperAllocationCid: swapperAllocationCid as ContractId<'Allocation'>,
+    });
   },
 
   placeOrder: async (params: {

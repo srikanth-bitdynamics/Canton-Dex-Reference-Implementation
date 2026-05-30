@@ -1,16 +1,11 @@
 module CantonDex.Dex.PoolExecution where
 
--- Shared pool settlement-assembly helpers (DEX-77).
+-- Shared pool settlement-assembly helpers.
 --
--- Pure, behavior-preserving extraction of the duplicated reserve-settlement
--- assembly that was inline/duplicated across the pool rule choices: drawing
--- a redemption/swap across an ordered slice prefix and turning it into the
--- per-side delivery legs + FinalizedAllocations the SettleBatch consumes.
---
--- Scope is deliberately minimal — only the genuinely shared assembly lives
--- here. The slice-draw math + SliceDraw type stay in PoolModel; the
--- request/spec construction stays in PoolLiquidityRules. No public choices,
--- no new abstractions: this is DRY of helper functions only.
+-- Drawing a redemption/swap across an ordered slice prefix and turning it
+-- into the per-side delivery legs + FinalizedAllocations the SettleBatch
+-- consumes. The slice-draw math + SliceDraw type live in PoolModel; the
+-- request/spec construction lives in PoolLiquidityRules.
 
 import DA.TextMap qualified as TextMap
 

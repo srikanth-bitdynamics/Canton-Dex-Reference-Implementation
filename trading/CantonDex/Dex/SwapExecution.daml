@@ -5,7 +5,7 @@ module CantonDex.Dex.SwapExecution where
 -- pre-funds with a standard V2.Allocation.
 
 import Splice.Api.Token.AllocationV2 qualified as V2
-import CantonDex.Trading.WorkflowConstructors (emptyExtraArgs)
+import Splice.Api.Token.MetadataV1 (ExtraArgs)
 
 data SwapDirection
   = BaseToQuote
@@ -32,26 +32,35 @@ template SwapRequest with
 
     ensure inputAmount > 0.0 && minOutputAmount > 0.0
 
+    -- The cancel/withdraw lifecycle exercises the registry's
+    -- Allocation_Cancel / Allocation_Withdraw, so the caller threads the
+    -- registry choice context (`getChoiceContext admin`) — empty for the
+    -- self-registry, real for a context-requiring registry.
     choice SwapRequest_Cancel : SwapRequest_CancelResult
+      with
+        extraArgs : ExtraArgs
       controller operator
       do
         result <- exercise traderAllocationCid V2.Allocation_Cancel with
           actors = [operator]
-          extraArgs = emptyExtraArgs
+          extraArgs
         pure SwapRequest_CancelResult with cancelResult = result
 
     choice SwapRequest_TraderCancel : SwapRequest_CancelResult
+      with
+        extraArgs : ExtraArgs
       controller trader
       do
         result <- exercise traderAllocationCid V2.Allocation_Withdraw with
           actors = [trader]
-          extraArgs = emptyExtraArgs
+          extraArgs
         pure SwapRequest_CancelResult with
           cancelResult = result
 
     choice SwapRequest_Expire : SwapRequest_CancelResult
       with
         currentTime : Time
+        extraArgs : ExtraArgs
       controller operator
       do
         case deadline of
@@ -59,7 +68,7 @@ template SwapRequest with
           None -> abort "Swap has no deadline"
         result <- exercise traderAllocationCid V2.Allocation_Cancel with
           actors = [operator]
-          extraArgs = emptyExtraArgs
+          extraArgs
         pure SwapRequest_CancelResult with cancelResult = result
 
     choice SwapRequest_Consume : ContractId V2.Allocation

@@ -309,7 +309,7 @@ export function TradePage() {
                         fontSize: 11,
                       }}
                     >
-                      {s.trader.slice(0, 10)}…
+                      {(s.trader ?? '—').slice(0, 10)}…
                     </span>
                   </div>
                 );

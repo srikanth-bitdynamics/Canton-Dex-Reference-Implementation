@@ -387,11 +387,14 @@ async function routeRequest(
     if (!owner) {
       throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
-    // Read holdings as the owner — Holding has `signatory admin, observer
-    // owner`, so the operator party doesn't see them. The JWT carries
-    // ledger-wide rights so we can query as the owner directly.
+    // Read holdings as the owner against the V2 registry Holding (the
+    // template that implements the Token Standard V2 Holding interface and
+    // backs every fund movement in this app). Holding is `signatory admin,
+    // owner`, so querying as the owner returns its holdings. Its flat
+    // createArgument (admin/owner/instrumentId/amount/locked) matches the
+    // dApp Holding type 1:1. The JWT carries ledger-wide rights.
     const holdings = await backend.ledger.query<{ owner: string }>({
-      templateId: "CantonDex.Instrument.Holding:Holding",
+      templateId: "CantonDex.Registry.V2:Holding",
       observingParty: owner as never,
     });
     respondJson(

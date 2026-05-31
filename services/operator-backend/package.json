@@ -22,7 +22,8 @@
     "test": "node --import tsx --test test/*.test.ts",
     "dev": "node --import tsx src/dev-server.ts",
     "testnet": "node --import tsx src/testnet-server.ts",
-    "start": "node --import tsx src/testnet-server.ts"
+    "start": "node --import tsx src/testnet-server.ts",
+    "localnet:dvp-e2e": "node --import tsx ../../scripts/localnet-dvp-e2e.ts"
   },
   "dependencies": {
     "@canton-dex/registry-client": "file:../registry-client",

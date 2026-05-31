@@ -15,7 +15,8 @@ import { DEFAULT_PROVIDER_ID } from "@/wallet/registry";
 import { useWalletStore } from "@/wallet/store";
 import type { WalletProviderId } from "@/wallet/registry";
 
-function truncate(s: string, head = 6, tail = 4): string {
+function truncate(s: string | null | undefined, head = 6, tail = 4): string {
+  if (!s) return "—";
   if (s.length <= head + tail + 1) return s;
   return `${s.slice(0, head)}…${s.slice(-tail)}`;
 }

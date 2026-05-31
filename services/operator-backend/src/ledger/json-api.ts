@@ -68,12 +68,24 @@ export class JsonApiLedger implements LedgerSubmitter {
     if (!res.ok) {
       throw await this.errorFor(res);
     }
-    const body = (await res.json()) as JsonApiSubmitResponse;
-    // The shape of `body.events` (CreatedEvent | ExercisedEvent) varies
-    // with the choice; we extract the result via the convention that
-    // the operator backend always exercises a single root command and
-    // expects its result back.
-    return this.extractResult<R>(body, req);
+    // submit-and-wait returns a completion (updateId), not the events.
+    // Follow it to the transaction tree to read the created/exercised
+    // events for the single root command we submitted.
+    const { updateId } = (await res.json()) as { updateId: string; completionOffset?: number };
+    const parties = [...req.actAs, ...(req.readAs ?? [])];
+    const qs = parties.map((p) => `parties=${encodeURIComponent(p)}`).join("&");
+    const treeRes = await this.fetchImpl(
+      new URL(
+        `/v2/updates/transaction-tree-by-id/${encodeURIComponent(updateId)}?${qs}`,
+        this.config.baseUrl,
+      ).toString(),
+      { headers: this.headers() },
+    );
+    if (!treeRes.ok) {
+      throw await this.errorFor(treeRes);
+    }
+    const tree = (await treeRes.json()) as TransactionTreeResponse;
+    return this.extractResult<R>(tree, req);
   }
 
   async query<T>(filter: SubscriptionFilter): Promise<T[]> {
@@ -283,29 +295,27 @@ export class JsonApiLedger implements LedgerSubmitter {
   }
 
   private extractResult<R>(
-    body: JsonApiSubmitResponse,
+    tree: TransactionTreeResponse,
     req: SubmitRequest,
   ): R {
-    // For exercise commands, JSON API returns the choice result under
-    // `events[0].exercised.exerciseResult` (Daml-LF JSON form). For
-    // create commands, returns the cid.
+    // The transaction tree carries the root command's result: a create (or
+    // createAndExercise) yields a CreatedTreeEvent whose contractId we
+    // return; an exercise yields an ExercisedTreeEvent whose exerciseResult
+    // we return (Daml-LF JSON form).
+    const events = Object.values(tree.transaction?.eventsById ?? {});
     const cmd = req.command;
     if (cmd.kind === "create" || cmd.kind === "createAndExercise") {
-      const created = body.events?.find(
-        (e: { created?: unknown }) => e.created !== undefined,
-      ) as { created?: { contractId: string } } | undefined;
-      if (!created?.created) {
+      const created = events.find((e) => e.CreatedTreeEvent !== undefined);
+      if (!created?.CreatedTreeEvent) {
         throw new LedgerError("validation", "no Created event", false);
       }
-      return created.created.contractId as R;
+      return created.CreatedTreeEvent.value.contractId as R;
     }
-    const exercised = body.events?.find(
-      (e: { exercised?: unknown }) => e.exercised !== undefined,
-    ) as { exercised?: { exerciseResult: unknown } } | undefined;
-    if (!exercised?.exercised) {
+    const exercised = events.find((e) => e.ExercisedTreeEvent !== undefined);
+    if (!exercised?.ExercisedTreeEvent) {
       throw new LedgerError("validation", "no Exercised event", false);
     }
-    return exercised.exercised.exerciseResult as R;
+    return exercised.ExercisedTreeEvent.value.exerciseResult as R;
   }
 
   private async errorFor(res: Response): Promise<LedgerError> {
@@ -329,13 +339,18 @@ export class JsonApiLedger implements LedgerSubmitter {
 
 // === wire shapes =========================================================
 
-interface JsonApiSubmitResponse {
-  events?: Array<{
-    created?: { contractId: string; payload: unknown };
-    exercised?: { exerciseResult: unknown };
-    archived?: { contractId: string };
-  }>;
-  transactionId?: string;
+// Canton 3.x transaction tree (from /v2/updates/transaction-tree-by-id):
+// a map of node id -> tree event. We read the root command's created or
+// exercised node out of it.
+interface TransactionTreeResponse {
+  transaction?: {
+    eventsById?: Record<string, TreeEvent>;
+  };
+}
+
+interface TreeEvent {
+  CreatedTreeEvent?: { value: { nodeId: number; contractId: string } };
+  ExercisedTreeEvent?: { value: { nodeId: number; exerciseResult: unknown } };
 }
 
 interface AcsEntry {

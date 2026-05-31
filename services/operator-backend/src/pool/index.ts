@@ -283,6 +283,7 @@ export class PoolService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
+        readAs: input.swapperAccount.owner ? [input.swapperAccount.owner] : [],
         commandId: `pool-swap:${input.poolCid}:${Date.now()}`,
         disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {

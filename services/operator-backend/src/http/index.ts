@@ -387,16 +387,24 @@ async function routeRequest(
     if (!owner) {
       throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
-    // Read holdings as the owner against the V2 registry Holding (the
-    // template that implements the Token Standard V2 Holding interface and
-    // backs every fund movement in this app). Holding is `signatory admin,
-    // owner`, so querying as the owner returns its holdings. Its flat
-    // createArgument (admin/owner/instrumentId/amount/locked) matches the
-    // dApp Holding type 1:1. The JWT carries ledger-wide rights.
-    const holdings = await backend.ledger.query<{ owner: string }>({
-      templateId: "CantonDex.Registry.V2:Holding",
-      observingParty: owner as never,
-    });
+    // Read holdings as the owner. V2 testnet/localnet flows use the
+    // registry-backed Holding template; older in-memory/demo paths can
+    // still surface the legacy instrument holding. Query both and merge
+    // so the browser sees trader funds on either backend.
+    const load = async (templateId: string) => {
+      try {
+        return await backend.ledger.query<{ owner: string }>({
+          templateId,
+          observingParty: owner as never,
+        });
+      } catch {
+        return [] as Array<{ owner: string }>;
+      }
+    };
+    const holdings = [
+      ...(await load("CantonDex.Registry.V2:Holding")),
+      ...(await load("CantonDex.Instrument.Holding:Holding")),
+    ];
     respondJson(
       res,
       200,

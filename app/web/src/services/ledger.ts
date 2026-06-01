@@ -55,6 +55,52 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
 
 const operator = new OperatorApi(API_BASE);
 
+export function formatDecimal10(value: number): string {
+  return value.toFixed(10);
+}
+
+function decimal10Units(value: number): bigint {
+  const [whole, frac = ''] = formatDecimal10(value).split('.');
+  return BigInt(`${whole}${frac.padEnd(10, '0')}`);
+}
+
+export function pickExactHoldingCids(
+  holdings: Holding[],
+  instrumentId: string,
+  targetAmount: number,
+): string[] | null {
+  const target = decimal10Units(targetAmount);
+  if (target <= 0n) return [];
+  const candidates = holdings
+    .filter((h) => h.instrumentId === instrumentId && !h.locked)
+    .map((h) => ({
+      contractId: h.contractId,
+      units: decimal10Units(h.amount),
+    }))
+    .filter((h) => h.units > 0n)
+    .sort((a, b) => Number(a.units - b.units));
+
+  const chosen: string[] = [];
+  const seen = new Set<string>();
+
+  function search(start: number, remaining: bigint): boolean {
+    if (remaining === 0n) return true;
+    const key = `${start}:${remaining}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    for (let i = start; i < candidates.length; i += 1) {
+      const candidate = candidates[i]!;
+      if (candidate.units > remaining) continue;
+      chosen.push(candidate.contractId);
+      if (search(i + 1, remaining - candidate.units)) return true;
+      chosen.pop();
+    }
+    return false;
+  }
+
+  return search(0, target) ? [...chosen] : null;
+}
+
 /**
  * Static parties + factory cids returned by /v1/context. Required to
  * build wallet intents (the dApp does not invent operator/admin/
@@ -184,9 +230,16 @@ export const ledger = {
     let inputHoldingCids = params.inputHoldingCids;
     if (!inputHoldingCids || inputHoldingCids.length === 0) {
       const holdings = await ledger.getHoldings(params.swapperParty);
-      inputHoldingCids = holdings
-        .filter((h) => h.instrumentId === params.inputInstrumentId && !h.locked)
-        .map((h) => h.contractId);
+      inputHoldingCids = pickExactHoldingCids(
+        holdings,
+        params.inputInstrumentId,
+        params.inputAmount,
+      ) ?? undefined;
+    }
+    if (!inputHoldingCids || inputHoldingCids.length === 0) {
+      throw new Error(
+        `swap: no exact unlocked ${params.inputInstrumentId} holdings cover ${formatDecimal10(params.inputAmount)}; split holdings first`,
+      );
     }
 
     // 1. Operator-built allocation spec + settlement.
@@ -194,7 +247,7 @@ export const ledger = {
       poolCid: params.pool.contractId as ContractId<'Pool'>,
       swapper: params.swapperParty,
       inputInstrumentId: params.inputInstrumentId,
-      inputAmount: params.inputAmount.toString(),
+      inputAmount: formatDecimal10(params.inputAmount),
     });
 
     // 2. Wallet authors the single prefunded input allocation.
@@ -218,8 +271,8 @@ export const ledger = {
       poolCid: params.pool.contractId as ContractId<'Pool'>,
       swapperAccount: { owner: params.swapperParty, provider: null, id: '' },
       inputInstrumentId: params.inputInstrumentId,
-      inputAmount: params.inputAmount.toString(),
-      minOutputAmount: params.minOutputAmount.toString(),
+      inputAmount: formatDecimal10(params.inputAmount),
+      minOutputAmount: formatDecimal10(params.minOutputAmount),
       swapperAllocationCid: swapperAllocationCid as ContractId<'Allocation'>,
     });
   },

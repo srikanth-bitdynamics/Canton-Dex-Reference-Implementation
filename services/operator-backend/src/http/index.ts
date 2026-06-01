@@ -387,13 +387,24 @@ async function routeRequest(
     if (!owner) {
       throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
-    // Read holdings as the owner — Holding has `signatory admin, observer
-    // owner`, so the operator party doesn't see them. The JWT carries
-    // ledger-wide rights so we can query as the owner directly.
-    const holdings = await backend.ledger.query<{ owner: string }>({
-      templateId: "CantonDex.Instrument.Holding:Holding",
-      observingParty: owner as never,
-    });
+    // Read holdings as the owner. V2 testnet/localnet flows use the
+    // registry-backed Holding template; older in-memory/demo paths can
+    // still surface the legacy instrument holding. Query both and merge
+    // so the browser sees trader funds on either backend.
+    const load = async (templateId: string) => {
+      try {
+        return await backend.ledger.query<{ owner: string }>({
+          templateId,
+          observingParty: owner as never,
+        });
+      } catch {
+        return [] as Array<{ owner: string }>;
+      }
+    };
+    const holdings = [
+      ...(await load("CantonDex.Registry.V2:Holding")),
+      ...(await load("CantonDex.Instrument.Holding:Holding")),
+    ];
     respondJson(
       res,
       200,

@@ -62,6 +62,18 @@ interface SubmitAndWaitResponse {
   createdEvents?: Array<{ contractId: string; templateId: string }>;
 }
 
+function requireCreatedEvent(
+  createdEvents: Array<{ contractId: string; templateId: string }> | undefined,
+  suffix: string,
+  kind: string,
+): string {
+  const cid = createdEvents?.find((e) => e.templateId.endsWith(suffix))?.contractId;
+  if (!cid) {
+    throw new Error(`wallet did not return the created ${kind} cid`);
+  }
+  return cid;
+}
+
 function template(name: string): string {
   return `${PACKAGE_PREFIX}:${name}`;
 }
@@ -184,6 +196,8 @@ export class TokenStandardProvider implements WalletProvider {
       case "accept-allocation-request":
         return this.acceptAllocationRequest(intent);
       case "request-swap":
+      case "split-holding":
+      case "merge-holdings":
       case "add-liquidity":
       case "remove-liquidity":
         // DvP swap + LP add/remove: author the allocation(s) via the shared
@@ -261,6 +275,9 @@ export class TokenStandardProvider implements WalletProvider {
     const allocationEvents = (result.createdEvents ?? []).filter((e) =>
       e.templateId.endsWith("CantonDex.Registry.V2:Allocation"),
     );
+    const holdingEvents = (result.createdEvents ?? []).filter((e) =>
+      e.templateId.endsWith("CantonDex.Registry.V2:Holding"),
+    );
     const createdAllocationCids = extractCreatedAllocationCids(
       intent,
       composed.commands.length,
@@ -270,6 +287,10 @@ export class TokenStandardProvider implements WalletProvider {
       submittedBy: party,
       primaryCid: result.updateId,
       createdAllocationCids,
+      createdHoldingCids:
+        holdingEvents.length > 0
+          ? holdingEvents.map((e) => e.contractId)
+          : undefined,
     };
   }
 
@@ -298,7 +319,14 @@ export class TokenStandardProvider implements WalletProvider {
         },
       },
     );
-    return { submittedBy: party, primaryCid: result.updateId };
+    return {
+      submittedBy: party,
+      primaryCid: requireCreatedEvent(
+        result.createdEvents,
+        "CantonDex.Dex.OrderFundingRequest:OrderFundingRequest",
+        "OrderFundingRequest",
+      ),
+    };
   }
 
 
@@ -306,24 +334,29 @@ export class TokenStandardProvider implements WalletProvider {
     intent: Extract<WalletIntent, { kind: "accept-allocation-request" }>,
   ): Promise<WalletResult> {
     const party = this.session!.party;
-    const result = await this.submitAndWait(
-      [party],
-      `alloc-accept-${intent.requestCid.slice(0, 12)}-${Date.now()}`,
-      {
-        ExerciseCommand: {
-          templateId: template(
-            "CantonDex.Dex.OrderAllocationRequest:OrderAllocationRequest",
-          ),
-          contractId: intent.requestCid,
-          choice: "OrderAllocationRequest_Accept",
-          choiceArgument: {
-            factoryCid: intent.factoryCid,
-            inputHoldingCids: intent.inputHoldingCids,
-          },
-        },
-      },
+    const composed = composeCommands(intent, {
+      party,
+      packagePrefix: PACKAGE_PREFIX,
+      now: () => new Date(),
+    });
+    const result = await this.submitCommands(
+      composed.actAs,
+      composed.commandId,
+      composed.commands as unknown as Record<string, unknown>[],
     );
-    return { submittedBy: party, primaryCid: result.updateId };
+    const allocationEvents = (result.createdEvents ?? []).filter((e) =>
+      e.templateId.endsWith("CantonDex.Registry.V2:Allocation"),
+    );
+    const createdAllocationCids = extractCreatedAllocationCids(
+      intent,
+      1,
+      { createdEvents: allocationEvents },
+    );
+    return {
+      submittedBy: party,
+      primaryCid: createdAllocationCids?.[0] ?? result.updateId,
+      createdAllocationCids,
+    };
   }
 
   private async postRfqQuote(

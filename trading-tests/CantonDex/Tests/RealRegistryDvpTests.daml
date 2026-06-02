@@ -321,8 +321,8 @@ testRealRegistryDvpRemoveSettles = do
   assertMsg "alice received base (X) back" (not (null baseBack))
   assertMsg "alice received quote (Y) back" (not (null quoteBack))
 
--- Swap against the REAL TestTokenV2 registry, via the on-screen DvP path
--- (DEX-83). After a funded add, a swapper (bob) swaps quote (Y) -> base (X):
+-- Swap against the REAL TestTokenV2 registry, via the on-screen DvP path.
+-- After a funded add, a swapper (bob) swaps quote (Y) -> base (X):
 --   1. operator builds bob's prefunded swap-input allocation spec via
 --      PoolRules_RequestSwap (the dApp POST /v1/pools/swap/request path);
 --   2. bob authors that exact spec through the real TestTokenV2 registry,

@@ -11,7 +11,7 @@ import { createContext, useContext, type ReactNode } from 'react';
 import { TxToast, useToasts, type TxPhaseKind } from './toasts';
 
 interface ToastApi {
-  push: (label: string, kind?: TxPhaseKind, onComplete?: () => void) => void;
+  push: (label: string, kind?: TxPhaseKind, onComplete?: () => void) => number;
   dismiss: (id: number) => void;
 }
 
@@ -40,7 +40,7 @@ export function useToast(): ToastApi {
   return (
     useContext(Ctx) ?? {
       push: () => {
-        /* no provider */
+        return 0;
       },
       dismiss: () => {
         /* no provider */

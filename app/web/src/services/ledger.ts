@@ -59,20 +59,132 @@ export function formatDecimal10(value: number): string {
   return value.toFixed(10);
 }
 
+function multiplyDecimal10(left: number, right: number): string {
+  const scaled = decimal10Units(left) * decimal10Units(right);
+  return unitsToDecimal10(scaled / 10_000_000_000n);
+}
+
 function decimal10Units(value: number): bigint {
   const [whole, frac = ''] = formatDecimal10(value).split('.');
   return BigInt(`${whole}${frac.padEnd(10, '0')}`);
 }
 
+function decimal10StringUnits(value: string): bigint {
+  const trimmed = value.trim();
+  const sign = trimmed.startsWith('-') ? -1n : 1n;
+  const unsigned = trimmed.replace(/^[+-]/, '');
+  const [whole = '0', frac = ''] = unsigned.split('.');
+  return sign * BigInt(`${whole}${frac.padEnd(10, '0').slice(0, 10)}`);
+}
+
+function unitsToDecimal10(value: bigint): string {
+  const sign = value < 0n ? '-' : '';
+  const abs = value < 0n ? -value : value;
+  const whole = abs / 10_000_000_000n;
+  const frac = (abs % 10_000_000_000n).toString().padStart(10, '0');
+  return `${sign}${whole.toString()}.${frac}`;
+}
+
+interface FundingHolding {
+  contractId: string;
+  units: bigint;
+}
+
+type SwapFundingPlan =
+  | { kind: 'exact'; holdingCids: string[] }
+  | { kind: 'split'; sourceHoldingCid: string; splitAmount: string }
+  | {
+      kind: 'merge-then-split';
+      primaryHoldingCid: string;
+      otherHoldingCids: string[];
+      splitAmount: string;
+    }
+  | { kind: 'insufficient' };
+
+function unlockedInstrumentHoldings(
+  holdings: Holding[],
+  instrumentId: string,
+  admin?: string,
+): FundingHolding[] {
+  return holdings
+    .filter(
+      (h) =>
+        h.instrumentId === instrumentId &&
+        !h.locked &&
+        (admin == null || h.admin === admin),
+    )
+    .map((h) => ({
+      contractId: h.contractId,
+      units: decimal10Units(h.amount),
+    }))
+    .filter((h) => h.units > 0n);
+}
+
+export function planSwapFunding(
+  holdings: Holding[],
+  instrumentId: string,
+  targetAmount: number | string,
+  admin?: string,
+): SwapFundingPlan {
+  const exact = pickExactHoldingCids(holdings, instrumentId, targetAmount, admin);
+  if (exact) return { kind: 'exact', holdingCids: exact };
+
+  const target =
+    typeof targetAmount === 'string'
+      ? decimal10StringUnits(targetAmount)
+      : decimal10Units(targetAmount);
+  const candidates = unlockedInstrumentHoldings(holdings, instrumentId, admin);
+  const total = candidates.reduce((sum, h) => sum + h.units, 0n);
+  if (total < target) return { kind: 'insufficient' };
+
+  const smallestOversized = [...candidates]
+    .filter((h) => h.units > target)
+    .sort((a, b) => Number(a.units - b.units))[0];
+  if (smallestOversized) {
+    return {
+      kind: 'split',
+      sourceHoldingCid: smallestOversized.contractId,
+      splitAmount: unitsToDecimal10(target),
+    };
+  }
+
+  const descending = [...candidates].sort((a, b) => Number(b.units - a.units));
+  const picked: FundingHolding[] = [];
+  let accumulated = 0n;
+  for (const holding of descending) {
+    picked.push(holding);
+    accumulated += holding.units;
+    if (accumulated >= target) break;
+  }
+  if (picked.length === 0 || accumulated < target) {
+    return { kind: 'insufficient' };
+  }
+  return {
+    kind: 'merge-then-split',
+    primaryHoldingCid: picked[0]!.contractId,
+    otherHoldingCids: picked.slice(1).map((h) => h.contractId),
+    splitAmount: unitsToDecimal10(target),
+  };
+}
+
 export function pickExactHoldingCids(
   holdings: Holding[],
   instrumentId: string,
-  targetAmount: number,
+  targetAmount: number | string,
+  admin?: string,
 ): string[] | null {
-  const target = decimal10Units(targetAmount);
+  const target =
+    typeof targetAmount === 'string'
+      ? decimal10StringUnits(targetAmount)
+      : decimal10Units(targetAmount);
   if (target <= 0n) return [];
   const candidates = holdings
-    .filter((h) => h.instrumentId === instrumentId && !h.locked)
+    .filter(
+      (h) =>
+        h.instrumentId === instrumentId &&
+        !h.locked &&
+        (admin == null || h.admin === admin),
+    )
     .map((h) => ({
       contractId: h.contractId,
       units: decimal10Units(h.amount),
@@ -99,6 +211,63 @@ export function pickExactHoldingCids(
   }
 
   return search(0, target) ? [...chosen] : null;
+}
+
+async function normalizeSwapFunding(params: {
+  admin: string;
+  party: string;
+  instrumentId: string;
+  amount: number | string;
+}): Promise<string[] | null> {
+  let holdings = await ledger.getHoldings(params.party);
+  let plan = planSwapFunding(
+    holdings,
+    params.instrumentId,
+    params.amount,
+    params.admin,
+  );
+  if (plan.kind === 'exact') return plan.holdingCids;
+  if (plan.kind === 'insufficient') return null;
+
+  if (plan.kind === 'split') {
+    await handToWallet({
+      kind: 'split-holding',
+      holdingCid: plan.sourceHoldingCid,
+      admin: params.admin,
+      splitAmount: plan.splitAmount,
+    });
+    holdings = await ledger.getHoldings(params.party);
+    return pickExactHoldingCids(
+      holdings,
+      params.instrumentId,
+      params.amount,
+      params.admin,
+    );
+  }
+
+  let currentCid = plan.primaryHoldingCid;
+  for (const otherCid of plan.otherHoldingCids) {
+    const result = await handToWallet({
+      kind: 'merge-holdings',
+      holdingCid: currentCid,
+      otherCid,
+      admin: params.admin,
+    });
+    currentCid = result.createdHoldingCids?.[0] ?? currentCid;
+  }
+  await handToWallet({
+    kind: 'split-holding',
+    holdingCid: currentCid,
+    admin: params.admin,
+    splitAmount: plan.splitAmount,
+  });
+  holdings = await ledger.getHoldings(params.party);
+  return pickExactHoldingCids(
+    holdings,
+    params.instrumentId,
+    params.amount,
+    params.admin,
+  );
 }
 
 /**
@@ -229,16 +398,16 @@ export const ledger = {
     // optimistic success.
     let inputHoldingCids = params.inputHoldingCids;
     if (!inputHoldingCids || inputHoldingCids.length === 0) {
-      const holdings = await ledger.getHoldings(params.swapperParty);
-      inputHoldingCids = pickExactHoldingCids(
-        holdings,
-        params.inputInstrumentId,
-        params.inputAmount,
-      ) ?? undefined;
+      inputHoldingCids = await normalizeSwapFunding({
+        admin: params.context.admin,
+        party: params.swapperParty,
+        instrumentId: params.inputInstrumentId,
+        amount: params.inputAmount,
+      }) ?? undefined;
     }
     if (!inputHoldingCids || inputHoldingCids.length === 0) {
       throw new Error(
-        `swap: no exact unlocked ${params.inputInstrumentId} holdings cover ${formatDecimal10(params.inputAmount)}; split holdings first`,
+        `swap: unable to prepare an exact ${params.inputInstrumentId} funding holding for ${formatDecimal10(params.inputAmount)}`,
       );
     }
 
@@ -286,6 +455,7 @@ export const ledger = {
     quantity: number;
     expiry: string | null;
   }) => {
+    const trader = connectedParty();
     const result = await handToWallet({
       kind: 'place-order',
       pair: { base: params.pairBase, quote: params.pairQuote },
@@ -296,7 +466,62 @@ export const ledger = {
       operator: params.context.operator,
       admin: params.context.admin,
     });
-    return { orderId: result.primaryCid };
+    const settlementRef = `web-${Date.now()}`;
+    const bindRes = await operator.bindOrder({
+      fundingRequestCid: result.primaryCid as ContractId<'OrderFundingRequest'>,
+      settlementRef,
+    });
+
+    const lockInstrumentId =
+      params.side === 'Bid' ? params.pairQuote : params.pairBase;
+    const lockAmount =
+      params.side === 'Bid'
+        ? multiplyDecimal10(params.limitPrice, params.quantity)
+        : formatDecimal10(params.quantity);
+    const inputHoldingCids = await normalizeSwapFunding({
+      admin: params.context.admin,
+      party: trader,
+      instrumentId: lockInstrumentId,
+      amount: lockAmount,
+    });
+    if (!inputHoldingCids || inputHoldingCids.length === 0) {
+      throw new Error(
+        `order funding: no exact unlocked ${lockInstrumentId} holdings cover ${lockAmount}; split holdings first`,
+      );
+    }
+
+    const walletRes = await handToWallet({
+      kind: 'accept-allocation-request',
+      requestCid: bindRes.allocationRequestCid as ContractId<'AllocationRequest'>,
+      factoryCid: params.context.allocationFactoryCid as ContractId<'AllocationFactory'>,
+      settlement: {
+        executors: [params.context.operator],
+        id: `DexOrder-${settlementRef}`,
+        cid: null,
+        meta: { values: {} },
+      },
+      allocationSpec: {
+        admin: params.context.admin,
+        authorizer: { owner: trader, provider: null, id: '' },
+        transferLegSides: [],
+        settlementDeadline: params.expiry,
+        nextIterationFunding: { [lockInstrumentId]: lockAmount },
+        committed: true,
+        meta: { values: {} },
+      },
+      inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
+      hint: { instrumentId: lockInstrumentId, amount: lockAmount },
+    });
+    const allocationCid = walletRes.createdAllocationCids?.[0];
+    if (!allocationCid) {
+      throw new Error('order funding: wallet did not return the created allocation cid');
+    }
+
+    const fundRes = await operator.fundOrder({
+      orderCid: bindRes.orderCid as ContractId<'Order'>,
+      allocationCid: allocationCid as ContractId<'Allocation'>,
+    });
+    return { orderId: fundRes.orderCid };
   },
 
   // Operator-authority write -- straight HTTP, no wallet involvement.
@@ -369,22 +594,30 @@ export const ledger = {
 
   // DvP remove, symmetric to add: the operator derives the slice
   // draw + creates the request; the trader's wallet authors the base/quote
-  // receipts + the LP burn-sender (locking `holderLpHoldingCid`); the
-  // operator + lpRegistrar settle, delivering base+quote to the holder and
-  // burning the LP tokens. `holderLpHoldingCid` is required — the wallet
-  // must lock a concrete LP holding for the burn.
+  // receipts + the LP burn-sender; the operator + lpRegistrar settle,
+  // delivering base+quote to the holder and burning the LP tokens. The
+  // wallet normalizes fragmented LP holdings to an exact burn amount first,
+  // so partial removals do not over-lock the trader's LP position.
   removeLiquidity: async (params: {
     poolId: string;
     holder: string;
+    lpAdmin: string;
+    lpInstrumentId: string;
     lpTokens: number;
     minBaseOut: number;
     minQuoteOut: number;
-    /** ALL the trader's unlocked LP holdings to lock for the burn (an LP
-     *  position can be split across several holdings). Must be non-empty. */
-    holderLpHoldingCids: string[];
   }) => {
-    if (params.holderLpHoldingCids.length === 0) {
-      throw new Error('no unlocked LP holdings to burn');
+    const lpTokensToRedeem = formatDecimal10(params.lpTokens);
+    const holderLpHoldingCids = await normalizeSwapFunding({
+      admin: params.lpAdmin,
+      party: params.holder,
+      instrumentId: params.lpInstrumentId,
+      amount: lpTokensToRedeem,
+    });
+    if (!holderLpHoldingCids || holderLpHoldingCids.length === 0) {
+      throw new Error(
+        `remove-liquidity: no exact unlocked ${params.lpInstrumentId} holdings cover ${lpTokensToRedeem}`,
+      );
     }
     const requestedAt = new Date().toISOString();
     const req = await fetchJson<RequestRemoveResult>('/v1/pools/remove-liquidity/request', {
@@ -392,7 +625,7 @@ export const ledger = {
       body: JSON.stringify({
         poolCid: params.poolId,
         holder: params.holder,
-        lpTokensToRedeem: params.lpTokens.toString(),
+        lpTokensToRedeem,
         requestedAt,
       }),
     });
@@ -403,7 +636,7 @@ export const ledger = {
       allocations: req.allocations,
       depositFactoryCid: req.depositFactoryCid,
       lpFactoryCid: req.lpFactoryCid,
-      lpHoldingCids: params.holderLpHoldingCids,
+      lpHoldingCids: holderLpHoldingCids,
     });
     const cids = walletRes.createdAllocationCids;
     if (!cids || cids.length !== 3) {
@@ -416,10 +649,10 @@ export const ledger = {
         poolCid: params.poolId,
         requestCid: req.requestCid,
         holder: params.holder,
-        lpTokensToRedeem: params.lpTokens.toString(),
+        lpTokensToRedeem,
         knownTotalLpSupply: req.knownTotalLpSupply,
-        minBaseOut: params.minBaseOut.toString(),
-        minQuoteOut: params.minQuoteOut.toString(),
+        minBaseOut: formatDecimal10(params.minBaseOut),
+        minQuoteOut: formatDecimal10(params.minQuoteOut),
         holderBaseReceiptCid,
         holderQuoteReceiptCid,
         holderBurnSenderCid,

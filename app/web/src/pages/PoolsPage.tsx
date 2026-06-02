@@ -48,18 +48,23 @@ export function PoolsPage() {
 
   const selectedPool = pools.find((p) => p.contractId === selected);
   if (selectedPool) {
-    // Find user's LP holding for this pool, matching the full (admin, id)
-    // instrument identity rather than the textual id alone.
-    const lpHolding = holdings?.find(
-      (h) =>
-        h.instrumentId === selectedPool.lpInstrumentId.id &&
-        h.admin === selectedPool.lpInstrumentId.admin,
-    );
+    // Sum the user's unlocked LP holdings for this pool, matching the full
+    // (admin, id) identity rather than the textual id alone. LP positions can
+    // be split across several holdings during normalization, and locked shards
+    // from failed attempts must not be counted as still available to redeem.
+    const lpHeld = (holdings ?? [])
+      .filter(
+        (h) =>
+          !h.locked &&
+          h.instrumentId === selectedPool.lpInstrumentId.id &&
+          h.admin === selectedPool.lpInstrumentId.admin,
+      )
+      .reduce((sum, h) => sum + h.amount, 0);
     return (
       <PoolDetail
         pool={selectedPool}
         holdings={holdings ?? []}
-        lpHeld={lpHolding?.amount ?? 0}
+        lpHeld={lpHeld}
         onBack={() => setSelected(null)}
       />
     );

@@ -50,8 +50,7 @@ Splice's `token-standard-v2-upcoming` branch:
 - iterated settlement
 - `nextIterationFunding`
 - committed allocations
-- `FinalizedAllocation.extraTransferLegSides` (replaces the
-  draft-era `Allocation_Adjust` choice)
+- `FinalizedAllocation.extraTransferLegSides`
 - settle results that return next-iteration allocation state
 
 Those changes are what make it realistic to use allocations not only for trade
@@ -208,7 +207,7 @@ The intended model is:
 
 - `Order`, `MatchedTrade`, `Pool`, and related app contracts define the exact
   business state that authorizes a use of funds
-- `Allocation_Adjust` and `SettlementFactory_SettleBatch` are only exercised as
+- finalized allocations and `SettlementFactory_SettleBatch` are only used as
   part of those app-owned workflows
 - the off-chain operator proposes actions, but the ledger-visible contracts
   validate the quantity, pair, expiry, side, and reserve references being used

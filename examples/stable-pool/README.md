@@ -31,9 +31,9 @@ different DEX without forking the core templates.
 
 To keep the example focused on the curve math, this version only
 implements `StablePool_ComputeSwapOut` (read-only). The full
-allocation-adjust + settle wiring is identical to the base
-reference's `Pool_Swap` and is omitted for brevity. A production
-fork would copy that wiring (10–15 lines) into `StablePool_Swap`.
+finalized-allocation + settle wiring is identical to the base
+reference's `PoolRules_Swap` and is omitted for brevity. A production
+fork would copy that wiring (10–15 lines) into its stable-pool swap choice.
 
 ## Build & test
 

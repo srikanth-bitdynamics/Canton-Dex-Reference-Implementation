@@ -111,7 +111,7 @@ There are two distinct workflow families.
 - resting orders backed by prefunded allocations
 - pool reserves represented by committed allocations
 - repeated swaps via iterated settlement
-- reserve roll-forward using `Allocation_Adjust`
+- reserve roll-forward using `FinalizedAllocation.nextIterationFunding`
 
 This split matters. A clean workflow design should not pretend these are at the
 same maturity level.

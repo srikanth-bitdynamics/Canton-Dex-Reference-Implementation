@@ -53,11 +53,10 @@ Current state (2026-05-18):
 
 Branch-tip refresh experiment on 2026-05-18 surfaced that the upstream
 branch has continued to refactor the allocation API on the way to release —
-specifically `transferLegs : [TransferLeg]` → `transferLegSides :
-[TransferLegSide]` and `Allocation_Adjust` choice removed. Adapting our
-local surface to the post-refactor API is gated
-on the upstream V2 release tag (so we migrate against a stable target,
-not a moving branch tip).
+specifically shifting iterated-settlement detail into
+`FinalizedAllocation.extraTransferLegSides` and
+`nextIterationFunding`. We migrate against the current
+`token-standard-v2-upcoming` surface rather than an older draft shape.
 
 ## Why this matters
 
@@ -129,7 +128,7 @@ not a moving branch tip).
   `PoolLiquidityRules_SettleRemoveLiquidity`, `Rfq_Accept`,
   `MatchedTrade_RequestAllocations`, `MatchedTrade_Settle`,
   `AllocationFactory_Allocate`, `SettlementFactory_SettleBatch`,
-  `Allocation_Adjust`, `Allocation_Cancel`.
+  `Allocation_Cancel`.
 - **BatchingUtilityV2 surface.** The wallet's multi-action composition
   uses this. If upstream renames or tightens it, the Token Standard
   provider needs an update.

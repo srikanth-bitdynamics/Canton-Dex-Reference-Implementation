@@ -176,8 +176,8 @@ mkCommittedPoolAllocationSpecification admin authorizer settlementDeadline nextI
     (Some nextIterationFunding)
     True
 
--- | FinalizedAllocation carrying extra leg-sides (the iterated-settlement
--- replacement for Allocation_Adjust) and optional next-iteration funding.
+-- | FinalizedAllocation carrying extra leg-sides and optional
+-- next-iteration funding.
 mkFinalizedAllocation
   : ContractId V2.Allocation
   -> [V2.TransferLegSide]

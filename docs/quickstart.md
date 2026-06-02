@@ -79,9 +79,9 @@ optional `src/`-stack analog.
   the trader's authority drives the holding movement (the operator cannot move
   trader holdings on their own).
 - `trading/CantonDex/Dex/OrderMatchExecution.daml` — applies the V2
-  prefunded-trade pattern: both prefunded allocations get `Allocation_Adjust`-ed
-  with the concrete match legs, then batch-settled; next-iteration CIDs roll
-  forward onto partial fills.
+  prefunded-trade pattern: concrete match legs are supplied as
+  `FinalizedAllocation.extraTransferLegSides` at batch settlement time;
+  next-iteration CIDs roll forward onto partial fills.
 - Tests: `EndToEndTests.daml::testOrderFundingFlow`,
   `testAllocationAdjustConservation`.
 

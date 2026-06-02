@@ -3,7 +3,7 @@
 // over <SwapCard> + a pool stats panel; all wallet handoff and on-ledger
 // state still lives behind ledger.executeSwap / useToast.
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { SwapCard } from '@/components/SwapCard';
@@ -17,6 +17,8 @@ import { usePriceHistory } from '@/hooks/useStats';
 
 export function TradePage() {
   const party = useCurrentParty();
+  // Which pool the user has explicitly chosen; null = default to first tradeable.
+  const [selectedPoolId, setSelectedPoolId] = useState<string | null>(null);
 
   const { data: pools } = useQuery({
     queryKey: ['pools'],
@@ -53,9 +55,15 @@ export function TradePage() {
     refetchInterval: 10_000,
   });
 
-  const activePool = useMemo(
-    () => pools?.find((p) => p.status === 'Active' || p.status === 'Unfunded'),
+  const tradeablePools = useMemo(
+    () => (pools ?? []).filter((p) => p.status === 'Active' || p.status === 'Unfunded'),
     [pools],
+  );
+  const activePool = useMemo(
+    () =>
+      tradeablePools.find((p) => p.contractId === selectedPoolId) ??
+      tradeablePools[0],
+    [tradeablePools, selectedPoolId],
   );
 
   const balances: Record<string, number> = useMemo(() => {
@@ -123,7 +131,29 @@ export function TradePage() {
             settle on-ledger via Token Standard V2 allocations.
           </p>
         </div>
-        <div className="row">
+        <div className="row" style={{ gap: 12 }}>
+          {tradeablePools.length > 1 && (
+            <select
+              value={activePool?.contractId ?? ''}
+              onChange={(e) => setSelectedPoolId(e.target.value)}
+              title="Choose which pool to trade against"
+              style={{
+                background: 'var(--bg-3)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                color: 'inherit',
+                padding: '6px 10px',
+                fontSize: 12,
+              }}
+            >
+              {tradeablePools.map((p) => (
+                <option key={p.contractId} value={p.contractId}>
+                  {p.baseInstrumentId}/{p.quoteInstrumentId} · {p.status} · #
+                  {p.contractId.slice(0, 6)}
+                </option>
+              ))}
+            </select>
+          )}
           <div className="status-pill">
             <span className="dot" />
             Network: Canton {import.meta.env.VITE_CANTON_NETWORK_ID ?? 'devnet'}

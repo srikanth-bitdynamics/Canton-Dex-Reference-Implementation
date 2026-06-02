@@ -68,24 +68,12 @@ export class JsonApiLedger implements LedgerSubmitter {
     if (!res.ok) {
       throw await this.errorFor(res);
     }
-    // submit-and-wait returns a completion (updateId), not the events.
-    // Follow it to the transaction tree to read the created/exercised
-    // events for the single root command we submitted.
-    const { updateId } = (await res.json()) as { updateId: string; completionOffset?: number };
-    const parties = [...req.actAs, ...(req.readAs ?? [])];
-    const qs = parties.map((p) => `parties=${encodeURIComponent(p)}`).join("&");
-    const treeRes = await this.fetchImpl(
-      new URL(
-        `/v2/updates/transaction-tree-by-id/${encodeURIComponent(updateId)}?${qs}`,
-        this.config.baseUrl,
-      ).toString(),
-      { headers: this.headers() },
-    );
-    if (!treeRes.ok) {
-      throw await this.errorFor(treeRes);
-    }
-    const tree = (await treeRes.json()) as TransactionTreeResponse;
-    return this.extractResult<R>(tree, req);
+    const body = (await res.json()) as JsonApiSubmitResponse;
+    // The shape of `body.events` (CreatedEvent | ExercisedEvent) varies
+    // with the choice; we extract the result via the convention that
+    // the operator backend always exercises a single root command and
+    // expects its result back.
+    return this.extractResult<R>(body, req);
   }
 
   async query<T>(filter: SubscriptionFilter): Promise<T[]> {
@@ -294,28 +282,81 @@ export class JsonApiLedger implements LedgerSubmitter {
     }
   }
 
-  private extractResult<R>(
-    tree: TransactionTreeResponse,
+  private async extractResult<R>(
+    body: JsonApiSubmitResponse,
     req: SubmitRequest,
-  ): R {
-    // The transaction tree carries the root command's result: a create (or
-    // createAndExercise) yields a CreatedTreeEvent whose contractId we
-    // return; an exercise yields an ExercisedTreeEvent whose exerciseResult
-    // we return (Daml-LF JSON form).
-    const events = Object.values(tree.transaction?.eventsById ?? {});
+  ): Promise<R> {
+    // For exercise commands, JSON API returns the choice result under
+    // `events[0].exercised.exerciseResult` (Daml-LF JSON form). For
+    // create commands, returns the cid.
     const cmd = req.command;
     if (cmd.kind === "create" || cmd.kind === "createAndExercise") {
-      const created = events.find((e) => e.CreatedTreeEvent !== undefined);
-      if (!created?.CreatedTreeEvent) {
+      const created = body.events?.find(
+        (e: { created?: unknown }) => e.created !== undefined,
+      ) as { created?: { contractId: string } } | undefined;
+      if (!created?.created) {
+        if (body.updateId) {
+          const tx = await this.fetchTransactionTree(body.updateId, req);
+          const createdEvent = this.firstCreatedTreeEvent(tx);
+          if (createdEvent) {
+            return createdEvent.contractId as R;
+          }
+        }
         throw new LedgerError("validation", "no Created event", false);
       }
-      return created.CreatedTreeEvent.value.contractId as R;
+      return Promise.resolve(created.created.contractId as R);
     }
-    const exercised = events.find((e) => e.ExercisedTreeEvent !== undefined);
-    if (!exercised?.ExercisedTreeEvent) {
+    const exercised = body.events?.find(
+      (e: { exercised?: unknown }) => e.exercised !== undefined,
+    ) as { exercised?: { exerciseResult: unknown } } | undefined;
+    if (!exercised?.exercised) {
+      if (body.updateId) {
+        const tx = await this.fetchTransactionTree(body.updateId, req);
+        const exercisedEvent = this.firstExercisedTreeEvent(tx);
+        if (exercisedEvent) {
+          return exercisedEvent.exerciseResult as R;
+        }
+      }
       throw new LedgerError("validation", "no Exercised event", false);
     }
-    return exercised.ExercisedTreeEvent.value.exerciseResult as R;
+    return Promise.resolve(exercised.exercised.exerciseResult as R);
+  }
+
+  private async fetchTransactionTree(
+    updateId: string,
+    req: SubmitRequest,
+  ): Promise<JsonApiTransactionTree> {
+    const url = new URL(
+      `/v2/updates/transaction-tree-by-id/${encodeURIComponent(updateId)}`,
+      this.config.baseUrl,
+    );
+    for (const party of new Set([...req.actAs, ...(req.readAs ?? [])])) {
+      url.searchParams.append("parties", party);
+    }
+    const res = await this.fetchImpl(url.toString(), { headers: this.headers() });
+    if (!res.ok) {
+      throw await this.errorFor(res);
+    }
+    const body = (await res.json()) as JsonApiTransactionTreeResponse;
+    return body.transaction;
+  }
+
+  private firstCreatedTreeEvent(
+    tx: JsonApiTransactionTree,
+  ): JsonApiCreatedTreeEvent["value"] | undefined {
+    return Object.values(tx.eventsById)
+      .map((event) => event.CreatedTreeEvent?.value)
+      .filter((event): event is JsonApiCreatedTreeEvent["value"] => event !== undefined)
+      .sort((a, b) => a.nodeId - b.nodeId)[0];
+  }
+
+  private firstExercisedTreeEvent(
+    tx: JsonApiTransactionTree,
+  ): JsonApiExercisedTreeEvent["value"] | undefined {
+    return Object.values(tx.eventsById)
+      .map((event) => event.ExercisedTreeEvent?.value)
+      .filter((event): event is JsonApiExercisedTreeEvent["value"] => event !== undefined)
+      .sort((a, b) => a.nodeId - b.nodeId)[0];
   }
 
   private async errorFor(res: Response): Promise<LedgerError> {
@@ -339,18 +380,42 @@ export class JsonApiLedger implements LedgerSubmitter {
 
 // === wire shapes =========================================================
 
-// Canton 3.x transaction tree (from /v2/updates/transaction-tree-by-id):
-// a map of node id -> tree event. We read the root command's created or
-// exercised node out of it.
-interface TransactionTreeResponse {
-  transaction?: {
-    eventsById?: Record<string, TreeEvent>;
+interface JsonApiSubmitResponse {
+  events?: Array<{
+    created?: { contractId: string; payload: unknown };
+    exercised?: { exerciseResult: unknown };
+    archived?: { contractId: string };
+  }>;
+  transactionId?: string;
+  updateId?: string;
+  completionOffset?: number;
+}
+
+interface JsonApiTransactionTreeResponse {
+  transaction: JsonApiTransactionTree;
+}
+
+interface JsonApiTransactionTree {
+  eventsById: Record<string, JsonApiTreeEvent>;
+}
+
+interface JsonApiTreeEvent {
+  CreatedTreeEvent?: JsonApiCreatedTreeEvent;
+  ExercisedTreeEvent?: JsonApiExercisedTreeEvent;
+}
+
+interface JsonApiCreatedTreeEvent {
+  value: {
+    nodeId: number;
+    contractId: string;
   };
 }
 
-interface TreeEvent {
-  CreatedTreeEvent?: { value: { nodeId: number; contractId: string } };
-  ExercisedTreeEvent?: { value: { nodeId: number; exerciseResult: unknown } };
+interface JsonApiExercisedTreeEvent {
+  value: {
+    nodeId: number;
+    exerciseResult: unknown;
+  };
 }
 
 interface AcsEntry {

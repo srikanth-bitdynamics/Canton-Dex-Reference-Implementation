@@ -25,11 +25,12 @@ V2 allocation surface:
   the upstream TradingAppV2 pattern
 - `Order` — resting bid/ask orders backed by prefunded `V2.Allocation`;
   uses the iterated settlement pattern for partial fills
-- `Pool` — constant-product liquidity pool backed by committed
-  `V2.Allocation`s; swap execution uses extra-leg adjust + batch
-  settle + roll-forward
-- `LPToken` — LP token issuance policy for pool share minting and
-  burning
-- `SwapExecution` — trader-facing swap request lifecycle
+- `Pool`, `PoolState`, and `PoolSlice` — constant-product liquidity
+  pool config, hot reserve accounting, and slice-local committed
+  allocations
+- `PoolRules` and `PoolLiquidityRules` — swap plus DvP liquidity
+  request/settle choices over the pool state and slices
+- `CantonDex.Lp.Policy` / `CantonDex.Lp.Instrument` — LP-token
+  issuance policy and mint/burn leg construction
 - `OrderMatchExecution` — order matching execution using the prefunded
   trade pattern (adjust both allocations, settle atomically)

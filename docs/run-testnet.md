@@ -114,7 +114,7 @@ on the EC2). Step-by-step:
 `scripts/testnet-v2registry-trade.ts` drives a real trade through
 **`CantonDex.Registry.V2.Registry`** — a registry implementing every
 CIP-0056 on-ledger interface: `V2.Holding`, `V2.AllocationFactory`,
-`V2.Allocation` (with `Allocation_Adjust` for iterated settlement),
+`V2.Allocation` (including iterated-settlement funding),
 `V2.SettlementFactory`, `V2.TransferFactory`, `V2.TransferInstruction`,
 `TransferEventsV2.EventLog`. Plus `InstrumentConfig` (decimals, supply
 cap, credential reqs), `Credential` (issuer-signed claims), and
@@ -156,8 +156,8 @@ Configure with `CANTON_DEX_PACKAGE_ID=518e614a12a08c594c385da32cb49b6d24ca6a8653
 - **`AllocationFactory_Allocate` enforces per-instrument coverage**:
   sum of input-holding amounts per instrument id must be ≥ outflow
   for that instrument across the authorizer's sender-side legs.
-- **`Allocation_Adjust` enforces funding conservation**: each
-  additional leg's net outflow must be covered by the current
+- **Settlement enforces funding conservation**: each
+  extra leg-side's net outflow must be covered by the current
   `nextIterationFunding` budget; consumed amount is debited from the
   next-iteration budget. Required for `PoolRules_Swap` and order partial-
   fill roll-forward.

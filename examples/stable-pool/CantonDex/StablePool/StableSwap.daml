@@ -17,17 +17,17 @@ module CantonDex.StablePool.StableSwap where
 --   1. The slice-local pool model is curve-agnostic — we re-use the
 --      same Pool template field shape (operator-signed, slice-list-
 --      backed) but plug in a different swap-output computation.
---   2. The V2-standard mint/burn flow (LPMintRequest / LPBurnRequest
---      from the base reference) works without modification for an
+--   2. The V2-standard LP mint/burn settlement flow from the base
+--      reference works without modification for an
 --      LP token issued by this new pool.
 --   3. The same operator-backend / dApp can route swaps to either the
 --      canton-dex constant-product pool OR this stable pool — they
 --      both implement the same query/exercise contract.
 --
 -- What this example does NOT do (kept lean intentionally):
---   - The full Allocation_Adjust + SettlementFactory_SettleBatch
+--   - The full finalized-allocation + SettlementFactory_SettleBatch
 --     orchestration. The point is the curve math; the settlement
---     wiring is identical to the base reference's `Pool_Swap` and
+--     wiring is identical to the base reference's `PoolRules_Swap` and
 --     omitted to keep the example focused on the *novel* part.
 
 import DA.TextMap qualified as TextMap
@@ -125,7 +125,7 @@ template StablePool with
     ensure amplification > 0.0 && feeBps >= 0 && feeBps <= 10000
 
     -- Read-only quote. Production swap exercise would settle V2
-    -- allocations exactly as `Pool_Swap` does in the base reference.
+    -- allocations exactly as `PoolRules_Swap` does in the base reference.
     nonconsuming choice StablePool_ComputeSwapOut : Decimal
       with
         inputInstrumentId : Text

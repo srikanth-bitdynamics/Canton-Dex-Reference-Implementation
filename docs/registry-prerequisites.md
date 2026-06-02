@@ -59,33 +59,33 @@ local mirror in `CantonDex/Instrument/` defines the on-ledger shape:
   by sender + admin without explicit receiver accept, scoped to specified
   instrument ids (or all under the admin if empty).
 
-## What the registry MUST enforce in `Allocation_Adjust`
+## What the registry MUST enforce for iterated settlement
 
-The DEX uses iterated settlement: the trader allocates an upper-bound
-funding budget (`nextIterationFunding`) once, and the operator (the
-settlement executor) calls `Allocation_Adjust` repeatedly to add
-transfer legs as trades match.
+The DEX uses iterated settlement: the authorizer opts in by creating an
+allocation with `nextIterationFunding = Some ...`, and the settlement
+executor supplies concrete trade leg-sides in
+`FinalizedAllocation.extraTransferLegSides` when calling
+`SettlementFactory_SettleBatch`.
 
-This pattern places funds under operator control between iterations. To
-keep the operator from misusing those funds, the registry's
-`allocation_adjustImpl` MUST enforce funding conservation **in Daml**,
-not in operator code:
+This pattern places funds under executor control between iterations. To
+keep the executor from misusing those funds, the registry's settlement
+implementation MUST enforce funding conservation **in Daml**, not in
+operator code:
 
-1. **Reject `Allocation_Adjust` if `nextIterationFunding` is `None`.**
-   Iterated adjustment is opt-in by the authorizer.
-2. **Every additional leg must involve the authorizer** as sender or
+1. **Reject extra settlement leg-sides when the allocation was not
+   iterated-enabled.** Iterated settlement is opt-in by the authorizer.
+2. **Every extra leg-side must involve the authorizer** as sender or
    receiver. Legs between unrelated parties cannot be smuggled into the
    authorizer's allocation.
-3. **Per-instrument net outflow from the authorizer (sender legs minus
-   self-receiver legs) MUST NOT exceed the current
-   `nextIterationFunding[instrumentId]`.** Self-transfer legs (sender
-   == receiver == authorizer) net to zero.
-4. **The new allocation produced by the adjustment MUST carry an
+3. **Per-instrument net outflow from the authorizer must not exceed the
+   current `nextIterationFunding[instrumentId]`.** Self-transfer legs
+   (sender == receiver == authorizer) net to zero.
+4. **Any next-iteration allocation produced by settlement must carry an
    updated `nextIterationFunding` reduced by the consumed amount per
-   instrument.** This is the double-spend guard for follow-on adjusts.
-5. **The DEX operator (settlement executors) MUST be in the
-   allocation's observer list** so each adjustment is visible to them
-   and to anyone monitoring the operator's stream.
+   instrument.** This is the double-spend guard for follow-on iterations.
+5. **The DEX operator (settlement executors) must be able to observe
+   the allocation lifecycle** so each settlement iteration is visible to
+   them and to anyone monitoring the operator's stream.
 
 When these are enforced in Daml, a malicious operator attempting to
 spend funds the authorizer never granted has to submit an **invalid
@@ -93,8 +93,8 @@ Daml transaction**, which the engine rejects regardless of operator
 intent.
 
 The mock at [MockRegistry.daml](../trading/CantonDex/Testing/MockRegistry.daml)
-implements all five rules and is covered by
-`testAllocationAdjustConservation` in
+implements these conservation rules and is covered by the iterated
+settlement tests in
 [EndToEndTests.daml](../trading-tests/CantonDex/Tests/EndToEndTests.daml).
 Production registries are expected to do at least the same.
 

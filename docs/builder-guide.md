@@ -78,8 +78,8 @@ code:
 5. Creates `OrderMatchExecution` referencing both allocations and the
    fill numbers.
 6. Exercises `OrderMatchExecution_Execute`, which:
-   - calls `Allocation_Adjust` on each allocation with concrete legs
-   - calls `SettlementFactory_SettleBatch` on the adjusted batch
+   - finalizes each allocation with the concrete match leg-sides
+   - calls `SettlementFactory_SettleBatch` on the finalized batch
    - returns `nextIterationAllocationCid` per side if any leftover
 7. For the side with remainder, exercise `Order_RecordPartialFill`
    against the new next-iter allocation. For a fully-filled side,

@@ -70,24 +70,19 @@ Required inputs:
   `mkOtcTradeSettlementInfo` output (or `poolSettlementInfo`).
 - `transferLegs : [V2.TransferLeg]` — the legs being settled, in the
   order the allocations expect.
-- `allocationCids : [ContractId V2.Allocation]` — every allocation
-  whose authorizer participates in the legs, plus any "missing"
-  receipt allocations the venue created.
+- `allocations : [V2.FinalizedAllocation]` — every allocation whose
+  authorizer participates in the legs. For iterated settlement, each
+  finalized allocation carries any settlement-time
+  `extraTransferLegSides` and the desired `nextIterationFunding`.
 - `actors : [Party]` — `[venue/operator]`.
 - `extraArgs.context` — registry-supplied choice context for the
   allocation admin. Self-registries may return empty context.
 
-### Allocation adjustment (draft V2 only; retired in the released V2 API)
+### Iterated settlement
 
-`V2.Allocation.Allocation_Adjust` (no longer present in the released
-`token-standard-v2-upcoming` API; replaced by
-`FinalizedAllocation.extraTransferLegSides` on
-`SettlementFactory_SettleBatch`).
-
-Required inputs:
-- `actors : [Party]` — `[operator]`.
-- `additionalTransferLegs : [V2.TransferLeg]`.
-- `allowFutureIterations : Bool` — `True` for partial-fill orders and
+`V2.FinalizedAllocation.extraTransferLegSides` and
+`V2.FinalizedAllocation.nextIterationFunding` on
+`SettlementFactory_SettleBatch`.
   pool swaps (so the next iteration is created); `False` to terminate
   an iterated allocation on this settlement.
 - `extraArgs.context` — registry-supplied choice context for the

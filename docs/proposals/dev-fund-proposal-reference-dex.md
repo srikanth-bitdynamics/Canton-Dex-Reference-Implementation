@@ -171,7 +171,7 @@ The design is grounded in:
 - the V2 allocation extensions in `token-standard-v2-upcoming`:
   - iterated settlement
   - committed allocations
-  - `Allocation_Adjust`
+  - settlement-time extra leg-sides
   - next-iteration allocation roll-forward (`nextIterationFunding`,
     `nextIterationAllocationCid`)
 
@@ -186,8 +186,8 @@ tracked in `token-standard-v2-upcoming`**:
   `nextIterationFunding`; without iterated settlement every swap
   would have to lock the entire pool through a fresh factory call.
 - Prefunded `Order`s park their budget in `nextIterationFunding` and
-  draw it down per fill via `Allocation_Adjust`; without these the
-  order book has no resting-state representation.
+  draw it down per fill through finalized settlement leg-sides; without
+  these the order book has no resting-state representation.
 
 If the V2 token standard does not include these semantics, **no
 registry-issued asset can be traded by this DEX** and the project has
@@ -208,9 +208,9 @@ and includes:
 - `AllocationFactory` and `SettlementFactory` implementations the DEX
   composes (never reimplements)
 - standard Mint / Burn / Transfer / TransferPreapproval workflows
-- conservation enforcement in `Allocation_Adjust` so iterated-
-  settlement funds under executor control cannot be misused without
-  an invalid Daml transaction
+- conservation enforcement for iterated settlement so funds under
+  executor control cannot be misused without an invalid Daml
+  transaction
 
 ### 6. Out of Scope
 
@@ -349,7 +349,7 @@ Project-specific acceptance conditions:
   dependencies, including the explicit list of registry-side
   guarantees the DEX assumes (`InstrumentConfiguration` shape,
   V2 holdings, allocation / settlement factories, mint / burn /
-  transfer workflows, and `Allocation_Adjust` funding-conservation
+  transfer workflows, and iterated-settlement funding-conservation
   enforcement) — see `docs/registry-prerequisites.md` and
   `docs/choice-context-spec.md`
 - Milestone 1 demonstrates at least one end-to-end OTC / RFQ settlement flow

@@ -160,7 +160,7 @@ The design is grounded in:
 - the V2 allocation extensions in `token-standard-v2-upcoming`, especially:
   - iterated settlement
   - committed allocations
-  - `Allocation_Adjust`
+  - settlement-time extra leg-sides
   - next-iteration allocation roll-forward
 
 This project does not require protocol changes from Canton itself. It does,

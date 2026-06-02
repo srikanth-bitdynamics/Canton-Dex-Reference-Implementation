@@ -24,7 +24,7 @@ interface PhaseSpec {
 export const TX_PHASES: Record<TxPhaseKind, PhaseSpec[]> = {
   swap: [
     { label: 'Lock funds in trader Allocation', tag: 'Locked' },
-    { label: 'Operator: Allocation_Adjust + swap legs', tag: 'Adjusted' },
+    { label: 'Operator: finalize swap leg-sides', tag: 'Finalized' },
     { label: 'SettleBatch on 3 allocations', tag: 'Settled' },
     { label: 'Pool roll-forward → next iteration', tag: 'Updated' },
   ],

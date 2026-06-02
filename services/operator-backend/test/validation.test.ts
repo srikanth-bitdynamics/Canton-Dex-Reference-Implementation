@@ -48,6 +48,8 @@ before(async () => {
       admin: "ad" as never,
       allocationFactoryCid: "#alloc:0",
       settlementFactoryCid: "#settle:0",
+      allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
+      allocationFactoryDisclosure: [],
       network: "canton:test",
     },
   });

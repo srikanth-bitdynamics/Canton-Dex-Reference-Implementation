@@ -36,7 +36,7 @@ export function formatExpiresIn(totalSeconds: number | null | undefined): string
 }
 
 /**
- * Constant-product swap output mirror of Pool.daml's Pool_ComputeSwapOut.
+ * Constant-product swap output mirror of PoolModel.daml's quote math.
  * Used for the dApp's quote panel before round-tripping the operator
  * backend's /v1/swaps/quote endpoint -- gives a snappy preview without
  * a network call. The on-chain choice re-validates against

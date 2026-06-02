@@ -45,8 +45,7 @@ instrument semantics instead of hardcoding asset families in the exchange.
 ### 3. Token Standard V2 allocation surface
 
 The pool design depends on the V2 allocation extensions released in
-Splice's `token-standard-v2-upcoming` branch (originally proposed as
-splice#5333, since merged):
+Splice's `token-standard-v2-upcoming` branch:
 
 - iterated settlement
 - `nextIterationFunding`
@@ -221,18 +220,20 @@ flows:
 - one prefunded allocation per order
 - a sharded set of committed reserve slices per pool side, each carrying its
   own allocation CID and tracked amount
-- `Pool_Swap` adjusts only the head slice on each side, settles it, and
-  replaces it in place with its next-iteration roll-forward; other slices are
-  untouched
-- remove-liquidity settlement (`LpDvpRules_SettleRemoveLiquidity`) walks the
+- `PoolRules_Swap` adjusts only the input-side slice and the output-side
+  covering prefix, settles them, and re-wraps the next-iteration allocations;
+  other slices are untouched
+- remove-liquidity settlement (`PoolLiquidityRules_SettleRemoveLiquidity`) walks the
   slice list from the front, cancels only the slices it needs to cover the
   redemption, and re-allocates at most ONE boundary slice per side for the
   leftover; slices beyond the boundary are untouched
 - long-tail maintenance actions such as consolidation or migration stay
   explicit and exceptional
 
-The data carrier is `PoolSlice = { allocationCid, amount }`, stored as
-`baseSlices : [PoolSlice]` / `quoteSlices : [PoolSlice]` on the `Pool`
+The data carrier is the standalone `PoolSlice` contract:
+`{ poolId, side, allocationCid, amount }`. The operator indexer supplies
+ordered slice contract IDs to the rules choices; the immutable `Pool` no
+longer stores an unbounded slice list.
 template. The slice's `amount` is reconciled with the underlying allocation's
 funding on every choice that touches it.
 
@@ -380,7 +381,8 @@ Canton-Dex/
       Order.daml
       MatchedTrade.daml
       Pool.daml
-      LPToken.daml
+      Lp/Policy.daml
+      Lp/Instrument.daml
     instrument/
       DexInstrumentConfiguration.daml
       Lifecycle.daml

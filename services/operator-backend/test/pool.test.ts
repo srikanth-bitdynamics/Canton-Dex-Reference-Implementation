@@ -199,7 +199,7 @@ describe("PoolService.computeQuote", () => {
   });
 });
 
-describe("PoolService DvP liquidity (DEX-53)", () => {
+describe("PoolService DvP liquidity", () => {
   const requestedAt = "1970-01-01T00:00:00Z" as never;
 
   it("requestAddLiquidity creates the LiquidityAllocationRequest with a floored LP quote", async () => {
@@ -264,7 +264,7 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
     assert.ok(cmd.argument.baseFactoryCid, "base/quote factory present");
     assert.ok(cmd.argument.lpFactoryCid, "LP factory present");
     assert.ok(cmd.argument.lpSettleCid, "LP settlement factory present");
-    // Split-admin contexts threaded separately, not collapsed (DEX-73).
+    // Split-admin contexts threaded separately, not collapsed.
     assert.ok(cmd.argument.poolAdminExtraArgs, "pool.admin choice context threaded");
     assert.ok(cmd.argument.lpRegistrarExtraArgs, "lpRegistrar choice context threaded");
     assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");
@@ -341,7 +341,7 @@ describe("PoolService DvP liquidity (DEX-53)", () => {
     assert.deepEqual(ledger.lastSubmit!.actAs, ["op", "lp"]);
     assert.equal(cmd.argument.requestCid, "#req:1");
     assert.equal(cmd.argument.holderBurnSenderCid, "#burn:0");
-    // Split-admin contexts threaded separately, not collapsed (DEX-73).
+    // Split-admin contexts threaded separately, not collapsed.
     assert.ok(cmd.argument.poolAdminExtraArgs, "pool.admin choice context threaded");
     assert.ok(cmd.argument.lpRegistrarExtraArgs, "lpRegistrar choice context threaded");
     assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");

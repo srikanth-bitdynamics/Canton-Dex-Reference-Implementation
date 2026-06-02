@@ -144,6 +144,8 @@ async function main(): Promise<void> {
       admin,
       allocationFactoryCid: allocCid,
       settlementFactoryCid: settleCid,
+      allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
+      allocationFactoryDisclosure: [],
       network,
     },
     db,

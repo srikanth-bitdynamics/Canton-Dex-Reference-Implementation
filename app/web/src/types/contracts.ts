@@ -96,20 +96,6 @@ export interface LPTokenPolicy {
   active: boolean;
 }
 
-export type SwapDirection = 'BaseToQuote' | 'QuoteToBase';
-
-export interface SwapRequest {
-  contractId: string;
-  operator: string;
-  trader: string;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
-  direction: SwapDirection;
-  inputAmount: number;
-  minOutputAmount: number;
-  deadline: string | null;
-}
-
 export interface Holding {
   contractId: string;
   owner: string;

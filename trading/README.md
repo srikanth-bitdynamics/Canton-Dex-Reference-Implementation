@@ -1,8 +1,7 @@
 # `canton-dex-trading` Package
 
 The DEX Daml package, built on Token Standard V2 (CIP-0056) released
-in Splice's `token-standard-v2-upcoming` branch (originally proposed
-as splice#5333).
+in Splice's `token-standard-v2-upcoming` branch.
 
 Current scope:
 

@@ -93,6 +93,23 @@ export class OperatorApi {
     return this.post("/v1/swaps/quote", req);
   }
 
+  // Operator builds (in Daml) the swapper's prefunded input-allocation spec +
+  // settlement; the wallet authors that spec, then swap() settles with the
+  // created allocation cid. The spec/settlement are opaque pass-through wire
+  // objects here — the wallet (commands.ts) consumes their typed shape.
+  async requestSwap(req: {
+    poolCid: ContractId<"Pool">;
+    swapper: Party;
+    inputInstrumentId: string;
+    inputAmount: Decimal;
+  }): Promise<{
+    allocationSpec: unknown;
+    settlement: unknown;
+    factoryCid: ContractId<"AllocationFactory">;
+  }> {
+    return this.post("/v1/pools/swap/request", req);
+  }
+
   async swap(req: {
     poolCid: ContractId<"Pool">;
     swapperAccount: { owner: Party; provider: Party | null; id: string };

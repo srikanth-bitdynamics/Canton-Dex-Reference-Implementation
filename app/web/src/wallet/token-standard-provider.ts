@@ -10,7 +10,7 @@
 //
 //   place-order             →  CreateCommand OrderFundingRequest
 //   accept-allocation-request → AllocationFactory_Allocate + AllocationRequest_Accept
-//   request-swap            →  AllocationFactory_Allocate + CreateCommand SwapRequest
+//   request-swap            →  AllocationFactory_Allocate (operator settles via PoolRules_Swap)
 //   add-liquidity           →  3× AllocationFactory_Allocate from a LiquidityAllocationRequest
 //   remove-liquidity        →  3× AllocationFactory_Allocate from a LiquidityAllocationRequest
 //   post-rfq-quote          →  CreateCommand RfqQuote
@@ -34,7 +34,7 @@ import type {
   WalletProvider,
   WalletResult,
 } from "./types";
-import { LpDvpUnsupportedError } from "./types";
+import { composeCommands, extractCreatedAllocationCids } from "./commands";
 
 const LS_KEY = "canton-dex:token-standard:session";
 const SUBMIT_TIMEOUT_MS = 60_000;
@@ -56,6 +56,10 @@ interface PersistedSession {
 interface SubmitAndWaitResponse {
   updateId: string;
   completionOffset: number;
+  // Added by the operator backend's /v1/wallet/submit (DEX-83): the
+  // transaction's created contracts, so DvP intents can recover the
+  // allocation cids the settle needs. Absent on older backends.
+  createdEvents?: Array<{ contractId: string; templateId: string }>;
 }
 
 function template(name: string): string {
@@ -180,12 +184,14 @@ export class TokenStandardProvider implements WalletProvider {
       case "accept-allocation-request":
         return this.acceptAllocationRequest(intent);
       case "request-swap":
-        return this.requestSwap(intent);
       case "add-liquidity":
       case "remove-liquidity":
-        // Operator-relay path cannot return the created allocation cids the
-        // DvP settle needs; LP DvP requires a CIP-0103 wallet (SDK provider).
-        throw new LpDvpUnsupportedError(this.id);
+        // DvP swap + LP add/remove: author the allocation(s) via the shared
+        // composer and recover their created cids from the submit response
+        // (DEX-83). The backend's /v1/wallet/submit now follows the transaction
+        // tree and returns createdEvents, so the operator-relay path CAN surface
+        // the allocation cids the settle needs — no CIP-0103 wallet required.
+        return this.submitComposed(intent);
       case "post-rfq-quote":
         return this.postRfqQuote(intent);
       case "accept-rfq":
@@ -198,9 +204,17 @@ export class TokenStandardProvider implements WalletProvider {
     commandId: string,
     command: Record<string, unknown>,
   ): Promise<SubmitAndWaitResponse> {
+    return this.submitCommands(actAs, commandId, [command]);
+  }
+
+  private async submitCommands(
+    actAs: string[],
+    commandId: string,
+    commands: Record<string, unknown>[],
+  ): Promise<SubmitAndWaitResponse> {
     if (!this.session) throw new Error("not connected");
     const body = {
-      commands: [command],
+      commands,
       userId: this.session.userId,
       actAs,
       commandId,
@@ -225,6 +239,38 @@ export class TokenStandardProvider implements WalletProvider {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // DvP intents (add/remove-liquidity): build the allocation commands with
+  // the shared composer, submit them, and recover the created Allocation cids
+  // from the backend's createdEvents (DEX-83). The settle path needs those
+  // cids in command order. Created events are filtered to V2.Allocation so an
+  // incidental extra create can't shift the mapping.
+  private async submitComposed(intent: WalletIntent): Promise<WalletResult> {
+    const party = this.session!.party;
+    const composed = composeCommands(intent, {
+      party,
+      packagePrefix: PACKAGE_PREFIX,
+      now: () => new Date(),
+    });
+    const result = await this.submitCommands(
+      composed.actAs,
+      composed.commandId,
+      composed.commands as unknown as Record<string, unknown>[],
+    );
+    const allocationEvents = (result.createdEvents ?? []).filter((e) =>
+      e.templateId.endsWith("CantonDex.Registry.V2:Allocation"),
+    );
+    const createdAllocationCids = extractCreatedAllocationCids(
+      intent,
+      composed.commands.length,
+      { createdEvents: allocationEvents },
+    );
+    return {
+      submittedBy: party,
+      primaryCid: result.updateId,
+      createdAllocationCids,
+    };
   }
 
   // -- per-intent handlers -------------------------------------------
@@ -255,40 +301,6 @@ export class TokenStandardProvider implements WalletProvider {
     return { submittedBy: party, primaryCid: result.updateId };
   }
 
-  private async requestSwap(intent: Extract<WalletIntent, { kind: "request-swap" }>):
-    Promise<WalletResult> {
-    // Two-step: AllocationFactory_Allocate (creates V2.Allocation) then
-    // CreateCommand SwapRequest carrying that allocation cid. Both go
-    // through one submit-and-wait so they're atomic.
-    if (!intent.factoryCid || intent.factoryCid.startsWith("PENDING_")) {
-      throw new Error(
-        "Token Standard provider: no AllocationFactory CID configured. Operator must seed the registry's allocation factory before swap can settle.",
-      );
-    }
-    const party = this.session!.party;
-    const result = await this.submitAndWait(
-      [party],
-      `swap-${intent.poolId.slice(0, 12)}-${Date.now()}`,
-      {
-        CreateCommand: {
-          templateId: template("CantonDex.Dex.SwapRequest:SwapRequest"),
-          createArguments: {
-            trader: party,
-            operator: intent.operator,
-            admin: intent.admin,
-            poolCid: intent.poolId,
-            inputInstrumentId: intent.inputInstrumentId,
-            inputAmount: intent.inputAmount,
-            minOutputAmount: intent.minOutputAmount,
-            inputHoldingCids: intent.inputHoldingCids,
-            factoryCid: intent.factoryCid,
-            requestedAt: new Date().toISOString(),
-          },
-        },
-      },
-    );
-    return { submittedBy: party, primaryCid: result.updateId };
-  }
 
   private async acceptAllocationRequest(
     intent: Extract<WalletIntent, { kind: "accept-allocation-request" }>,

@@ -36,6 +36,7 @@ import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState qualified as PS
 import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
+import CantonDex.Dex.PoolRules qualified as PRules
 import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
 import CantonDex.Lp.Policy qualified as LP
 import CantonDex.Lp.Instrument qualified as Lp
@@ -93,6 +94,7 @@ data Fixture = Fixture with
   stateCid : ContractId PS.PoolState
   policyCid : ContractId LP.LPTokenPolicy
   dvpCid : ContractId Dvp.PoolLiquidityRules
+  rulesCid : ContractId PRules.PoolRules
   ttFactoryCid : ContractId V2.AllocationFactory
   ttSettleCid : ContractId V2.SettlementFactory
   ttDisclosures : Disclosures'
@@ -124,6 +126,7 @@ setup lp = do
     totalLpSupply = 0.0; publicReaders = []
   dvpCid <- submitMulti [operator, lpRegistrar] [] $
     createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar
+  rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId
     totalSupply = 0.0; active = True
@@ -143,7 +146,7 @@ setup lp = do
   ttD <- queryDisclosure' @TestTokenV2.TokenRules ttAdmin tokenRulesCid
   pure Fixture with
     operator; lpRegistrar; ttAdmin; ttReg; lpReg = lpRegCid
-    poolId; poolCid; stateCid; policyCid; dvpCid
+    poolId; poolCid; stateCid; policyCid; dvpCid; rulesCid
     ttFactoryCid = enriched.factoryCid
     ttSettleCid = coerceContractId enriched.factoryCid
     ttDisclosures = ttD
@@ -317,3 +320,61 @@ testRealRegistryDvpRemoveSettles = do
   quoteBack <- holdingCidsFor alice "Y"
   assertMsg "alice received base (X) back" (not (null baseBack))
   assertMsg "alice received quote (Y) back" (not (null quoteBack))
+
+-- Swap against the REAL TestTokenV2 registry, via the on-screen DvP path
+-- (DEX-83). After a funded add, a swapper (bob) swaps quote (Y) -> base (X):
+--   1. operator builds bob's prefunded swap-input allocation spec via
+--      PoolRules_RequestSwap (the dApp POST /v1/pools/swap/request path);
+--   2. bob authors that exact spec through the real TestTokenV2 registry,
+--      locking his Y holdings (mirrors the wallet's AllocationFactory_Allocate);
+--   3. operator settles via PoolRules_Swap against the real TestTokenV2
+--      SettlementFactory, threading the real per-admin context + disclosures.
+-- Asserts reserves move (quote up, base down) and the swap produces output --
+-- proving the new swap path settles end-to-end against a context-requiring
+-- real registry, not just the Mock.
+testRealRegistryDvpSwapSettles : Script ()
+testRealRegistryDvpSwapSettles = do
+  bob <- allocateParty "lp"      -- LP/funder
+  fx <- setup bob
+  now <- getTime
+  addRes <- addSettle fx bob now
+
+  -- Mint the swapper's quote (Y) input as a real TestTokenV2 holding.
+  let swapIn = 1000.0
+  TT2.mint fx.ttReg (Utils.basicAccount bob) "Y" swapIn
+
+  -- 1. Operator builds the swapper's prefunded input-allocation spec.
+  reqRes <- submit fx.operator $ exerciseCmd fx.rulesCid PRules.PoolRules_RequestSwap with
+    poolCid = fx.poolCid
+    swapper = bob
+    inputInstrumentId = "Y"
+    inputAmount = swapIn
+
+  -- 2. Bob authors that exact spec via the REAL TestTokenV2 registry,
+  --    locking his Y input holdings.
+  quoteIn <- holdingCidsFor bob "Y"
+  swapAllocCid <- ttAlloc fx.ttReg bob reqRes.settlement reqRes.allocationSpec quoteIn now
+
+  -- 3. Operator settles the swap via PoolRules_Swap against the real
+  --    TestTokenV2 SettlementFactory, with the real per-admin context.
+  settleDisc <- ttSettleDisclosures fx
+  let swapCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
+  swapRes <- submit (actAs fx.operator <> discloseMany' settleDisc) $
+    exerciseCmd fx.rulesCid PRules.PoolRules_Swap with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid
+      swapperAccount = Utils.basicAccount bob
+      inputInstrumentId = "Y"; inputAmount = swapIn; minOutputAmount = 0.0
+      swapperAllocationCid = swapAllocCid
+      inputSliceCid = addRes.quoteSliceCid
+      outputSliceCids = [addRes.baseSliceCid]
+      factoryCid = fx.ttSettleCid
+      extraArgs = swapCtx
+
+  Some state <- queryContractId fx.operator swapRes.poolStateCid
+  assertMsg "quote reserve increased after swap" (state.reserves.quoteAmount > 200000.0)
+  assertMsg "base reserve decreased after swap" (state.reserves.baseAmount < 10.0)
+  assertMsg "swap via RequestSwap produced output" (swapRes.amountOut > 0.0)
+  -- Bob received base (X) out as a real TestTokenV2 holding.
+  bobBase <- holdingCidsFor bob "X"
+  assertMsg "bob received base (X) from the swap" (not (null bobBase))

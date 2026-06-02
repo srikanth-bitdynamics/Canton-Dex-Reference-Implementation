@@ -90,6 +90,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
         inputInstrumentId,
         inputAmount: parsedInput,
         minOutputAmount: minReceived,
+        swapperParty: party ?? '',
       });
       setInputAmount('');
       onSwapComplete?.();
@@ -411,8 +412,8 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                   marginTop: 10,
                 }}
               >
-                By approving, you create a SwapRequest and authorize the
-                operator to execute Pool_Swap.
+                By approving, your wallet locks the input in a single
+                allocation; the operator then settles the swap on-ledger.
               </div>
             </div>
           </div>

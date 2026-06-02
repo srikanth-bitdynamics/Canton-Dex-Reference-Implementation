@@ -658,22 +658,67 @@ async function routeRequest(
       return;
     }
     const body = await readJson<Record<string, unknown>>(req);
+    const base = ledgerUrl.replace(/\/$/, "");
     try {
-      const r = await fetch(
-        `${ledgerUrl.replace(/\/$/, "")}/v2/commands/submit-and-wait`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${ledgerToken}`,
-          },
-          body: JSON.stringify(body),
+      const r = await fetch(`${base}/v2/commands/submit-and-wait`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${ledgerToken}`,
         },
-      );
+        body: JSON.stringify(body),
+      });
       const text = await r.text();
-      res.statusCode = r.status;
-      res.setHeader("Content-Type", "application/json");
-      res.end(text);
+      if (!r.ok) {
+        res.statusCode = r.status;
+        res.setHeader("Content-Type", "application/json");
+        res.end(text);
+        return;
+      }
+      // submit-and-wait returns only { updateId, completionOffset } — no
+      // created events. The DvP settle path (swap + LP add/remove) needs the
+      // created Allocation cids, so follow the transaction tree by-id and
+      // surface its CreatedTreeEvents. Additive: existing callers keep
+      // reading `updateId`; new callers read `createdEvents`.
+      const submitBody = JSON.parse(text) as {
+        updateId?: string;
+        completionOffset?: number;
+      };
+      const actAs = ((body.actAs as string[] | undefined) ?? []).filter(Boolean);
+      let createdEvents: Array<{ contractId: string; templateId: string }> = [];
+      if (submitBody.updateId && actAs.length > 0) {
+        const treeUrl = new URL(
+          `${base}/v2/updates/transaction-tree-by-id/${encodeURIComponent(submitBody.updateId)}`,
+        );
+        for (const p of new Set(actAs)) treeUrl.searchParams.append("parties", p);
+        const treeRes = await fetch(treeUrl.toString(), {
+          headers: { Authorization: `Bearer ${ledgerToken}` },
+        });
+        if (treeRes.ok) {
+          const tree = (await treeRes.json()) as {
+            transaction?: {
+              eventsById?: Record<
+                string,
+                {
+                  CreatedTreeEvent?: {
+                    value?: { contractId?: string; templateId?: string };
+                  };
+                }
+              >;
+            };
+          };
+          createdEvents = Object.values(
+            tree.transaction?.eventsById ?? {},
+          )
+            .map((e) => e.CreatedTreeEvent?.value)
+            .filter(
+              (v): v is { contractId: string; templateId: string } =>
+                !!v?.contractId,
+            )
+            .map((v) => ({ contractId: v.contractId, templateId: v.templateId ?? "" }));
+        }
+      }
+      respondJson(res, 200, { ...submitBody, createdEvents });
     } catch (e) {
       respondJson(res, 502, { error: `submit proxy failed: ${e instanceof Error ? e.message : String(e)}` });
     }
@@ -870,6 +915,14 @@ async function routeRequest(
     const orderCid = decodeURIComponent(cancelMatch[1]!);
     await backend.order.cancel(orderCid as never);
     respondJson(res, 204, {});
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/pools/swap/request") {
+    const body =
+      await readJson<Parameters<typeof backend.pool.requestSwap>[0]>(req);
+    const result = await backend.pool.requestSwap(body);
+    respondJson(res, 200, result);
     return;
   }
 

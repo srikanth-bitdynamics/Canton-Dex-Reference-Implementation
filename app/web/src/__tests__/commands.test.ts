@@ -13,12 +13,35 @@ const ctx: ComposeContext = {
   now: () => FIXED_NOW,
 };
 
+const allocationFactoryExtraArgs = {
+  context: { values: { 'ctx.allocationFactory': true } },
+  meta: { values: {} },
+};
+const allocationRequestExtraArgs = {
+  context: { values: { 'ctx.allocationRequest': true } },
+  meta: { values: {} },
+};
+const lpFactoryExtraArgs = {
+  context: { values: { 'ctx.lpFactory': true } },
+  meta: { values: {} },
+};
+const disclosure = [
+  {
+    contractId: '#ctx:0',
+    templateId: 'Registry:Context',
+    payloadBlob: 'payload',
+  },
+];
+
 describe('composeCommands', () => {
   it('accept-allocation-request', () => {
     const intent: WalletIntent = {
       kind: 'accept-allocation-request',
       requestCid: 'aaaaaaaaaaaarequest1',
       factoryCid: 'factory1',
+      allocationRequestExtraArgs,
+      allocationFactoryExtraArgs,
+      disclosure,
       settlement: {
         executors: ['op::1'],
         id: 'DexOrder-web-1',
@@ -53,7 +76,9 @@ describe('composeCommands', () => {
                 ],
                 "extraArgs": {
                   "context": {
-                    "values": {},
+                    "values": {
+                      "ctx.allocationRequest": true,
+                    },
                   },
                   "meta": {
                     "values": {},
@@ -90,7 +115,9 @@ describe('composeCommands', () => {
                 },
                 "extraArgs": {
                   "context": {
-                    "values": {},
+                    "values": {
+                      "ctx.allocationFactory": true,
+                    },
                   },
                   "meta": {
                     "values": {},
@@ -115,6 +142,13 @@ describe('composeCommands', () => {
               "contractId": "factory1",
               "templateId": "#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory",
             },
+          },
+        ],
+        "disclosedContracts": [
+          {
+            "contractId": "#ctx:0",
+            "payloadBlob": "payload",
+            "templateId": "Registry:Context",
           },
         ],
       }
@@ -181,6 +215,8 @@ describe('composeCommands', () => {
       allocationSpec: swapAllocationSpec,
       settlement: swapSettlement,
       factoryCid: 'factory1',
+      allocationFactoryExtraArgs,
+      disclosure,
       inputHoldingCids: ['h1'],
     };
     const composed = composeCommands(intent, ctx);
@@ -202,6 +238,8 @@ describe('composeCommands', () => {
       allocationSpec: swapAllocationSpec,
       settlement: swapSettlement,
       factoryCid: 'PENDING_FACTORY',
+      allocationFactoryExtraArgs,
+      disclosure,
       inputHoldingCids: [],
     };
     expect(() => composeCommands(intent, ctx)).toThrowError(
@@ -242,6 +280,9 @@ describe('composeCommands', () => {
       allocations: [baseSpec, quoteSpec, receiptSpec],
       depositFactoryCid: 'depF',
       lpFactoryCid: 'lpF',
+      depositFactoryExtraArgs: allocationFactoryExtraArgs,
+      lpFactoryExtraArgs,
+      disclosure,
       baseHoldingCids: ['b1'],
       quoteHoldingCids: ['q1', 'q2'],
     };
@@ -277,6 +318,9 @@ describe('composeCommands', () => {
       allocations: [baseRcpt, quoteRcpt, burnSpec],
       depositFactoryCid: 'depF',
       lpFactoryCid: 'lpF',
+      depositFactoryExtraArgs: allocationFactoryExtraArgs,
+      lpFactoryExtraArgs,
+      disclosure,
       lpHoldingCids: ['lp1', 'lp2'],
     };
     const out = composeCommands(intent, ctx);

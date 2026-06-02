@@ -59,6 +59,18 @@ export interface V2SettlementInfo {
   meta: V2Metadata;
 }
 
+export interface V2ExtraArgs {
+  context: { values: Record<string, unknown> };
+  meta: { values: Record<string, unknown> };
+}
+
+export interface DisclosedContract {
+  contractId: string;
+  templateId: string;
+  contractKeyHash?: string;
+  payloadBlob: string;
+}
+
 // === intent shapes ========================================================
 //
 // Each intent corresponds to a trader-authority Daml choice (or compose
@@ -75,6 +87,9 @@ export interface AcceptAllocationRequestIntent {
   kind: "accept-allocation-request";
   requestCid: ContractId<"AllocationRequest">;
   factoryCid: ContractId<"AllocationFactory">;
+  allocationRequestExtraArgs: V2ExtraArgs;
+  allocationFactoryExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
   settlement: V2SettlementInfo;
   allocationSpec: V2AllocationSpecification;
   /** Holdings the wallet should propose to lock. */
@@ -107,7 +122,7 @@ export interface PlaceOrderIntent {
  * spec; the wallet authors that single allocation via AllocationFactory_Allocate
  * (locking `inputHoldingCids`), and its created cid is returned as
  * `WalletResult.createdAllocationCids[0]` for the operator settle
- * (PoolRules_Swap). No SwapRequest contract is created.
+ * (PoolRules_Swap). No intermediate request contract is created.
  */
 export interface RequestSwapIntent {
   kind: "request-swap";
@@ -115,6 +130,8 @@ export interface RequestSwapIntent {
   allocationSpec: V2AllocationSpecification;
   settlement: V2SettlementInfo;
   factoryCid: ContractId<"AllocationFactory">;
+  allocationFactoryExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
   inputHoldingCids: ContractId<"Holding">[];
 }
 
@@ -154,6 +171,9 @@ export interface AddLiquidityIntent {
   allocations: V2AllocationSpecification[];
   depositFactoryCid: ContractId<"AllocationFactory">;
   lpFactoryCid: ContractId<"AllocationFactory">;
+  depositFactoryExtraArgs: V2ExtraArgs;
+  lpFactoryExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
   baseHoldingCids: ContractId<"Holding">[];
   quoteHoldingCids: ContractId<"Holding">[];
 }
@@ -172,6 +192,9 @@ export interface RemoveLiquidityIntent {
   allocations: V2AllocationSpecification[];
   depositFactoryCid: ContractId<"AllocationFactory">;
   lpFactoryCid: ContractId<"AllocationFactory">;
+  depositFactoryExtraArgs: V2ExtraArgs;
+  lpFactoryExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
   /**
    * ALL the holder's unlocked LP holdings to lock for the burn — an LP
    * position can be fragmented across several holdings after multiple

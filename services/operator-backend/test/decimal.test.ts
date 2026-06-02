@@ -1,4 +1,4 @@
-// Exact fixed-point decimal helper tests (DEX-53). The point of this module
+// Exact fixed-point decimal helper tests. The point of this module
 // is that the LP quote stays accurate at magnitudes where IEEE-754 doubles
 // lose the low digits — so the large-magnitude sqrt case is the headline.
 

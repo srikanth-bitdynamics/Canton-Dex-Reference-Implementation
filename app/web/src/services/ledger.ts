@@ -12,7 +12,13 @@
 import { OperatorApi } from './operator-api';
 import { handToWallet } from '@/wallet/handoff';
 import { useWalletStore } from '@/wallet/store';
-import type { ContractId, V2AllocationSpecification, V2SettlementInfo } from '@/wallet/types';
+import type {
+  ContractId,
+  DisclosedContract,
+  V2AllocationSpecification,
+  V2ExtraArgs,
+  V2SettlementInfo,
+} from '@/wallet/types';
 import type {
   Order,
   Holding,
@@ -31,6 +37,10 @@ interface RequestAddResult {
   settlement: V2SettlementInfo;
   depositFactoryCid: string;
   lpFactoryCid: string;
+  depositFactoryExtraArgs: V2ExtraArgs;
+  lpFactoryExtraArgs: V2ExtraArgs;
+  depositFactoryDisclosure: DisclosedContract[];
+  lpFactoryDisclosure: DisclosedContract[];
 }
 interface RequestRemoveResult {
   requestCid: string;
@@ -43,6 +53,10 @@ interface RequestRemoveResult {
   settlement: V2SettlementInfo;
   depositFactoryCid: string;
   lpFactoryCid: string;
+  depositFactoryExtraArgs: V2ExtraArgs;
+  lpFactoryExtraArgs: V2ExtraArgs;
+  depositFactoryDisclosure: DisclosedContract[];
+  lpFactoryDisclosure: DisclosedContract[];
 }
 
 function connectedParty(): string {
@@ -281,6 +295,8 @@ export interface DexContext {
   admin: string;
   allocationFactoryCid: string;
   settlementFactoryCid: string;
+  allocationFactoryExtraArgs: V2ExtraArgs;
+  allocationFactoryDisclosure: DisclosedContract[];
   network: string;
 }
 
@@ -390,7 +406,7 @@ export const ledger = {
     swapperParty: string;
     inputHoldingCids?: string[];
   }) => {
-    // Three-call DvP swap (DEX-83): (1) the operator builds the swapper's input
+    // Three-call DvP swap: (1) the operator builds the swapper's input
     // allocation spec in Daml (PoolRules_RequestSwap); (2) the wallet authors
     // that single allocation, locking the trader's input holdings, and returns
     // the created Allocation cid; (3) the operator settles via PoolRules_Swap
@@ -426,6 +442,8 @@ export const ledger = {
       allocationSpec: req.allocationSpec as V2AllocationSpecification,
       settlement: req.settlement as V2SettlementInfo,
       factoryCid: req.factoryCid,
+      allocationFactoryExtraArgs: req.allocationFactoryExtraArgs,
+      disclosure: req.allocationFactoryDisclosure,
       inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
     });
     const swapperAllocationCid = walletResult.createdAllocationCids?.[0];
@@ -494,6 +512,9 @@ export const ledger = {
       kind: 'accept-allocation-request',
       requestCid: bindRes.allocationRequestCid as ContractId<'AllocationRequest'>,
       factoryCid: params.context.allocationFactoryCid as ContractId<'AllocationFactory'>,
+      allocationRequestExtraArgs: params.context.allocationFactoryExtraArgs,
+      allocationFactoryExtraArgs: params.context.allocationFactoryExtraArgs,
+      disclosure: params.context.allocationFactoryDisclosure,
       settlement: {
         executors: [params.context.operator],
         id: `DexOrder-${settlementRef}`,
@@ -565,6 +586,9 @@ export const ledger = {
       // under pool.lpRegistrar) — both come from /request, not context.
       depositFactoryCid: req.depositFactoryCid,
       lpFactoryCid: req.lpFactoryCid,
+      depositFactoryExtraArgs: req.depositFactoryExtraArgs,
+      lpFactoryExtraArgs: req.lpFactoryExtraArgs,
+      disclosure: [...req.depositFactoryDisclosure, ...req.lpFactoryDisclosure],
       baseHoldingCids: params.baseHoldingCids ?? [],
       quoteHoldingCids: params.quoteHoldingCids ?? [],
     });
@@ -636,6 +660,9 @@ export const ledger = {
       allocations: req.allocations,
       depositFactoryCid: req.depositFactoryCid,
       lpFactoryCid: req.lpFactoryCid,
+      depositFactoryExtraArgs: req.depositFactoryExtraArgs,
+      lpFactoryExtraArgs: req.lpFactoryExtraArgs,
+      disclosure: [...req.depositFactoryDisclosure, ...req.lpFactoryDisclosure],
       lpHoldingCids: holderLpHoldingCids,
     });
     const cids = walletRes.createdAllocationCids;

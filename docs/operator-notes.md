@@ -14,7 +14,7 @@ operator dev instance but should not be the production posture.
 
 | Party         | Owns                                                                          | Signs                                                               |
 | ------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `operator`    | `DexPair`, `Order`, `MatchedTrade`, `Pool`, `OrderMatchExecution`, `SwapRequest` | All DEX-side market state                                          |
+| `operator`    | `DexPair`, `Order`, `MatchedTrade`, `Pool`, `PoolState`, `PoolSlice`, `PoolRules`, `OrderMatchExecution` | All DEX-side market state                                          |
 | `lpRegistrar` | `LPTokenPolicy`, the LP `InstrumentConfiguration`, LP `Holding` records       | Mint/burn supply, LP holding lifecycle                              |
 | `admin`       | The base/quote `InstrumentConfiguration`, `AllocationFactory`, `SettlementFactory` | Allocations, settlement batches, registry-side mint/burn/transfer  |
 | `trader` / `lp` | `OrderFundingRequest`, `Rfq`, and the deposit/receipt/burn allocations they author against a `LiquidityAllocationRequest` | Their own intents and allocation accepts                          |
@@ -40,10 +40,14 @@ In rough order of dependency:
 4. **Create LP infrastructure (per pool).**
    - `lpRegistrar` creates an `InstrumentConfiguration` for the LP token
      instrument (one per pool)
-   - `lpRegistrar` creates the `LPTokenPolicy` and binds it to the pool CID
-5. **Create pools.** Operator creates a `Pool` template in `PS_Unfunded` state
-   with empty slice lists. The first LP exercises `Pool_Initialize` to
-   transition to `PS_Active`.
+   - `lpRegistrar` creates the `LPTokenPolicy` for the full
+     `{ admin = lpRegistrar, id = lpInstrumentId }` instrument identity
+5. **Create pools.** Operator creates the immutable `Pool`, the hot
+   `PoolState` in `PS_Unfunded`, and the operator-side `PoolRules` /
+   co-controlled `PoolLiquidityRules`. The first LP uses the same
+   add-liquidity DvP request/allocate/settle flow as later LPs; the settle
+   creates the first `PoolSlice` contracts and transitions the state to
+   `PS_Active`.
 6. **Open the order book / swap surface.** Once pools are funded and pairs
    are active, traders may submit `OrderFundingRequest`, liquidity adds/removes
    via the DvP `/request` flow, `Rfq`, etc.
@@ -86,11 +90,11 @@ on a schedule.
 
 ### Pool maintenance
 
-- `Pool_Pause` (operator) — halts new swaps and liquidity actions while
+- `PoolRules_Pause` (operator) — halts new swaps and liquidity actions while
   leaving reserve allocations in place. Useful for upgrades and incident
   response.
-- `Pool_Resume` (operator) — exits Paused back to Active.
-- Remove-liquidity is slice-local: the `LpDvpRules_SettleRemoveLiquidity`
+- `PoolRules_Resume` (operator) — exits Paused back to Active.
+- Remove-liquidity is slice-local: the `PoolLiquidityRules_SettleRemoveLiquidity`
   settle sources a routine withdrawal from at most ONE boundary
   re-allocation per side. The architecture and workflows docs describe the
   invariant; `LpDvpPoolTests.daml` exercises the boundary case.
@@ -113,13 +117,13 @@ operators do not need a parallel database to explain a trade.
 | Where did this pool's reserves come from?             | Each `PoolSlice` is an `Allocation` CID, each carrying its admin, authorizer, and committed funding    |
 | What's the current head slice / boundary candidate?   | `Pool.baseSlices` and `Pool.quoteSlices`, list head and tail                                            |
 | Did this trader's funding accept?                     | The `OrderAllocationRequest` archive event plus the corresponding `Allocation` create event           |
-| Why is this `Pool_Swap` failing slippage?             | `Pool_ComputeSwapOut` choice is nonconsuming — call it before the swap to read the current quote      |
-| Did this LP mint actually run?                        | `LpDvpRules_SettleAddLiquidity` mints against the LP receipt allocation and records the resulting supply on `LPTokenPolicy` |
+| Why is this `PoolRules_Swap` failing slippage?        | Call the quote endpoint before swap; the on-ledger choice re-validates against current reserves and `minOutputAmount` |
+| Did this LP mint actually run?                        | `PoolLiquidityRules_SettleAddLiquidity` mints against the LP receipt allocation and records the resulting supply on `LPTokenPolicy` |
 
 Off-chain telemetry the operator should also collect:
 
 - **Latency** per workflow (`OrderFundingRequest_Bind` → `Order_Fund`,
-  `Rfq_Accept` → `MatchedTrade_Settle`, `Pool_Swap` end-to-end).
+  `Rfq_Accept` → `MatchedTrade_Settle`, `PoolRules_Swap` end-to-end).
 - **Failure counts** per choice, especially slippage rejections, allocation
   conservation failures, and credential-requirement rejections.
 - **Slice-count distributions** per pool side, to flag when consolidation
@@ -201,7 +205,7 @@ upgrade" section.
 
 `LPTokenPolicy.totalSupply` and `PoolState.totalLpSupply` are kept in
 lock-step: the DvP liquidity settles
-(`LpDvpRules_SettleAddLiquidity`/`_SettleRemoveLiquidity`) rewrite both
+(`PoolLiquidityRules_SettleAddLiquidity`/`_SettleRemoveLiquidity`) rewrite both
 inline and assert they match on entry. If they diverge, the settle's
 supply-sync guard aborts. Recovery: query the policy supply and re-run
 `PoolState_RecordLPSupply` with `newSupply = policy.totalSupply`.
@@ -232,7 +236,7 @@ runtime knobs that are not encoded on-ledger.
 | `LP tokens below minimum`                                 | LP's `minLpTokens` slippage bound too tight                                                        | LP resubmits with a looser bound or smaller deposit                                          |
 | `Output below slippage minimum`                           | Reserve drift between quote time and submit                                                        | Trader resubmits with a looser bound, or operator routes through a different pool             |
 | `Head output slice cannot cover swap`                     | Head slice on the output side is smaller than `amountOut`                                          | Operator should run consolidation, or split the swap across multiple smaller swaps            |
-| `Pool must be Active`                                     | Pool was Paused (planned) or Unfunded (last LP exited)                                             | If Paused: `Pool_Resume` after maintenance. If Unfunded: a new LP needs to call `Pool_Initialize` |
+| `Pool must be Active`                                     | Pool was Paused (planned) or Unfunded (last LP exited)                                             | If Paused: `PoolRules_Resume` after maintenance. If Unfunded: a new LP needs to complete add-liquidity request/allocate/settle |
 
 ## Single-operator dev shortcut
 

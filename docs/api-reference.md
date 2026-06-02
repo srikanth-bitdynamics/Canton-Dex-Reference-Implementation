@@ -91,7 +91,7 @@ All operator config key-values.
 { "outputAmount": "9852.143..." }
 ```
 
-Advisory; the on-ledger `Pool_Swap` choice re-validates with the latest
+Advisory; the on-ledger `PoolRules_Swap` choice re-validates with the latest
 reserves.
 
 ## Write Endpoints
@@ -123,7 +123,10 @@ the input shapes (the HTTP shim is a thin pass-through).
 
 ### `POST /v1/pools/swap`
 
-Operator-driven `Pool_Swap` exercise.
+Operator-driven `PoolRules_Swap` exercise. The dApp first calls
+`POST /v1/pools/swap/request`, passes the returned allocation spec +
+choice context to the wallet, and then sends the wallet-created allocation
+CID to this endpoint.
 
 ### `POST /v1/pools/add-liquidity/request`
 
@@ -134,7 +137,7 @@ base-deposit, quote-deposit, and LP-receipt allocations via
 
 ### `POST /v1/pools/add-liquidity/settle`
 
-Operator + lpRegistrar settle (`LpDvpRules_SettleAddLiquidity`): funds
+Operator + lpRegistrar settle (`PoolLiquidityRules_SettleAddLiquidity`): funds
 enter the pool and LP tokens are minted to the LP, atomically.
 
 ### `POST /v1/pools/remove-liquidity/request`
@@ -145,7 +148,7 @@ base-receipt, quote-receipt, and LP burn-sender allocations.
 
 ### `POST /v1/pools/remove-liquidity/settle`
 
-Operator + lpRegistrar settle (`LpDvpRules_SettleRemoveLiquidity`):
+Operator + lpRegistrar settle (`PoolLiquidityRules_SettleRemoveLiquidity`):
 base + quote are delivered to the holder and the LP tokens burn to the
 burn account, atomically.
 

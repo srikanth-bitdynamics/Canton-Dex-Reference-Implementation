@@ -6,6 +6,18 @@ export type Party = string;
 export type ContractId<_T> = string;
 export type Decimal = string;
 
+export interface V2ExtraArgs {
+  context: { values: Record<string, unknown> };
+  meta: { values: Record<string, unknown> };
+}
+
+export interface DisclosedContract {
+  contractId: string;
+  templateId: string;
+  contractKeyHash?: string;
+  payloadBlob: string;
+}
+
 export interface PoolSlice {
   allocationCid: ContractId<"Allocation">;
   amount: Decimal;
@@ -106,6 +118,8 @@ export class OperatorApi {
     allocationSpec: unknown;
     settlement: unknown;
     factoryCid: ContractId<"AllocationFactory">;
+    allocationFactoryExtraArgs: V2ExtraArgs;
+    allocationFactoryDisclosure: DisclosedContract[];
   }> {
     return this.post("/v1/pools/swap/request", req);
   }

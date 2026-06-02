@@ -3,8 +3,10 @@
 
 import type {
   ContractId,
+  DisclosedContract,
   Party,
   V2AllocationSpecification,
+  V2ExtraArgs,
   V2SettlementInfo,
   WalletIntent,
 } from "./types";
@@ -17,8 +19,6 @@ const ALLOCATION_FACTORY_IID =
 const ALLOCATION_REQUEST_IID =
   "#splice-api-token-allocation-request-v2:Splice.Api.Token.AllocationRequestV2:AllocationRequest";
 
-const emptyExtraArgs = { context: { values: {} }, meta: { values: {} } };
-
 // One AllocationFactory_Allocate exercise: the wallet authors the given
 // spec under `factoryCid`, locking `inputHoldingCids`. Created Allocation
 // cids are read back from the submit result in command order.
@@ -29,6 +29,7 @@ function allocateCmd(
   inputHoldingCids: ContractId<"Holding">[],
   party: Party,
   requestedAt: string,
+  extraArgs: V2ExtraArgs,
 ): DamlCommand {
   return {
     ExerciseCommand: {
@@ -41,7 +42,7 @@ function allocateCmd(
         requestedAt,
         inputHoldingCids,
         actors: [party],
-        extraArgs: emptyExtraArgs,
+        extraArgs,
       },
     },
   };
@@ -67,6 +68,7 @@ export interface ComposedCommands {
   commandId: string;
   commands: DamlCommand[];
   actAs: Party[];
+  disclosedContracts?: DisclosedContract[];
 }
 
 export interface ComposeContext {
@@ -111,7 +113,7 @@ function composeAcceptAllocationRequest(
           choice: "AllocationRequest_Accept",
           choiceArgument: {
             actors: [ctx.party],
-            extraArgs: emptyExtraArgs,
+            extraArgs: intent.allocationRequestExtraArgs,
           },
         },
       },
@@ -122,8 +124,10 @@ function composeAcceptAllocationRequest(
         intent.inputHoldingCids,
         ctx.party,
         ctx.now().toISOString(),
+        intent.allocationFactoryExtraArgs,
       ),
     ],
+    disclosedContracts: dedupeDisclosure(intent.disclosure),
   };
 }
 
@@ -156,7 +160,7 @@ function composePlaceOrder(
 // Swap (DvP): author the single prefunded/iterated input allocation the
 // operator's PoolRules_RequestSwap named, locking the trader's input holdings.
 // The created Allocation cid is read back from the submit result (like LP DvP)
-// and fed to the operator settle (PoolRules_Swap). No SwapRequest contract.
+// and fed to the operator settle (PoolRules_Swap). No intermediate request contract.
 function composeRequestSwap(
   intent: Extract<WalletIntent, { kind: "request-swap" }>,
   ctx: ComposeContext,
@@ -173,8 +177,10 @@ function composeRequestSwap(
         intent.inputHoldingCids,
         ctx.party,
         ctx.now().toISOString(),
+        intent.allocationFactoryExtraArgs,
       ),
     ],
+    disclosedContracts: dedupeDisclosure(intent.disclosure),
   };
 }
 
@@ -239,10 +245,35 @@ function composeAddLiquidity(
     commandId: `add-lp-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [
-      allocateCmd(intent.depositFactoryCid, intent.settlement, baseSpec, intent.baseHoldingCids, ctx.party, requestedAt),
-      allocateCmd(intent.depositFactoryCid, intent.settlement, quoteSpec, intent.quoteHoldingCids, ctx.party, requestedAt),
-      allocateCmd(intent.lpFactoryCid, intent.settlement, receiptSpec, [], ctx.party, requestedAt),
+      allocateCmd(
+        intent.depositFactoryCid,
+        intent.settlement,
+        baseSpec,
+        intent.baseHoldingCids,
+        ctx.party,
+        requestedAt,
+        intent.depositFactoryExtraArgs,
+      ),
+      allocateCmd(
+        intent.depositFactoryCid,
+        intent.settlement,
+        quoteSpec,
+        intent.quoteHoldingCids,
+        ctx.party,
+        requestedAt,
+        intent.depositFactoryExtraArgs,
+      ),
+      allocateCmd(
+        intent.lpFactoryCid,
+        intent.settlement,
+        receiptSpec,
+        [],
+        ctx.party,
+        requestedAt,
+        intent.lpFactoryExtraArgs,
+      ),
     ],
+    disclosedContracts: dedupeDisclosure(intent.disclosure),
   };
 }
 
@@ -266,10 +297,35 @@ function composeRemoveLiquidity(
     commandId: `remove-lp-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [
-      allocateCmd(intent.depositFactoryCid, intent.settlement, baseReceiptSpec, [], ctx.party, requestedAt),
-      allocateCmd(intent.depositFactoryCid, intent.settlement, quoteReceiptSpec, [], ctx.party, requestedAt),
-      allocateCmd(intent.lpFactoryCid, intent.settlement, burnSenderSpec, intent.lpHoldingCids, ctx.party, requestedAt),
+      allocateCmd(
+        intent.depositFactoryCid,
+        intent.settlement,
+        baseReceiptSpec,
+        [],
+        ctx.party,
+        requestedAt,
+        intent.depositFactoryExtraArgs,
+      ),
+      allocateCmd(
+        intent.depositFactoryCid,
+        intent.settlement,
+        quoteReceiptSpec,
+        [],
+        ctx.party,
+        requestedAt,
+        intent.depositFactoryExtraArgs,
+      ),
+      allocateCmd(
+        intent.lpFactoryCid,
+        intent.settlement,
+        burnSenderSpec,
+        intent.lpHoldingCids,
+        ctx.party,
+        requestedAt,
+        intent.lpFactoryExtraArgs,
+      ),
     ],
+    disclosedContracts: dedupeDisclosure(intent.disclosure),
   };
 }
 
@@ -375,4 +431,15 @@ function assertFactoryReady(factoryCid: string | undefined, kind: string): void 
       `${kind}: AllocationFactory CID not configured (got ${factoryCid ?? "undefined"}).`,
     );
   }
+}
+
+function dedupeDisclosure(disclosure: DisclosedContract[]): DisclosedContract[] {
+  const seen = new Set<string>();
+  const out: DisclosedContract[] = [];
+  for (const contract of disclosure) {
+    if (seen.has(contract.contractId)) continue;
+    seen.add(contract.contractId);
+    out.push(contract);
+  }
+  return out;
 }

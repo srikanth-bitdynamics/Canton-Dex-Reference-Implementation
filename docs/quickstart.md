@@ -91,18 +91,18 @@ optional `src/`-stack analog.
   the split pool: immutable config, the hot reserves/supply/status state, and
   one committed allocation per slice.
 - `trading/CantonDex/Dex/PoolRules.daml` — the operational choices:
-  `PoolRules_Swap` (iterated-settlement roll-forward of the sourced slices),
-  `PoolRules_Pause`, `PoolRules_Resume`.
-- `trading/CantonDex/Dex/LpDvpRules.daml` + `LiquidityAllocationRequest.daml` —
-  the delivery-vs-payment add/remove path: `LpDvpRules_RequestAddLiquidity`/
-  `_SettleAddLiquidity` and `_RequestRemoveLiquidity`/`_SettleRemoveLiquidity`,
-  co-controlled by operator + lpRegistrar. The same add-liquidity settle handles
-  both first funding from `PS_Unfunded` and later funded-pool adds.
-- `trading/CantonDex/Dex/LPToken.daml` — `LPTokenPolicy` owned by an
-  `lpRegistrar` party (distinct from the DEX `operator`), with
-  `LPTokenPolicy_RecordMint`/`_RecordBurn`. The LP token is a real
-  registry-native instrument.
-- `trading/CantonDex/Dex/SwapExecution.daml` — trader-facing `SwapRequest`.
+  `PoolRules_RequestSwap` (operator-built allocation spec),
+  `PoolRules_Swap`, `PoolRules_Pause`, `PoolRules_Resume`.
+- `trading/CantonDex/Dex/PoolLiquidityRules.daml` +
+  `LiquidityAllocationRequest.daml` — the delivery-vs-payment add/remove
+  path: `PoolLiquidityRules_RequestAddLiquidity` /
+  `_SettleAddLiquidity` and `_RequestRemoveLiquidity` /
+  `_SettleRemoveLiquidity`, co-controlled by operator + lpRegistrar. The same
+  add-liquidity settle handles both first funding from `PS_Unfunded` and later
+  funded-pool adds.
+- `trading/CantonDex/Lp/Policy.daml` + `Instrument.daml` — the LP-token
+  component. `LPTokenPolicy` is owned by `lpRegistrar`, uses
+  `V2.InstrumentId`, and knows nothing about pools or orders.
 - Tests: `EndToEndTests.daml::testPoolFullLifecycle`, `testPoolSwapEndToEnd`;
   `LpDvpPoolTests.daml` (DvP add, remove-to-holder, boundary slice).
 
@@ -127,7 +127,7 @@ The repo is meant to be read AND copied. Common adaptations:
 | Add a new trading pair                | Create a `DexPair`; optionally a `Pool` if the pair runs pool-mode                                |
 | Use a different instrument family     | Create a new `InstrumentConfiguration` (different `admin`, different credential requirements)     |
 | Swap out the mock registry            | Replace `CantonDex.Testing.MockRegistry` with the real registry's `AllocationFactory` + `SettlementFactory` |
-| Add a fee policy                      | Extend `Pool.feeBps` / `DexPair.feeModel` and the `Pool_ComputeSwapOut` math                      |
+| Add a fee policy                      | Extend `Pool.feeBps` / `DexPair.feeModel` and the `constantProductOut` quote math                 |
 | Change RFQ ranking policy             | Modify `Rfq.applyPolicy` and bump the `PolicyReceipt.policyVersion` / `policyHash`               |
 
 The boundary that must NOT move:

@@ -43,10 +43,7 @@ This routes to `AdminService.createPair` in
 
 What you get back: `{ pairCid: ContractId<DexPair> }`. Note it.
 
-## Step 2. If `TM_Pool` or `TM_Both`: create an `LPTokenPolicy`
-
-The LP policy must exist before `Pool_Initialize` since the mint
-request carries the policy CID forward.
+## Step 2. If `TM_Pool` or `TM_Both`: create the LP token policy
 
 ```bash
 # (currently no admin endpoint; submit via the operator-backend in code)
@@ -59,14 +56,11 @@ await ledger.submit({
   commandId: `lp-policy-eth-usdt`,
   command: {
     kind: 'create',
-    templateId: 'CantonDex.Dex.LPToken:LPTokenPolicy',
+    templateId: 'CantonDex.Lp.Policy:LPTokenPolicy',
     argument: {
       lpRegistrar,
       operator,
-      lpInstrumentId: 'ETH-USDT-LP',
-      baseInstrumentId: 'ETH',
-      quoteInstrumentId: 'USDT',
-      poolCid: '0000...placeholder...', // re-bind after Pool create
+      lpInstrumentId: { admin: lpRegistrar, id: 'ETH-USDT-LP' },
       totalSupply: '0.0',
       active: true,
     },
@@ -74,10 +68,9 @@ await ledger.submit({
 });
 ```
 
-The `poolCid` field is updated after `Pool_Initialize`. The reference
-deployment uses a placeholder; production wants a tighter binding:
-either create the LP policy after the pool, or accept a circular
-chicken-and-egg and ignore the field at read time.
+The current LP policy is the LP-token component only: it owns the full
+`V2.InstrumentId` and circulating supply, and it does not reference the
+pool, base instrument, quote instrument, or order venue.
 
 ## Step 3. Create the `Pool`
 
@@ -109,7 +102,7 @@ The first LP needs to:
    - quote deposit
    - LP receipt
 4. Call `POST /v1/pools/add-liquidity/settle`. The operator and
-   `lpRegistrar` co-settle the request via `LpDvpRules_SettleAddLiquidity`,
+   `lpRegistrar` co-settle the request via `PoolLiquidityRules_SettleAddLiquidity`,
    which seeds the first pool slices, transitions the pool to `PS_Active`,
    and mints `sqrt(baseAmount * quoteAmount)` LP tokens atomically.
 

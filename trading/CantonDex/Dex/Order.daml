@@ -118,6 +118,8 @@ template Order with
           adjustedAllocationCid = allocCid
 
     choice Order_Cancel : Order_CancelResult
+      with
+        extraArgs : ExtraArgs
       controller operator
       do
         case allocationCid of
@@ -126,7 +128,7 @@ template Order with
               cancelResult = None
               releasedHoldings = TextMap.empty
           Some allocCid -> do
-            let cancelArg = WC.mkDefaultAllocationCancel [operator]
+            let cancelArg = WC.mkAllocationCancel [operator] extraArgs
             result <- exercise allocCid cancelArg
             pure Order_CancelResult with
               cancelResult = Some result
@@ -135,6 +137,7 @@ template Order with
     choice Order_Expire : Order_CancelResult
       with
         currentTime : Time
+        extraArgs : ExtraArgs
       controller operator
       do
         case expiry of
@@ -148,7 +151,7 @@ template Order with
               cancelResult = None
               releasedHoldings = TextMap.empty
           Some allocCid -> do
-            let cancelArg = WC.mkDefaultAllocationCancel [operator]
+            let cancelArg = WC.mkAllocationCancel [operator] extraArgs
             result <- exercise allocCid cancelArg
             pure Order_CancelResult with
               cancelResult = Some result

@@ -28,6 +28,7 @@
 // and refreshed via the wallet's auth flow (out of scope here).
 
 import type {
+  DisclosedContract,
   WalletAccount,
   WalletConnectionStatus,
   WalletIntent,
@@ -56,7 +57,7 @@ interface PersistedSession {
 interface SubmitAndWaitResponse {
   updateId: string;
   completionOffset: number;
-  // Added by the operator backend's /v1/wallet/submit (DEX-83): the
+  // Added by the operator backend's /v1/wallet/submit: the
   // transaction's created contracts, so DvP intents can recover the
   // allocation cids the settle needs. Absent on older backends.
   createdEvents?: Array<{ contractId: string; templateId: string }>;
@@ -202,7 +203,7 @@ export class TokenStandardProvider implements WalletProvider {
       case "remove-liquidity":
         // DvP swap + LP add/remove: author the allocation(s) via the shared
         // composer and recover their created cids from the submit response
-        // (DEX-83). The backend's /v1/wallet/submit now follows the transaction
+        // The backend's /v1/wallet/submit now follows the transaction
         // tree and returns createdEvents, so the operator-relay path CAN surface
         // the allocation cids the settle needs — no CIP-0103 wallet required.
         return this.submitComposed(intent);
@@ -225,6 +226,7 @@ export class TokenStandardProvider implements WalletProvider {
     actAs: string[],
     commandId: string,
     commands: Record<string, unknown>[],
+    disclosedContracts: DisclosedContract[] = [],
   ): Promise<SubmitAndWaitResponse> {
     if (!this.session) throw new Error("not connected");
     const body = {
@@ -233,6 +235,7 @@ export class TokenStandardProvider implements WalletProvider {
       actAs,
       commandId,
       synchronizerId: SYNCHRONIZER_ID || undefined,
+      disclosedContracts,
     };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
@@ -257,7 +260,7 @@ export class TokenStandardProvider implements WalletProvider {
 
   // DvP intents (add/remove-liquidity): build the allocation commands with
   // the shared composer, submit them, and recover the created Allocation cids
-  // from the backend's createdEvents (DEX-83). The settle path needs those
+  // from the backend's createdEvents. The settle path needs those
   // cids in command order. Created events are filtered to V2.Allocation so an
   // incidental extra create can't shift the mapping.
   private async submitComposed(intent: WalletIntent): Promise<WalletResult> {
@@ -271,6 +274,7 @@ export class TokenStandardProvider implements WalletProvider {
       composed.actAs,
       composed.commandId,
       composed.commands as unknown as Record<string, unknown>[],
+      composed.disclosedContracts,
     );
     const allocationEvents = (result.createdEvents ?? []).filter((e) =>
       e.templateId.endsWith("CantonDex.Registry.V2:Allocation"),
@@ -343,6 +347,7 @@ export class TokenStandardProvider implements WalletProvider {
       composed.actAs,
       composed.commandId,
       composed.commands as unknown as Record<string, unknown>[],
+      composed.disclosedContracts,
     );
     const allocationEvents = (result.createdEvents ?? []).filter((e) =>
       e.templateId.endsWith("CantonDex.Registry.V2:Allocation"),

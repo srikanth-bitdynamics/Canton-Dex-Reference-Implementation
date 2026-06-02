@@ -1,7 +1,7 @@
 # V2 MainNet Migration Plan
 
 The DEX currently consumes the Token Standard V2 surface via the
-vendored PR-5333 DARs under `vendor/splice/`. When V2 lands on
+vendored `token-standard-v2-upcoming` DARs under `vendor/splice/`. When V2 lands on
 MainNet (target: EOM July 2026 per proposal [M7][proposal-m7], confirmed
 by Simon Meier @ DA on 2026-05-18), we switch to the upstream packages.
 
@@ -42,28 +42,26 @@ of us.
 We track the `token-standard-v2-upcoming` branch of
 <https://github.com/canton-network/splice>, per Simon's recommendation on
 2026-05-18 to "upgrade to the .dars from that branch to also incorporate
-other changes" beyond what the original PR-5333 introduced.
+other changes" beyond the earlier draft allocation surface.
 
 Current state (2026-05-18):
 
-- `vendor/splice/` — baseline V2 snapshot of `token-standard-v2-upcoming`
-  (does NOT include PR-5333's allocation extensions).
-- `vendor/splice/` — PR-5333-augmented snapshot with
-  `Allocation_Adjust`, `nextIterationFunding`, `committed`, and the
-  per-side `transferLegs` field. Our `trading/` surface package
-  depends on this.
+- `vendor/splice/` — V2 snapshot of `token-standard-v2-upcoming` with the
+  allocation functionality the trading surface consumes: committed
+  allocations, `nextIterationFunding`, settlement batches, and per-side
+  transfer-leg sides.
 
 Branch-tip refresh experiment on 2026-05-18 surfaced that the upstream
-branch has continued to refactor PR-5333's API on the way to release —
+branch has continued to refactor the allocation API on the way to release —
 specifically `transferLegs : [TransferLeg]` → `transferLegSides :
 [TransferLegSide]` and `Allocation_Adjust` choice removed. Adapting our
-local surface to the post-refactor API is tracked in DEX-35 and gated
+local surface to the post-refactor API is gated
 on the upstream V2 release tag (so we migrate against a stable target,
 not a moving branch tip).
 
 ## Why this matters
 
-- PR-5333 vendors a draft of V2. Upstream may rename modules, tighten
+- The vendored branch is still pre-release. Upstream may rename modules, tighten
   argument types, or change choice signatures.
 - Until the switch, every DAR hash referenced in `daml.yaml` is a
   pre-release; production deployments shouldn't pin to those forever.
@@ -109,8 +107,8 @@ not a moving branch tip).
      `.env.example` and any deployment config.
 
 7. **Run E2E against testnet.**
-   - Use `scripts/deploy-testnet.sh` (DEX-30) to deploy the new DARs.
-   - Hit the e2e smoke test (`scripts/e2e-smoke.sh`, DEX-21).
+   - Use `scripts/deploy-testnet.sh` to deploy the new DARs.
+   - Hit the e2e smoke test (`scripts/e2e-smoke.sh`).
    - Verify the docker-compose path with the new images.
 
 8. **Cut a release.**
@@ -121,11 +119,14 @@ not a moving branch tip).
 
 ## Risk areas
 
-- **PR-5333 choice signatures.** Some choices in the draft V2 took
+- **V2 choice signatures.** Some choices in the pre-release V2 surface took
   arguments that may not survive into the stable release (e.g.,
   `nextIterationFunding` shape). Audit each choice the DEX exercises:
-  `OrderFundingRequest_Bind`, `Pool_Initialize`, `Pool_AddLiquidity`,
-  `Pool_RemoveLiquidity`, `Pool_Swap`, `Rfq_Accept`,
+  `OrderFundingRequest_Bind`, `PoolRules_RequestSwap`, `PoolRules_Swap`,
+  `PoolLiquidityRules_RequestAddLiquidity`,
+  `PoolLiquidityRules_SettleAddLiquidity`,
+  `PoolLiquidityRules_RequestRemoveLiquidity`,
+  `PoolLiquidityRules_SettleRemoveLiquidity`, `Rfq_Accept`,
   `MatchedTrade_RequestAllocations`, `MatchedTrade_Settle`,
   `AllocationFactory_Allocate`, `SettlementFactory_SettleBatch`,
   `Allocation_Adjust`, `Allocation_Cancel`.

@@ -15,7 +15,7 @@ Per registry, the operator backend fetches:
 |--------------------------------------------|-------------------------------------------|---------|
 | `GET /registry/instrument-config/:id`      | `InstrumentConfiguration` + disclosure    | Order, Pool, MatchedTrade, Rfq |
 | `GET /registry/credentials?holder=:p`      | `Credential[]` for that party             | MintRequest_Accept, TransferOffer_Accept |
-| `GET /registry/factories/:admin`           | `(AllocationFactory, SettlementFactory)` CIDs + disclosure | Pool_Swap, OTCTrade_Settle |
+| `GET /registry/factories/:admin`           | `(AllocationFactory, SettlementFactory)` CIDs + disclosure | `PoolRules_Swap`, matched-trade settle |
 | `GET /registry/choice-context/:admin`      | `ChoiceContextRef` (`context` + disclosure) | Pool, MatchedTrade, any registry-touching token-standard choice |
 | `GET /registry/transfer-rule/:id`          | `TransferRule` (if any)                   | TransferOffer_Accept |
 | `GET /registry/preapprovals?receiver=:p`   | `TransferPreapproval[]` for that receiver | TransferOffer_AcceptPreapproved |

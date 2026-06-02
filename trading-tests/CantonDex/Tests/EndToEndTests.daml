@@ -489,6 +489,80 @@ testPoolSwapEndToEnd = do
   assertMsg "swap produced output" (swapRes.amountOut > 0.0)
   pure ()
 
+-- 6b. Pool swap via PoolRules_RequestSwap (the on-screen DvP path) --------
+--
+-- Same as testPoolSwapEndToEnd, but the swapper's allocation spec is built
+-- by the operator's PoolRules_RequestSwap choice (the dApp
+-- POST /v1/pools/swap/request path) rather than hand-constructed. Proves
+-- PoolRules_RequestSwap emits a spec that PoolRules_Swap settles end-to-end
+-- (reserves move).
+
+testPoolSwapViaRequestSwap : Script ()
+testPoolSwapViaRequestSwap = do
+  operator <- allocateParty "operator-rswap"
+  lpRegistrar <- allocateParty "lp-registrar-rswap"
+  admin <- allocateParty "admin-rswap"
+  alice <- allocateParty "alice-rswap"  -- LP
+  bob <- allocateParty "bob-rswap"      -- swapper
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
+
+  (poolId, poolCid, stateCid, rulesCid, dvpCid, policyCid) <- setupPool operator lpRegistrar admin
+  initRes <- dvpFundPool
+    operator
+    lpRegistrar
+    factoryCid
+    settleCid
+    poolId
+    poolCid
+    stateCid
+    policyCid
+    dvpCid
+    alice
+    10.0
+    200000.0
+    now
+    emptyExtraArgs
+
+  -- Operator builds the swapper's prefunded allocation spec via the new
+  -- choice (mirrors the dApp's POST /v1/pools/swap/request).
+  reqRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+    poolCid
+    swapper = bob
+    inputInstrumentId = "USDC"
+    inputAmount = 100.0
+
+  -- Bob (the wallet) authors that exact spec via the allocation factory.
+  let bobAccount = Utils.basicAccount bob
+      bobAllocateArg = WC.mkAllocationFactoryAllocate
+        reqRes.settlement reqRes.allocationSpec now [] [bob] emptyExtraArgs
+  bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
+  bobAllocationCid <- case bobInstr.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "swap allocation must complete"
+
+  -- Operator settles the swap against the authored allocation.
+  swapRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Swap with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = initRes.poolStateCid
+    swapperAccount = bobAccount
+    inputInstrumentId = "USDC"
+    inputAmount = 100.0
+    minOutputAmount = 0.0
+    swapperAllocationCid = bobAllocationCid
+    inputSliceCid = initRes.quoteSliceCid
+    outputSliceCids = [initRes.baseSliceCid]
+    factoryCid = settleCid
+    extraArgs = emptyExtraArgs
+
+  Some state <- queryContractId operator swapRes.poolStateCid
+  assertMsg "base reserve decreased" (state.reserves.baseAmount < 10.0)
+  assertMsg "quote reserve increased" (state.reserves.quoteAmount > 200000.0)
+  assertMsg "swap via RequestSwap produced output" (swapRes.amountOut > 0.0)
+  pure ()
+
 -- 7. Full MatchedTrade lifecycle: request → accept → settle -------------
 --
 -- Verifies the OTC settlement path end-to-end with two trader-created

@@ -157,7 +157,7 @@ The design is grounded in:
 
 - the Token Standard V2 trading example (`TradingAppV2`)
 - registry workflow guidance around `InstrumentConfiguration`
-- the proposed allocation extensions discussed in Splice PR 5333, especially:
+- the V2 allocation extensions in `token-standard-v2-upcoming`, especially:
   - iterated settlement
   - committed allocations
   - `Allocation_Adjust`
@@ -167,8 +167,8 @@ This project does not require protocol changes from Canton itself. It does,
 however, assume that the reference will build against either:
 
 - the landed Token Standard V2 allocation API, or
-- a branch/fork that includes the PR-5333-style semantics if upstream timing
-  requires it
+- the `token-standard-v2-upcoming` surface while upstream release timing
+  stabilizes
 
 That dependency will be documented explicitly in the repository and milestone
 acceptance criteria.
@@ -312,7 +312,7 @@ Project-specific acceptance conditions:
   public testnet deployment
 - Milestone 2 includes concrete evidence of external evaluation or adoption
 - Milestone 2 documents whether it is running against landed upstream V2 APIs
-  or a PR-5333-compatible branch
+  or the vendored `token-standard-v2-upcoming` snapshot
 - Milestone 3 demonstrates prefunded order placement and settlement using
   allocation-backed order state
 - Milestone 3 includes at least one concrete reuse proof point from outside the

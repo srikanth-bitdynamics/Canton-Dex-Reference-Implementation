@@ -142,7 +142,7 @@ curl -X POST http://localhost:8080/v1/admin/pools \
 ```
 
 The new pool starts in `PS_Unfunded`. First trader to add liquidity
-calls `Pool_Initialize`, which mints the initial LP supply at
+completes the add-liquidity request/allocate/settle flow, which mints the initial LP supply at
 `sqrt(baseAmount * quoteAmount)`.
 
 ### Order matching

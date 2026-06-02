@@ -37,10 +37,10 @@ over a pool's life and would re-version the LP behind users' backs.
 
 Concretely:
 
-- `LpDvpRules_SettleAddLiquidity` mints `lpInstrumentId` tokens at the pool's
+- `PoolLiquidityRules_SettleAddLiquidity` mints `lpInstrumentId` tokens at the pool's
   current proportional ratio. The minted holdings use the same `instrumentId`
   as every prior LP minted from this pool.
-- `LpDvpRules_SettleRemoveLiquidity` burns `lpInstrumentId` tokens. The pool
+- `PoolLiquidityRules_SettleRemoveLiquidity` burns `lpInstrumentId` tokens. The pool
   does not care which iteration created them.
 - The `LPTokenPolicy` registrar must accept any holding of `lpInstrumentId`
   for burn — there is no version check.

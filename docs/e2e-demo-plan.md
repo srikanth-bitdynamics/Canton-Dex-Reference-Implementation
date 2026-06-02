@@ -120,7 +120,7 @@ pair: `POST /v1/pools/add-liquidity/request` creates a
 quote-deposit, and LP-receipt allocations via
 `AllocationFactory_Allocate`, then
 `POST /v1/pools/add-liquidity/settle` has the operator and lpRegistrar
-settle (`LpDvpRules_SettleAddLiquidity`) — funds enter the pool and LP
+settle (`PoolLiquidityRules_SettleAddLiquidity`) — funds enter the pool and LP
 tokens mint to the LP atomically, including the initial `PS_Unfunded` →
 `PS_Active` transition. Pool reserves visible in the dApp on `/pools`.
 

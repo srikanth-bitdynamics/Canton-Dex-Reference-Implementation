@@ -7,10 +7,10 @@ module CantonDex.Tests.EndToEndTests where
 --   2. Order funding: trader-signed -> operator-bound -> trader-accepted.
 --   3. TradeAllocationRequest accept returns (no abort).
 --   4. RFQ accept produces a MatchedTrade with a derived PolicyReceipt.
---   5. Pool_Swap end-to-end through the mock registry.
+--   5. PoolRules_Swap end-to-end through the mock registry.
 --
 -- The mock doesn't model holdings (tests pass empty inputHoldingCids), and
--- joint-authority flows (e.g. Pool_Swap) use submitMulti.
+-- joint-authority flows (e.g. PoolRules_Swap) use submitMulti.
 
 import DA.Assert
 import DA.List (head, tail)
@@ -302,7 +302,7 @@ testOrderFundingFlow = do
         cid = orderRef.cid
         meta = emptyMetadata
       allocateArg = WC.mkPrefundedAllocationFactoryAllocate
-        admin aliceAccount settlement order.expiry lockedFunding now [] [alice]
+        admin aliceAccount settlement order.expiry lockedFunding now [] [alice] emptyExtraArgs
 
   instrResult <- submit alice $ exerciseCmd factoryCid allocateArg
   case instrResult.output of
@@ -403,10 +403,10 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
 
   pure ()
 
--- 6. Pool_Swap end-to-end through the mock registry -----------------------
+-- 6. PoolRules_Swap end-to-end through the mock registry ------------------
 --
 -- Trader pre-funds a swap by creating their own prefunded allocation
--- via the mock factory; operator drives Pool_Swap which adjusts both
+-- via the mock factory; operator drives PoolRules_Swap which adjusts both
 -- pool allocations + the trader allocation and batch-settles them.
 --
 -- Verifies:
@@ -455,7 +455,7 @@ testPoolSwapEndToEnd = do
       -- Prefunded: empty legs, nextIterationFunding holds the swap input
       bobFunding = TextMap.fromList [("USDC", 100.0)]
       bobAllocateArg = WC.mkPrefundedAllocationFactoryAllocate
-        admin bobAccount swapSettlement None bobFunding now [] [bob]
+        admin bobAccount swapSettlement None bobFunding now [] [bob] emptyExtraArgs
 
   bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
   bobAllocationCid <- case bobInstr.output of
@@ -767,7 +767,7 @@ testDvpAddRejectsEmptyContext = do
       actors = [lpRegistrar]
       extraArgs = emptyExtraArgs
 
--- Per-admin choice context (DEX-73) -------------------------------------
+-- Per-admin choice context ----------------------------------------------
 --
 -- The DvP settle runs two per-authority batches in one transaction:
 -- base/quote under pool.admin, LP mint/burn under pool.lpRegistrar. Each

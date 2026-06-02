@@ -1,6 +1,6 @@
 // Order flow. Same shape as RFQ; see RFQ comments for the worked example.
 
-import type { ContractId } from "@canton-dex/registry-client";
+import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
@@ -34,9 +34,23 @@ export interface OrderMatchInput {
 export class OrderService {
   constructor(
     private readonly ledger: LedgerSubmitter,
-    private readonly _registry: RegistryClient,
+    private readonly registry: RegistryClient,
     private readonly operatorParty: Party,
   ) {}
+
+  private async choiceContext(admin: Party): Promise<{
+    extraArgs: {
+      context: { values: Record<string, unknown> };
+      meta: { values: Record<string, unknown> };
+    };
+    disclosure: DisclosedContract[];
+  }> {
+    const ctx = await this.registry.getChoiceContext(admin);
+    return {
+      extraArgs: { context: ctx.context, meta: { values: {} } },
+      disclosure: ctx.disclosure,
+    };
+  }
 
   async bind(input: OrderBindInput): Promise<OrderBindResult> {
     return retryOnContention(() =>
@@ -95,26 +109,38 @@ export class OrderService {
   }
 
   async cancel(orderCid: ContractId<"Order">): Promise<void> {
+    const order = (await this.listOpen()).find((o) => o.contractId === orderCid);
+    if (!order) throw new Error(`Order ${orderCid} not found`);
+    const [factories, ctx] = await Promise.all([
+      this.registry.getFactories(order.admin),
+      this.choiceContext(order.admin),
+    ]);
     await retryOnContention(() =>
       this.ledger.submit<unknown>({
         actAs: [this.operatorParty],
         commandId: `order-cancel:${orderCid}`,
+        disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.Order:Order",
           contractId: orderCid,
           choice: "Order_Cancel",
-          argument: {},
+          argument: { extraArgs: ctx.extraArgs },
         },
       }),
     );
   }
 
   async listOpen(): Promise<Order[]> {
-    return this.ledger.query<Order>({
+    const stripPrefix = (s: string): string => (s.startsWith("OS_") ? s.slice(3) : s);
+    const rows = await this.ledger.query<Order>({
       templateId: "CantonDex.Dex.Order:Order",
       observingParty: this.operatorParty,
     });
+    return rows.map((o) => ({
+      ...o,
+      status: stripPrefix(String(o.status)) as Order["status"],
+    }));
   }
 
   /**

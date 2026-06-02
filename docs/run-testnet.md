@@ -159,7 +159,7 @@ Configure with `CANTON_DEX_PACKAGE_ID=518e614a12a08c594c385da32cb49b6d24ca6a8653
 - **`Allocation_Adjust` enforces funding conservation**: each
   additional leg's net outflow must be covered by the current
   `nextIterationFunding` budget; consumed amount is debited from the
-  next-iteration budget. Required for `Pool_Swap` and order partial-
+  next-iteration budget. Required for `PoolRules_Swap` and order partial-
   fill roll-forward.
 
 ## Not yet wired
@@ -171,8 +171,8 @@ The end-to-end happy path still needs:
   admin) needs to create instances and surface their CIDs into
   `CANTON_ALLOC_FACTORY_CID` / `CANTON_SETTLE_FACTORY_CID` env vars.
   Without this, swap / add-liquidity / order intents complete the
-  wallet handoff but the operator cannot drive `Pool_Initialize` /
-  `Pool_Swap` against real factories.
+  wallet handoff but the operator cannot drive first funding or
+  `PoolRules_Swap` against real factories.
 - **WalletConnect project id** in `app/web/.env.local`. With one set,
   the Connect Wallet button opens the real WalletConnect modal; sessions
   request CIP-0103 methods (`canton_listAccounts`, `canton_prepareExecute`,

@@ -17,6 +17,10 @@
 export type Party = string;
 export type ContractId<_T> = string;
 
+export interface V2Metadata {
+  values: Record<string, string>;
+}
+
 // === Token Standard V2 wire shapes =======================================
 // Mirror the Daml AllocationV2 types. The dApp receives these (the specs the
 // wallet must author) from the operator-backend `/request` response and
@@ -35,7 +39,7 @@ export interface V2TransferLegSide {
   otherside: V2Account;
   amount: string;
   instrumentId: string;
-  meta: Record<string, string>;
+  meta: V2Metadata;
 }
 
 export interface V2AllocationSpecification {
@@ -45,14 +49,26 @@ export interface V2AllocationSpecification {
   settlementDeadline: string | null;
   nextIterationFunding: Record<string, string> | null;
   committed: boolean;
-  meta: Record<string, string>;
+  meta: V2Metadata;
 }
 
 export interface V2SettlementInfo {
   executors: Party[];
   id: string;
   cid: string | null;
-  meta: Record<string, string>;
+  meta: V2Metadata;
+}
+
+export interface V2ExtraArgs {
+  context: { values: Record<string, unknown> };
+  meta: { values: Record<string, unknown> };
+}
+
+export interface DisclosedContract {
+  contractId: string;
+  templateId: string;
+  contractKeyHash?: string;
+  payloadBlob: string;
 }
 
 // === intent shapes ========================================================
@@ -71,6 +87,11 @@ export interface AcceptAllocationRequestIntent {
   kind: "accept-allocation-request";
   requestCid: ContractId<"AllocationRequest">;
   factoryCid: ContractId<"AllocationFactory">;
+  allocationRequestExtraArgs: V2ExtraArgs;
+  allocationFactoryExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
+  settlement: V2SettlementInfo;
+  allocationSpec: V2AllocationSpecification;
   /** Holdings the wallet should propose to lock. */
   inputHoldingCids: ContractId<"Holding">[];
   /**
@@ -101,7 +122,7 @@ export interface PlaceOrderIntent {
  * spec; the wallet authors that single allocation via AllocationFactory_Allocate
  * (locking `inputHoldingCids`), and its created cid is returned as
  * `WalletResult.createdAllocationCids[0]` for the operator settle
- * (PoolRules_Swap). No SwapRequest contract is created.
+ * (PoolRules_Swap). No intermediate request contract is created.
  */
 export interface RequestSwapIntent {
   kind: "request-swap";
@@ -109,7 +130,28 @@ export interface RequestSwapIntent {
   allocationSpec: V2AllocationSpecification;
   settlement: V2SettlementInfo;
   factoryCid: ContractId<"AllocationFactory">;
+  allocationFactoryExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
   inputHoldingCids: ContractId<"Holding">[];
+}
+
+/**
+ * Normalize fragmented holdings so a later swap can lock an exact
+ * funding amount without over-locking change. The registry controls
+ * these choices jointly with the trader and admin.
+ */
+export interface SplitHoldingIntent {
+  kind: "split-holding";
+  holdingCid: ContractId<"Holding">;
+  admin: Party;
+  splitAmount: string;
+}
+
+export interface MergeHoldingsIntent {
+  kind: "merge-holdings";
+  holdingCid: ContractId<"Holding">;
+  otherCid: ContractId<"Holding">;
+  admin: Party;
 }
 
 /**
@@ -129,6 +171,9 @@ export interface AddLiquidityIntent {
   allocations: V2AllocationSpecification[];
   depositFactoryCid: ContractId<"AllocationFactory">;
   lpFactoryCid: ContractId<"AllocationFactory">;
+  depositFactoryExtraArgs: V2ExtraArgs;
+  lpFactoryExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
   baseHoldingCids: ContractId<"Holding">[];
   quoteHoldingCids: ContractId<"Holding">[];
 }
@@ -147,6 +192,9 @@ export interface RemoveLiquidityIntent {
   allocations: V2AllocationSpecification[];
   depositFactoryCid: ContractId<"AllocationFactory">;
   lpFactoryCid: ContractId<"AllocationFactory">;
+  depositFactoryExtraArgs: V2ExtraArgs;
+  lpFactoryExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
   /**
    * ALL the holder's unlocked LP holdings to lock for the burn — an LP
    * position can be fragmented across several holdings after multiple
@@ -192,6 +240,8 @@ export type WalletIntent =
   | AcceptAllocationRequestIntent
   | PlaceOrderIntent
   | RequestSwapIntent
+  | SplitHoldingIntent
+  | MergeHoldingsIntent
   | AddLiquidityIntent
   | RemoveLiquidityIntent
   | PostRfqQuoteIntent
@@ -215,6 +265,12 @@ export interface WalletResult {
    * MUST reject those intents rather than return this empty/partial.
    */
   createdAllocationCids?: string[];
+  /**
+   * Created Holding cids for holding-normalization intents such as
+   * split/merge. Providers that cannot surface them may omit this and
+   * let the caller re-fetch holdings from the ledger.
+   */
+  createdHoldingCids?: string[];
 }
 
 export interface WalletAccount {

@@ -13,11 +13,6 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.MetadataV1
 
-emptyExtraArgs : ExtraArgs
-emptyExtraArgs = ExtraArgs with
-  context = emptyChoiceContext
-  meta = emptyMetadata
-
 mkAllocationFactoryAllocate
   : V2.SettlementInfo
   -> V2.AllocationSpecification
@@ -44,15 +39,16 @@ mkPrefundedAllocationFactoryAllocate
   -> Time
   -> [ContractId HoldingV2.Holding]
   -> [Party]
+  -> ExtraArgs
   -> AllocationInstructionV2.AllocationFactory_Allocate
-mkPrefundedAllocationFactoryAllocate admin authorizer settlement settlementDeadline nextIterationFunding requestedAt inputHoldingCids actors =
+mkPrefundedAllocationFactoryAllocate admin authorizer settlement settlementDeadline nextIterationFunding requestedAt inputHoldingCids actors extraArgs =
   mkAllocationFactoryAllocate
     settlement
     (Utils.mkPrefundedAllocationSpecification admin authorizer settlementDeadline nextIterationFunding)
     requestedAt
     inputHoldingCids
     actors
-    emptyExtraArgs
+    extraArgs
 
 -- `extraArgs` carries the registry's off-ledger choice context; an empty
 -- one only works against registries that don't require it.
@@ -105,22 +101,10 @@ mkBatchSettlement settlement transferLegs allocations actors extraArgs =
     actors
     extraArgs
 
-mkDefaultBatchSettlement
-  : V2.SettlementInfo
-  -> [V2.TransferLeg]
-  -> [V2.FinalizedAllocation]
-  -> [Party]
-  -> V2.SettlementFactory_SettleBatch
-mkDefaultBatchSettlement settlement transferLegs allocations actors =
-  mkBatchSettlement settlement transferLegs allocations actors emptyExtraArgs
-
 mkAllocationCancel : [Party] -> ExtraArgs -> V2.Allocation_Cancel
 mkAllocationCancel actors extraArgs = V2.Allocation_Cancel with
   actors
   extraArgs
-
-mkDefaultAllocationCancel : [Party] -> V2.Allocation_Cancel
-mkDefaultAllocationCancel actors = mkAllocationCancel actors emptyExtraArgs
 
 extractCompletedAllocationCid
   : AllocationInstructionV2.AllocationInstructionResult

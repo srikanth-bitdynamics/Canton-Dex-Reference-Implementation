@@ -75,6 +75,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   const [baseAmt, setBaseAmt] = useState('');
   const [quoteAmt, setQuoteAmt] = useState('');
   const [removePct, setRemovePct] = useState(50);
+  const [liquidityError, setLiquidityError] = useState<string | null>(null);
   // Slippage tolerance for add/remove liquidity. The pool's ratio can move
   // between quote and execute; we accept up to this much shortfall in LP
   // tokens minted (add) or underlying received (remove).
@@ -144,43 +145,54 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
 
   const onAdd = async () => {
     if (!context) throw new Error('dApp context not loaded yet');
-    toast.push(
+    setLiquidityError(null);
+    const toastId = toast.push(
       `Add liquidity: ${fmt(parseFloat(baseAmt), 4)} ${pool.baseInstrumentId} + ${fmt(parseFloat(quoteAmt), 2)} ${pool.quoteInstrumentId}`,
       'addLp',
       refreshOnComplete,
     );
-    await ledger.addLiquidity({
-      poolId: pool.contractId,
-      baseAmount: parseFloat(baseAmt),
-      quoteAmount: parseFloat(quoteAmt),
-      minLpTokens: minLpTokensWithSlippage,
-      baseHoldingCids: coveringHoldingCids(pool.baseInstrumentId, parseFloat(baseAmt)),
-      quoteHoldingCids: coveringHoldingCids(pool.quoteInstrumentId, parseFloat(quoteAmt)),
-    });
-    setBaseAmt('');
-    setQuoteAmt('');
+    try {
+      await ledger.addLiquidity({
+        poolId: pool.contractId,
+        baseAmount: parseFloat(baseAmt),
+        quoteAmount: parseFloat(quoteAmt),
+        minLpTokens: minLpTokensWithSlippage,
+        baseHoldingCids: coveringHoldingCids(pool.baseInstrumentId, parseFloat(baseAmt)),
+        quoteHoldingCids: coveringHoldingCids(pool.quoteInstrumentId, parseFloat(quoteAmt)),
+      });
+      setBaseAmt('');
+      setQuoteAmt('');
+    } catch (error) {
+      toast.dismiss(toastId);
+      setLiquidityError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   };
 
   const onRemove = async () => {
     if (!party) throw new Error('connect a wallet to remove liquidity');
     if (!context) throw new Error('dApp context not loaded yet');
-    // Lock only the minimal LP-holding prefix that covers the redeem amount —
-    // a partial remove must not burn the trader's whole fragmented position.
-    const lpHoldingCids = coveringHoldingCids(pool.lpInstrumentId.id, (lpHeld * removePct) / 100);
-    if (lpHoldingCids.length === 0) throw new Error('no unlocked LP holding to burn');
-    toast.push(
+    setLiquidityError(null);
+    const toastId = toast.push(
       `Remove ${removePct}% LP from ${pool.baseInstrumentId}/${pool.quoteInstrumentId}`,
       'removeLp',
       refreshOnComplete,
     );
-    await ledger.removeLiquidity({
-      poolId: pool.contractId,
-      holder: party,
-      lpTokens: (lpHeld * removePct) / 100,
-      minBaseOut: minBaseOutWithSlippage,
-      minQuoteOut: minQuoteOutWithSlippage,
-      holderLpHoldingCids: lpHoldingCids,
-    });
+    try {
+      await ledger.removeLiquidity({
+        poolId: pool.contractId,
+        holder: party,
+        lpAdmin: pool.lpInstrumentId.admin,
+        lpInstrumentId: pool.lpInstrumentId.id,
+        lpTokens: (lpHeld * removePct) / 100,
+        minBaseOut: minBaseOutWithSlippage,
+        minQuoteOut: minQuoteOutWithSlippage,
+      });
+    } catch (error) {
+      toast.dismiss(toastId);
+      setLiquidityError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   };
 
   return (
@@ -382,6 +394,21 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
               </div>
 
               <div className="sp-16" />
+              {liquidityError && (
+                <>
+                  <div
+                    className="rounded px-3 py-2 text-sm"
+                    style={{
+                      background: 'rgba(248, 81, 73, 0.08)',
+                      border: '1px solid var(--red)',
+                      color: 'var(--red)',
+                    }}
+                  >
+                    {liquidityError}
+                  </div>
+                  <div className="sp-12" />
+                </>
+              )}
               <button
                 className="btn primary block"
                 disabled={!canAdd}
@@ -551,6 +578,21 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                   the underlying to you and burning your LP tokens atomically.
                 </div>
                 <div className="sp-12" />
+                {liquidityError && (
+                  <>
+                    <div
+                      className="rounded px-3 py-2 text-sm"
+                      style={{
+                        background: 'rgba(248, 81, 73, 0.08)',
+                        border: '1px solid var(--red)',
+                        color: 'var(--red)',
+                      }}
+                    >
+                      {liquidityError}
+                    </div>
+                    <div className="sp-12" />
+                  </>
+                )}
                 <button
                   className="btn danger block"
                   onClick={onRemove}

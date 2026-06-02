@@ -111,10 +111,15 @@ export class OrderService {
   }
 
   async listOpen(): Promise<Order[]> {
-    return this.ledger.query<Order>({
+    const stripPrefix = (s: string): string => (s.startsWith("OS_") ? s.slice(3) : s);
+    const rows = await this.ledger.query<Order>({
       templateId: "CantonDex.Dex.Order:Order",
       observingParty: this.operatorParty,
     });
+    return rows.map((o) => ({
+      ...o,
+      status: stripPrefix(String(o.status)) as Order["status"],
+    }));
   }
 
   /**

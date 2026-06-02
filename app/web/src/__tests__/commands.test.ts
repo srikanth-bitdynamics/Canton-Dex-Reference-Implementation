@@ -19,6 +19,21 @@ describe('composeCommands', () => {
       kind: 'accept-allocation-request',
       requestCid: 'aaaaaaaaaaaarequest1',
       factoryCid: 'factory1',
+      settlement: {
+        executors: ['op::1'],
+        id: 'DexOrder-web-1',
+        cid: null,
+        meta: { values: {} },
+      },
+      allocationSpec: {
+        admin: 'ad::1',
+        authorizer: { owner: 'alice::1220a', provider: null, id: '' },
+        transferLegSides: [],
+        settlementDeadline: null,
+        nextIterationFunding: { USDC: '100.0' },
+        committed: true,
+        meta: { values: {} },
+      },
       inputHoldingCids: ['holding1', 'holding2'],
       hint: { instrumentId: 'USDC', amount: '100.0' },
     };
@@ -31,16 +46,74 @@ describe('composeCommands', () => {
         "commands": [
           {
             "ExerciseCommand": {
-              "choice": "OrderAllocationRequest_Accept",
+              "choice": "AllocationRequest_Accept",
               "choiceArgument": {
-                "factoryCid": "factory1",
+                "actors": [
+                  "alice::1220a",
+                ],
+                "extraArgs": {
+                  "context": {
+                    "values": {},
+                  },
+                  "meta": {
+                    "values": {},
+                  },
+                },
+              },
+              "contractId": "aaaaaaaaaaaarequest1",
+              "templateId": "#splice-api-token-allocation-request-v2:Splice.Api.Token.AllocationRequestV2:AllocationRequest",
+            },
+          },
+          {
+            "ExerciseCommand": {
+              "choice": "AllocationFactory_Allocate",
+              "choiceArgument": {
+                "actors": [
+                  "alice::1220a",
+                ],
+                "allocation": {
+                  "admin": "ad::1",
+                  "authorizer": {
+                    "id": "",
+                    "owner": "alice::1220a",
+                    "provider": null,
+                  },
+                  "committed": true,
+                  "meta": {
+                    "values": {},
+                  },
+                  "nextIterationFunding": {
+                    "USDC": "100.0",
+                  },
+                  "settlementDeadline": null,
+                  "transferLegSides": [],
+                },
+                "extraArgs": {
+                  "context": {
+                    "values": {},
+                  },
+                  "meta": {
+                    "values": {},
+                  },
+                },
                 "inputHoldingCids": [
                   "holding1",
                   "holding2",
                 ],
+                "requestedAt": "2026-05-19T12:00:00.000Z",
+                "settlement": {
+                  "cid": null,
+                  "executors": [
+                    "op::1",
+                  ],
+                  "id": "DexOrder-web-1",
+                  "meta": {
+                    "values": {},
+                  },
+                },
               },
-              "contractId": "aaaaaaaaaaaarequest1",
-              "templateId": "#canton-dex-trading:CantonDex.Dex.OrderAllocationRequest:OrderAllocationRequest",
+              "contractId": "factory1",
+              "templateId": "#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory",
             },
           },
         ],
@@ -140,7 +213,7 @@ describe('composeCommands', () => {
   // per spec, in canonical order, mapping the right factory + holdings.
   const ALLOC_FACTORY_IID =
     '#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory';
-  const settlement = { executors: ['op::1'], id: 's1', cid: null, meta: {} };
+  const settlement = { executors: ['op::1'], id: 's1', cid: null, meta: { values: {} } };
   const mkSpec = (
     legId: string,
     instrumentId: string,
@@ -150,12 +223,12 @@ describe('composeCommands', () => {
     admin: 'reg::1',
     authorizer: { owner: 'alice::1220a', provider: null, id: '' },
     transferLegSides: [
-      { transferLegId: legId, side, otherside: { owner: null, provider: null, id: '' }, amount: '1.0', instrumentId, meta: {} },
+      { transferLegId: legId, side, otherside: { owner: null, provider: null, id: '' }, amount: '1.0', instrumentId, meta: { values: {} } },
     ],
     settlementDeadline: null,
     nextIterationFunding: null,
     committed,
-    meta: {},
+    meta: { values: {} },
   });
 
   it('add-liquidity authors 3 allocations (base+quote deposits, LP receipt)', () => {

@@ -21,6 +21,13 @@ function truncate(s: string | null | undefined, head = 6, tail = 4): string {
   return `${s.slice(0, head)}…${s.slice(-tail)}`;
 }
 
+function prettyParty(party: string | null | undefined): string {
+  if (!party) return "—";
+  const [hint] = party.split("::");
+  if (hint && hint.length > 0) return hint;
+  return truncate(party);
+}
+
 export function ConnectWalletButton() {
   const status = useWalletStore((s) => s.status);
   const activeProviderId = useWalletStore((s) => s.activeProviderId);
@@ -61,7 +68,7 @@ export function ConnectWalletButton() {
       <button
         type="button"
         onClick={() => disconnect()}
-        title={`Disconnect ${status.account.label ?? status.providerId}`}
+        title={`Disconnect ${status.account.party} (${status.account.label ?? status.providerId})`}
         className="row"
         style={{
           gap: 8,
@@ -83,7 +90,7 @@ export function ConnectWalletButton() {
           }}
         />
         <div className="leading-tight" style={{ textAlign: "left" }}>
-          <div className="text-xs">{truncate(status.account.party)}</div>
+          <div className="text-xs">{prettyParty(status.account.party)}</div>
           <div
             className="mono text-[10px]"
             style={{ color: "var(--text-2)" }}

@@ -663,12 +663,14 @@ export class PoolService {
       templateId: "CantonDex.Lp.Policy:LPTokenPolicy",
       observingParty: this.operatorParty,
     });
-    const found = policies.find(
+    const candidates = policies.filter(
       (p) =>
         p.active &&
         p.lpInstrumentId.id === pool.lpInstrumentId.id &&
         p.lpInstrumentId.admin === pool.lpInstrumentId.admin,
     );
+    const found =
+      candidates.find((p) => p.totalSupply === pool.totalLpSupply) ?? candidates[0];
     if (!found) {
       throw new Error(
         `no active LPTokenPolicy for ${pool.lpInstrumentId.admin}:${pool.lpInstrumentId.id}`,

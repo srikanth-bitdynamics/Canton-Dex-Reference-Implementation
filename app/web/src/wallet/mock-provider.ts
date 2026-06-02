@@ -74,10 +74,17 @@ export class MockWalletProvider implements WalletProvider {
       intent.kind === "add-liquidity" || intent.kind === "remove-liquidity"
         ? [`#mock-alloc-${id}-0:0`, `#mock-alloc-${id}-1:0`, `#mock-alloc-${id}-2:0`]
         : undefined;
+    const createdHoldingCids =
+      intent.kind === "split-holding"
+        ? [`#mock-holding-${id}-0:0`, `#mock-holding-${id}-1:0`]
+        : intent.kind === "merge-holdings"
+          ? [`#mock-holding-${id}-0:0`]
+          : undefined;
     return {
       submittedBy: this.status.account.party,
       primaryCid: `#mock-${id}:0`,
       createdAllocationCids,
+      createdHoldingCids,
     };
   }
 }

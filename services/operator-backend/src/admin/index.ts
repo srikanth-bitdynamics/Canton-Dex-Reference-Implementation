@@ -54,7 +54,11 @@ export class AdminService {
             baseInstrumentId: input.baseInstrumentId,
             quoteInstrumentId: input.quoteInstrumentId,
             tradingMode: input.tradingMode,
-            feeModel: input.feeModel,
+            feeModel: {
+              makerFeeBps: damlInt(input.feeModel.makerFeeBps),
+              takerFeeBps: damlInt(input.feeModel.takerFeeBps),
+              poolFeeBps: damlInt(input.feeModel.poolFeeBps),
+            },
             active: input.active ?? true,
             publicReaders: null,
             accumulatedMakerFees: null,
@@ -78,7 +82,13 @@ export class AdminService {
           templateId: "CantonDex.Dex.DexPair:DexPair",
           contractId: input.pairCid,
           choice: "DexPair_UpdateFeeModel",
-          argument: { newFeeModel: input.newFeeModel },
+          argument: {
+            newFeeModel: {
+              makerFeeBps: damlInt(input.newFeeModel.makerFeeBps),
+              takerFeeBps: damlInt(input.newFeeModel.takerFeeBps),
+              poolFeeBps: damlInt(input.newFeeModel.poolFeeBps),
+            },
+          },
         },
       }),
     );
@@ -144,8 +154,8 @@ export class AdminService {
             baseInstrumentId: input.baseInstrumentId,
             quoteInstrumentId: input.quoteInstrumentId,
             lpInstrumentId,
-            feeBps: input.feeBps,
-            operatorFeeBps: 0,
+            feeBps: damlInt(input.feeBps),
+            operatorFeeBps: damlInt(0),
           },
         },
       }),
@@ -246,4 +256,8 @@ export class AdminService {
       }),
     );
   }
+}
+
+function damlInt(value: number | string): string {
+  return String(value);
 }

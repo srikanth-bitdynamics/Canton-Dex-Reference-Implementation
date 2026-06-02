@@ -388,6 +388,8 @@ async function main(): Promise<void> {
       admin,
       allocationFactoryCid: "#alloc-fac:0",
       settlementFactoryCid: "#settle-fac:0",
+      allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
+      allocationFactoryDisclosure: [],
       network: process.env.CANTON_NETWORK ?? "canton:devnet",
     },
   });

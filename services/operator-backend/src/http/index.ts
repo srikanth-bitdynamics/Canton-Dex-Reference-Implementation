@@ -14,11 +14,11 @@
 //     GET  /v1/orders?trader=:p         -> Order[]
 //     GET  /v1/holdings?owner=:p        -> Holding[]
 //
-//   Quote (off-chain; advisory, on-chain Pool_Swap re-validates):
+//   Quote (off-chain; advisory, on-chain PoolRules_Swap re-validates):
 //     POST /v1/swaps/quote              -> { outputAmount }
 //
 //   Operator-driven write:
-//     POST /v1/pools/swap               -> Pool_Swap result
+//     POST /v1/pools/swap               -> PoolRules_Swap result
 //     POST /v1/pools/add-liquidity/request  -> LiquidityAllocationRequest payload
 //     POST /v1/pools/add-liquidity/settle   -> PoolLiquidityRules_SettleAddLiquidity result
 //     POST /v1/pools/remove-liquidity/request -> LiquidityAllocationRequest payload
@@ -38,6 +38,7 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { OperatorBackend } from "../index.js";
 import type { Party, Pool } from "../types.js";
+import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
 import { DealersService } from "../dealers/index.js";
@@ -103,6 +104,11 @@ export interface DexContext {
   admin: Party;
   allocationFactoryCid: string;
   settlementFactoryCid: string;
+  allocationFactoryExtraArgs: {
+    context: { values: Record<string, unknown> };
+    meta: { values: Record<string, unknown> };
+  };
+  allocationFactoryDisclosure: DisclosedContract[];
   network: string;
 }
 
@@ -270,7 +276,23 @@ async function routeRequest(
   // === read endpoints ====================================================
 
   if (method === "GET" && path === "/v1/context") {
-    respondJson(res, 200, context);
+    const [factories, choiceContext] = await Promise.all([
+      backend.registry.getFactories(context.admin),
+      backend.registry.getChoiceContext(context.admin),
+    ]);
+    respondJson(res, 200, {
+      ...context,
+      allocationFactoryCid: factories.allocationFactoryCid,
+      settlementFactoryCid: factories.settlementFactoryCid,
+      allocationFactoryExtraArgs: {
+        context: choiceContext.context,
+        meta: { values: {} },
+      },
+      allocationFactoryDisclosure: [
+        ...factories.disclosure,
+        ...choiceContext.disclosure,
+      ],
+    });
     return;
   }
 
@@ -387,13 +409,24 @@ async function routeRequest(
     if (!owner) {
       throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
-    // Read holdings as the owner — Holding has `signatory admin, observer
-    // owner`, so the operator party doesn't see them. The JWT carries
-    // ledger-wide rights so we can query as the owner directly.
-    const holdings = await backend.ledger.query<{ owner: string }>({
-      templateId: "CantonDex.Instrument.Holding:Holding",
-      observingParty: owner as never,
-    });
+    // Read holdings as the owner. V2 testnet/localnet flows use the
+    // registry-backed Holding template; older in-memory/demo paths can
+    // still surface the legacy instrument holding. Query both and merge
+    // so the browser sees trader funds on either backend.
+    const load = async (templateId: string) => {
+      try {
+        return await backend.ledger.query<{ owner: string }>({
+          templateId,
+          observingParty: owner as never,
+        });
+      } catch {
+        return [] as Array<{ owner: string }>;
+      }
+    };
+    const holdings = [
+      ...(await load("CantonDex.Registry.V2:Holding")),
+      ...(await load("CantonDex.Instrument.Holding:Holding")),
+    ];
     respondJson(
       res,
       200,

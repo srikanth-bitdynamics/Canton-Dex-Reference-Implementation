@@ -74,7 +74,7 @@ pool account.
   (`pool.lpRegistrar`, receiver-side); for remove, base+quote receipt
   (`pool.admin`, receiver-side) + LP-token burn-sender
   (`pool.lpRegistrar`, sender-side).
-- The settle choices live on a **new co-controlled `LpDvpRules`**
+- The settle choices live on a **co-controlled `PoolLiquidityRules`**
   contract (`{ operator, lpRegistrar }`, `signatory operator,
   lpRegistrar`, choices `controller operator, lpRegistrar`) — not on the
   operator-only `PoolRules`, which has no `lpRegistrar` visibility. This

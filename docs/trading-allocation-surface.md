@@ -1,22 +1,21 @@
-# V2 Allocation Surface (post-PR-5333)
+# V2 Allocation Surface
 
 Last updated: 2026-05-18
 
 ## Purpose
 
 Record the exact V2 allocation surface our DEX consumes — the
-extensions originally proposed as splice#5333 and now released in
-the `token-standard-v2-upcoming` branch — covering prefunded orders
+allocation functionality released in the `token-standard-v2-upcoming`
+branch — covering prefunded orders
 and allocation-backed pool funds.
 
 Source base (single tree after the upstream merge):
 
 - `vendor/splice/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml`
 
-## Exact Source Delta vs. the pre-PR-5333 V2 draft
+## Exact Source Delta vs. the earlier V2 draft
 
-The V2 allocation extensions (introduced in splice#5333, since
-merged) changed `AllocationV2` in the following ways:
+The V2 allocation surface changed `AllocationV2` in the following ways:
 
 - `SettlementInfo`
   - removes `requestedAt`
@@ -96,8 +95,9 @@ The V2 source file explicitly describes the intended use for:
 ## Immediate Impact on Local Stable Modules
 
 The current local stable implementation in
-`src/CantonDex/DexApp/OTCTradeV2.daml` cannot be reused unchanged on the PR
-5333 surface because it depends on stable-only fields and result shapes:
+`src/CantonDex/DexApp/OTCTradeV2.daml` cannot be reused unchanged on the
+current V2 allocation surface because it depends on stable-only fields and
+result shapes:
 
 - `mkOtcTradeSettlementInfo` sets `requestedAt` and `settleAt`
 - stable trade legs use `HoldingV2.InstrumentId`

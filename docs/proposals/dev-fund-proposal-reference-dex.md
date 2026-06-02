@@ -168,7 +168,7 @@ The design is grounded in:
 
 - the Token Standard V2 trading example (`TradingAppV2`)
 - registry workflow guidance around `InstrumentConfiguration`
-- the allocation extensions discussed in Splice PR 5333:
+- the V2 allocation extensions in `token-standard-v2-upcoming`:
   - iterated settlement
   - committed allocations
   - `Allocation_Adjust`
@@ -176,13 +176,13 @@ The design is grounded in:
     `nextIterationAllocationCid`)
 
 This project does not require protocol changes from Canton itself. It
-does, however, have a **hard dependency on PR-5333-style semantics
-landing in the V2 token standard**:
+does, however, have a **hard dependency on the allocation semantics now
+tracked in `token-standard-v2-upcoming`**:
 
 - `Pool` reserves are backed by committed allocations; without
   committed allocations there is no way to keep pool funds backed
   across the pool's lifetime.
-- `Pool_Swap` rolls forward on each trade via `Allocation_Adjust` +
+- `PoolRules_Swap` rolls forward on each trade via finalized allocations +
   `nextIterationFunding`; without iterated settlement every swap
   would have to lock the entire pool through a fresh factory call.
 - Prefunded `Order`s park their budget in `nextIterationFunding` and
@@ -191,10 +191,9 @@ landing in the V2 token standard**:
 
 If the V2 token standard does not include these semantics, **no
 registry-issued asset can be traded by this DEX** and the project has
-no usable settlement path. We are tracking the PR-5333 discussion and
-expect iterated settlement to be incorporated into the standard.
-Until then the reference builds against a vendored PR-5333 source
-checkout under `vendor/splice/`; the dependency is documented
+no usable settlement path. The reference builds against the vendored
+`token-standard-v2-upcoming` source checkout under `vendor/splice/`;
+the dependency is documented
 explicitly in the repository and the milestone acceptance criteria
 (see Section 11) tie completion to the standard's resolution rather
 than to a long-term fork.
@@ -358,9 +357,9 @@ Project-specific acceptance conditions:
   public testnet deployment
 - Milestone 2 includes concrete evidence of external evaluation or adoption
 - Milestone 2 documents whether it is running against landed upstream
-  V2 APIs (with iterated settlement / committed allocations /
-  `Allocation_Adjust` included) or against the vendored PR-5333 source
-  checkout pending that landing; the project commits to migrating to
+  V2 APIs (with iterated settlement / committed allocations included)
+  or against the vendored `token-standard-v2-upcoming` source checkout
+  pending that landing; the project commits to migrating to
   the standard surface as soon as those semantics land
 - Milestone 3 demonstrates prefunded order placement and settlement using
   allocation-backed order state

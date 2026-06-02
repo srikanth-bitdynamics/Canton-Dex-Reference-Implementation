@@ -9,7 +9,7 @@ implementation against a live Canton testnet validator.
    Direct, Mock) connect against a real participant.
 2. Verify every trader-authority intent translates correctly into
    on-ledger V2 Token Standard transactions.
-3. Confirm operator-driven flows (RFQ accept, Pool_Swap, order
+3. Confirm operator-driven flows (RFQ accept, PoolRules_Swap, order
    binding/funding, remove-liquidity) settle through the
    AllocationFactory + SettlementFactory.
 4. Validate indexer + history endpoints reflect on-ledger state.
@@ -131,7 +131,7 @@ Requires `OPERATOR_ADMIN_TOKEN`.
 
 ### 5.3 Pool swap
 - [ ] Quote: `POST /v1/swaps/quote` returns positive output for 0.01 BTC
-- [ ] Submit swap intent through wallet → on-ledger Pool_Swap exercised
+- [ ] Submit swap intent through wallet → on-ledger PoolRules_Swap exercised
 - [ ] Pool reserves update; swap appears in `GET /v1/swaps`
 
 ### 5.4 Add liquidity (two-call DvP)
@@ -140,7 +140,7 @@ Requires `OPERATOR_ADMIN_TOKEN`.
 - [ ] Wallet authors the base-deposit, quote-deposit, and LP-receipt
       allocations via AllocationFactory_Allocate
 - [ ] `POST /v1/pools/add-liquidity/settle` → operator + lpRegistrar
-      settle (LpDvpRules_SettleAddLiquidity); funds enter the pool and
+      settle (PoolLiquidityRules_SettleAddLiquidity); funds enter the pool and
       LP tokens are minted to the LP atomically
 - [ ] LP tokens minted (visible in Portfolio page LP section)
 - [ ] Pool reserves grow proportionally
@@ -151,7 +151,7 @@ Requires `OPERATOR_ADMIN_TOKEN`.
 - [ ] Wallet authors the holder's base-receipt + quote-receipt + LP
       burn-sender allocations
 - [ ] `POST /v1/pools/remove-liquidity/settle` → operator + lpRegistrar
-      settle (LpDvpRules_SettleRemoveLiquidity); base + quote are
+      settle (PoolLiquidityRules_SettleRemoveLiquidity); base + quote are
       delivered to the holder and the LP tokens burn to the burn
       account atomically
 

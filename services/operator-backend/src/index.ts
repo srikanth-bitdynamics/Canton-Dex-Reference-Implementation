@@ -11,7 +11,7 @@
 //       Rfq_Accept
 //       Order_Fund, Order_Adjust, Order_Cancel
 //       OrderFundingRequest_Bind
-//       Pool_Swap
+//       PoolRules_Swap
 //       PoolLiquidityRules_RequestAddLiquidity, PoolLiquidityRules_SettleAddLiquidity
 //       PoolLiquidityRules_RequestRemoveLiquidity, PoolLiquidityRules_SettleRemoveLiquidity
 //       MatchedTrade_RequestAllocations, MatchedTrade_Settle, MatchedTrade_Cancel
@@ -59,10 +59,12 @@ export class OperatorBackend {
   // that need to drive raw ledger commands. Production callers should
   // prefer the typed flow modules.
   readonly ledger: LedgerSubmitter;
+  readonly registry: RegistryClient;
   readonly operatorParty: Party;
 
   constructor(cfg: OperatorBackendConfig) {
     this.ledger = cfg.ledger;
+    this.registry = cfg.registry;
     this.operatorParty = cfg.operatorParty;
     this.rfq = new RfqService(cfg.ledger, cfg.registry, cfg.operatorParty);
     this.order = new OrderService(cfg.ledger, cfg.registry, cfg.operatorParty);

@@ -3,10 +3,8 @@
 // describe the on-ledger sequence per workflow so the user sees what
 // the operator backend is actually doing on their behalf.
 //
-// Each phase has a `tag` that becomes the alloc-pill prefix for
-// completed steps -- e.g., "Alloc#a1c4". CIDs in production come from
-// the ledger event stream; in the demo they're synthesized from the
-// toast id.
+// Each phase has a short status tag shown once the step completes.
+// These are UI-only status badges, not real on-ledger contract ids.
 
 import { useCallback, useEffect, useState } from 'react';
 
@@ -25,41 +23,41 @@ interface PhaseSpec {
 
 export const TX_PHASES: Record<TxPhaseKind, PhaseSpec[]> = {
   swap: [
-    { label: 'Lock funds in trader Allocation', tag: 'Alloc' },
-    { label: 'Operator: Allocation_Adjust + swap legs', tag: 'AdjustCID' },
-    { label: 'SettleBatch on 3 allocations', tag: 'Settle' },
-    { label: 'Pool roll-forward → next iteration', tag: 'PoolAlloc·next' },
+    { label: 'Lock funds in trader Allocation', tag: 'Locked' },
+    { label: 'Operator: Allocation_Adjust + swap legs', tag: 'Adjusted' },
+    { label: 'SettleBatch on 3 allocations', tag: 'Settled' },
+    { label: 'Pool roll-forward → next iteration', tag: 'Updated' },
   ],
   addLp: [
-    { label: 'DepositRequest created', tag: 'DepReq' },
-    { label: 'Allocations bound to pool legs', tag: 'Alloc' },
-    { label: 'Pool refreshed → reserves updated', tag: 'PoolAlloc·next' },
-    { label: 'LP tokens minted to your party', tag: 'LPToken' },
+    { label: 'DepositRequest created', tag: 'Requested' },
+    { label: 'Allocations bound to pool legs', tag: 'Allocated' },
+    { label: 'Pool refreshed → reserves updated', tag: 'Updated' },
+    { label: 'LP tokens minted to your party', tag: 'Minted' },
   ],
   removeLp: [
-    { label: 'Burn LP tokens', tag: 'LPBurn' },
-    { label: 'Pool legs split → trader allocations', tag: 'AdjustCID' },
-    { label: 'SettleBatch on pool + trader', tag: 'Settle' },
-    { label: 'Underlying assets returned', tag: 'Alloc' },
+    { label: 'Burn LP tokens', tag: 'Burned' },
+    { label: 'Pool legs split → trader allocations', tag: 'Adjusted' },
+    { label: 'SettleBatch on pool + trader', tag: 'Settled' },
+    { label: 'Underlying assets returned', tag: 'Returned' },
   ],
   placeOrder: [
-    { label: 'Submitted to operator', tag: 'OrderReq' },
-    { label: 'Bound: TradeAllocationRequest issued', tag: 'BindCID' },
-    { label: 'Funding allocation locked', tag: 'OrderAlloc' },
-    { label: 'In book — awaiting match', tag: 'Order' },
+    { label: 'Submitted to operator', tag: 'Submitted' },
+    { label: 'Bound: TradeAllocationRequest issued', tag: 'Bound' },
+    { label: 'Funding allocation locked', tag: 'Locked' },
+    { label: 'In book — awaiting match', tag: 'Open' },
   ],
   cancelOrder: [
-    { label: 'Cancel signal received', tag: 'CancelReq' },
-    { label: 'Order archived', tag: 'Order·closed' },
-    { label: 'Funding allocation released', tag: 'Alloc·release' },
-    { label: 'Funds returned to available', tag: 'Settle' },
+    { label: 'Cancel signal received', tag: 'Requested' },
+    { label: 'Order archived', tag: 'Closed' },
+    { label: 'Funding allocation released', tag: 'Released' },
+    { label: 'Funds returned to available', tag: 'Returned' },
   ],
   rfqAccept: [
-    { label: 'Trader signs MatchedTrade', tag: 'Match' },
-    { label: 'Both parties post Allocations', tag: 'Alloc' },
-    { label: 'Operator validates: whitelist + expiry', tag: 'PolicyOK' },
-    { label: 'SettleBatch on 2 allocations', tag: 'Settle' },
-    { label: 'Trade recorded → private to counterparties', tag: 'TradeCID' },
+    { label: 'Trader signs MatchedTrade', tag: 'Signed' },
+    { label: 'Both parties post Allocations', tag: 'Allocated' },
+    { label: 'Operator validates: whitelist + expiry', tag: 'Validated' },
+    { label: 'SettleBatch on 2 allocations', tag: 'Settled' },
+    { label: 'Trade recorded → private to counterparties', tag: 'Recorded' },
   ],
 };
 
@@ -71,6 +69,7 @@ export interface Toast {
   phaseCount: number;
   onComplete?: () => void;
   _notified?: boolean;
+  _dismissScheduled?: boolean;
 }
 
 export function useToasts() {
@@ -98,6 +97,7 @@ export function useToasts() {
         ...cur,
         { id, label, kind, phase: 0, phaseCount, onComplete },
       ]);
+      return id;
     },
     [],
   );
@@ -106,15 +106,33 @@ export function useToasts() {
     setToasts((cur) => cur.filter((t) => t.id !== id));
   }, []);
 
-  // Fire onComplete once per toast when it reaches the end.
+  // Fire onComplete once per toast when it reaches the end, then let the
+  // finished card clear itself after a short dwell so successful actions
+  // don't leave stale cards behind.
   useEffect(() => {
-    toasts.forEach((t) => {
-      if (t.phase === t.phaseCount && !t._notified) {
-        t._notified = true;
-        t.onComplete?.();
-      }
+    const completed = toasts.filter(
+      (t) => t.phase === t.phaseCount && !t._dismissScheduled,
+    );
+    if (completed.length === 0) return;
+
+    completed.forEach((t) => {
+      if (!t._notified) t.onComplete?.();
     });
-  }, [toasts]);
+    setToasts((cur) =>
+      cur.map((t) =>
+        t.phase === t.phaseCount && !t._dismissScheduled
+          ? { ...t, _notified: true, _dismissScheduled: true }
+          : t,
+      ),
+    );
+
+    const timers = completed.map((t) =>
+      setTimeout(() => dismiss(t.id), 1800),
+    );
+    return () => {
+      timers.forEach(clearTimeout);
+    };
+  }, [dismiss, toasts]);
 
   return { toasts, push, dismiss };
 }
@@ -154,11 +172,7 @@ export function TxToast({
                 className="alloc-pill"
                 style={{ marginLeft: 'auto' }}
               >
-                {p.tag}#
-                {(0xa1c4 + i * 17 + Math.floor(tx.id))
-                  .toString(16)
-                  .padStart(4, '0')
-                  .slice(-4)}
+                {p.tag}
               </span>
             )}
           </div>

@@ -307,7 +307,7 @@ On-ledger flow:
    minimum LP shares (the add-liquidity request step)
 2. the trader's wallet authors the base-deposit, quote-deposit, and LP-receipt
    allocations via `AllocationFactory_Allocate`
-3. operator and `lpRegistrar` settle with `LpDvpRules_SettleAddLiquidity`:
+3. operator and `lpRegistrar` settle with `PoolLiquidityRules_SettleAddLiquidity`:
    funds enter the pool, reserve state is updated, pool-managed committed
    allocations are refreshed, and LP tokens are minted to the provider —
    atomically in one settlement
@@ -328,7 +328,7 @@ On-ledger flow:
    and minimum asset outputs (the remove-liquidity request step)
 2. the wallet authors the holder's base-receipt and quote-receipt allocations
    plus the LP burn-sender allocation via `AllocationFactory_Allocate`
-3. operator and `lpRegistrar` settle with `LpDvpRules_SettleRemoveLiquidity`:
+3. operator and `lpRegistrar` settle with `PoolLiquidityRules_SettleRemoveLiquidity`:
    base and quote are delivered to the holder, the LP tokens burn to the burn
    account, pool reserve allocations are adjusted down, and reserve references
    are rolled forward — atomically in one settlement

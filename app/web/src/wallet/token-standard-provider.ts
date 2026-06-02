@@ -28,6 +28,7 @@
 // and refreshed via the wallet's auth flow (out of scope here).
 
 import type {
+  DisclosedContract,
   WalletAccount,
   WalletConnectionStatus,
   WalletIntent,
@@ -56,10 +57,22 @@ interface PersistedSession {
 interface SubmitAndWaitResponse {
   updateId: string;
   completionOffset: number;
-  // Added by the operator backend's /v1/wallet/submit (DEX-83): the
+  // Added by the operator backend's /v1/wallet/submit: the
   // transaction's created contracts, so DvP intents can recover the
   // allocation cids the settle needs. Absent on older backends.
   createdEvents?: Array<{ contractId: string; templateId: string }>;
+}
+
+function requireCreatedEvent(
+  createdEvents: Array<{ contractId: string; templateId: string }> | undefined,
+  suffix: string,
+  kind: string,
+): string {
+  const cid = createdEvents?.find((e) => e.templateId.endsWith(suffix))?.contractId;
+  if (!cid) {
+    throw new Error(`wallet did not return the created ${kind} cid`);
+  }
+  return cid;
 }
 
 function template(name: string): string {
@@ -184,11 +197,13 @@ export class TokenStandardProvider implements WalletProvider {
       case "accept-allocation-request":
         return this.acceptAllocationRequest(intent);
       case "request-swap":
+      case "split-holding":
+      case "merge-holdings":
       case "add-liquidity":
       case "remove-liquidity":
         // DvP swap + LP add/remove: author the allocation(s) via the shared
         // composer and recover their created cids from the submit response
-        // (DEX-83). The backend's /v1/wallet/submit now follows the transaction
+        // The backend's /v1/wallet/submit now follows the transaction
         // tree and returns createdEvents, so the operator-relay path CAN surface
         // the allocation cids the settle needs — no CIP-0103 wallet required.
         return this.submitComposed(intent);
@@ -211,6 +226,7 @@ export class TokenStandardProvider implements WalletProvider {
     actAs: string[],
     commandId: string,
     commands: Record<string, unknown>[],
+    disclosedContracts: DisclosedContract[] = [],
   ): Promise<SubmitAndWaitResponse> {
     if (!this.session) throw new Error("not connected");
     const body = {
@@ -219,6 +235,7 @@ export class TokenStandardProvider implements WalletProvider {
       actAs,
       commandId,
       synchronizerId: SYNCHRONIZER_ID || undefined,
+      disclosedContracts,
     };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
@@ -243,7 +260,7 @@ export class TokenStandardProvider implements WalletProvider {
 
   // DvP intents (add/remove-liquidity): build the allocation commands with
   // the shared composer, submit them, and recover the created Allocation cids
-  // from the backend's createdEvents (DEX-83). The settle path needs those
+  // from the backend's createdEvents. The settle path needs those
   // cids in command order. Created events are filtered to V2.Allocation so an
   // incidental extra create can't shift the mapping.
   private async submitComposed(intent: WalletIntent): Promise<WalletResult> {
@@ -257,9 +274,13 @@ export class TokenStandardProvider implements WalletProvider {
       composed.actAs,
       composed.commandId,
       composed.commands as unknown as Record<string, unknown>[],
+      composed.disclosedContracts,
     );
     const allocationEvents = (result.createdEvents ?? []).filter((e) =>
       e.templateId.endsWith("CantonDex.Registry.V2:Allocation"),
+    );
+    const holdingEvents = (result.createdEvents ?? []).filter((e) =>
+      e.templateId.endsWith("CantonDex.Registry.V2:Holding"),
     );
     const createdAllocationCids = extractCreatedAllocationCids(
       intent,
@@ -270,6 +291,10 @@ export class TokenStandardProvider implements WalletProvider {
       submittedBy: party,
       primaryCid: result.updateId,
       createdAllocationCids,
+      createdHoldingCids:
+        holdingEvents.length > 0
+          ? holdingEvents.map((e) => e.contractId)
+          : undefined,
     };
   }
 
@@ -298,7 +323,14 @@ export class TokenStandardProvider implements WalletProvider {
         },
       },
     );
-    return { submittedBy: party, primaryCid: result.updateId };
+    return {
+      submittedBy: party,
+      primaryCid: requireCreatedEvent(
+        result.createdEvents,
+        "CantonDex.Dex.OrderFundingRequest:OrderFundingRequest",
+        "OrderFundingRequest",
+      ),
+    };
   }
 
 
@@ -306,24 +338,30 @@ export class TokenStandardProvider implements WalletProvider {
     intent: Extract<WalletIntent, { kind: "accept-allocation-request" }>,
   ): Promise<WalletResult> {
     const party = this.session!.party;
-    const result = await this.submitAndWait(
-      [party],
-      `alloc-accept-${intent.requestCid.slice(0, 12)}-${Date.now()}`,
-      {
-        ExerciseCommand: {
-          templateId: template(
-            "CantonDex.Dex.OrderAllocationRequest:OrderAllocationRequest",
-          ),
-          contractId: intent.requestCid,
-          choice: "OrderAllocationRequest_Accept",
-          choiceArgument: {
-            factoryCid: intent.factoryCid,
-            inputHoldingCids: intent.inputHoldingCids,
-          },
-        },
-      },
+    const composed = composeCommands(intent, {
+      party,
+      packagePrefix: PACKAGE_PREFIX,
+      now: () => new Date(),
+    });
+    const result = await this.submitCommands(
+      composed.actAs,
+      composed.commandId,
+      composed.commands as unknown as Record<string, unknown>[],
+      composed.disclosedContracts,
     );
-    return { submittedBy: party, primaryCid: result.updateId };
+    const allocationEvents = (result.createdEvents ?? []).filter((e) =>
+      e.templateId.endsWith("CantonDex.Registry.V2:Allocation"),
+    );
+    const createdAllocationCids = extractCreatedAllocationCids(
+      intent,
+      1,
+      { createdEvents: allocationEvents },
+    );
+    return {
+      submittedBy: party,
+      primaryCid: createdAllocationCids?.[0] ?? result.updateId,
+      createdAllocationCids,
+    };
   }
 
   private async postRfqQuote(

@@ -39,7 +39,7 @@ For every instrument the DEX trades, the registry MUST publish:
 | `admin` is sole signatory on `InstrumentConfiguration`; updates are admin-controlled | Operator backend caches configs and listens for archive/recreate cycles |
 | Holdings can be locked / unlocked / split / merged by admin | The trader's wallet or registry handles holding selection before allocation accept |
 | Allocation factory accepts arbitrary `AllocationSpecification` shapes (prefunded, with-legs, committed, with `nextIterationFunding`) | Order's prefunded model and Pool's committed model both depend on this |
-| Settlement factory enforces transfer-leg consistency with allocations | OTCTrade_Settle and Pool_Swap rely on the factory to validate, not the DEX |
+| Settlement factory enforces transfer-leg consistency with allocations | OTC / matched-trade settlement and `PoolRules_Swap` rely on the factory to validate, not the DEX |
 
 ## Mint / Burn / Transfer prerequisites
 

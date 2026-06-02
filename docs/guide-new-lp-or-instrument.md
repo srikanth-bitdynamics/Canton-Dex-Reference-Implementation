@@ -29,7 +29,7 @@ The LP token:
 
 - has `instrumentId = "<BASE>-<QUOTE>-LP"`
 - has `admin = lpRegistrar`
-- is created when `LpDvpRules_SettleAddLiquidity` settles the LP receipt
+- is created when `PoolLiquidityRules_SettleAddLiquidity` settles the LP receipt
   against the registry-side mint allocation
 - is a real `Registry.V2.Holding`: fungible with other V2 holdings,
   usable as input to `V2.TransferInstruction`, lockable into a
@@ -207,7 +207,7 @@ The reference doesn't ship either; build them in your fork.
 
 - `trading/CantonDex/Registry/V2.daml`: full CIP-0056 surface
 - `trading/CantonDex/Instrument/Credentials.daml`: credential primitive
-- `trading/CantonDex/Dex/LPToken.daml`: example of an LP wrapper
+- `trading/CantonDex/Lp/Policy.daml`: LP-token policy component
   driving V2 mints/burns
 - `trading-tests/CantonDex/Tests/InstrumentTests.daml`: registration,
   mint, transfer, burn flows in Daml Script

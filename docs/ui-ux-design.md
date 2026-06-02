@@ -74,13 +74,14 @@ execution.
 
 **Key UX decisions:**
 
-- **Two-step execution**: "Review Swap" opens a confirmation modal showing the
-  exact transfer legs before the user approves. This maps to the on-ledger
-  `SwapRequest` creation + `Pool_Swap` execution.
+- **Three-step DvP execution**: "Review Swap" opens a confirmation modal
+  showing the exact transfer legs before the user approves. This maps to
+  `PoolRules_RequestSwap` → wallet-authored `AllocationFactory_Allocate` →
+  `PoolRules_Swap`.
 - **Slippage controls**: expandable settings panel with preset options
   (0.1%, 0.5%, 1.0%) and custom input.
-- **Real-time quote**: the "You receive" field updates live from
-  `Pool_ComputeSwapOut`.
+- **Real-time quote**: the "You receive" field updates live from the
+  operator quote endpoint and is re-validated by `PoolRules_Swap`.
 - **Balance display**: show available (unlocked) balance for the input asset.
 - **Transaction status**: after submission, a toast notification tracks the
   swap through: Submitted → Allocation Created → Settled → Complete.
@@ -273,7 +274,7 @@ Every on-ledger action follows the same three-phase pattern:
 This maps directly to the on-ledger workflow:
 
 ```
-User intent → SwapRequest/Order created → Allocation funded
+User intent → allocation request/spec created → Allocation funded
             → Adjustment (if needed) → Settlement → Result
 ```
 
@@ -325,7 +326,7 @@ Progresses through each stage in real-time by watching ledger events.
 | `Order` | Order book rows, "My Orders" panel |
 | `Pool` | Pool list cards, reserve display, swap pricing |
 | `LPTokenPolicy` | LP position display in portfolio and pool detail |
-| `SwapRequest` | Swap confirmation modal and transaction toast |
+| `PoolRules_RequestSwap` / `PoolRules_Swap` | Swap confirmation modal and transaction toast |
 | `MatchedTrade` | Trade settlement status in activity feed |
 | `OrderMatchExecution` | Fill notification toast |
 | `V2.Allocation` (prefunded) | "Locked" column in portfolio |

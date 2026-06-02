@@ -39,7 +39,7 @@ You ──┐                                         pool roll-forward
   ┌───────────────────────────────────────────────────┴───┐
   │  AllocationFactory_Allocate (your authority)          │
   │      ↓                                                │
-  │  Pool_Swap (operator)                                 │
+  │  PoolRules_Swap (operator)                            │
   │      ↓                                                │
   │  SettlementFactory_SettleBatch (atomic)               │
   │      ↓                                                │
@@ -54,8 +54,10 @@ You ──┐                                         pool roll-forward
    received update live.
 3. Set slippage tolerance via the ⚙ settings button (default 0.5 %).
 4. Click **Review Swap** → confirm the on-ledger sequence.
-5. Click **Approve & Submit**. Your wallet signs the
-   `AllocationFactory_Allocate` + `SwapRequest` composition.
+5. Click **Approve & Submit**. The dApp has already asked the operator for a
+   Daml-built swap allocation spec (`PoolRules_RequestSwap`); your wallet
+   signs the matching `AllocationFactory_Allocate` with the registry's choice
+   context.
 6. A toast banner shows each on-ledger phase as it completes. When the
    final phase ("Pool roll-forward") goes green, your holdings and the
    pool reserves refresh automatically.
@@ -85,7 +87,7 @@ Use this to provide both sides of a pool and earn LP tokens.
    allocations via `AllocationFactory_Allocate`.
 5. The operator and lpRegistrar settle
    (`POST /v1/pools/add-liquidity/settle`,
-   `LpDvpRules_SettleAddLiquidity`): your funds enter the pool and LP
+   `PoolLiquidityRules_SettleAddLiquidity`): your funds enter the pool and LP
    tokens are minted to you, atomically.
 6. Your LP balance appears under "Your LP position" once settled.
 
@@ -104,7 +106,7 @@ A DvP flow because the LP holding lives in the registry, not the DEX:
 2. Wallet step: your wallet authors the base-receipt, quote-receipt,
    and LP burn-sender allocations via `AllocationFactory_Allocate`.
 3. Settle step: `POST /v1/pools/remove-liquidity/settle`
-   (`LpDvpRules_SettleRemoveLiquidity`, co-signed by the operator and
+   (`PoolLiquidityRules_SettleRemoveLiquidity`, co-signed by the operator and
    lpRegistrar) delivers base + quote to you and burns the LP tokens to
    the burn account, atomically.
 
@@ -199,9 +201,9 @@ above goes through your wallet provider:
 
 | UI action | Wallet intent | On-ledger result |
 |---|---|---|
-| Swap | `request-swap` | `Allocation` (prefunded) + `SwapRequest` |
-| Add liquidity | `add-liquidity` | Base-deposit + quote-deposit + LP-receipt `Allocation`s (settled by `LpDvpRules_SettleAddLiquidity`) |
-| Remove liquidity | `remove-liquidity` | Base-receipt + quote-receipt + LP burn-sender `Allocation`s (settled by `LpDvpRules_SettleRemoveLiquidity`) |
+| Swap | `request-swap` | Prefunded input `Allocation`, then `PoolRules_Swap` |
+| Add liquidity | `add-liquidity` | Base-deposit + quote-deposit + LP-receipt `Allocation`s (settled by `PoolLiquidityRules_SettleAddLiquidity`) |
+| Remove liquidity | `remove-liquidity` | Base-receipt + quote-receipt + LP burn-sender `Allocation`s (settled by `PoolLiquidityRules_SettleRemoveLiquidity`) |
 | Place order | `place-order` | `OrderFundingRequest` |
 | Accept RFQ | `accept-rfq` | Joint `Rfq_Accept` exercise |
 | Post RFQ quote (dealer) | `post-rfq-quote` | `RfqQuote` create |

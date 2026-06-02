@@ -59,8 +59,8 @@ authorizes.
 | Action | Trader's experience |
 |---|---|
 | **Place an order** | (1) Trader composes order in dApp; (2) dApp calls operator backend to bind, which produces `OrderAllocationRequest`; (3) wallet receives the request, shows it for accept/reject; (4) on accept, wallet composes `AllocationFactory_Allocate`; (5) dApp shows the order as Funded once the operator binds |
-| **Add liquidity** | (1) Trader composes the deposit in dApp; (2) dApp calls `POST /v1/pools/add-liquidity/request`, which has the operator create a `LiquidityAllocationRequest`; (3) wallet receives the request and authors the base-deposit, quote-deposit, and LP-receipt allocations via `AllocationFactory_Allocate`; (4) dApp calls `POST /v1/pools/add-liquidity/settle`, where operator + lpRegistrar settle (`LpDvpRules_SettleAddLiquidity`) so funds enter the pool and LP tokens mint to the LP atomically. Remove liquidity mirrors this via the `/request` + `/settle` pair (`LpDvpRules_SettleRemoveLiquidity`) |
-| **Pool swap** | (1) Trader composes swap in dApp; (2) dApp creates `SwapRequest` (trader-signed) with an allocation reference; (3) wallet shows the underlying allocation; (4) operator backend exercises `Pool_Swap` |
+| **Add liquidity** | (1) Trader composes the deposit in dApp; (2) dApp calls `POST /v1/pools/add-liquidity/request`, which has the operator create a `LiquidityAllocationRequest`; (3) wallet receives the request and authors the base-deposit, quote-deposit, and LP-receipt allocations via `AllocationFactory_Allocate` with the registry's choice context; (4) dApp calls `POST /v1/pools/add-liquidity/settle`, where operator + lpRegistrar settle (`PoolLiquidityRules_SettleAddLiquidity`) so funds enter the pool and LP tokens mint to the LP atomically. Remove liquidity mirrors this via the `/request` + `/settle` pair (`PoolLiquidityRules_SettleRemoveLiquidity`) |
+| **Pool swap** | (1) Trader composes swap in dApp; (2) dApp calls `POST /v1/pools/swap/request`, where `PoolRules_RequestSwap` builds the exact input-allocation spec and settlement descriptor; (3) wallet authors that single `AllocationFactory_Allocate` with the registry's choice context; (4) dApp calls `POST /v1/pools/swap`, where the operator exercises `PoolRules_Swap` with the created allocation CID |
 | **Cancel order** | (1) Trader clicks Cancel in dApp; (2) operator exercises `Order_Cancel`; (3) wallet receives released-holding event, surfaces it |
 | **Accept an RFQ quote** | (1) Trader picks quote in dApp; (2) dApp + operator co-submit `Rfq_Accept`; (3) wallet receives the resulting `MatchedTrade` and the corresponding `TradeAllocationRequest`; (4) wallet asks for accept; (5) on accept, wallet composes the allocation |
 
@@ -99,16 +99,19 @@ operator backend can still submit operator-only transactions
 
 1. **dApp**: trader fills swap form, hits "Review Swap"
 2. **dApp**: shows transfer-leg breakdown + on-ledger sequence preview
-3. **dApp → operator backend**: `prepareSwap({pair, amountIn, slippage})`
-4. **operator backend → registry client**: fetch `InstrumentConfiguration` CIDs
-5. **operator backend → dApp**: returns a `SwapRequest` create command for the trader's wallet
-6. **dApp → wallet**: deep-link to wallet with the prepared command
-7. **wallet**: shows holding selection + allocation preview + asks for trader signature
-8. **wallet → ledger**: submits the create + allocation factory call
-9. **ledger event stream → operator backend**: notices the new `SwapRequest`
-10. **operator backend → ledger**: submits `Pool_Swap` (operator-only authority)
-11. **ledger event stream → dApp + wallet**: both update their views
-12. **dApp**: shows transaction toast progressing through the 4 phases
+3. **dApp → operator backend**: `POST /v1/pools/swap/request`
+4. **operator backend → Daml**: `PoolRules_RequestSwap` builds the settlement
+   descriptor and input-allocation spec
+5. **operator backend → registry client**: fetch allocation factory CID,
+   choice context, and disclosures for the pool admin
+6. **operator backend → dApp**: returns the allocation spec, settlement,
+   factory CID, choice context, and disclosures
+7. **dApp → wallet**: hands over a `request-swap` intent
+8. **wallet → ledger**: submits `AllocationFactory_Allocate`
+9. **wallet → dApp**: returns the created allocation CID
+10. **dApp → operator backend**: `POST /v1/pools/swap`
+11. **operator backend → ledger**: exercises `PoolRules_Swap`
+12. **ledger event stream → dApp + wallet**: both update their views
 
 The dApp never touches the trader's allocation directly; the wallet
 never has DEX market state. Each side does what it's designed for.

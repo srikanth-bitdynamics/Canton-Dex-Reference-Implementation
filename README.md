@@ -172,9 +172,7 @@ These three upstream sources define the design surface:
 - [**Splice `token-standard-v2-upcoming`**](https://github.com/canton-network/splice/tree/token-standard-v2-upcoming/token-standard)
   — the released V2 allocation semantics (iterated settlement,
   committed allocations, `FinalizedAllocation`, and settle results
-  that return rolled-forward allocation state). Originally proposed
-  as [splice#5333](https://github.com/canton-network/splice/pull/5333);
-  merged into the `token-standard-v2-upcoming` branch.
+  that return rolled-forward allocation state).
 
 The repo ships the V2 token-standard DARs under
 [`vendor/splice/`](vendor/splice/). When upstream V2
@@ -259,7 +257,7 @@ Security disclosures: see [`SECURITY.md`](SECURITY.md).
 The reference implementation is funded under the
 [Canton Foundation Dev Fund](https://github.com/canton-foundation/canton-dev-fund/pull/108)
 (BitDynamics, 1.1M CC). Roadmap and milestones are tracked in
-[Linear](https://linear.app/bitdynamics/team/DEX/) (DEX-1 through DEX-30).
+[Linear](https://linear.app/bitdynamics/team/DEX/).
 
 ---
 

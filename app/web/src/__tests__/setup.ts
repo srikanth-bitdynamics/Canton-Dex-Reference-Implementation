@@ -14,6 +14,8 @@ const DEFAULT_RESPONSES: Record<string, unknown> = {
     admin: 'ad::1',
     allocationFactoryCid: 'fac:1',
     settlementFactoryCid: 'set:1',
+    allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
+    allocationFactoryDisclosure: [],
     network: 'canton:test',
   },
   '/v1/pools': [],

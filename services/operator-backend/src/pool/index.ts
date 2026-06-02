@@ -25,6 +25,11 @@ import type {
   V2SettlementInfo,
 } from "../types.js";
 
+interface RegistryExtraArgs {
+  context: { values: Record<string, unknown> };
+  meta: { values: Record<string, unknown> };
+}
+
 export interface PoolSwapInput {
   poolCid: ContractId<"Pool">;
   swapperAccount: V2Account;
@@ -51,6 +56,8 @@ export interface PoolRequestSwapResult {
   settlement: V2SettlementInfo;
   // The pool-admin allocation factory the swapper allocates under.
   factoryCid: ContractId<"AllocationFactory">;
+  allocationFactoryExtraArgs: RegistryExtraArgs;
+  allocationFactoryDisclosure: DisclosedContract[];
 }
 
 // === DvP liquidity ==========================================
@@ -78,6 +85,10 @@ export interface PoolRequestAddLiquidityResult {
   // Distinct factories for pool-admin vs lpRegistrar allocations.
   depositFactoryCid: ContractId<"AllocationFactory">;
   lpFactoryCid: ContractId<"AllocationFactory">;
+  depositFactoryExtraArgs: RegistryExtraArgs;
+  lpFactoryExtraArgs: RegistryExtraArgs;
+  depositFactoryDisclosure: DisclosedContract[];
+  lpFactoryDisclosure: DisclosedContract[];
 }
 
 export interface PoolSettleAddLiquidityInput {
@@ -117,6 +128,10 @@ export interface PoolRequestRemoveLiquidityResult {
   settlement: V2SettlementInfo;
   depositFactoryCid: ContractId<"AllocationFactory">;
   lpFactoryCid: ContractId<"AllocationFactory">;
+  depositFactoryExtraArgs: RegistryExtraArgs;
+  lpFactoryExtraArgs: RegistryExtraArgs;
+  depositFactoryDisclosure: DisclosedContract[];
+  lpFactoryDisclosure: DisclosedContract[];
 }
 
 export interface PoolSettleRemoveLiquidityInput {
@@ -335,7 +350,10 @@ export class PoolService {
   // pool-admin allocation factory the wallet allocates under.
   async requestSwap(input: PoolRequestSwapInput): Promise<PoolRequestSwapResult> {
     const pool = await this.fetchPool(input.poolCid);
-    const factories = await this.registry.getFactories(pool.admin);
+    const [factories, ctx] = await Promise.all([
+      this.registry.getFactories(pool.admin),
+      this.choiceContext(pool.admin),
+    ]);
     const result = await this.ledger.submit<{
       settlement: V2SettlementInfo;
       allocationSpec: V2AllocationSpecification;
@@ -359,6 +377,8 @@ export class PoolService {
       allocationSpec: result.allocationSpec,
       settlement: result.settlement,
       factoryCid: factories.allocationFactoryCid,
+      allocationFactoryExtraArgs: ctx.extraArgs,
+      allocationFactoryDisclosure: [...factories.disclosure, ...ctx.disclosure],
     };
   }
 
@@ -453,7 +473,8 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
-    const { depositFactories, lpFactories } = await this.loadLiquidityFactories(pool);
+    const { depositFactories, lpFactories, depositContext, lpContext } =
+      await this.loadDvpSurface(pool);
     return {
       requestCid,
       lpAmount,
@@ -464,6 +485,13 @@ export class PoolService {
       settlement: req.settlement,
       depositFactoryCid: depositFactories.allocationFactoryCid,
       lpFactoryCid: lpFactories.allocationFactoryCid,
+      depositFactoryExtraArgs: depositContext.extraArgs,
+      lpFactoryExtraArgs: lpContext.extraArgs,
+      depositFactoryDisclosure: [
+        ...depositFactories.disclosure,
+        ...depositContext.disclosure,
+      ],
+      lpFactoryDisclosure: [...lpFactories.disclosure, ...lpContext.disclosure],
     };
   }
 
@@ -580,7 +608,8 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
-    const { depositFactories, lpFactories } = await this.loadLiquidityFactories(pool);
+    const { depositFactories, lpFactories, depositContext, lpContext } =
+      await this.loadDvpSurface(pool);
     return {
       requestCid,
       knownTotalLpSupply: pool.totalLpSupply,
@@ -592,6 +621,13 @@ export class PoolService {
       settlement: req.settlement,
       depositFactoryCid: depositFactories.allocationFactoryCid,
       lpFactoryCid: lpFactories.allocationFactoryCid,
+      depositFactoryExtraArgs: depositContext.extraArgs,
+      lpFactoryExtraArgs: lpContext.extraArgs,
+      depositFactoryDisclosure: [
+        ...depositFactories.disclosure,
+        ...depositContext.disclosure,
+      ],
+      lpFactoryDisclosure: [...lpFactories.disclosure, ...lpContext.disclosure],
     };
   }
 
@@ -663,12 +699,14 @@ export class PoolService {
       templateId: "CantonDex.Lp.Policy:LPTokenPolicy",
       observingParty: this.operatorParty,
     });
-    const found = policies.find(
+    const candidates = policies.filter(
       (p) =>
         p.active &&
         p.lpInstrumentId.id === pool.lpInstrumentId.id &&
         p.lpInstrumentId.admin === pool.lpInstrumentId.admin,
     );
+    const found =
+      candidates.find((p) => p.totalSupply === pool.totalLpSupply) ?? candidates[0];
     if (!found) {
       throw new Error(
         `no active LPTokenPolicy for ${pool.lpInstrumentId.admin}:${pool.lpInstrumentId.id}`,

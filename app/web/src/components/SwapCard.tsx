@@ -28,6 +28,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [swapError, setSwapError] = useState<string | null>(null);
 
   const inputInstrumentId = direction === 'base-to-quote' ? pool.baseInstrumentId : pool.quoteInstrumentId;
   const outputInstrumentId = direction === 'base-to-quote' ? pool.quoteInstrumentId : pool.baseInstrumentId;
@@ -65,18 +66,21 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
   const flipDirection = useCallback(() => {
     setDirection(d => d === 'base-to-quote' ? 'quote-to-base' : 'base-to-quote');
     setInputAmount('');
+    setSwapError(null);
   }, []);
 
   const handleSwap = useCallback(async () => {
     if (parsedInput <= 0 || outputAmount <= 0 || !context) return;
+    setSwapError(null);
     setIsSubmitting(true);
     const label = `Swap ${parsedInput} ${inputInstrumentId} → ${outputInstrumentId}`;
+    let toastId = 0;
     try {
       // Push the toast first so the user sees the lifecycle even while
       // the wallet round-trip is happening. The advance timer in
       // useToasts ticks independently; the actual ledger settle path
       // resolves the React Query caches when it completes.
-      toast.push(label, 'swap', () => {
+      toastId = toast.push(label, 'swap', () => {
         void queryClient.invalidateQueries({ queryKey: ['pools'] });
         void queryClient.invalidateQueries({ queryKey: ['holdings'] });
       });
@@ -94,6 +98,9 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
       });
       setInputAmount('');
       onSwapComplete?.();
+    } catch (error) {
+      if (toastId) toast.dismiss(toastId);
+      setSwapError(error instanceof Error ? error.message : 'Swap failed');
     } finally {
       setIsSubmitting(false);
     }
@@ -142,7 +149,10 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
           <input
             type="number"
             value={inputAmount}
-            onChange={e => setInputAmount(e.target.value)}
+            onChange={e => {
+              setInputAmount(e.target.value);
+              setSwapError(null);
+            }}
             placeholder="0.00"
             className="flex-1 bg-surface border border-surface-border rounded-lg px-4 py-3 text-text-primary font-mono text-lg focus:outline-none focus:border-accent-blue"
           />
@@ -217,6 +227,19 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
               quote.
             </div>
           )}
+        </div>
+      )}
+
+      {swapError && (
+        <div
+          className="mb-4 rounded px-3 py-2 text-sm"
+          style={{
+            background: 'rgba(248, 81, 73, 0.08)',
+            border: '1px solid var(--red)',
+            color: 'var(--red)',
+          }}
+        >
+          {swapError}
         </div>
       )}
 

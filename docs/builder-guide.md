@@ -10,7 +10,7 @@ A runnable Canton DEX that:
 - uses Token Standard V2 (CIP-0056) for every asset: base, quote, and
   LP all implement `V2.Holding`.
 - uses iterated allocations from Splice's `token-standard-v2-upcoming`
-  branch (originally splice#5333, since merged), so pool reserves and
+  branch, so pool reserves and
   resting orders can be adjusted in place without re-funding round
   trips.
 - ships an on-chain operator policy receipt (`PolicyReceipt`) for RFQ

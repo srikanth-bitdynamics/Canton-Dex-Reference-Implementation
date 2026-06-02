@@ -138,6 +138,10 @@ function composePlaceOrder(
   };
 }
 
+// Swap (DvP): author the single prefunded/iterated input allocation the
+// operator's PoolRules_RequestSwap named, locking the trader's input holdings.
+// The created Allocation cid is read back from the submit result (like LP DvP)
+// and fed to the operator settle (PoolRules_Swap). No SwapRequest contract.
 function composeRequestSwap(
   intent: Extract<WalletIntent, { kind: "request-swap" }>,
   ctx: ComposeContext,
@@ -146,23 +150,16 @@ function composeRequestSwap(
   return {
     commandId: `swap-${shortCid(intent.poolId)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
-    commands: [{
-      CreateCommand: {
-        templateId: tid(ctx.packagePrefix, "CantonDex.Dex.SwapRequest:SwapRequest"),
-        createArguments: {
-          trader: ctx.party,
-          operator: intent.operator,
-          admin: intent.admin,
-          poolCid: intent.poolId,
-          inputInstrumentId: intent.inputInstrumentId,
-          inputAmount: intent.inputAmount,
-          minOutputAmount: intent.minOutputAmount,
-          inputHoldingCids: intent.inputHoldingCids,
-          factoryCid: intent.factoryCid,
-          requestedAt: ctx.now().toISOString(),
-        },
-      },
-    }],
+    commands: [
+      allocateCmd(
+        intent.factoryCid,
+        intent.settlement,
+        intent.allocationSpec,
+        intent.inputHoldingCids,
+        ctx.party,
+        ctx.now().toISOString(),
+      ),
+    ],
   };
 }
 
@@ -278,7 +275,11 @@ function composeAcceptRfq(
 
 /** The two intents whose settle needs the wallet's created allocation cids. */
 export function isLpDvpIntent(intent: WalletIntent): boolean {
-  return intent.kind === "add-liquidity" || intent.kind === "remove-liquidity";
+  return (
+    intent.kind === "add-liquidity" ||
+    intent.kind === "remove-liquidity" ||
+    intent.kind === "request-swap"
+  );
 }
 
 /**

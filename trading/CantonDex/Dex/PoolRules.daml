@@ -28,6 +28,15 @@ data PoolRules_SwapResult = PoolRules_SwapResult with
     amountOut : Decimal
   deriving (Eq, Show)
 
+-- The settlement descriptor + the swapper's input-allocation spec the wallet
+-- must author before a swap can settle. Returned by PoolRules_RequestSwap so
+-- the spec is Daml-built (matching what PoolRules_Swap settles against) rather
+-- than reconstructed off-ledger.
+data PoolRules_RequestSwapResult = PoolRules_RequestSwapResult with
+    settlement : V2.SettlementInfo
+    allocationSpec : V2.AllocationSpecification
+  deriving (Eq, Show)
+
 -- The constant-product math, settlement descriptor, pool-context guard, and
 -- slice-draw live in CantonDex.Dex.PoolModel (shared with PoolLiquidityRules).
 
@@ -37,6 +46,35 @@ template PoolRules with
     operator : Party
   where
     signatory operator
+
+    -- Build the swapper's input-allocation spec + the pool settlement
+    -- descriptor for the wallet to author. Creates nothing: PoolRules_Swap
+    -- consumes the resulting allocation cid directly, so there is no request
+    -- contract to archive. The swapper's allocation is prefunded/iterated
+    -- (funds only the input; empty legs), because PoolRules_Swap supplies the
+    -- real swap-in/swap-out legs via extraTransferLegSides at settle — which
+    -- V2 only permits when the allocation was authored iterated-enabled
+    -- (nextIterationFunding = Some ...).
+    nonconsuming choice PoolRules_RequestSwap : PoolRules_RequestSwapResult
+      with
+        poolCid : ContractId Pool
+        swapper : Party
+        inputInstrumentId : Text
+        inputAmount : Decimal
+      controller operator
+      do
+        pool <- fetch poolCid
+        assertMsg "Pool operator mismatch" (pool.operator == operator)
+        assertMsg "inputInstrumentId is not a pool instrument"
+          (inputInstrumentId == pool.baseInstrumentId
+            || inputInstrumentId == pool.quoteInstrumentId)
+        assertMsg "inputAmount must be positive" (inputAmount > 0.0)
+        let swapperAccount = Utils.basicAccount swapper
+            settlement = poolSettlement poolCid operator
+            funding = TextMap.fromList [(inputInstrumentId, inputAmount)]
+            allocationSpec =
+              Utils.mkPrefundedAllocationSpecification pool.admin swapperAccount None funding
+        pure PoolRules_RequestSwapResult with settlement; allocationSpec
 
     -- Constant-product swap (multi-slice): prices against global reserves,
     -- sources amountOut from an ordered output-slice prefix (draining full

@@ -43,6 +43,7 @@ const LP_ID = { admin: "lp", id: "BTC-USDC-LP" };
 class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
   servePolicy = true;
+  treeEvents: Array<{ contractId: string; templateId: string }> = [];
   private readonly policies: LPTokenPolicy[];
   constructor(private readonly pool: Pool, policyOrPolicies: LPTokenPolicy | LPTokenPolicy[]) {
     this.policies = Array.isArray(policyOrPolicies)
@@ -52,6 +53,9 @@ class CapturingLedger implements LedgerSubmitter {
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.lastSubmit = req;
     return "#result:0" as R;
+  }
+  async treeCreatedEvents() {
+    return this.treeEvents;
   }
   async *subscribe<T>(_f: SubscriptionFilter): AsyncIterable<LedgerEvent<T>> {
     // no streaming in this stub
@@ -201,6 +205,31 @@ describe("PoolService.computeQuote", () => {
 
 describe("PoolService DvP liquidity", () => {
   const requestedAt = "1970-01-01T00:00:00Z" as never;
+
+  it("recoverDvpAllocations recovers the Allocation cids (in order) + acceptance from updateId", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    // A realistic add-liquidity submission tree: acceptance receipt + a locked
+    // holding + the three Allocation creates, interleaved out of order by node.
+    ledger.treeEvents = [
+      { contractId: "#acc:0", templateId: "pkg:CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance" },
+      { contractId: "#hold:0", templateId: "pkg:CantonDex.Registry.V2:Holding" },
+      { contractId: "#alloc:base", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#alloc:quote", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#alloc:receipt", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+    ];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    const got = await svc.recoverDvpAllocations("update-1", "lp" as never, 3);
+    assert.deepEqual(got.allocationCids, ["#alloc:base", "#alloc:quote", "#alloc:receipt"]);
+    assert.equal(got.acceptanceCid, "#acc:0");
+
+    // Wrong expected count is a loud failure (guards a partial/garbled tree).
+    await assert.rejects(
+      svc.recoverDvpAllocations("update-1", "lp" as never, 4),
+      /expected 4 Allocation creates/,
+    );
+  });
 
   it("requestAddLiquidity creates the LiquidityAllocationRequest with a floored LP quote", async () => {
     const pool = mkPool(0, 0); // unfunded → first-funding sqrt quote

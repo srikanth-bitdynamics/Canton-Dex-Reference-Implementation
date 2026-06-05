@@ -63,9 +63,14 @@ recoverable. Two supported recovery paths:
    `WalletResult.createdAllocationCids` (+ `auxiliaryCids.liquidityAcceptanceCid`).
    This is what `token-standard-provider` / `sdk-provider` / `mock-provider` do.
 2. **Operator discovery** — if the wallet result exposes only an `updateId`, the
-   operator recovers the cids via `updateId → transaction-tree-by-id`
-   (`json-api.ts`) or discovers the acceptance by its stable `(lp, settlement.id)`
-   key (`PoolService.discoverAcceptance`, DEX-90).
+   operator recovers **both** the created `Allocation` cids **and** the
+   `LiquidityAllocationAcceptance` cid from that update's tree
+   (`PoolService.recoverDvpAllocations`: `updateId → transaction-tree-by-id`,
+   classify created events by template; DEX-92). A separate
+   `PoolService.discoverAcceptance(requestCid)` recovers an acceptance *without*
+   an updateId, keyed on the unique `originalRequestCid` — note `(lp,
+   settlement.id)` is **not** unique because `poolSettlement` uses a constant
+   settlement id per pool.
 
 So "the wallet result lacks created cids" is **not** a blocker — it only decides
 *which* recovery path a provider uses.

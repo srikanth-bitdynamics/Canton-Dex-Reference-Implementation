@@ -137,13 +137,16 @@ what collides with the stock-wallet accept path.
 ## Connector note (PartyLayer)
 
 PartyLayer is a wallet-connector SDK (CIP-0103 `prepareExecute` / `ledgerApi`),
-not a wallet and not a protocol layer. It slots behind our `WalletProvider`
-interface as `PartyLayerProvider` (the `sdk-provider.ts` slot), reaching multiple
-Canton wallets through one facade. It does **not** fix the LP command shape, does
-**not** abstract registry factory-cid / choice-context fetching (stays app-side),
-and cannot override a wallet's DAR allowlist (Loop still refuses third-party DARs;
-Amulet/Console on LocalNet is the realistic hosted-E2E target). PartyLayer + the
-acceptance-evidence fix **stack**; PartyLayer alone does not carry DvP.
+not a wallet and not a protocol layer. It now sits behind our `WalletProvider`
+interface as a real SDK-backed `PartyLayerProvider`, lazily loading
+`@partylayer/sdk` and trying installed submit-capable wallets (Console, Nightly,
+Send by default; override with `VITE_PARTYLAYER_WALLET_IDS`). It does **not**
+abstract registry factory-cid / choice-context fetching (stays app-side), and
+cannot override a wallet's DAR allowlist (Loop still refuses third-party DARs;
+Amulet/Console on LocalNet is the realistic hosted-E2E target). PartyLayer is the
+wallet transport; DvP depends on the lower acceptance-evidence and
+operator-discovery changes, and is not fully proven until a real wallet signs and
+returns an `updateId` the operator can discover.
 
 ## Open items to verify before scoping
 

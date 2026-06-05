@@ -6,10 +6,12 @@ import type { WalletIntent } from "@/wallet/types";
 // A fake @partylayer/sdk client: records the submitted command tree and returns
 // an updateId-only receipt, exactly like the real SDK (DEX-91).
 function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
-  const calls: Array<{ commandId: string; actAs: string[]; commands: unknown[] }> = [];
+  const connectCalls: unknown[] = [];
+  const calls: Array<Parameters<PartyLayerClient["submitTransaction"]>[0]> = [];
   let connected = false;
   const client: PartyLayerClient = {
-    async connect() {
+    async connect(options) {
+      connectCalls.push(options);
       connected = true;
       return { partyId: "alice::1220a", label: "Alice" };
     },
@@ -21,7 +23,7 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
       return receipt;
     },
   };
-  return { client, calls, isConnected: () => connected };
+  return { client, calls, connectCalls, isConnected: () => connected };
 }
 
 const swapIntent: WalletIntent = {
@@ -53,6 +55,10 @@ describe("PartyLayerProvider", () => {
     const acct = await p.connect();
     expect(acct.party).toBe("alice::1220a");
     expect(p.getStatus().kind).toBe("connected");
+    expect(fake.connectCalls[0]).toMatchObject({
+      requiredCapabilities: ["submitTransaction"],
+      preferInstalled: true,
+    });
   });
 
   it("submit returns updateId as primaryCid and does NOT set createdAllocationCids", async () => {
@@ -67,7 +73,9 @@ describe("PartyLayerProvider", () => {
     expect(res.createdAllocationCids).toBeUndefined();
     // The composed command tree was handed to the wallet to sign.
     expect(fake.calls).toHaveLength(1);
-    expect(fake.calls[0].actAs).toEqual(["alice::1220a"]);
+    expect(fake.calls[0].signedTx.actAs).toEqual(["alice::1220a"]);
+    expect(fake.calls[0].signedTx.commandId).toMatch(/^swap-pool-abc-/);
+    expect(fake.calls[0].signedTx.commands).toHaveLength(1);
   });
 
   it("falls back to transactionHash when updateId is absent", async () => {

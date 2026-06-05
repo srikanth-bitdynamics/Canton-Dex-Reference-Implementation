@@ -1,7 +1,7 @@
 // PartyLayer wallet provider (CIP-0103 multi-wallet connector).
 //
-// PartyLayer (@partylayer/sdk) unifies Console / Nightly / Send / Cantor8 /
-// Bron behind one connect + signing surface. This provider sits behind the
+// PartyLayer (@partylayer/sdk) unifies supported Canton wallets behind one
+// connect + signing surface. This provider sits behind the
 // `WalletProvider` interface and reuses the shared `composeCommands` translator
 // — the wallet only ever sees Daml command trees, never our intents.
 //
@@ -25,14 +25,19 @@ import type {
   WalletResult,
 } from "./types";
 
-// The subset of `@partylayer/sdk`'s `PartyLayerClient` we use. Mirrors the real
-// API (`createPartyLayer(config).{connect,disconnect,submitTransaction}`) so the
-// concrete binding is a thin adapter (added once the dependency is installed).
+export interface PartyLayerConnectOptions {
+  requiredCapabilities?: string[];
+  preferInstalled?: boolean;
+  timeoutMs?: number;
+}
+
 export interface PartyLayerSession {
   /** The connected party id. */
   partyId: string;
   /** Optional human label the wallet chose. */
   label?: string;
+  walletId?: string;
+  capabilitiesSnapshot?: string[];
 }
 
 export interface PartyLayerTxReceipt {
@@ -40,13 +45,19 @@ export interface PartyLayerTxReceipt {
   transactionHash?: string;
 }
 
+export interface PartyLayerCommandSubmission {
+  commandId: string;
+  actAs: string[];
+  commands: unknown[];
+  disclosedContracts?: unknown[];
+}
+
+// The subset of `@partylayer/sdk`'s `PartyLayerClient` we use.
 export interface PartyLayerClient {
-  connect(options?: unknown): Promise<PartyLayerSession>;
+  connect(options?: PartyLayerConnectOptions): Promise<PartyLayerSession>;
   disconnect(): Promise<void>;
   submitTransaction(params: {
-    commandId: string;
-    actAs: string[];
-    commands: unknown[];
+    signedTx: PartyLayerCommandSubmission;
   }): Promise<PartyLayerTxReceipt>;
 }
 
@@ -69,7 +80,10 @@ export class PartyLayerProvider implements WalletProvider {
     this.setStatus({ kind: "connecting" });
     try {
       this.client ??= await this.clientFactory();
-      const session = await this.client.connect();
+      const session = await this.client.connect({
+        requiredCapabilities: ["submitTransaction"],
+        preferInstalled: true,
+      });
       const account: WalletAccount = { party: session.partyId, label: session.label };
       this.setStatus({ kind: "connected", account, providerId: this.id });
       return account;
@@ -110,10 +124,16 @@ export class PartyLayerProvider implements WalletProvider {
       packagePrefix: this.packagePrefix,
       now: () => new Date(),
     });
-    const receipt = await this.client.submitTransaction({
+    const signedTx: PartyLayerCommandSubmission = {
       commandId: composed.commandId,
       actAs: composed.actAs,
       commands: composed.commands as unknown[],
+      ...(composed.disclosedContracts
+        ? { disclosedContracts: composed.disclosedContracts }
+        : {}),
+    };
+    const receipt = await this.client.submitTransaction({
+      signedTx,
     });
     const updateId = receipt.updateId ?? receipt.transactionHash;
     if (!updateId) {

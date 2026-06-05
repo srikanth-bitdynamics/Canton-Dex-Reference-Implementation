@@ -17,7 +17,7 @@ import type {
 } from "../src/ledger/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
-import type { LPTokenPolicy, Pool } from "../src/types.js";
+import type { LPTokenPolicy, Pool, LiquidityAllocationAcceptanceContract } from "../src/types.js";
 
 class StubRegistry extends RegistryClient {
   constructor() {
@@ -43,6 +43,7 @@ const LP_ID = { admin: "lp", id: "BTC-USDC-LP" };
 class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
   servePolicy = true;
+  acceptances: LiquidityAllocationAcceptanceContract[] = [];
   private readonly policies: LPTokenPolicy[];
   constructor(private readonly pool: Pool, policyOrPolicies: LPTokenPolicy | LPTokenPolicy[]) {
     this.policies = Array.isArray(policyOrPolicies)
@@ -93,6 +94,8 @@ class CapturingLedger implements LedgerSubmitter {
         } as unknown as T];
       case "CantonDex.Lp.Policy:LPTokenPolicy":
         return this.servePolicy ? (this.policies as unknown as T[]) : [];
+      case "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance":
+        return this.acceptances as unknown as T[];
       default:
         return [];
     }
@@ -296,6 +299,39 @@ describe("PoolService DvP liquidity", () => {
     const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
     assert.equal(cmd.argument.acceptanceCid, "#acc:0", "acceptance evidence threaded to the choice");
     assert.equal(cmd.argument.requestCid, null, "no live request on the acceptance path");
+  });
+
+  it("discoverAcceptance recovers the evidence cid by the (lp, settlement.id) key", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const mkAcc = (
+      contractId: string, lp: string, settlementId: string,
+    ): LiquidityAllocationAcceptanceContract => ({
+      contractId: contractId as never,
+      operator: "op" as never,
+      lp: lp as never,
+      settlement: { executors: ["op"], id: settlementId, cid: null, meta: { values: {} } } as never,
+      allocations: [],
+      settleAt: null,
+      acceptedAt: "1970-01-01T00:00:00Z" as never,
+    });
+    // Two pending acceptances; discovery must pick the one matching BOTH lp and
+    // settlement id (not just lp).
+    ledger.acceptances = [
+      mkAcc("#acc:lp-other", "lp", "settle-OTHER"),
+      mkAcc("#acc:hit", "lp", "settle-HIT"),
+      mkAcc("#acc:other-lp", "lp2", "settle-HIT"),
+    ];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    const cid = await svc.discoverAcceptance("lp" as never, "settle-HIT");
+    assert.equal(cid, "#acc:hit", "matches on (lp, settlement.id)");
+
+    await assert.rejects(
+      svc.discoverAcceptance("lp" as never, "settle-NONE"),
+      /no LiquidityAllocationAcceptance/,
+      "throws when no acceptance matches the key",
+    );
   });
 
   // A pool whose 15 BTC / 300k USDC reserves are split across two slices

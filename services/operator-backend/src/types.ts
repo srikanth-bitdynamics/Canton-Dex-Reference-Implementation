@@ -153,6 +153,19 @@ export interface LiquidityAllocationRequestContract {
   settleAt: Time | null;
 }
 
+// Operator-visible evidence left by AllocationRequest_Accept before it consumes
+// the request (DEX-90). Discovered by the stable (lp, settlement.id) key when
+// the wallet result does not surface the acceptance cid directly.
+export interface LiquidityAllocationAcceptanceContract {
+  contractId: ContractId<"LiquidityAllocationAcceptance">;
+  operator: Party;
+  lp: Party;
+  settlement: V2SettlementInfo;
+  allocations: V2AllocationSpecification[];
+  settleAt: Time | null;
+  acceptedAt: Time;
+}
+
 // Combined API view assembled from the split pool contracts.
 export interface Pool {
   contractId: ContractId<"Pool">;

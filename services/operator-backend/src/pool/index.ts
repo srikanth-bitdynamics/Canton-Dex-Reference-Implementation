@@ -10,6 +10,7 @@ import * as dec from "./decimal.js";
 import type {
   Decimal,
   LiquidityAllocationRequestContract,
+  LiquidityAllocationAcceptanceContract,
   PoolLiquidityRulesContract,
   LPTokenPolicy,
   Party,
@@ -433,6 +434,38 @@ export class PoolService {
     const found = reqs.find((r) => r.contractId === cid);
     if (!found) throw new Error(`LiquidityAllocationRequest ${cid} not found after create`);
     return found;
+  }
+
+  /**
+   * Discover the acceptance evidence (DEX-90) by its stable correlation key,
+   * `(lp, settlement.id)`. Used when the canonical accept flow consumed the
+   * request and the wallet result did not surface the acceptance cid directly,
+   * so the operator recovers it on-ledger before `/settle`. Throws if no unique
+   * match exists.
+   */
+  async discoverAcceptance(
+    lp: Party,
+    settlementId: string,
+  ): Promise<ContractId<"LiquidityAllocationAcceptance">> {
+    const accs = await this.ledger.query<LiquidityAllocationAcceptanceContract>({
+      templateId:
+        "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance",
+      observingParty: this.operatorParty,
+    });
+    const [match, ...rest] = accs.filter(
+      (a) => a.lp === lp && a.settlement.id === settlementId,
+    );
+    if (!match) {
+      throw new Error(
+        `no LiquidityAllocationAcceptance for lp=${lp} settlement=${settlementId}`,
+      );
+    }
+    if (rest.length > 0) {
+      throw new Error(
+        `ambiguous LiquidityAllocationAcceptance for lp=${lp} settlement=${settlementId} (${rest.length + 1} matches)`,
+      );
+    }
+    return match.contractId;
   }
 
   /** LP quote in fixed-point decimal. */

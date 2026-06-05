@@ -63,23 +63,19 @@ recoverable. Two supported recovery paths:
    `WalletResult.createdAllocationCids` (+ `auxiliaryCids.liquidityAcceptanceCid`).
    This is what `token-standard-provider` / `sdk-provider` / `mock-provider` do.
 2. **Operator discovery** — if the wallet result exposes only an `updateId`, the
-   operator recovers **both** the created `Allocation` cids **and** the
-   `LiquidityAllocationAcceptance` cid from that update's tree
-   (`PoolService.recoverDvpAllocations`: `updateId → transaction-tree-by-id`,
-   classify created events by template; DEX-92). **Currently wired for LP
-   add/remove only** — swap and order-funding (the one-allocation paths) are not
-   yet on the updateId path, so an updateId-only wallet (e.g. PartyLayer) rejects
-   those flows with a clear error until that wiring lands. A separate
+   operator recovers the created `Allocation` cids (and, for LP, the
+   `LiquidityAllocationAcceptance` cid) from that update's tree via the shared
+   `recoverCreatedAllocations` helper (`updateId → transaction-tree-by-id`,
+   classify created events by template; DEX-92). **All DvP flows support this** —
+   LP add/remove (`recoverDvpAllocations`, 3 allocations + acceptance), swap, and
+   order-funding (1 allocation each). A separate
    `PoolService.discoverAcceptance(requestCid)` recovers an acceptance *without*
    an updateId, keyed on the unique `originalRequestCid` — note `(lp,
    settlement.id)` is **not** unique because `poolSettlement` uses a constant
    settlement id per pool.
 
-So "the wallet result lacks created cids" is **not** a blocker **for LP
-add/remove** — it only decides *which* recovery path that flow uses. For **swap
-and order-funding** it is currently still a blocker: those one-allocation paths
-have no operator-discovery wiring yet, so an updateId-only wallet is rejected
-there until that lands.
+So "the wallet result lacks created cids" is **not** a blocker — it only decides
+*which* recovery path a flow uses (dApp-return vs operator-discovery).
 
 ## Support matrix
 
@@ -89,7 +85,7 @@ there until that lands.
 | `sdk-provider` (`@canton-network/dapp-sdk`) | ✅ | ✅ | ✅ | ✅ | ✅ | CIP-0103; behind `VITE_ENABLE_SDK` |
 | `mock-provider` | ✅ | ✅ | ✅ | ✅ | ✅ | deterministic cids for tests/dev |
 | **Splice / Amulet wallet** (LocalNet, TSv2 branch) | ✅ | ✅ | ✅ | 🧪 | 🧪 | DvP needs DEX-90 (landed) + a live pass (DEX-94) |
-| **PartyLayer** facade (Console / Nightly / Send / Cantor8) | 🧪 | 🧪 | 🧪 | ❌ (not wired) | 🧪 | LP add/remove only via operator-discovery; swap/order updateId recovery pending. Needs the @partylayer binding + DEX-94 live pass |
+| **PartyLayer** facade (Console / Nightly / Send / Cantor8) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | Swap + LP add/remove via operator-discovery (wired). Needs the @partylayer binding + DEX-94 live pass |
 | **Loop** (via PartyLayer or direct) | ✅ | ✅ | ❌ | ❌ | ❌ | refuses third-party DARs (`utility-*` allowlist only) |
 
 Cells marked 🧪 are **planned capability**, validated by the DEX-91 probe and the

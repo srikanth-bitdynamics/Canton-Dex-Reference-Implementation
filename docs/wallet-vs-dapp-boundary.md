@@ -1,5 +1,9 @@
 # Wallet ↔ dApp Boundary
 
+> For which concrete wallets/providers can drive which flows (including PartyLayer
+> as a connector and the DvP recovery requirement), see
+> [`wallet-providers.md`](./wallet-providers.md).
+
 The DEX trader experience is a composition of two interfaces:
 
 - **The token-standard wallet** — a generic Canton Network wallet that

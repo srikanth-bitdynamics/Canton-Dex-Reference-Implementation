@@ -7,12 +7,15 @@
 //
 // DEX-91 (resolved from the published package types): PartyLayer's submit result
 // is `TxReceipt { updateId? }` — it does NOT expose the transaction tree or
-// created-contract ids. So for swap / LP DvP the created `Allocation` cids and
-// the `LiquidityAllocationAcceptance` cid are recovered OPERATOR-SIDE
-// (`updateId -> transaction-tree-by-id` + `discoverAcceptance`, DEX-90). This
-// provider therefore deliberately returns only `primaryCid = updateId` and does
-// NOT populate `createdAllocationCids`; the `/settle` call forwards the
-// settlement id for operator discovery.
+// created-contract ids. So this provider deliberately returns only
+// `primaryCid = updateId` and does NOT populate `createdAllocationCids`; the
+// `/settle` call forwards `{ updateId }` and the operator recovers the created
+// `Allocation` cids + the `LiquidityAllocationAcceptance` cid from that update's
+// tree (`recoverDvpAllocations`, DEX-92).
+//
+// NOTE: operator-discovery is currently wired for **LP add/remove only**.
+// swap/order (the one-allocation paths) are NOT yet wired, so those flows reject
+// updateId-only wallets with a clear error (see ledger.ts). LP DvP only for now.
 
 import { composeCommands } from "./commands";
 import type {

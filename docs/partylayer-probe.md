@@ -66,15 +66,18 @@ Published adapters: **Bron, Console, Nightly, Send, Cantor8, Loop** (+
 
 **GO, via operator-discovery.** The `PartyLayerProvider.submit()` returns
 `{ primaryCid: updateId }` and does **not** attempt to parse created cids. The
-operator recovers them, reusing code already built in DEX-90:
-- `updateId → /v2/updates/transaction-tree-by-id` (`json-api.ts`) → the created `Allocation` cids;
-- `discoverAcceptance(requestCid)` → the `LiquidityAllocationAcceptance` cid, keyed
-  on the unique `originalRequestCid` (the consumed request's cid).
+operator recovers **both** the created `Allocation` cids **and** the
+`LiquidityAllocationAcceptance` cid from the **same update tree**, keyed by
+`updateId`: `recoverDvpAllocations(updateId)` walks
+`/v2/updates/transaction-tree-by-id` (`json-api.ts`) and classifies the created
+events by template (DEX-92).
 
-So the dApp's `/settle` call, on the PartyLayer path, forwards the **settlement id**
-(which it has from `/request`) instead of cids, and the operator discovers them.
-(Alternative: the dApp itself calls `ledgerApi` GET the tree by `updateId` — but
-operator-discovery is cleaner and reuses existing code.)
+So the dApp's `/settle` call, on the PartyLayer path, forwards **`{ updateId }`**
+(from the wallet receipt) instead of cids; the operator recovers everything from
+the tree. (`discoverAcceptance(requestCid)` — keyed on the unique
+`originalRequestCid` — is a **separate fallback** for recovering an acceptance cid
+*without* an updateId; it is not used on the PartyLayer path, which already has the
+updateId.)
 
 ## Capability matrix
 

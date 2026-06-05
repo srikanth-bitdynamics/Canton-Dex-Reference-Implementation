@@ -16,18 +16,18 @@ export type WalletProviderId =
   | "canton-direct"
   | "mock";
 
-// Concrete PartyLayer client binding. Replace this body with the real adapter
-// once `@partylayer/sdk` is installed:
-//   const client = createPartyLayer({ network, appName, adapters: [...] });
-//   await client.connect(); return adaptToPartyLayerClient(client);
-// Kept as a loud failure (not a silent stub) so an unconfigured PartyLayer
-// provider never mis-routes a submission. See docs/wallet-providers.md.
-async function partyLayerClientFactory(): Promise<PartyLayerClient> {
-  throw new Error(
-    "PartyLayer client not wired: install @partylayer/sdk and provide a " +
-      "createPartyLayer(...) → PartyLayerClient binding in registry.ts.",
-  );
-}
+// Concrete PartyLayer client binding. NULL until `@partylayer/sdk` is installed
+// and a createPartyLayer(...) → PartyLayerClient adapter is provided here. While
+// it is null the PartyLayer provider is NOT registered at all, so it never shows
+// up as a dead/selectable option in the connect menu. To enable:
+//   1. `npm i @partylayer/sdk @partylayer/react @partylayer/adapter-*`
+//   2. set this to a factory, e.g.:
+//        const PARTYLAYER_CLIENT_FACTORY = async () => {
+//          const client = createPartyLayer({ network, appName, adapters: [...] });
+//          return adaptToPartyLayerClient(client); // map to the PartyLayerClient seam
+//        };
+// See docs/wallet-providers.md.
+const PARTYLAYER_CLIENT_FACTORY: (() => Promise<PartyLayerClient>) | null = null;
 
 let providers: Map<WalletProviderId, WalletProvider> | null = null;
 
@@ -49,13 +49,13 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   const map = new Map<WalletProviderId, WalletProvider>();
 
   if (enableSdk) map.set("sdk", new SdkProvider(packagePrefix));
-  if (enablePartyLayer) {
-    // The concrete client is wired only once `@partylayer/sdk` is installed and
-    // the binding adapter (createPartyLayer(...) → PartyLayerClient) is added.
-    // Until then the factory fails loudly rather than silently mis-routing.
+  // Register PartyLayer only when BOTH the env flag is on AND the real client
+  // binding exists — otherwise it would be a selectable dead option that throws
+  // on connect. (#review-fix)
+  if (enablePartyLayer && PARTYLAYER_CLIENT_FACTORY) {
     map.set(
       "partylayer",
-      new PartyLayerProvider(packagePrefix, partyLayerClientFactory),
+      new PartyLayerProvider(packagePrefix, PARTYLAYER_CLIENT_FACTORY),
     );
   }
   map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));

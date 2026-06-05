@@ -452,8 +452,17 @@ export const ledger = {
     });
     const swapperAllocationCid = walletResult.createdAllocationCids?.[0];
     if (!swapperAllocationCid) {
+      // updateId-only wallets (e.g. PartyLayer) need operator-discovery recovery,
+      // which is currently wired for LP add/remove only — not swap (one-allocation
+      // recovery for swap/order is a follow-up). Fail with a clear, actionable
+      // message rather than a generic one.
+      const updateIdOnly = !!walletResult.auxiliaryCids?.updateId;
       throw new Error(
-        'swap: wallet did not return the created allocation cid; this provider cannot drive the swap',
+        updateIdOnly
+          ? 'Swap is not yet supported on updateId-only wallets (e.g. PartyLayer): ' +
+            'operator-discovery recovery is wired for LP add/remove only. ' +
+            'Use a wallet that returns created allocation cids, or use LP add/remove.'
+          : 'swap: wallet did not return the created allocation cid; this provider cannot drive the swap',
       );
     }
 
@@ -539,7 +548,14 @@ export const ledger = {
     });
     const allocationCid = walletRes.createdAllocationCids?.[0];
     if (!allocationCid) {
-      throw new Error('order funding: wallet did not return the created allocation cid');
+      const updateIdOnly = !!walletRes.auxiliaryCids?.updateId;
+      throw new Error(
+        updateIdOnly
+          ? 'Order funding is not yet supported on updateId-only wallets (e.g. PartyLayer): ' +
+            'operator-discovery recovery is wired for LP add/remove only. ' +
+            'Use a wallet that returns created allocation cids, or use LP add/remove.'
+          : 'order funding: wallet did not return the created allocation cid',
+      );
     }
 
     const fundRes = await operator.fundOrder({

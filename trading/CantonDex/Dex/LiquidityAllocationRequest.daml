@@ -46,16 +46,24 @@ template LiquidityAllocationRequest with
       -- validation terms; the settle binds to that in the stock-wallet flow.
       -- (The legacy direct-allocation flow never calls accept and binds to the
       -- still-live request instead.) Reject/withdraw simply consume.
-      allocationRequest_acceptImpl = \self _arg -> do
+      allocationRequest_acceptImpl = \self arg -> do
+        -- TSv2 requires implementations to check the actors so a merely-visible
+        -- party (e.g. the operator) can't consume the request with its own
+        -- actor list. Only the targeted lp/holder may accept.
+        assertMsg "accept actors must be exactly the request lp" (arg.actors == [lp])
         acceptedAt <- getTime
         create LiquidityAllocationAcceptance with
           operator; lp; settlement; allocations; settleAt; acceptedAt
+          originalRequestCid = coerceContractId self
         archive self
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
-      allocationRequest_rejectImpl = \self _arg -> do
+      allocationRequest_rejectImpl = \self arg -> do
+        assertMsg "reject actors must be exactly the request lp" (arg.actors == [lp])
         archive self
         pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
-      allocationRequest_withdrawImpl = \self _arg -> do
+      allocationRequest_withdrawImpl = \self arg -> do
+        -- Withdraw is the executor's action (the operator drives settlement).
+        assertMsg "withdraw actors must be exactly the operator" (arg.actors == [operator])
         archive self
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
 
@@ -73,6 +81,10 @@ template LiquidityAllocationAcceptance with
     allocations : [V2.AllocationSpecification]
     settleAt : Optional Time
     acceptedAt : Time
+    originalRequestCid : ContractId LiquidityAllocationRequest
+      -- ^ The consumed request's cid — a globally-unique, stable correlation
+      -- key the operator discovers this evidence by. (settlement.id alone is
+      -- not unique: `poolSettlement` uses a constant id per pool.)
   where
     signatory operator
     observer lp

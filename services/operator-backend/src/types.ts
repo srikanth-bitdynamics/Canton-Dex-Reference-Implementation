@@ -164,6 +164,8 @@ export interface LiquidityAllocationAcceptanceContract {
   allocations: V2AllocationSpecification[];
   settleAt: Time | null;
   acceptedAt: Time;
+  /** The consumed request's cid — the unique key discovery matches on. */
+  originalRequestCid: ContractId<"LiquidityAllocationRequest">;
 }
 
 // Combined API view assembled from the split pool contracts.

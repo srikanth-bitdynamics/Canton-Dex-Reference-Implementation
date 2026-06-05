@@ -706,6 +706,25 @@ testAddAcceptsWithinDust = do
   state.totalLpSupply === nearLp
   pure ()
 
+-- TSv2 actor authorization: accept must check the actor list. The operator is
+-- the request signatory (so it can see the request) but is NOT the targeted lp;
+-- it must not be able to consume the request with its own actor list.
+testAcceptRejectsUnauthorizedActor : Script ()
+testAcceptRejectsUnauthorizedActor = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  let lpAmount = PM.sqrtDecimal 2000000.0
+  reqCid <- requestAdd fx alice 10.0 200000.0 lpAmount None now
+  let reqIface = toInterfaceContractId @V2.AllocationRequest reqCid
+  -- operator accepting with its own actor list → rejected.
+  submitMustFail fx.operator $ exerciseCmd reqIface
+    (V2.AllocationRequest_Accept with actors = [fx.operator]; extraArgs = emptyExtraArgs)
+  -- alice supplying a non-lp actor list → rejected.
+  submitMustFail alice $ exerciseCmd reqIface
+    (V2.AllocationRequest_Accept with actors = [fx.operator]; extraArgs = emptyExtraArgs)
+  pure ()
+
 -- DEX-90: the canonical stock-wallet flow. The LP/holder calls the standard
 -- `AllocationRequest_Accept` (as a real wallet like Amulet does), which — per
 -- Token Standard V2 — consumes the request, but first leaves an

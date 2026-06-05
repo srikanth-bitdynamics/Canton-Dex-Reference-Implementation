@@ -437,32 +437,30 @@ export class PoolService {
   }
 
   /**
-   * Discover the acceptance evidence (DEX-90) by its stable correlation key,
-   * `(lp, settlement.id)`. Used when the canonical accept flow consumed the
-   * request and the wallet result did not surface the acceptance cid directly,
-   * so the operator recovers it on-ledger before `/settle`. Throws if no unique
-   * match exists.
+   * Discover the acceptance evidence (DEX-90) by its stable, globally-unique
+   * correlation key: the consumed request's cid (`originalRequestCid`). The
+   * operator created the request and knows its cid, so it recovers the matching
+   * evidence even though the request itself is archived. (Keying on
+   * `(lp, settlement.id)` is NOT unique — `poolSettlement` uses a constant
+   * settlement id per pool, so an LP with two pending requests would be
+   * ambiguous.) Used when the wallet result did not surface the acceptance cid.
    */
   async discoverAcceptance(
-    lp: Party,
-    settlementId: string,
+    requestCid: ContractId<"LiquidityAllocationRequest">,
   ): Promise<ContractId<"LiquidityAllocationAcceptance">> {
     const accs = await this.ledger.query<LiquidityAllocationAcceptanceContract>({
       templateId:
         "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance",
       observingParty: this.operatorParty,
     });
-    const [match, ...rest] = accs.filter(
-      (a) => a.lp === lp && a.settlement.id === settlementId,
-    );
+    const [match, ...rest] = accs.filter((a) => a.originalRequestCid === requestCid);
     if (!match) {
-      throw new Error(
-        `no LiquidityAllocationAcceptance for lp=${lp} settlement=${settlementId}`,
-      );
+      throw new Error(`no LiquidityAllocationAcceptance for requestCid=${requestCid}`);
     }
     if (rest.length > 0) {
+      // requestCid is unique, so this should be unreachable; guard anyway.
       throw new Error(
-        `ambiguous LiquidityAllocationAcceptance for lp=${lp} settlement=${settlementId} (${rest.length + 1} matches)`,
+        `ambiguous LiquidityAllocationAcceptance for requestCid=${requestCid} (${rest.length + 1} matches)`,
       );
     }
     return match.contractId;

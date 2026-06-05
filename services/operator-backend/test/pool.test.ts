@@ -301,36 +301,37 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.requestCid, null, "no live request on the acceptance path");
   });
 
-  it("discoverAcceptance recovers the evidence cid by the (lp, settlement.id) key", async () => {
+  it("discoverAcceptance disambiguates by originalRequestCid (lp + settlement.id collide)", async () => {
     const pool = mkPool(0, 0);
     const ledger = new CapturingLedger(pool, mkLpPolicy());
     const mkAcc = (
-      contractId: string, lp: string, settlementId: string,
+      contractId: string, originalRequestCid: string,
     ): LiquidityAllocationAcceptanceContract => ({
       contractId: contractId as never,
       operator: "op" as never,
-      lp: lp as never,
-      settlement: { executors: ["op"], id: settlementId, cid: null, meta: { values: {} } } as never,
+      lp: "lp" as never,
+      // Same lp AND the same constant settlement id ("DexPool", as poolSettlement
+      // produces in prod) across all rows — only originalRequestCid disambiguates.
+      settlement: { executors: ["op"], id: "DexPool", cid: null, meta: { values: {} } } as never,
       allocations: [],
       settleAt: null,
       acceptedAt: "1970-01-01T00:00:00Z" as never,
+      originalRequestCid: originalRequestCid as never,
     });
-    // Two pending acceptances; discovery must pick the one matching BOTH lp and
-    // settlement id (not just lp).
     ledger.acceptances = [
-      mkAcc("#acc:lp-other", "lp", "settle-OTHER"),
-      mkAcc("#acc:hit", "lp", "settle-HIT"),
-      mkAcc("#acc:other-lp", "lp2", "settle-HIT"),
+      mkAcc("#acc:req-A", "#req:A"),
+      mkAcc("#acc:req-B", "#req:B"),
     ];
     const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
 
-    const cid = await svc.discoverAcceptance("lp" as never, "settle-HIT");
-    assert.equal(cid, "#acc:hit", "matches on (lp, settlement.id)");
+    // The (lp, settlement.id) key would be ambiguous here; the requestCid key is unique.
+    const cid = await svc.discoverAcceptance("#req:B" as never);
+    assert.equal(cid, "#acc:req-B", "matches the unique originalRequestCid");
 
     await assert.rejects(
-      svc.discoverAcceptance("lp" as never, "settle-NONE"),
+      svc.discoverAcceptance("#req:none" as never),
       /no LiquidityAllocationAcceptance/,
-      "throws when no acceptance matches the key",
+      "throws when no acceptance matches the request cid",
     );
   });
 

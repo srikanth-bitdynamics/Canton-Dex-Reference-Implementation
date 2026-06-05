@@ -364,6 +364,28 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.requestCid, null, "request consumed on the discovery path");
   });
 
+  it("swap (operator-discovery) recovers the single input allocation from updateId", async () => {
+    const pool = mkSlicedPool();
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    ledger.treeEvents = [
+      { contractId: "#hold:0", templateId: "pkg:CantonDex.Registry.V2:Holding" },
+      { contractId: "#swapAlloc", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+    ];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    await svc.swap({
+      poolCid: pool.contractId,
+      swapperAccount: { owner: "swapper", provider: null, id: "" } as never,
+      inputInstrumentId: "BTC",
+      inputAmount: "0.01",
+      minOutputAmount: "0",
+      updateId: "u-swap",
+    });
+
+    const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
+    assert.equal(cmd.argument.swapperAllocationCid, "#swapAlloc", "recovered swap input cid");
+  });
+
   it("discoverAcceptance disambiguates by originalRequestCid (lp + settlement.id collide)", async () => {
     const pool = mkPool(0, 0);
     const ledger = new CapturingLedger(pool, mkLpPolicy());

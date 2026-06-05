@@ -4,6 +4,7 @@ import type { ContractId, DisclosedContract } from "@canton-dex/registry-client"
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
+import { recoverCreatedAllocations } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import { toFloat } from "../policy/index.js";
 import * as dec from "./decimal.js";
@@ -37,7 +38,12 @@ export interface PoolSwapInput {
   inputInstrumentId: string;
   inputAmount: Decimal;
   minOutputAmount: Decimal;
-  swapperAllocationCid: ContractId<"Allocation">;
+  // Explicit created cid (dApp-return path). Omitted on the operator-discovery
+  // path, where `updateId` is supplied and the operator recovers it.
+  swapperAllocationCid?: ContractId<"Allocation">;
+  // Operator-discovery path (updateId-only wallet, e.g. PartyLayer): the
+  // swapper's single input allocation is recovered from the tree.
+  updateId?: string | null;
 }
 
 // The wallet-facing request for a swap: the operator builds (in Daml) the
@@ -321,6 +327,18 @@ export class PoolService {
 
   async swap(input: PoolSwapInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
+    // Operator-discovery: recover the single swap input allocation from the tree
+    // when the wallet returned only an updateId.
+    let swapperAllocationCid = input.swapperAllocationCid;
+    if (input.updateId) {
+      const { allocationCids } = await recoverCreatedAllocations(
+        this.ledger, this.operatorParty, input.updateId, 1,
+      );
+      swapperAllocationCid = allocationCids[0] as ContractId<"Allocation">;
+    }
+    if (!swapperAllocationCid) {
+      throw new Error("swap: supply swapperAllocationCid or an updateId to recover it");
+    }
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);
     const inputIsBase = input.inputInstrumentId === pool.baseInstrumentId;
@@ -349,7 +367,7 @@ export class PoolService {
             inputInstrumentId: input.inputInstrumentId,
             inputAmount: input.inputAmount,
             minOutputAmount: input.minOutputAmount,
-            swapperAllocationCid: input.swapperAllocationCid,
+            swapperAllocationCid,
             inputSliceCid: headInput.contractId,
             outputSliceCids,
             factoryCid: factories.settlementFactoryCid,
@@ -491,27 +509,18 @@ export class PoolService {
     allocationCids: ContractId<"Allocation">[];
     acceptanceCid?: ContractId<"LiquidityAllocationAcceptance">;
   }> {
-    if (!this.ledger.treeCreatedEvents) {
-      throw new Error(
-        "ledger does not support transaction-tree recovery (treeCreatedEvents)",
-      );
-    }
-    const created = await this.ledger.treeCreatedEvents(updateId, party);
-    const allocationCids = created
-      .filter((e) => e.templateId.endsWith("CantonDex.Registry.V2:Allocation"))
-      .map((e) => e.contractId as ContractId<"Allocation">);
-    if (allocationCids.length !== expectedAllocations) {
-      throw new Error(
-        `recoverDvpAllocations: expected ${expectedAllocations} Allocation creates for ` +
-          `updateId=${updateId}, found ${allocationCids.length}`,
-      );
-    }
-    const acceptanceCid = created.find((e) =>
-      e.templateId.endsWith(
-        "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance",
-      ),
-    )?.contractId as ContractId<"LiquidityAllocationAcceptance"> | undefined;
-    return { allocationCids, acceptanceCid };
+    const { allocationCids, acceptanceCid } = await recoverCreatedAllocations(
+      this.ledger,
+      party,
+      updateId,
+      expectedAllocations,
+    );
+    return {
+      allocationCids: allocationCids as ContractId<"Allocation">[],
+      acceptanceCid: acceptanceCid as
+        | ContractId<"LiquidityAllocationAcceptance">
+        | undefined,
+    };
   }
 
   /** LP quote in fixed-point decimal. */

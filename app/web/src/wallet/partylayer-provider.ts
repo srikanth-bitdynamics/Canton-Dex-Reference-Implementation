@@ -9,13 +9,12 @@
 // is `TxReceipt { updateId? }` — it does NOT expose the transaction tree or
 // created-contract ids. So this provider deliberately returns only
 // `primaryCid = updateId` and does NOT populate `createdAllocationCids`; the
-// `/settle` call forwards `{ updateId }` and the operator recovers the created
-// `Allocation` cids + the `LiquidityAllocationAcceptance` cid from that update's
-// tree (`recoverDvpAllocations`, DEX-92).
-//
-// NOTE: operator-discovery is currently wired for **LP add/remove only**.
-// swap/order (the one-allocation paths) are NOT yet wired, so those flows reject
-// updateId-only wallets with a clear error (see ledger.ts). LP DvP only for now.
+// `/settle` (and the swap / order-fund) calls forward `{ updateId }` and the
+// operator recovers the created `Allocation` cids (and, for LP, the
+// `LiquidityAllocationAcceptance` cid) from that update's tree
+// (`recoverCreatedAllocations` / `recoverDvpAllocations`, DEX-92). All DvP flows
+// — LP add/remove, swap, and order funding — support this operator-discovery
+// path, so an updateId-only wallet can complete them.
 
 import { composeCommands } from "./commands";
 import type {
@@ -121,9 +120,8 @@ export class PartyLayerProvider implements WalletProvider {
       throw new Error("partylayer-provider: submit returned no updateId");
     }
     // updateId-only by design (DEX-91). createdAllocationCids is intentionally
-    // omitted: LP add/remove DvP recovers the created cids operator-side from
-    // updateId (swap/order updateId recovery is not yet wired — those flows
-    // reject updateId-only wallets in ledger.ts).
+    // omitted: the operator recovers the created cids from the updateId for all
+    // DvP flows (LP add/remove, swap, order funding) via operator-discovery.
     return {
       submittedBy: party,
       primaryCid: updateId,

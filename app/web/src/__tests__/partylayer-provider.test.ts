@@ -62,8 +62,8 @@ describe("PartyLayerProvider", () => {
     const res = await p.submit(swapIntent);
     expect(res.primaryCid).toBe("update-xyz");
     expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
-    // updateId-only by design — LP add/remove DvP cids are recovered
-    // operator-side from the updateId (swap/order recovery not yet wired).
+    // updateId-only by design — the operator recovers the created cids from the
+    // updateId for all DvP flows (LP add/remove, swap, order funding).
     expect(res.createdAllocationCids).toBeUndefined();
     // The composed command tree was handed to the wallet to sign.
     expect(fake.calls).toHaveLength(1);

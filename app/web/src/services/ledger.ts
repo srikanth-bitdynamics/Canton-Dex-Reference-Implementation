@@ -451,29 +451,26 @@ export const ledger = {
       inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
     });
     const swapperAllocationCid = walletResult.createdAllocationCids?.[0];
-    if (!swapperAllocationCid) {
-      // updateId-only wallets (e.g. PartyLayer) need operator-discovery recovery,
-      // which is currently wired for LP add/remove only — not swap (one-allocation
-      // recovery for swap/order is a follow-up). Fail with a clear, actionable
-      // message rather than a generic one.
-      const updateIdOnly = !!walletResult.auxiliaryCids?.updateId;
+    // updateId-only wallets (e.g. PartyLayer) return no created cid; the operator
+    // recovers the swap input allocation from the tree by updateId.
+    const updateId = walletResult.auxiliaryCids?.updateId;
+    if (!swapperAllocationCid && !updateId) {
       throw new Error(
-        updateIdOnly
-          ? 'Swap is not yet supported on updateId-only wallets (e.g. PartyLayer): ' +
-            'operator-discovery recovery is wired for LP add/remove only. ' +
-            'Use a wallet that returns created allocation cids, or use LP add/remove.'
-          : 'swap: wallet did not return the created allocation cid; this provider cannot drive the swap',
+        'swap: wallet returned neither a created allocation cid nor an updateId',
       );
     }
 
-    // 3. Operator settles the swap against the authored allocation.
+    // 3. Operator settles the swap against the authored allocation (explicit cid
+    // or operator-discovery from the updateId).
     return operator.swap({
       poolCid: params.pool.contractId as ContractId<'Pool'>,
       swapperAccount: { owner: params.swapperParty, provider: null, id: '' },
       inputInstrumentId: params.inputInstrumentId,
       inputAmount: formatDecimal10(params.inputAmount),
       minOutputAmount: formatDecimal10(params.minOutputAmount),
-      swapperAllocationCid: swapperAllocationCid as ContractId<'Allocation'>,
+      ...(swapperAllocationCid
+        ? { swapperAllocationCid: swapperAllocationCid as ContractId<'Allocation'> }
+        : { updateId }),
     });
   },
 
@@ -547,20 +544,20 @@ export const ledger = {
       hint: { instrumentId: lockInstrumentId, amount: lockAmount },
     });
     const allocationCid = walletRes.createdAllocationCids?.[0];
-    if (!allocationCid) {
-      const updateIdOnly = !!walletRes.auxiliaryCids?.updateId;
+    // updateId-only wallets (e.g. PartyLayer): the operator recovers the order's
+    // funding allocation from the tree by updateId.
+    const updateId = walletRes.auxiliaryCids?.updateId;
+    if (!allocationCid && !updateId) {
       throw new Error(
-        updateIdOnly
-          ? 'Order funding is not yet supported on updateId-only wallets (e.g. PartyLayer): ' +
-            'operator-discovery recovery is wired for LP add/remove only. ' +
-            'Use a wallet that returns created allocation cids, or use LP add/remove.'
-          : 'order funding: wallet did not return the created allocation cid',
+        'order funding: wallet returned neither a created allocation cid nor an updateId',
       );
     }
 
     const fundRes = await operator.fundOrder({
       orderCid: bindRes.orderCid as ContractId<'Order'>,
-      allocationCid: allocationCid as ContractId<'Allocation'>,
+      ...(allocationCid
+        ? { allocationCid: allocationCid as ContractId<'Allocation'> }
+        : { updateId }),
     });
     return { orderId: fundRes.orderCid };
   },

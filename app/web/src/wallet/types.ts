@@ -173,6 +173,8 @@ export interface AddLiquidityIntent {
   lpFactoryCid: ContractId<"AllocationFactory">;
   depositFactoryExtraArgs: V2ExtraArgs;
   lpFactoryExtraArgs: V2ExtraArgs;
+  /** Context for the AllocationRequest_Accept call (empty for the self-registry). */
+  allocationRequestExtraArgs: V2ExtraArgs;
   disclosure: DisclosedContract[];
   baseHoldingCids: ContractId<"Holding">[];
   quoteHoldingCids: ContractId<"Holding">[];
@@ -194,6 +196,8 @@ export interface RemoveLiquidityIntent {
   lpFactoryCid: ContractId<"AllocationFactory">;
   depositFactoryExtraArgs: V2ExtraArgs;
   lpFactoryExtraArgs: V2ExtraArgs;
+  /** Context for the AllocationRequest_Accept call (empty for the self-registry). */
+  allocationRequestExtraArgs: V2ExtraArgs;
   disclosure: DisclosedContract[];
   /**
    * ALL the holder's unlocked LP holdings to lock for the burn — an LP

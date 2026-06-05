@@ -37,11 +37,19 @@ template LiquidityAllocationRequest with
       allocationRequest_rejectExtraObservers = \_ -> []
       allocationRequest_withdrawExtraObservers = \_ -> []
 
-      -- `AllocationRequest_Accept` is standard V2 behavior, but the main
-      -- liquidity flow reads the view and creates allocations directly.
-      -- If accept is called first the later settle fails to fetch the
-      -- request, which is a deliberate fail-safe.
+      -- Token Standard V2 requires `AllocationRequest_Accept` to consume the
+      -- request (the choice is `nonconsuming` only so the implementation
+      -- chooses *how* to consume). A stock wallet (e.g. Amulet) calls accept
+      -- when it authors the allocations, so settle can no longer bind to the
+      -- request. Before consuming, we therefore leave an operator-visible
+      -- `LiquidityAllocationAcceptance` receipt carrying the request's
+      -- validation terms; the settle binds to that in the stock-wallet flow.
+      -- (The legacy direct-allocation flow never calls accept and binds to the
+      -- still-live request instead.) Reject/withdraw simply consume.
       allocationRequest_acceptImpl = \self _arg -> do
+        acceptedAt <- getTime
+        create LiquidityAllocationAcceptance with
+          operator; lp; settlement; allocations; settleAt; acceptedAt
         archive self
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
       allocationRequest_rejectImpl = \self _arg -> do
@@ -50,3 +58,21 @@ template LiquidityAllocationRequest with
       allocationRequest_withdrawImpl = \self _arg -> do
         archive self
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
+
+-- Operator-visible evidence that the LP/holder accepted the request and
+-- authored the allocations. Created by `AllocationRequest_Accept` immediately
+-- before the request is consumed, so the DvP settle can bind to it once the
+-- request itself is gone. Carries the same validation terms the live request
+-- would have supplied (party, settlement, expected specs, deadline). Discover
+-- it operator-side by (`lp`, `settlement`) — the original request cid is no
+-- longer resolvable once consumed.
+template LiquidityAllocationAcceptance with
+    operator : Party
+    lp : Party
+    settlement : V2.SettlementInfo
+    allocations : [V2.AllocationSpecification]
+    settleAt : Optional Time
+    acceptedAt : Time
+  where
+    signatory operator
+    observer lp

@@ -16,7 +16,11 @@ import {
   type Wallet,
 } from "@canton-network/dapp-sdk";
 
-import { composeCommands, extractCreatedAllocationCids } from "./commands";
+import {
+  composeCommands,
+  extractCreatedAllocationCids,
+  extractLiquidityAcceptanceCid,
+} from "./commands";
 import type {
   WalletAccount,
   WalletConnectionStatus,
@@ -92,13 +96,15 @@ export class SdkProvider implements WalletProvider {
     const tx = result.tx as {
       updateId?: string;
       contractId?: string;
-      createdEvents?: Array<{ contractId: string }>;
-      events?: Array<{ created?: { contractId: string } }>;
+      createdEvents?: Array<{ contractId: string; templateId?: string }>;
+      events?: Array<{ created?: { contractId: string; templateId?: string } }>;
     };
+    const liquidityAcceptanceCid = extractLiquidityAcceptanceCid(tx);
     return {
       submittedBy: party,
       primaryCid: tx.updateId ?? tx.contractId ?? composed.commandId,
-      createdAllocationCids: extractCreatedAllocationCids(intent, composed.commands.length, tx),
+      createdAllocationCids: extractCreatedAllocationCids(intent, tx),
+      auxiliaryCids: liquidityAcceptanceCid ? { liquidityAcceptanceCid } : undefined,
     };
   }
 

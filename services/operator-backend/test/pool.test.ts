@@ -259,6 +259,8 @@ describe("PoolService DvP liquidity", () => {
       "settle is co-signed [operator, lpRegistrar]",
     );
     assert.equal(cmd.argument.requestCid, "#req:0");
+    // Legacy direct-allocation path binds to the live request, not evidence.
+    assert.equal(cmd.argument.acceptanceCid, null, "no acceptance evidence on the legacy path");
     assert.equal(cmd.argument.lpBaseDepositCid, "#b:0");
     assert.equal(cmd.argument.lpReceiptCid, "#r:0");
     assert.ok(cmd.argument.baseFactoryCid, "base/quote factory present");
@@ -268,6 +270,32 @@ describe("PoolService DvP liquidity", () => {
     assert.ok(cmd.argument.poolAdminExtraArgs, "pool.admin choice context threaded");
     assert.ok(cmd.argument.lpRegistrarExtraArgs, "lpRegistrar choice context threaded");
     assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");
+  });
+
+  it("settleAddLiquidity binds to acceptance evidence when no live request is supplied", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    // Canonical stock-wallet flow: accept consumed the request, so the dApp
+    // forwards the acceptance evidence cid instead.
+    await svc.settleAddLiquidity({
+      poolCid: pool.contractId,
+      acceptanceCid: "#acc:0" as never,
+      recipient: "lp" as never,
+      lpBaseDepositCid: "#b:0" as never,
+      lpQuoteDepositCid: "#q:0" as never,
+      lpReceiptCid: "#r:0" as never,
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      minLpTokens: "0.0",
+      knownTotalLpSupply: "0.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
+    assert.equal(cmd.argument.acceptanceCid, "#acc:0", "acceptance evidence threaded to the choice");
+    assert.equal(cmd.argument.requestCid, null, "no live request on the acceptance path");
   });
 
   // A pool whose 15 BTC / 300k USDC reserves are split across two slices

@@ -48,6 +48,24 @@ function allocateCmd(
   };
 }
 
+// AllocationRequest_Accept on a LiquidityAllocationRequest. Token Standard V2
+// requires accept to consume the request; our impl leaves an operator-visible
+// LiquidityAllocationAcceptance receipt first, which the DvP settle binds to.
+function acceptRequestCmd(
+  requestCid: ContractId<"LiquidityAllocationRequest">,
+  party: Party,
+  extraArgs: V2ExtraArgs,
+): DamlCommand {
+  return {
+    ExerciseCommand: {
+      templateId: ALLOCATION_REQUEST_IID,
+      contractId: requestCid,
+      choice: "AllocationRequest_Accept",
+      choiceArgument: { actors: [party], extraArgs },
+    },
+  };
+}
+
 export type DamlCommand =
   | { CreateCommand: CreateCommand }
   | { ExerciseCommand: ExerciseCommand };
@@ -245,6 +263,10 @@ function composeAddLiquidity(
     commandId: `add-lp-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [
+      // Canonical Token Standard V2 shape: AllocationRequest_Accept first
+      // (consumes the request, leaves the acceptance evidence), then the three
+      // AllocationFactory_Allocate exercises in canonical order.
+      acceptRequestCmd(intent.requestCid, ctx.party, intent.allocationRequestExtraArgs),
       allocateCmd(
         intent.depositFactoryCid,
         intent.settlement,
@@ -297,6 +319,9 @@ function composeRemoveLiquidity(
     commandId: `remove-lp-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [
+      // Canonical Token Standard V2 shape: accept (consumes request, leaves
+      // acceptance evidence) then the three receipts/burn allocations.
+      acceptRequestCmd(intent.requestCid, ctx.party, intent.allocationRequestExtraArgs),
       allocateCmd(
         intent.depositFactoryCid,
         intent.settlement,
@@ -394,31 +419,82 @@ export function isLpDvpIntent(intent: WalletIntent): boolean {
   );
 }
 
+// Template suffixes used to classify created events in a submit result.
+const ALLOCATION_TEMPLATE_SUFFIX = "CantonDex.Registry.V2:Allocation";
+const LIQUIDITY_ACCEPTANCE_SUFFIX =
+  "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance";
+
+// How many V2.Allocation contracts each LP-DvP intent authors (the canonical
+// command shape). Drives the extraction count check independently of how many
+// total commands the submission carries (the accept pairing adds a command but
+// no extra Allocation).
+function expectedAllocationCount(intent: WalletIntent): number {
+  switch (intent.kind) {
+    case "add-liquidity":
+    case "remove-liquidity":
+      return 3;
+    case "request-swap":
+    case "accept-allocation-request":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+type CreatedEvent = { contractId: string; templateId?: string };
+
+function createdEventsOf(tx: {
+  createdEvents?: CreatedEvent[];
+  events?: Array<{ created?: CreatedEvent }>;
+}): CreatedEvent[] {
+  return tx.createdEvents ?? tx.events?.flatMap((e) => (e.created ? [e.created] : [])) ?? [];
+}
+
 /**
  * Pull the created V2.Allocation cids (in command order) out of a provider's
  * submit-transaction shape for intents whose next step needs the authored
- * allocation cid. Fails loudly if the count doesn't match the number of
- * authored allocations.
+ * allocation cid. When template ids are present, keeps only the V2.Allocation
+ * creates — so the canonical accept pairing's `LiquidityAllocationAcceptance`
+ * receipt (and any locked-holding creates) are ignored. Fails loudly if the
+ * remaining count doesn't match the intent's authored-allocation count.
  */
 export function extractCreatedAllocationCids(
   intent: WalletIntent,
-  expectedCount: number,
   tx: {
-    createdEvents?: Array<{ contractId: string }>;
-    events?: Array<{ created?: { contractId: string } }>;
+    createdEvents?: CreatedEvent[];
+    events?: Array<{ created?: CreatedEvent }>;
   },
 ): string[] | undefined {
   if (!isLpDvpIntent(intent)) return undefined;
-  const fromCreated = tx.createdEvents?.map((e) => e.contractId);
-  const fromEvents = tx.events?.flatMap((e) => (e.created ? [e.created.contractId] : []));
-  const cids = fromCreated ?? fromEvents;
-  if (!cids || cids.length !== expectedCount) {
+  const created = createdEventsOf(tx);
+  const templated = created.some((e) => e.templateId !== undefined);
+  const allocations = templated
+    ? created.filter((e) => e.templateId?.endsWith(ALLOCATION_TEMPLATE_SUFFIX))
+    : created;
+  const cids = allocations.map((e) => e.contractId);
+  const expected = expectedAllocationCount(intent);
+  if (cids.length !== expected) {
     throw new Error(
-      `wallet did not return ${expectedCount} created allocation cids for ${intent.kind} ` +
-        `(got ${cids?.length ?? 0})`,
+      `wallet did not return ${expected} created allocation cids for ${intent.kind} ` +
+        `(got ${cids.length})`,
     );
   }
   return cids;
+}
+
+/**
+ * Pull the `LiquidityAllocationAcceptance` evidence cid out of a submit result
+ * (created by AllocationRequest_Accept in the canonical LP flow). The operator
+ * settle binds to this when the live request has been consumed. Undefined if
+ * the submission did not produce one (e.g. legacy direct-allocation flow).
+ */
+export function extractLiquidityAcceptanceCid(tx: {
+  createdEvents?: CreatedEvent[];
+  events?: Array<{ created?: CreatedEvent }>;
+}): string | undefined {
+  return createdEventsOf(tx).find((e) =>
+    e.templateId?.endsWith(LIQUIDITY_ACCEPTANCE_SUFFIX),
+  )?.contractId;
 }
 
 function shortCid(cid: ContractId<unknown> | string): string {

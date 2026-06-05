@@ -196,7 +196,7 @@ mkSettleAdd
 mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx =
   exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
     expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-    lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = lp
+    lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = lp
     lpBaseDepositCid = baseDep; lpQuoteDepositCid = quoteDep; lpReceiptCid = receiptCid
     baseFactoryCid = fx.ttFactoryCid; quoteFactoryCid = fx.ttFactoryCid
     lpFactoryCid = toInterfaceContractId fx.lpReg
@@ -297,7 +297,7 @@ testRealRegistryDvpRemoveSettles = do
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = reqCid
+      requestCid = Some reqCid; acceptanceCid = None
       holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
       minBaseOut = 0.0; minQuoteOut = 0.0
       baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]

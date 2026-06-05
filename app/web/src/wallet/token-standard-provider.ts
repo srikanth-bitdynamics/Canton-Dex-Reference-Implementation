@@ -35,7 +35,11 @@ import type {
   WalletProvider,
   WalletResult,
 } from "./types";
-import { composeCommands, extractCreatedAllocationCids } from "./commands";
+import {
+  composeCommands,
+  extractCreatedAllocationCids,
+  extractLiquidityAcceptanceCid,
+} from "./commands";
 
 const LS_KEY = "canton-dex:token-standard:session";
 const SUBMIT_TIMEOUT_MS = 60_000;
@@ -282,11 +286,14 @@ export class TokenStandardProvider implements WalletProvider {
     const holdingEvents = (result.createdEvents ?? []).filter((e) =>
       e.templateId.endsWith("CantonDex.Registry.V2:Holding"),
     );
-    const createdAllocationCids = extractCreatedAllocationCids(
-      intent,
-      composed.commands.length,
-      { createdEvents: allocationEvents },
-    );
+    const createdAllocationCids = extractCreatedAllocationCids(intent, {
+      createdEvents: allocationEvents,
+    });
+    // The canonical LP accept pairing leaves a LiquidityAllocationAcceptance
+    // receipt; the operator settle binds to it once the request is consumed.
+    const liquidityAcceptanceCid = extractLiquidityAcceptanceCid({
+      createdEvents: result.createdEvents,
+    });
     return {
       submittedBy: party,
       primaryCid: result.updateId,
@@ -295,6 +302,7 @@ export class TokenStandardProvider implements WalletProvider {
         holdingEvents.length > 0
           ? holdingEvents.map((e) => e.contractId)
           : undefined,
+      auxiliaryCids: liquidityAcceptanceCid ? { liquidityAcceptanceCid } : undefined,
     };
   }
 
@@ -352,11 +360,9 @@ export class TokenStandardProvider implements WalletProvider {
     const allocationEvents = (result.createdEvents ?? []).filter((e) =>
       e.templateId.endsWith("CantonDex.Registry.V2:Allocation"),
     );
-    const createdAllocationCids = extractCreatedAllocationCids(
-      intent,
-      1,
-      { createdEvents: allocationEvents },
-    );
+    const createdAllocationCids = extractCreatedAllocationCids(intent, {
+      createdEvents: allocationEvents,
+    });
     return {
       submittedBy: party,
       primaryCid: createdAllocationCids?.[0] ?? result.updateId,

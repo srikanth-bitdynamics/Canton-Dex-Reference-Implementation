@@ -93,7 +93,11 @@ export interface PoolRequestAddLiquidityResult {
 
 export interface PoolSettleAddLiquidityInput {
   poolCid: ContractId<"Pool">;
-  requestCid: ContractId<"LiquidityAllocationRequest">;
+  // The settle binds to EITHER the live request (legacy direct-allocation
+  // flow) OR the acceptance evidence (canonical accept flow, where accept
+  // consumed the request). Exactly one is supplied.
+  requestCid?: ContractId<"LiquidityAllocationRequest"> | null;
+  acceptanceCid?: ContractId<"LiquidityAllocationAcceptance"> | null;
   recipient: Party;
   lpBaseDepositCid: ContractId<"Allocation">;
   lpQuoteDepositCid: ContractId<"Allocation">;
@@ -136,7 +140,9 @@ export interface PoolRequestRemoveLiquidityResult {
 
 export interface PoolSettleRemoveLiquidityInput {
   poolCid: ContractId<"Pool">;
-  requestCid: ContractId<"LiquidityAllocationRequest">;
+  // Bind to the live request OR the acceptance evidence (see settle-add).
+  requestCid?: ContractId<"LiquidityAllocationRequest"> | null;
+  acceptanceCid?: ContractId<"LiquidityAllocationAcceptance"> | null;
   holder: Party;
   lpTokensToRedeem: Decimal;
   knownTotalLpSupply: Decimal;
@@ -507,7 +513,7 @@ export class PoolService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        commandId: `lp-add-settle:${input.requestCid}`,
+        commandId: `lp-add-settle:${input.requestCid ?? input.acceptanceCid}`,
         disclosure: [
           ...depositFactories.disclosure,
           ...lpFactories.disclosure,
@@ -524,7 +530,8 @@ export class PoolService {
             poolCid: input.poolCid,
             poolStateCid: pool.poolStateCid,
             lpPolicyCid,
-            requestCid: input.requestCid,
+            requestCid: input.requestCid ?? null,
+            acceptanceCid: input.acceptanceCid ?? null,
             recipient: input.recipient,
             lpBaseDepositCid: input.lpBaseDepositCid,
             lpQuoteDepositCid: input.lpQuoteDepositCid,
@@ -645,7 +652,7 @@ export class PoolService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        commandId: `lp-remove-settle:${input.requestCid}`,
+        commandId: `lp-remove-settle:${input.requestCid ?? input.acceptanceCid}`,
         disclosure: [
           ...depositFactories.disclosure,
           ...lpFactories.disclosure,
@@ -662,7 +669,8 @@ export class PoolService {
             poolCid: input.poolCid,
             poolStateCid: pool.poolStateCid,
             lpPolicyCid,
-            requestCid: input.requestCid,
+            requestCid: input.requestCid ?? null,
+            acceptanceCid: input.acceptanceCid ?? null,
             holder: input.holder,
             lpTokensToRedeem: input.lpTokensToRedeem,
             knownTotalLpSupply: input.knownTotalLpSupply,

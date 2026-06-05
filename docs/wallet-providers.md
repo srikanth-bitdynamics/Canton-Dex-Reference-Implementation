@@ -75,8 +75,11 @@ recoverable. Two supported recovery paths:
    settlement.id)` is **not** unique because `poolSettlement` uses a constant
    settlement id per pool.
 
-So "the wallet result lacks created cids" is **not** a blocker — it only decides
-*which* recovery path a provider uses.
+So "the wallet result lacks created cids" is **not** a blocker **for LP
+add/remove** — it only decides *which* recovery path that flow uses. For **swap
+and order-funding** it is currently still a blocker: those one-allocation paths
+have no operator-discovery wiring yet, so an updateId-only wallet is rejected
+there until that lands.
 
 ## Support matrix
 

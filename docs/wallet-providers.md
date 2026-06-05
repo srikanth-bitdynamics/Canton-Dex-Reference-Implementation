@@ -18,15 +18,16 @@ WalletIntent  ──────────────── the audit boundar
 commands.ts (composeCommands)
    │  ExerciseCommand / CreateCommand trees
 WalletProvider  ─────────────── pluggable connector interface
-   │   token-standard · sdk · mock · (PartyLayer →)
+   │   token-standard · sdk · mock · PartyLayer
 the wallet  ─────────────────── signs + submits (CIP-0103 prepare/sign/execute)
 ```
 
 **PartyLayer is a `WalletProvider` (connector) — nothing more.** It is a CIP-0103
-SDK that unifies multiple Canton wallets (Console, Loop, Cantor8, Nightly, Send)
-behind one connect/discovery/session/approval surface, plus a ready
-`ConnectButton`. It slots in **beside** the existing providers; it does not change
-the layers above it.
+SDK that unifies multiple Canton wallets behind one
+connect/discovery/session/approval surface. Our DEX provider lazily loads
+`@partylayer/sdk` and, by default, tries the submit-capable wallets Console,
+Nightly, and Send (`VITE_PARTYLAYER_WALLET_IDS` can override the order). It slots
+in **beside** the existing providers; it does not change the layers above it.
 
 ## What PartyLayer does and does **not** do
 
@@ -75,7 +76,9 @@ recoverable. Two supported recovery paths:
    settlement id per pool.
 
 So "the wallet result lacks created cids" is **not** a blocker — it only decides
-*which* recovery path a flow uses (dApp-return vs operator-discovery).
+*which* recovery path a flow uses (dApp-return vs operator-discovery). The
+remaining blocker is a live wallet proof: the wallet must sign/submit the
+prepared command and return an `updateId` the operator can read.
 
 ## Support matrix
 
@@ -85,7 +88,7 @@ So "the wallet result lacks created cids" is **not** a blocker — it only decid
 | `sdk-provider` (`@canton-network/dapp-sdk`) | ✅ | ✅ | ✅ | ✅ | ✅ | CIP-0103; behind `VITE_ENABLE_SDK` |
 | `mock-provider` | ✅ | ✅ | ✅ | ✅ | ✅ | deterministic cids for tests/dev |
 | **Splice / Amulet wallet** (LocalNet, TSv2 branch) | ✅ | ✅ | ✅ | 🧪 | 🧪 | DvP needs DEX-90 (landed) + a live pass (DEX-94) |
-| **PartyLayer** facade (Console / Nightly / Send / Cantor8) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | Swap + LP add/remove via operator-discovery (wired). Needs the @partylayer binding + DEX-94 live pass |
+| **PartyLayer** facade (Console / Nightly / Send) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | SDK binding + Preview menu are wired; no installed submit-capable wallet was available in the Preview check. Swap, order funding, and LP DvP use operator-discovery; needs DEX-94 live wallet pass |
 | **Loop** (via PartyLayer or direct) | ✅ | ✅ | ❌ | ❌ | ❌ | refuses third-party DARs (`utility-*` allowlist only) |
 
 Cells marked 🧪 are **planned capability**, validated by the DEX-91 probe and the
@@ -100,16 +103,20 @@ from that run.
   `token-standard-v2-upcoming` branch — the reference CIP-0103 wallet, and the
   realistic hosted-E2E target. (Loop is **not** a target: its allowlist excludes
   our DAR.)
-- **Multi-wallet / demo UX:** **PartyLayer** as the connector once DEX-91/92 land —
-  one integration reaching Console / Nightly / Send / Cantor8, with the canonical
-  accept flow (DEX-90) underneath so DvP works through any of them that sign our
-  DAR command and surface (or let the operator recover) the created cids.
+- **Multi-wallet / demo UX:** **PartyLayer** as the SDK-backed connector — one
+  integration reaching Console / Nightly / Send, with the canonical accept flow
+  (DEX-90) underneath so DvP works through any wallet that signs our DAR command
+  and returns an `updateId` the operator can use to recover created cids.
 
 ## Proven vs planned (so builders aren't misled)
 
 - **Proven on LocalNet today:** read paths + OTC accept-settle through the existing
   providers; the full LP/swap DvP *Daml + composer + backend* path (DEX-90, green
   across daml/backend/web suites).
-- **Planned / pending live validation:** Amulet-driven DvP (DEX-94), and the entire
-  PartyLayer column (DEX-91 probe → DEX-92 provider → DEX-93 UI). This doc's 🧪
-  cells will flip to ✅ as those land; do not read them as working today.
+- **Proven in Preview UI:** PartyLayer is an SDK-backed menu option and attempts
+  installed submit-capable wallets. On this machine it failed clearly because no
+  Console/Nightly/Send wallet was installed.
+- **Planned / pending live validation:** Amulet-driven DvP (DEX-94), and the
+  PartyLayer live-wallet column once an installed submit-capable wallet signs and
+  returns an `updateId`. This doc's 🧪 cells will flip to ✅ as those land; do not
+  read them as working today.

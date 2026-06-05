@@ -100,6 +100,10 @@ operator-discovery is cleaner and reuses existing code.)
 
 ## Spike procedure (live)
 
+> A complete, runnable spike implementing the loop below lives at
+> **`spike/partylayer/`** (isolated Vite app; `npm install && npm run dev`). See
+> its `README.md` for the turnkey runbook. The steps below are what it does.
+
 1. `PartyLayerKit network=devnet appName=Canton-Dex adapters=[console,nightly,send,cantor8]`,
    mount `ConnectButton` on a throwaway route.
 2. `useConnect().connect()`; capture the `Session` / party.

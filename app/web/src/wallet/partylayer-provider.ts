@@ -135,9 +135,14 @@ export class PartyLayerProvider implements WalletProvider {
     const receipt = await this.client.submitTransaction({
       signedTx,
     });
-    const updateId = receipt.updateId ?? receipt.transactionHash;
+    const updateId = receipt.updateId;
     if (!updateId) {
-      throw new Error("partylayer-provider: submit returned no updateId");
+      const hashSuffix = receipt.transactionHash
+        ? ` (transactionHash=${receipt.transactionHash})`
+        : "";
+      throw new Error(
+        `partylayer-provider: submit returned no updateId${hashSuffix}; operator-discovery requires an updateId`,
+      );
     }
     // updateId-only by design (DEX-91). createdAllocationCids is intentionally
     // omitted: the operator recovers the created cids from the updateId for all

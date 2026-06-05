@@ -159,7 +159,7 @@ export function ConnectWalletButton() {
             top: "calc(100% + 6px)",
             right: 0,
             zIndex: 50,
-            maxWidth: 320,
+            maxWidth: 420,
             padding: "8px 10px",
             borderRadius: 6,
             background: "var(--bg-3)",
@@ -167,6 +167,7 @@ export function ConnectWalletButton() {
             color: "var(--text-2)",
             fontSize: 12,
             lineHeight: 1.4,
+            wordBreak: "break-word",
           }}
         >
           {status.message}

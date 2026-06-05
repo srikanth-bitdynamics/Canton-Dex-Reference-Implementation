@@ -58,12 +58,17 @@ function isMissingWalletError(err: unknown): boolean {
   );
 }
 
-function missingWalletMessage(walletIds: string[], lastError: unknown): string {
-  const suffix =
-    lastError instanceof Error && lastError.message
-      ? ` Last error: ${lastError.message}`
-      : "";
-  return `No supported PartyLayer wallet is installed or detected (${walletIds.join(", ")}).${suffix}`;
+function formatError(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  return String(err);
+}
+
+function missingWalletMessage(attempts: Array<{ walletId: string; error: unknown }>): string {
+  const attempted = attempts.map(({ walletId }) => walletId).join(", ");
+  const details = attempts
+    .map(({ walletId, error }) => `${walletId}: ${formatError(error)}`)
+    .join(" | ");
+  return `No supported PartyLayer wallet is installed or detected (${attempted}). Tried ${details}`;
 }
 
 function mapSession(session: Awaited<ReturnType<ReturnType<typeof createPartyLayer>["connect"]>>) {
@@ -90,7 +95,7 @@ export function createDexPartyLayerClient(
 
   return {
     async connect(connectOptions) {
-      let lastMissingWalletError: unknown;
+      const missingWalletAttempts: Array<{ walletId: string; error: unknown }> = [];
       for (const walletId of walletIds) {
         try {
           const session = await client.connect({
@@ -100,10 +105,10 @@ export function createDexPartyLayerClient(
           return mapSession(session);
         } catch (err) {
           if (!isMissingWalletError(err)) throw err;
-          lastMissingWalletError = err;
+          missingWalletAttempts.push({ walletId, error: err });
         }
       }
-      throw new Error(missingWalletMessage(walletIds, lastMissingWalletError));
+      throw new Error(missingWalletMessage(missingWalletAttempts));
     },
     async disconnect() {
       await client.disconnect();

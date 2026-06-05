@@ -78,12 +78,11 @@ describe("PartyLayerProvider", () => {
     expect(fake.calls[0].signedTx.commands).toHaveLength(1);
   });
 
-  it("falls back to transactionHash when updateId is absent", async () => {
+  it("rejects submit when the wallet receipt has no updateId", async () => {
     fake = fakeClient({ transactionHash: "tx-hash-9" });
     const p = ctx();
     await p.connect();
-    const res = await p.submit(swapIntent);
-    expect(res.primaryCid).toBe("tx-hash-9");
+    await expect(p.submit(swapIntent)).rejects.toThrow(/no updateId/);
   });
 
   it("rejects submit when not connected", async () => {

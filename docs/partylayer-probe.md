@@ -68,7 +68,8 @@ Published adapters: **Bron, Console, Nightly, Send, Cantor8, Loop** (+
 `{ primaryCid: updateId }` and does **not** attempt to parse created cids. The
 operator recovers them, reusing code already built in DEX-90:
 - `updateId → /v2/updates/transaction-tree-by-id` (`json-api.ts`) → the created `Allocation` cids;
-- `discoverAcceptance(lp, settlement.id)` → the `LiquidityAllocationAcceptance` cid.
+- `discoverAcceptance(requestCid)` → the `LiquidityAllocationAcceptance` cid, keyed
+  on the unique `originalRequestCid` (the consumed request's cid).
 
 So the dApp's `/settle` call, on the PartyLayer path, forwards the **settlement id**
 (which it has from `/request`) instead of cids, and the operator discovers them.
@@ -110,7 +111,14 @@ operator-discovery is cleaner and reuses existing code.)
 3. `useSubmitTransaction().submitTransaction({ commands: <a harmless Holding_Split> })`;
    log the `TxReceipt`. Confirm `updateId` present, signing happened in-wallet.
 4. Submit a real `add-liquidity` batch (accept + 3 allocates from `/request`); log the receipt.
-5. `useLedgerApi().ledgerApi({ requestMethod:'GET', resource:'/v2/updates/transaction-tree-by-id/<updateId>' })`
-   and confirm the `Allocation` + `LiquidityAllocationAcceptance` creates are
-   recoverable by `updateId` (proves the operator-discovery path end-to-end).
-6. Record which adapters completed steps 3–4; fill the matrix's "Signs our DAR" column.
+5. **(precondition, client-side)** `useLedgerApi().ledgerApi(GET
+   /v2/updates/transaction-tree-by-id/<updateId>)` confirms the `Allocation` +
+   `LiquidityAllocationAcceptance` creates are present in the tree by `updateId`.
+   Note: this queries via the *wallet's* ledgerApi (`parties=<connected party>`),
+   so it only proves the data exists — it is **not** the operator path.
+6. **(production, operator-side)** the actual recovery runs in the operator
+   backend: `PoolService.recoverDvpAllocations(updateId, operatorParty)` walks the
+   tree via the operator's own JSON API (`json-api.ts`) — already implemented and
+   unit-tested in DEX-92. The spike's "3b" button POSTs the `updateId` to the
+   operator to exercise this path (endpoint lands with the DEX-92 settle wiring).
+7. Record which adapters completed steps 3–4; fill the matrix's "Signs our DAR" column.

@@ -129,15 +129,19 @@ function Panel() {
     }
   }
 
-  // (4) Recover created cids by updateId via ledgerApi — proves operator-discovery.
-  async function recoverByUpdateId() {
+  // (4a) CLIENT-SIDE precondition check: confirm the created cids are present in
+  // the transaction tree keyed by updateId. This is NOT the operator path — it
+  // queries via the wallet's own ledgerApi (parties=<connected party>). It only
+  // proves the data the operator needs is in the tree. The PRODUCTION recovery
+  // runs OPERATOR-SIDE (its own JSON API + operator party) — see (4b) and the
+  // backend's PoolService.recoverDvpAllocations (DEX-92).
+  async function clientSideTreeCheck() {
     try {
       const res = await client.ledgerApi({
         requestMethod: "GET",
         resource: `/v2/updates/transaction-tree-by-id/${updateId}?parties=${encodeURIComponent(party)}`,
       });
       const tree = JSON.parse((res as { response: string }).response);
-      // Pull the created events and classify by template suffix.
       const created: Array<{ contractId: string; templateId?: string }> =
         tree?.transaction?.eventsById
           ? Object.values(tree.transaction.eventsById)
@@ -152,13 +156,41 @@ function Panel() {
           "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance",
         ),
       );
-      log(setOut, "RECOVERED by updateId (operator-discovery proof)", {
+      log(setOut, "CLIENT-SIDE tree check (precondition; NOT the operator path)", {
         allocationCids: allocations.map((a) => a.contractId),
         acceptanceCid: acceptance?.contractId,
         rawCreatedCount: created.length,
       });
     } catch (e) {
-      log(setOut, "recover ERROR", String(e));
+      log(setOut, "client-side tree check ERROR", String(e));
+    }
+  }
+
+  // (4b) OPERATOR-SIDE recovery (the production path): hand the updateId to the
+  // operator backend, which runs PoolService.recoverDvpAllocations against its
+  // OWN JSON API (operator party) and returns the recovered cids. This is what
+  // actually drives /settle for an updateId-only wallet. The endpoint lands with
+  // the DEX-92 settle wiring; until then this button shows the wiring gap.
+  async function recoverViaOperator() {
+    try {
+      const res = await fetch(
+        `${API_BASE}/v1/pools/recover-dvp-allocations`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ updateId, party }),
+        },
+      );
+      const text = await res.text();
+      log(
+        setOut,
+        res.ok
+          ? "OPERATOR-SIDE recovery (production path)"
+          : `OPERATOR-SIDE recovery — endpoint not wired yet (DEX-92): ${res.status}`,
+        text,
+      );
+    } catch (e) {
+      log(setOut, "operator-side recovery ERROR (is the operator backend running?)", String(e));
     }
   }
 
@@ -178,8 +210,11 @@ function Panel() {
           onChange={(e) => setUpdateId(e.target.value)}
           style={{ minWidth: 280 }}
         />
-        <button onClick={recoverByUpdateId} disabled={!session || !updateId}>
-          3 · recover cids by updateId
+        <button onClick={clientSideTreeCheck} disabled={!session || !updateId}>
+          3a · client-side tree check (precondition)
+        </button>
+        <button onClick={recoverViaOperator} disabled={!updateId}>
+          3b · operator-side recover (production path)
         </button>
       </div>
       <details>

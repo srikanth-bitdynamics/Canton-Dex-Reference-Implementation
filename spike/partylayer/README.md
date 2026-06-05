@@ -44,11 +44,16 @@ npm run dev                 # http://localhost:5191
    `probeBaseHoldingCids` / `probeQuoteHoldingCids` arrays for the deposit
    legs). Builds the canonical `AllocationRequest_Accept` + 3×
    `AllocationFactory_Allocate` and submits. **Record the receipt.**
-4. **Recover by updateId** (button 3) — calls `ledgerApi` GET
-   `/v2/updates/transaction-tree-by-id/{updateId}` and classifies created
-   events. **Confirm** the 3 `Registry.V2:Allocation` cids and the
-   `LiquidityAllocationAcceptance` cid come back — this proves the
-   operator-discovery recovery the DEX-92 provider relies on.
+4a. **Client-side tree check** (button 3a) — calls the *wallet's* `ledgerApi` GET
+   `/v2/updates/transaction-tree-by-id/{updateId}` and classifies created events.
+   This is a **precondition** check (it proves the 3 `Registry.V2:Allocation` cids
+   + the `LiquidityAllocationAcceptance` cid are in the tree) — **not** the operator
+   path, since it queries as the connected wallet party.
+4b. **Operator-side recover** (button 3b) — POSTs the `updateId` to the operator
+   backend, which runs `PoolService.recoverDvpAllocations` against its **own** JSON
+   API (operator party). This is the **production** recovery the DEX-92 provider
+   relies on (already unit-tested server-side). The endpoint lands with the DEX-92
+   settle wiring; until then 3b surfaces the wiring gap.
 
 ## Then
 

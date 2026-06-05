@@ -121,7 +121,9 @@ export class PartyLayerProvider implements WalletProvider {
       throw new Error("partylayer-provider: submit returned no updateId");
     }
     // updateId-only by design (DEX-91). createdAllocationCids is intentionally
-    // omitted: swap/LP DvP recover the created cids operator-side from updateId.
+    // omitted: LP add/remove DvP recovers the created cids operator-side from
+    // updateId (swap/order updateId recovery is not yet wired — those flows
+    // reject updateId-only wallets in ledger.ts).
     return {
       submittedBy: party,
       primaryCid: updateId,

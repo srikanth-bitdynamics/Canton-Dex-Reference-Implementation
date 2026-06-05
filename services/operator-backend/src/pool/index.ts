@@ -466,6 +466,45 @@ export class PoolService {
     return match.contractId;
   }
 
+  /**
+   * Operator-discovery (DEX-92): recover the created `Allocation` cids (in
+   * canonical command order) and the `LiquidityAllocationAcceptance` cid from a
+   * committed transaction by `updateId`. Used when the wallet (e.g. PartyLayer)
+   * returns only an `updateId` and not the created events, so `/settle` can be
+   * driven without the dApp surfacing cids. Throws if the ledger can't serve
+   * trees, or if the expected number of allocations isn't present.
+   */
+  async recoverDvpAllocations(
+    updateId: string,
+    party: Party,
+    expectedAllocations: number,
+  ): Promise<{
+    allocationCids: ContractId<"Allocation">[];
+    acceptanceCid?: ContractId<"LiquidityAllocationAcceptance">;
+  }> {
+    if (!this.ledger.treeCreatedEvents) {
+      throw new Error(
+        "ledger does not support transaction-tree recovery (treeCreatedEvents)",
+      );
+    }
+    const created = await this.ledger.treeCreatedEvents(updateId, party);
+    const allocationCids = created
+      .filter((e) => e.templateId.endsWith("CantonDex.Registry.V2:Allocation"))
+      .map((e) => e.contractId as ContractId<"Allocation">);
+    if (allocationCids.length !== expectedAllocations) {
+      throw new Error(
+        `recoverDvpAllocations: expected ${expectedAllocations} Allocation creates for ` +
+          `updateId=${updateId}, found ${allocationCids.length}`,
+      );
+    }
+    const acceptanceCid = created.find((e) =>
+      e.templateId.endsWith(
+        "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance",
+      ),
+    )?.contractId as ContractId<"LiquidityAllocationAcceptance"> | undefined;
+    return { allocationCids, acceptanceCid };
+  }
+
   /** LP quote in fixed-point decimal. */
   private lpQuote(pool: Pool, baseAmount: Decimal, quoteAmount: Decimal): Decimal {
     const b = dec.parseDecimal(baseAmount);

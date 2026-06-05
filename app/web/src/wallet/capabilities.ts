@@ -36,7 +36,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
   },
   partylayer: {
     dvp: "unproven",
-    note: "Multi-wallet (Console / Nightly / Send / Cantor8). DvP via operator-discovery — pending LocalNet proof (DEX-94).",
+    note: "Multi-wallet (Console / Nightly / Send / Cantor8). LP add/remove via operator-discovery (swap/order pending); needs the @partylayer binding + LocalNet proof (DEX-94).",
   },
   walletconnect: {
     dvp: "unsupported",

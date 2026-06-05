@@ -1048,6 +1048,21 @@ async function routeRequest(
     return;
   }
 
+  // Operator-discovery recovery (DEX-92): given an updateId-only wallet receipt,
+  // recover the created Allocation cids + the acceptance evidence from the
+  // transaction tree. Exposed for the probe spike (3b) and for clients that
+  // prefer to settle in two steps.
+  if (method === "POST" && path === "/v1/pools/recover-dvp-allocations") {
+    const body = await readJson<{ updateId: string; party: string; expected?: number }>(req);
+    const result = await backend.pool.recoverDvpAllocations(
+      body.updateId,
+      body.party as never,
+      body.expected ?? 3,
+    );
+    respondJson(res, 200, result);
+    return;
+  }
+
   if (method === "POST" && path === "/v1/pools/remove-liquidity/request") {
     const body = await readJson<
       Parameters<typeof backend.pool.requestRemoveLiquidity>[0]

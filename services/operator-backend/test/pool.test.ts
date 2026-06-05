@@ -330,6 +330,40 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.requestCid, null, "no live request on the acceptance path");
   });
 
+  it("settleAddLiquidity (operator-discovery) recovers the 3 cids + acceptance from updateId", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    // updateId-only wallet (PartyLayer): the operator recovers the created cids
+    // from the transaction tree. Acceptance + locked holding are present too.
+    ledger.treeEvents = [
+      { contractId: "#acc:0", templateId: "pkg:CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance" },
+      { contractId: "#hold:0", templateId: "pkg:CantonDex.Registry.V2:Holding" },
+      { contractId: "#a:base", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#a:quote", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#a:receipt", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+    ];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    // No explicit cids — only updateId.
+    await svc.settleAddLiquidity({
+      poolCid: pool.contractId,
+      updateId: "update-7",
+      recipient: "lp" as never,
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      minLpTokens: "0.0",
+      knownTotalLpSupply: "0.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
+    assert.equal(cmd.argument.lpBaseDepositCid, "#a:base", "recovered base deposit (order)");
+    assert.equal(cmd.argument.lpQuoteDepositCid, "#a:quote", "recovered quote deposit (order)");
+    assert.equal(cmd.argument.lpReceiptCid, "#a:receipt", "recovered LP receipt (order)");
+    assert.equal(cmd.argument.acceptanceCid, "#acc:0", "recovered acceptance evidence");
+    assert.equal(cmd.argument.requestCid, null, "request consumed on the discovery path");
+  });
+
   it("discoverAcceptance disambiguates by originalRequestCid (lp + settlement.id collide)", async () => {
     const pool = mkPool(0, 0);
     const ledger = new CapturingLedger(pool, mkLpPolicy());

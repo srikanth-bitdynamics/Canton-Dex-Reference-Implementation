@@ -66,7 +66,10 @@ recoverable. Two supported recovery paths:
    operator recovers **both** the created `Allocation` cids **and** the
    `LiquidityAllocationAcceptance` cid from that update's tree
    (`PoolService.recoverDvpAllocations`: `updateId → transaction-tree-by-id`,
-   classify created events by template; DEX-92). A separate
+   classify created events by template; DEX-92). **Currently wired for LP
+   add/remove only** — swap and order-funding (the one-allocation paths) are not
+   yet on the updateId path, so an updateId-only wallet (e.g. PartyLayer) rejects
+   those flows with a clear error until that wiring lands. A separate
    `PoolService.discoverAcceptance(requestCid)` recovers an acceptance *without*
    an updateId, keyed on the unique `originalRequestCid` — note `(lp,
    settlement.id)` is **not** unique because `poolSettlement` uses a constant
@@ -83,7 +86,7 @@ So "the wallet result lacks created cids" is **not** a blocker — it only decid
 | `sdk-provider` (`@canton-network/dapp-sdk`) | ✅ | ✅ | ✅ | ✅ | ✅ | CIP-0103; behind `VITE_ENABLE_SDK` |
 | `mock-provider` | ✅ | ✅ | ✅ | ✅ | ✅ | deterministic cids for tests/dev |
 | **Splice / Amulet wallet** (LocalNet, TSv2 branch) | ✅ | ✅ | ✅ | 🧪 | 🧪 | DvP needs DEX-90 (landed) + a live pass (DEX-94) |
-| **PartyLayer** facade (Console / Nightly / Send / Cantor8) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | pending the DEX-91 probe + DEX-92 provider |
+| **PartyLayer** facade (Console / Nightly / Send / Cantor8) | 🧪 | 🧪 | 🧪 | ❌ (not wired) | 🧪 | LP add/remove only via operator-discovery; swap/order updateId recovery pending. Needs the @partylayer binding + DEX-94 live pass |
 | **Loop** (via PartyLayer or direct) | ✅ | ✅ | ❌ | ❌ | ❌ | refuses third-party DARs (`utility-*` allowlist only) |
 
 Cells marked 🧪 are **planned capability**, validated by the DEX-91 probe and the

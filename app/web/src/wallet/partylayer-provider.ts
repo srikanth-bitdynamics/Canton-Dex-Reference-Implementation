@@ -76,8 +76,18 @@ export interface PartyLayerClient {
   ledgerApi(params: PartyLayerLedgerApiParams): Promise<PartyLayerLedgerApiResult>;
 }
 
+const HOLDING_V2_INTERFACE_ID =
+  "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding";
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
 }
 
 function extractContractEvents(value: unknown): unknown[] {
@@ -112,16 +122,33 @@ function unwrapCreatedEvent(value: unknown): Record<string, unknown> | null {
 }
 
 function contractPayload(event: Record<string, unknown>): Record<string, unknown> | null {
+  const interfaceViews =
+    asRecord(event.interfaceViews) ?? asRecord(event.interface_views);
+  const interfaceView = interfaceViews
+    ? Object.values(interfaceViews)
+        .map(asRecord)
+        .find((view) => !!view)
+    : null;
+  const interfacePayload =
+    asRecord(interfaceView?.viewValue) ??
+    asRecord(interfaceView?.view_value) ??
+    asRecord(interfaceView?.view);
+
   return (
     asRecord(event.createArgument) ??
+    asRecord(event.createArguments) ??
+    asRecord(event.create_argument) ??
+    asRecord(event.create_arguments) ??
     asRecord(event.payload) ??
     asRecord(event.view) ??
+    interfacePayload ??
+    (event.instrumentId || event.instrument_id || event.account ? event : null) ??
     null
   );
 }
 
 function contractIdOf(event: Record<string, unknown>): string | null {
-  const value = event.contractId ?? event.contract_id ?? event.cid;
+  const value = event.contractId ?? event.contract_id ?? event.cid ?? event.id;
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
@@ -136,24 +163,32 @@ function parseHoldingPayload(
   owner: Party,
   payload: Record<string, unknown>,
 ): Holding | null {
-  const instrument = payload.instrumentId;
+  const instrument =
+    payload.instrumentId ?? payload.instrument_id ?? payload.instrument;
   const instrumentRecord = asRecord(instrument);
   const account = asRecord(payload.account);
-  const payloadOwner = payload.owner ?? account?.owner;
+  const payloadOwner =
+    payload.owner ?? payload.accountOwner ?? payload.account_owner ?? account?.owner;
   if (typeof payloadOwner === "string" && payloadOwner !== owner) return null;
 
   const instrumentId =
     typeof instrument === "string"
       ? instrument
-      : typeof instrumentRecord?.id === "string"
-        ? instrumentRecord.id
-        : null;
-  const admin =
-    typeof payload.admin === "string"
-      ? payload.admin
-      : typeof instrumentRecord?.admin === "string"
-        ? instrumentRecord.admin
-        : null;
+      : firstString(
+          instrumentRecord?.id,
+          instrumentRecord?.instrumentId,
+          instrumentRecord?.instrument_id,
+          payload.instrumentIdText,
+          payload.instrument_id_text,
+        );
+  const admin = firstString(
+    payload.admin,
+    payload.instrumentAdmin,
+    payload.instrument_admin,
+    instrumentRecord?.admin,
+    instrumentRecord?.instrumentAdmin,
+    instrumentRecord?.instrument_admin,
+  );
   const resolvedOwner =
     typeof payloadOwner === "string"
       ? payloadOwner
@@ -176,6 +211,12 @@ function parseHoldingPayload(
     amount: parseAmount(payload.amount),
     locked,
   };
+}
+
+function dedupeHoldings(holdings: Holding[]): Holding[] {
+  const byCid = new Map<string, Holding>();
+  for (const holding of holdings) byCid.set(holding.contractId, holding);
+  return [...byCid.values()];
 }
 
 export function parsePartyLayerHoldings(response: string, owner: Party): Holding[] {
@@ -213,7 +254,7 @@ export class PartyLayerProvider implements WalletProvider {
     try {
       this.client ??= await this.clientFactory();
       const session = await this.client.connect({
-        requiredCapabilities: ["submitTransaction"],
+        requiredCapabilities: ["submitTransaction", "ledgerApi"],
         preferInstalled: true,
         timeoutMs: this.connectTimeoutMs,
       });
@@ -300,12 +341,30 @@ export class PartyLayerProvider implements WalletProvider {
       throw new Error("partylayer-provider: can only read holdings for the connected party");
     }
     const templateId = `${this.packagePrefix}:CantonDex.Registry.V2:Holding`;
-    const result = await this.client.ledgerApi({
-      requestMethod: "POST",
-      resource: "/v2/state/acs",
-      body: JSON.stringify({ templateId }),
-    });
-    return parsePartyLayerHoldings(result.response, owner);
+    const filters = [
+      { interfaceId: HOLDING_V2_INTERFACE_ID },
+      { templateId },
+    ];
+    const holdings: Holding[] = [];
+    let successfulReads = 0;
+    let lastError: unknown = null;
+
+    for (const filter of filters) {
+      try {
+        const result = await this.client.ledgerApi({
+          requestMethod: "POST",
+          resource: "/v2/state/acs",
+          body: JSON.stringify(filter),
+        });
+        successfulReads += 1;
+        holdings.push(...parsePartyLayerHoldings(result.response, owner));
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (successfulReads === 0 && lastError) throw lastError;
+    return dedupeHoldings(holdings);
   }
 
   private setStatus(s: WalletConnectionStatus): void {

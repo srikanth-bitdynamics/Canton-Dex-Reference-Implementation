@@ -30,6 +30,37 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
     },
     async ledgerApi(params) {
       ledgerApiCalls.push(params);
+      const filter = JSON.parse(params.body ?? "{}") as {
+        interfaceId?: string;
+        templateId?: string;
+      };
+      if (filter.interfaceId) {
+        return {
+          response: JSON.stringify({
+            activeContracts: [
+              {
+                contractId: "holding-cbtc",
+                view: {
+                  account: { owner: "alice::1220a", provider: null, id: "" },
+                  instrumentId: { admin: "cbtc-admin", id: "CBTC" },
+                  amount: "1.0000000000",
+                  lock: null,
+                },
+              },
+              {
+                contractId: "holding-1",
+                createArgument: {
+                  owner: "alice::1220a",
+                  admin: "dex-admin",
+                  instrumentId: "BTC",
+                  amount: "0.3350000000",
+                  locked: false,
+                },
+              },
+            ],
+          }),
+        };
+      }
       return {
         response: JSON.stringify({
           activeContracts: [
@@ -100,7 +131,7 @@ describe("PartyLayerProvider", () => {
     expect(acct.party).toBe("alice::1220a");
     expect(p.getStatus().kind).toBe("connected");
     expect(fake.connectCalls[0]).toMatchObject({
-      requiredCapabilities: ["submitTransaction"],
+      requiredCapabilities: ["submitTransaction", "ledgerApi"],
       preferInstalled: true,
       timeoutMs: DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
     });
@@ -161,15 +192,26 @@ describe("PartyLayerProvider", () => {
 
     const holdings = await p.listHoldings("alice::1220a");
 
-    expect(fake.ledgerApiCalls).toHaveLength(1);
+    expect(fake.ledgerApiCalls).toHaveLength(2);
     expect(fake.ledgerApiCalls[0]).toMatchObject({
       requestMethod: "POST",
       resource: "/v2/state/acs",
     });
     expect(JSON.parse(fake.ledgerApiCalls[0].body ?? "{}")).toEqual({
+      interfaceId: "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding",
+    });
+    expect(JSON.parse(fake.ledgerApiCalls[1].body ?? "{}")).toEqual({
       templateId: "#canton-dex-trading:CantonDex.Registry.V2:Holding",
     });
     expect(holdings).toEqual([
+      {
+        contractId: "holding-cbtc",
+        owner: "alice::1220a",
+        admin: "cbtc-admin",
+        instrumentId: "CBTC",
+        amount: 1,
+        locked: false,
+      },
       {
         contractId: "holding-1",
         owner: "alice::1220a",
@@ -222,6 +264,40 @@ describe("PartyLayerProvider", () => {
         admin: "dex-admin",
         instrumentId: "USDC",
         amount: 125.25,
+        locked: false,
+      },
+    ]);
+  });
+
+  it("parses snake_case ACS entries with interface views", () => {
+    const holdings = parsePartyLayerHoldings(
+      JSON.stringify({
+        active_contracts: [
+          {
+            contract_id: "holding-snake-cbtc",
+            interface_views: {
+              "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding": {
+                view_value: {
+                  account: { owner: "alice::1220a", provider: null, id: "" },
+                  instrument_id: { instrument_admin: "cbtc-admin", id: "CBTC" },
+                  amount: "1.0000000000",
+                  lock: null,
+                },
+              },
+            },
+          },
+        ],
+      }),
+      "alice::1220a",
+    );
+
+    expect(holdings).toEqual([
+      {
+        contractId: "holding-snake-cbtc",
+        owner: "alice::1220a",
+        admin: "cbtc-admin",
+        instrumentId: "CBTC",
+        amount: 1,
         locked: false,
       },
     ]);

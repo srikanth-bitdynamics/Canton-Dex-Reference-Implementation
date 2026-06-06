@@ -140,13 +140,13 @@ PartyLayer is a wallet-connector SDK (CIP-0103 `prepareExecute` / `ledgerApi`),
 not a wallet and not a protocol layer. It now sits behind our `WalletProvider`
 interface as a real SDK-backed `PartyLayerProvider`, lazily loading
 `@partylayer/sdk` and trying installed submit-capable wallets (Console, Nightly,
-Send by default; override with `VITE_PARTYLAYER_WALLET_IDS`). It does **not**
+Send by default; override with `VITE_PARTYLAYER_WALLET_IDS`, e.g. `loop` for 5N
+Loop). It does **not**
 abstract registry factory-cid / choice-context fetching (stays app-side), and
-cannot override a wallet's DAR allowlist (Loop still refuses third-party DARs;
-Amulet/Console on LocalNet is the realistic hosted-E2E target). PartyLayer is the
-wallet transport; DvP depends on the lower acceptance-evidence and
-operator-discovery changes, and is not fully proven until a real wallet signs and
-returns an `updateId` the operator can discover.
+cannot override a wallet's DAR/package allowlist. 5N Loop can be reached through
+the SDK, but full DEX DvP remains unproven until a real wallet signs and returns
+an `updateId` the operator can discover. PartyLayer is the wallet transport; DvP
+depends on the lower acceptance-evidence and operator-discovery changes.
 
 ## Open items to verify before scoping
 

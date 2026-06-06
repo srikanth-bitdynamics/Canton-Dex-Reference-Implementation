@@ -8,6 +8,7 @@ const sdk = vi.hoisted(() => ({
 
 vi.mock("@partylayer/sdk", () => ({
   ConsoleAdapter: class ConsoleAdapter {},
+  LoopAdapter: class LoopAdapter {},
   NightlyAdapter: class NightlyAdapter {},
   SendAdapter: class SendAdapter {},
   createPartyLayer: vi.fn(() => sdk),
@@ -68,5 +69,23 @@ describe("createDexPartyLayerClient", () => {
     await expect(client.connect()).rejects.toThrow(
       /No supported PartyLayer wallet is installed or detected \(console, send\).*console missing.*send missing/,
     );
+  });
+
+  it("allows an explicit 5N Loop probe", async () => {
+    sdk.connect.mockResolvedValueOnce({
+      partyId: "alice::1220a",
+      walletId: "loop",
+      capabilitiesSnapshot: ["submitTransaction"],
+    });
+
+    const client = createDexPartyLayerClient({
+      appName: "Canton DEX",
+      network: "canton:devnet",
+      walletIds: ["loop"],
+    });
+    const session = await client.connect();
+
+    expect(session.walletId).toBe("loop");
+    expect(sdk.connect.mock.calls[0][0].walletId).toBe("loop");
   });
 });

@@ -3,6 +3,7 @@
 
 import {
   ConsoleAdapter,
+  LoopAdapter,
   NightlyAdapter,
   SendAdapter,
   createPartyLayer,
@@ -44,6 +45,7 @@ function buildAdapters(): WalletAdapter[] {
     new ConsoleAdapter(),
     new NightlyAdapter(),
     new SendAdapter(),
+    new LoopAdapter(),
   ];
 }
 

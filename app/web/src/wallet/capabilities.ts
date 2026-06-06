@@ -36,7 +36,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
   },
   partylayer: {
     dvp: "unproven",
-    note: "Multi-wallet SDK (Console / Nightly / Send); tries installed submit-capable wallets. Swap, order funding, and LP DvP use operator-discovery; pending live wallet proof.",
+    note: "Multi-wallet SDK; tries configured submit-capable wallets. Swap, order funding, and LP DvP use operator-discovery; pending live wallet proof.",
   },
   walletconnect: {
     dvp: "unsupported",

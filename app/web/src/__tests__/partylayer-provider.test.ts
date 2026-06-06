@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 
-import { PartyLayerProvider, type PartyLayerClient } from "@/wallet/partylayer-provider";
+import {
+  DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
+  PartyLayerProvider,
+  type PartyLayerClient,
+} from "@/wallet/partylayer-provider";
 import type { WalletIntent } from "@/wallet/types";
 
 // A fake @partylayer/sdk client: records the submitted command tree and returns
@@ -24,6 +28,22 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
     },
   };
   return { client, calls, connectCalls, isConnected: () => connected };
+}
+
+function failingClient(error: Error) {
+  const disconnectCalls: unknown[] = [];
+  const client: PartyLayerClient = {
+    async connect() {
+      throw error;
+    },
+    async disconnect() {
+      disconnectCalls.push(null);
+    },
+    async submitTransaction() {
+      return {};
+    },
+  };
+  return { client, disconnectCalls };
 }
 
 const swapIntent: WalletIntent = {
@@ -58,6 +78,25 @@ describe("PartyLayerProvider", () => {
     expect(fake.connectCalls[0]).toMatchObject({
       requiredCapabilities: ["submitTransaction"],
       preferInstalled: true,
+      timeoutMs: DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
+    });
+  });
+
+  it("allows the connect timeout to be overridden", async () => {
+    fake = fakeClient({ updateId: "u-1" });
+    const p = new PartyLayerProvider("#canton-dex-trading", async () => fake.client, 240_000);
+    await p.connect();
+    expect(fake.connectCalls[0]).toMatchObject({ timeoutMs: 240_000 });
+  });
+
+  it("disconnects the SDK client after a failed connect attempt", async () => {
+    const f = failingClient(new Error("connect timed out"));
+    const p = new PartyLayerProvider("#canton-dex-trading", async () => f.client);
+    await expect(p.connect()).rejects.toThrow(/connect timed out/);
+    expect(f.disconnectCalls).toHaveLength(1);
+    expect(p.getStatus()).toMatchObject({
+      kind: "error",
+      message: "connect timed out",
     });
   });
 

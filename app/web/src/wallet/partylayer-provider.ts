@@ -52,6 +52,8 @@ export interface PartyLayerCommandSubmission {
   disclosedContracts?: unknown[];
 }
 
+export const DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS = 180_000;
+
 // The subset of `@partylayer/sdk`'s `PartyLayerClient` we use.
 export interface PartyLayerClient {
   connect(options?: PartyLayerConnectOptions): Promise<PartyLayerSession>;
@@ -74,6 +76,7 @@ export class PartyLayerProvider implements WalletProvider {
     // Lazily build the real client so the @partylayer dependency is only loaded
     // when this provider is actually selected. In tests a fake client is passed.
     private readonly clientFactory: () => Promise<PartyLayerClient>,
+    private readonly connectTimeoutMs: number = DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
   ) {}
 
   async connect(): Promise<WalletAccount> {
@@ -83,12 +86,18 @@ export class PartyLayerProvider implements WalletProvider {
       const session = await this.client.connect({
         requiredCapabilities: ["submitTransaction"],
         preferInstalled: true,
+        timeoutMs: this.connectTimeoutMs,
       });
       const account: WalletAccount = { party: session.partyId, label: session.label };
       this.setStatus({ kind: "connected", account, providerId: this.id });
       return account;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      try {
+        await this.client?.disconnect();
+      } catch {
+        /* best-effort cleanup after a failed connection attempt */
+      }
       this.setStatus({ kind: "error", message });
       throw err;
     }

@@ -2,7 +2,11 @@
 
 import { CantonDirectProvider } from "./canton-direct-provider";
 import { MockWalletProvider } from "./mock-provider";
-import { PartyLayerProvider, type PartyLayerClient } from "./partylayer-provider";
+import {
+  DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
+  PartyLayerProvider,
+  type PartyLayerClient,
+} from "./partylayer-provider";
 import { SdkProvider } from "./sdk-provider";
 import { TokenStandardProvider } from "./token-standard-provider";
 import { WalletConnectProvider } from "./walletconnect-provider";
@@ -27,6 +31,13 @@ function optionalEnvList(name: string): string[] | undefined {
     .map((value) => value.trim())
     .filter(Boolean);
   return values && values.length > 0 ? values : undefined;
+}
+
+function optionalPositiveInt(name: string): number | undefined {
+  const raw = optionalEnv(name);
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function partyLayerClientFactory(networkId: string): () => Promise<PartyLayerClient> {
@@ -70,7 +81,12 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   if (enablePartyLayer) {
     map.set(
       "partylayer",
-      new PartyLayerProvider(packagePrefix, partyLayerClientFactory(networkId)),
+      new PartyLayerProvider(
+        packagePrefix,
+        partyLayerClientFactory(networkId),
+        optionalPositiveInt("VITE_PARTYLAYER_CONNECT_TIMEOUT_MS") ??
+          DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
+      ),
     );
   }
   map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));

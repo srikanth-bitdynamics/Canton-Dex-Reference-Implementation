@@ -15,6 +15,7 @@ import {
 import type {
   PartyLayerClient,
   PartyLayerCommandSubmission,
+  PartyLayerLedgerApiParams,
 } from "./partylayer-provider";
 
 export interface DexPartyLayerClientOptions {
@@ -117,6 +118,9 @@ export function createDexPartyLayerClient(
     },
     async submitTransaction(params: { signedTx: PartyLayerCommandSubmission }) {
       return client.submitTransaction(params);
+    },
+    async ledgerApi(params: PartyLayerLedgerApiParams) {
+      return client.ledgerApi(params);
     },
   };
 }

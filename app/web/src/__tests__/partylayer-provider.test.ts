@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
   PartyLayerProvider,
+  parsePartyLayerHoldings,
   type PartyLayerClient,
 } from "@/wallet/partylayer-provider";
 import type { WalletIntent } from "@/wallet/types";
@@ -12,6 +13,7 @@ import type { WalletIntent } from "@/wallet/types";
 function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
   const connectCalls: unknown[] = [];
   const calls: Array<Parameters<PartyLayerClient["submitTransaction"]>[0]> = [];
+  const ledgerApiCalls: Array<Parameters<PartyLayerClient["ledgerApi"]>[0]> = [];
   let connected = false;
   const client: PartyLayerClient = {
     async connect(options) {
@@ -26,8 +28,27 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
       calls.push(params);
       return receipt;
     },
+    async ledgerApi(params) {
+      ledgerApiCalls.push(params);
+      return {
+        response: JSON.stringify({
+          activeContracts: [
+            {
+              contractId: "holding-1",
+              createArgument: {
+                owner: "alice::1220a",
+                admin: "dex-admin",
+                instrumentId: "BTC",
+                amount: "0.3350000000",
+                locked: false,
+              },
+            },
+          ],
+        }),
+      };
+    },
   };
-  return { client, calls, connectCalls, isConnected: () => connected };
+  return { client, calls, connectCalls, ledgerApiCalls, isConnected: () => connected };
 }
 
 function failingClient(error: Error) {
@@ -41,6 +62,9 @@ function failingClient(error: Error) {
     },
     async submitTransaction() {
       return {};
+    },
+    async ledgerApi() {
+      return { response: JSON.stringify({ activeContracts: [] }) };
     },
   };
   return { client, disconnectCalls };
@@ -128,6 +152,79 @@ describe("PartyLayerProvider", () => {
     fake = fakeClient({ updateId: "u" });
     const p = ctx();
     await expect(p.submit(swapIntent)).rejects.toThrow(/not connected/);
+  });
+
+  it("lists connected-party holdings through PartyLayer ledgerApi", async () => {
+    fake = fakeClient({ updateId: "u" });
+    const p = ctx();
+    await p.connect();
+
+    const holdings = await p.listHoldings("alice::1220a");
+
+    expect(fake.ledgerApiCalls).toHaveLength(1);
+    expect(fake.ledgerApiCalls[0]).toMatchObject({
+      requestMethod: "POST",
+      resource: "/v2/state/acs",
+    });
+    expect(JSON.parse(fake.ledgerApiCalls[0].body ?? "{}")).toEqual({
+      templateId: "#canton-dex-trading:CantonDex.Registry.V2:Holding",
+    });
+    expect(holdings).toEqual([
+      {
+        contractId: "holding-1",
+        owner: "alice::1220a",
+        admin: "dex-admin",
+        instrumentId: "BTC",
+        amount: 0.335,
+        locked: false,
+      },
+    ]);
+  });
+
+  it("parses PartyLayer ACS holding views and filters other owners", () => {
+    const holdings = parsePartyLayerHoldings(
+      JSON.stringify({
+        result: [
+          {
+            contractEntry: {
+              JsActiveContract: {
+                createdEvent: {
+                  contractId: "holding-view-1",
+                  view: {
+                    account: { owner: "alice::1220a", provider: null, id: "" },
+                    instrumentId: { admin: "dex-admin", id: "USDC" },
+                    amount: "125.2500000000",
+                    lock: null,
+                  },
+                },
+              },
+            },
+          },
+          {
+            contractId: "other-owner",
+            createArgument: {
+              owner: "bob::1220b",
+              admin: "dex-admin",
+              instrumentId: "BTC",
+              amount: "1.0000000000",
+              locked: false,
+            },
+          },
+        ],
+      }),
+      "alice::1220a",
+    );
+
+    expect(holdings).toEqual([
+      {
+        contractId: "holding-view-1",
+        owner: "alice::1220a",
+        admin: "dex-admin",
+        instrumentId: "USDC",
+        amount: 125.25,
+        locked: false,
+      },
+    ]);
   });
 
   it("disconnect resets status", async () => {

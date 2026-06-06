@@ -17,7 +17,9 @@
 // path, so an updateId-only wallet can complete them.
 
 import { composeCommands } from "./commands";
+import type { Holding } from "@/types/contracts";
 import type {
+  Party,
   WalletAccount,
   WalletConnectionStatus,
   WalletIntent,
@@ -52,6 +54,16 @@ export interface PartyLayerCommandSubmission {
   disclosedContracts?: unknown[];
 }
 
+export interface PartyLayerLedgerApiParams {
+  requestMethod: "GET" | "POST" | "PUT" | "DELETE";
+  resource: string;
+  body?: string;
+}
+
+export interface PartyLayerLedgerApiResult {
+  response: string;
+}
+
 export const DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS = 180_000;
 
 // The subset of `@partylayer/sdk`'s `PartyLayerClient` we use.
@@ -61,6 +73,123 @@ export interface PartyLayerClient {
   submitTransaction(params: {
     signedTx: PartyLayerCommandSubmission;
   }): Promise<PartyLayerTxReceipt>;
+  ledgerApi(params: PartyLayerLedgerApiParams): Promise<PartyLayerLedgerApiResult>;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function extractContractEvents(value: unknown): unknown[] {
+  const root = asRecord(value);
+  if (!root) return [];
+  const candidates = [
+    root.activeContracts,
+    root.active_contracts,
+    root.contracts,
+    root.result,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return Array.isArray(value) ? value : [];
+}
+
+function unwrapCreatedEvent(value: unknown): Record<string, unknown> | null {
+  const root = asRecord(value);
+  if (!root) return null;
+  const wrappers = [
+    root.CreatedEvent,
+    root.createdEvent,
+    asRecord(root.contractEntry)?.JsActiveContract &&
+      asRecord(asRecord(root.contractEntry)?.JsActiveContract)?.createdEvent,
+  ];
+  for (const wrapper of wrappers) {
+    const event = asRecord(wrapper);
+    if (event) return event;
+  }
+  return root;
+}
+
+function contractPayload(event: Record<string, unknown>): Record<string, unknown> | null {
+  return (
+    asRecord(event.createArgument) ??
+    asRecord(event.payload) ??
+    asRecord(event.view) ??
+    null
+  );
+}
+
+function contractIdOf(event: Record<string, unknown>): string | null {
+  const value = event.contractId ?? event.contract_id ?? event.cid;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function parseAmount(value: unknown): number {
+  if (typeof value === "number") return value;
+  const parsed = parseFloat(String(value ?? 0));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseHoldingPayload(
+  contractId: string,
+  owner: Party,
+  payload: Record<string, unknown>,
+): Holding | null {
+  const instrument = payload.instrumentId;
+  const instrumentRecord = asRecord(instrument);
+  const account = asRecord(payload.account);
+  const payloadOwner = payload.owner ?? account?.owner;
+  if (typeof payloadOwner === "string" && payloadOwner !== owner) return null;
+
+  const instrumentId =
+    typeof instrument === "string"
+      ? instrument
+      : typeof instrumentRecord?.id === "string"
+        ? instrumentRecord.id
+        : null;
+  const admin =
+    typeof payload.admin === "string"
+      ? payload.admin
+      : typeof instrumentRecord?.admin === "string"
+        ? instrumentRecord.admin
+        : null;
+  const resolvedOwner =
+    typeof payloadOwner === "string"
+      ? payloadOwner
+      : typeof account?.owner === "string"
+        ? account.owner
+        : owner;
+
+  if (!instrumentId || !admin) return null;
+
+  const locked =
+    typeof payload.locked === "boolean"
+      ? payload.locked
+      : payload.lock !== undefined && payload.lock !== null;
+
+  return {
+    contractId,
+    owner: resolvedOwner,
+    admin,
+    instrumentId,
+    amount: parseAmount(payload.amount),
+    locked,
+  };
+}
+
+export function parsePartyLayerHoldings(response: string, owner: Party): Holding[] {
+  const parsed = JSON.parse(response) as unknown;
+  return extractContractEvents(parsed)
+    .map(unwrapCreatedEvent)
+    .filter((event): event is Record<string, unknown> => !!event)
+    .map((event) => {
+      const contractId = contractIdOf(event);
+      const payload = contractPayload(event);
+      if (!contractId || !payload) return null;
+      return parseHoldingPayload(contractId, owner, payload);
+    })
+    .filter((holding): holding is Holding => !!holding);
 }
 
 export class PartyLayerProvider implements WalletProvider {
@@ -161,6 +290,22 @@ export class PartyLayerProvider implements WalletProvider {
       primaryCid: updateId,
       auxiliaryCids: { updateId },
     };
+  }
+
+  async listHoldings(owner: Party): Promise<Holding[]> {
+    if (this.status.kind !== "connected" || !this.client) {
+      throw new Error("partylayer-provider: wallet not connected");
+    }
+    if (this.status.account.party !== owner) {
+      throw new Error("partylayer-provider: can only read holdings for the connected party");
+    }
+    const templateId = `${this.packagePrefix}:CantonDex.Registry.V2:Holding`;
+    const result = await this.client.ledgerApi({
+      requestMethod: "POST",
+      resource: "/v2/state/acs",
+      body: JSON.stringify({ templateId }),
+    });
+    return parsePartyLayerHoldings(result.response, owner);
   }
 
   private setStatus(s: WalletConnectionStatus): void {

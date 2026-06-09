@@ -202,10 +202,8 @@ Operations:
 
 Reference details:
 - [`docs/choice-context-spec.md`](docs/choice-context-spec.md)
-- [`docs/v2-alignment-audit.md`](docs/v2-alignment-audit.md)
 - [`docs/lp-token-versioning.md`](docs/lp-token-versioning.md)
-- [`docs/source-dependency-status.md`](docs/source-dependency-status.md)
-- [`docs/architecture-non-goals.md`](docs/architecture-non-goals.md)
+- [`docs/pricing-sources.md`](docs/pricing-sources.md)
 
 ---
 

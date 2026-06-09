@@ -332,3 +332,7 @@ Please do not open public issues for suspected vulnerabilities. See
 
 Apache 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Vendored upstream
 packages are under [`vendor/`](vendor/) with their own attribution.
+
+## Acknowledgements
+
+Implemented by BitDynamics as part of a Canton ecosystem development grant.

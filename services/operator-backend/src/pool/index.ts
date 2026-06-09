@@ -4,6 +4,7 @@ import type { ContractId, DisclosedContract } from "@canton-dex/registry-client"
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
+import { recoverCreatedAllocations } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import { toFloat } from "../policy/index.js";
 import * as dec from "./decimal.js";
@@ -37,7 +38,12 @@ export interface PoolSwapInput {
   inputInstrumentId: string;
   inputAmount: Decimal;
   minOutputAmount: Decimal;
-  swapperAllocationCid: ContractId<"Allocation">;
+  // Explicit created cid (dApp-return path). Omitted on the operator-discovery
+  // path, where `updateId` is supplied and the operator recovers it.
+  swapperAllocationCid?: ContractId<"Allocation">;
+  // Operator-discovery path (updateId-only wallet, e.g. PartyLayer): the
+  // swapper's single input allocation is recovered from the tree.
+  updateId?: string | null;
 }
 
 // The wallet-facing request for a swap: the operator builds (in Daml) the
@@ -100,9 +106,15 @@ export interface PoolSettleAddLiquidityInput {
   requestCid?: ContractId<"LiquidityAllocationRequest"> | null;
   acceptanceCid?: ContractId<"LiquidityAllocationAcceptance"> | null;
   recipient: Party;
-  lpBaseDepositCid: ContractId<"Allocation">;
-  lpQuoteDepositCid: ContractId<"Allocation">;
-  lpReceiptCid: ContractId<"Allocation">;
+  // Explicit created cids (dApp-return path). Omitted on the operator-discovery
+  // path, where `updateId` is supplied instead and the operator recovers them.
+  lpBaseDepositCid?: ContractId<"Allocation">;
+  lpQuoteDepositCid?: ContractId<"Allocation">;
+  lpReceiptCid?: ContractId<"Allocation">;
+  // Operator-discovery path (DEX-92): the wallet (e.g. PartyLayer) returned only
+  // an updateId. The operator recovers the 3 Allocation cids + the acceptance
+  // evidence from the transaction tree. Mutually exclusive with the explicit cids.
+  updateId?: string | null;
   baseAmount: Decimal;
   quoteAmount: Decimal;
   minLpTokens: Decimal;
@@ -150,9 +162,12 @@ export interface PoolSettleRemoveLiquidityInput {
   minBaseOut: Decimal;
   minQuoteOut: Decimal;
   // The backend re-derives the slice prefix from current state.
-  holderBaseReceiptCid: ContractId<"Allocation">;
-  holderQuoteReceiptCid: ContractId<"Allocation">;
-  holderBurnSenderCid: ContractId<"Allocation">;
+  // Explicit created cids (dApp-return path); omitted when `updateId` is given.
+  holderBaseReceiptCid?: ContractId<"Allocation">;
+  holderQuoteReceiptCid?: ContractId<"Allocation">;
+  holderBurnSenderCid?: ContractId<"Allocation">;
+  // Operator-discovery path (updateId-only wallet); see settle-add.
+  updateId?: string | null;
   requestedAt: Time;
 }
 
@@ -312,6 +327,18 @@ export class PoolService {
 
   async swap(input: PoolSwapInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
+    // Operator-discovery: recover the single swap input allocation from the tree
+    // when the wallet returned only an updateId.
+    let swapperAllocationCid = input.swapperAllocationCid;
+    if (input.updateId) {
+      const { allocationCids } = await recoverCreatedAllocations(
+        this.ledger, this.operatorParty, input.updateId, 1,
+      );
+      swapperAllocationCid = allocationCids[0] as ContractId<"Allocation">;
+    }
+    if (!swapperAllocationCid) {
+      throw new Error("swap: supply swapperAllocationCid or an updateId to recover it");
+    }
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);
     const inputIsBase = input.inputInstrumentId === pool.baseInstrumentId;
@@ -340,7 +367,7 @@ export class PoolService {
             inputInstrumentId: input.inputInstrumentId,
             inputAmount: input.inputAmount,
             minOutputAmount: input.minOutputAmount,
-            swapperAllocationCid: input.swapperAllocationCid,
+            swapperAllocationCid,
             inputSliceCid: headInput.contractId,
             outputSliceCids,
             factoryCid: factories.settlementFactoryCid,
@@ -466,6 +493,36 @@ export class PoolService {
     return match.contractId;
   }
 
+  /**
+   * Operator-discovery (DEX-92): recover the created `Allocation` cids (in
+   * canonical command order) and the `LiquidityAllocationAcceptance` cid from a
+   * committed transaction by `updateId`. Used when the wallet (e.g. PartyLayer)
+   * returns only an `updateId` and not the created events, so `/settle` can be
+   * driven without the dApp surfacing cids. Throws if the ledger can't serve
+   * trees, or if the expected number of allocations isn't present.
+   */
+  async recoverDvpAllocations(
+    updateId: string,
+    party: Party,
+    expectedAllocations: number,
+  ): Promise<{
+    allocationCids: ContractId<"Allocation">[];
+    acceptanceCid?: ContractId<"LiquidityAllocationAcceptance">;
+  }> {
+    const { allocationCids, acceptanceCid } = await recoverCreatedAllocations(
+      this.ledger,
+      party,
+      updateId,
+      expectedAllocations,
+    );
+    return {
+      allocationCids: allocationCids as ContractId<"Allocation">[],
+      acceptanceCid: acceptanceCid as
+        | ContractId<"LiquidityAllocationAcceptance">
+        | undefined,
+    };
+  }
+
   /** LP quote in fixed-point decimal. */
   private lpQuote(pool: Pool, baseAmount: Decimal, quoteAmount: Decimal): Decimal {
     const b = dec.parseDecimal(baseAmount);
@@ -538,13 +595,31 @@ export class PoolService {
     const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
     const { depositFactories, lpFactories, depositContext, lpContext } =
       await this.loadDvpSurface(pool);
+
+    // Resolve the three created allocation cids + the binding. On the
+    // operator-discovery path (updateId-only wallet, e.g. PartyLayer) the
+    // operator recovers them from the transaction tree; otherwise the dApp
+    // supplied them explicitly.
+    let { lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid, requestCid, acceptanceCid } = input;
+    if (input.updateId) {
+      const rec = await this.recoverDvpAllocations(input.updateId, this.operatorParty, 3);
+      [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] = rec.allocationCids;
+      acceptanceCid = rec.acceptanceCid ?? input.acceptanceCid ?? null;
+      requestCid = null; // accept consumed the request on this path
+    }
+    if (!lpBaseDepositCid || !lpQuoteDepositCid || !lpReceiptCid) {
+      throw new Error(
+        "settleAddLiquidity: supply the 3 allocation cids or an updateId to recover them",
+      );
+    }
+
     // Split-admin DvP: the base/quote batch settles under pool.admin and the
     // LP-mint batch under pool.lpRegistrar, so each carries its own registry
     // choice context. For the self-registry both contexts are empty.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        commandId: `lp-add-settle:${input.requestCid ?? input.acceptanceCid}`,
+        commandId: `lp-add-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,
           ...lpFactories.disclosure,
@@ -561,12 +636,12 @@ export class PoolService {
             poolCid: input.poolCid,
             poolStateCid: pool.poolStateCid,
             lpPolicyCid,
-            requestCid: input.requestCid ?? null,
-            acceptanceCid: input.acceptanceCid ?? null,
+            requestCid: requestCid ?? null,
+            acceptanceCid: acceptanceCid ?? null,
             recipient: input.recipient,
-            lpBaseDepositCid: input.lpBaseDepositCid,
-            lpQuoteDepositCid: input.lpQuoteDepositCid,
-            lpReceiptCid: input.lpReceiptCid,
+            lpBaseDepositCid,
+            lpQuoteDepositCid,
+            lpReceiptCid,
             baseFactoryCid: depositFactories.allocationFactoryCid,
             quoteFactoryCid: depositFactories.allocationFactoryCid,
             lpFactoryCid: lpFactories.allocationFactoryCid,
@@ -677,13 +752,29 @@ export class PoolService {
     const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
     const { depositFactories, lpFactories, depositContext, lpContext } =
       await this.loadDvpSurface(pool);
+
+    // Operator-discovery path (updateId-only wallet): recover the 3 created
+    // allocation cids [base receipt, quote receipt, burn-sender] + acceptance.
+    let { holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid, requestCid, acceptanceCid } = input;
+    if (input.updateId) {
+      const rec = await this.recoverDvpAllocations(input.updateId, this.operatorParty, 3);
+      [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid] = rec.allocationCids;
+      acceptanceCid = rec.acceptanceCid ?? input.acceptanceCid ?? null;
+      requestCid = null;
+    }
+    if (!holderBaseReceiptCid || !holderQuoteReceiptCid || !holderBurnSenderCid) {
+      throw new Error(
+        "settleRemoveLiquidity: supply the 3 allocation cids or an updateId to recover them",
+      );
+    }
+
     // Split-admin DvP: base/quote batch under pool.admin, LP-burn batch under
     // pool.lpRegistrar — each carries its own registry choice context.
     // For the self-registry both contexts are empty.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        commandId: `lp-remove-settle:${input.requestCid ?? input.acceptanceCid}`,
+        commandId: `lp-remove-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,
           ...lpFactories.disclosure,
@@ -700,8 +791,8 @@ export class PoolService {
             poolCid: input.poolCid,
             poolStateCid: pool.poolStateCid,
             lpPolicyCid,
-            requestCid: input.requestCid ?? null,
-            acceptanceCid: input.acceptanceCid ?? null,
+            requestCid: requestCid ?? null,
+            acceptanceCid: acceptanceCid ?? null,
             holder: input.holder,
             lpTokensToRedeem: input.lpTokensToRedeem,
             knownTotalLpSupply: input.knownTotalLpSupply,
@@ -709,9 +800,9 @@ export class PoolService {
             minQuoteOut: input.minQuoteOut,
             baseSliceCids: plan.base.sliceCids,
             quoteSliceCids: plan.quote.sliceCids,
-            holderBaseReceiptCid: input.holderBaseReceiptCid,
-            holderQuoteReceiptCid: input.holderQuoteReceiptCid,
-            holderBurnSenderCid: input.holderBurnSenderCid,
+            holderBaseReceiptCid,
+            holderQuoteReceiptCid,
+            holderBurnSenderCid,
             baseFactoryCid: depositFactories.allocationFactoryCid,
             quoteFactoryCid: depositFactories.allocationFactoryCid,
             lpFactoryCid: lpFactories.allocationFactoryCid,

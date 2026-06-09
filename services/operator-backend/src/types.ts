@@ -154,8 +154,10 @@ export interface LiquidityAllocationRequestContract {
 }
 
 // Operator-visible evidence left by AllocationRequest_Accept before it consumes
-// the request (DEX-90). Discovered by the stable (lp, settlement.id) key when
-// the wallet result does not surface the acceptance cid directly.
+// the request (DEX-90). Keyed by `originalRequestCid` (globally unique). The
+// operator recovers it either from the update tree (updateId path, alongside the
+// created Allocation cids) or via discoverAcceptance(requestCid). (lp,
+// settlement.id) is NOT unique — poolSettlement uses a constant settlement id.
 export interface LiquidityAllocationAcceptanceContract {
   contractId: ContractId<"LiquidityAllocationAcceptance">;
   operator: Party;

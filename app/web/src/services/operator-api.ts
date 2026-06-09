@@ -130,7 +130,9 @@ export class OperatorApi {
     inputInstrumentId: string;
     inputAmount: Decimal;
     minOutputAmount: Decimal;
-    swapperAllocationCid: ContractId<"Allocation">;
+    // Either the explicit created cid, or an updateId for operator-discovery.
+    swapperAllocationCid?: ContractId<"Allocation">;
+    updateId?: string;
   }): Promise<unknown> {
     return this.post("/v1/pools/swap", req);
   }
@@ -239,7 +241,9 @@ export class OperatorApi {
 
   async fundOrder(req: {
     orderCid: ContractId<"Order">;
-    allocationCid: ContractId<"Allocation">;
+    // Either the explicit created cid, or an updateId for operator-discovery.
+    allocationCid?: ContractId<"Allocation">;
+    updateId?: string;
   }): Promise<{ orderCid: ContractId<"Order"> }> {
     return this.post("/v1/orders/fund", req);
   }

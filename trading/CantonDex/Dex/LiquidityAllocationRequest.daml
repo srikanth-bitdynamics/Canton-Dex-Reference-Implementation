@@ -71,9 +71,11 @@ template LiquidityAllocationRequest with
 -- authored the allocations. Created by `AllocationRequest_Accept` immediately
 -- before the request is consumed, so the DvP settle can bind to it once the
 -- request itself is gone. Carries the same validation terms the live request
--- would have supplied (party, settlement, expected specs, deadline). Discover
--- it operator-side by (`lp`, `settlement`) — the original request cid is no
--- longer resolvable once consumed.
+-- would have supplied (party, settlement, expected specs, deadline). Discover it
+-- operator-side by `originalRequestCid` (globally unique) — or, on the
+-- updateId path, recover it directly from the accept transaction's update tree
+-- alongside the created allocations. (`(lp, settlement)` is NOT a unique key:
+-- `poolSettlement` uses a constant settlement id per pool.)
 template LiquidityAllocationAcceptance with
     operator : Party
     lp : Party

@@ -20,6 +20,7 @@
 import type { ContractId, Party, DisclosedContract } from "@canton-dex/registry-client";
 
 import {
+  CreatedEventRef,
   LedgerCommand,
   LedgerError,
   LedgerEvent,
@@ -341,6 +342,23 @@ export class JsonApiLedger implements LedgerSubmitter {
     return body.transaction;
   }
 
+  // Operator-discovery (DEX-92): recover the created contracts of a committed
+  // transaction by updateId, in node order. Used when a wallet (e.g. PartyLayer)
+  // returns only an updateId, so the operator recovers the created Allocation +
+  // acceptance cids itself rather than the dApp surfacing them.
+  async treeCreatedEvents(updateId: string, party: Party): Promise<CreatedEventRef[]> {
+    const tx = await this.fetchTransactionTree(updateId, {
+      actAs: [party],
+      commandId: "",
+      command: { kind: "create", templateId: "", argument: {} },
+    });
+    return Object.values(tx.eventsById)
+      .map((event) => event.CreatedTreeEvent?.value)
+      .filter((v): v is JsonApiCreatedTreeEvent["value"] => v !== undefined)
+      .sort((a, b) => a.nodeId - b.nodeId)
+      .map((v) => ({ contractId: v.contractId, templateId: v.templateId ?? "" }));
+  }
+
   private firstCreatedTreeEvent(
     tx: JsonApiTransactionTree,
   ): JsonApiCreatedTreeEvent["value"] | undefined {
@@ -408,6 +426,7 @@ interface JsonApiCreatedTreeEvent {
   value: {
     nodeId: number;
     contractId: string;
+    templateId?: string;
   };
 }
 

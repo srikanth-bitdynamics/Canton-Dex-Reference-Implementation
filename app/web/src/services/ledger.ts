@@ -451,20 +451,26 @@ export const ledger = {
       inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
     });
     const swapperAllocationCid = walletResult.createdAllocationCids?.[0];
-    if (!swapperAllocationCid) {
+    // updateId-only wallets (e.g. PartyLayer) return no created cid; the operator
+    // recovers the swap input allocation from the tree by updateId.
+    const updateId = walletResult.auxiliaryCids?.updateId;
+    if (!swapperAllocationCid && !updateId) {
       throw new Error(
-        'swap: wallet did not return the created allocation cid; this provider cannot drive the swap',
+        'swap: wallet returned neither a created allocation cid nor an updateId',
       );
     }
 
-    // 3. Operator settles the swap against the authored allocation.
+    // 3. Operator settles the swap against the authored allocation (explicit cid
+    // or operator-discovery from the updateId).
     return operator.swap({
       poolCid: params.pool.contractId as ContractId<'Pool'>,
       swapperAccount: { owner: params.swapperParty, provider: null, id: '' },
       inputInstrumentId: params.inputInstrumentId,
       inputAmount: formatDecimal10(params.inputAmount),
       minOutputAmount: formatDecimal10(params.minOutputAmount),
-      swapperAllocationCid: swapperAllocationCid as ContractId<'Allocation'>,
+      ...(swapperAllocationCid
+        ? { swapperAllocationCid: swapperAllocationCid as ContractId<'Allocation'> }
+        : { updateId }),
     });
   },
 
@@ -538,13 +544,20 @@ export const ledger = {
       hint: { instrumentId: lockInstrumentId, amount: lockAmount },
     });
     const allocationCid = walletRes.createdAllocationCids?.[0];
-    if (!allocationCid) {
-      throw new Error('order funding: wallet did not return the created allocation cid');
+    // updateId-only wallets (e.g. PartyLayer): the operator recovers the order's
+    // funding allocation from the tree by updateId.
+    const updateId = walletRes.auxiliaryCids?.updateId;
+    if (!allocationCid && !updateId) {
+      throw new Error(
+        'order funding: wallet returned neither a created allocation cid nor an updateId',
+      );
     }
 
     const fundRes = await operator.fundOrder({
       orderCid: bindRes.orderCid as ContractId<'Order'>,
-      allocationCid: allocationCid as ContractId<'Allocation'>,
+      ...(allocationCid
+        ? { allocationCid: allocationCid as ContractId<'Allocation'> }
+        : { updateId }),
     });
     return { orderId: fundRes.orderCid };
   },
@@ -599,30 +612,48 @@ export const ledger = {
       quoteHoldingCids: params.quoteHoldingCids ?? [],
     });
     const cids = walletRes.createdAllocationCids;
-    if (!cids || cids.length !== 3) {
-      throw new Error('wallet did not return the 3 created allocation cids for add-liquidity');
+    // updateId-only wallets (e.g. PartyLayer) return no created cids; the
+    // operator recovers them from the tree by updateId (operator-discovery).
+    const updateId = walletRes.auxiliaryCids?.updateId;
+    if ((!cids || cids.length !== 3) && !updateId) {
+      throw new Error(
+        'wallet returned neither the 3 created allocation cids nor an updateId for add-liquidity',
+      );
     }
-    const [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] = cids;
     // Canonical accept flow consumes the request and leaves acceptance
     // evidence; bind settle to that. Fall back to the live request only if no
     // acceptance surfaced (legacy direct-allocation path).
     const liquidityAcceptanceCid = walletRes.auxiliaryCids?.liquidityAcceptanceCid;
+    const settleBody =
+      cids && cids.length === 3
+        ? {
+            poolCid: params.poolId,
+            requestCid: liquidityAcceptanceCid ? undefined : req.requestCid,
+            acceptanceCid: liquidityAcceptanceCid,
+            recipient,
+            lpBaseDepositCid: cids[0],
+            lpQuoteDepositCid: cids[1],
+            lpReceiptCid: cids[2],
+            baseAmount: req.baseAmount,
+            quoteAmount: req.quoteAmount,
+            minLpTokens: params.minLpTokens.toString(),
+            knownTotalLpSupply: req.knownTotalLpSupply,
+            requestedAt,
+          }
+        : {
+            // operator-discovery path: hand over the updateId only.
+            poolCid: params.poolId,
+            updateId,
+            recipient,
+            baseAmount: req.baseAmount,
+            quoteAmount: req.quoteAmount,
+            minLpTokens: params.minLpTokens.toString(),
+            knownTotalLpSupply: req.knownTotalLpSupply,
+            requestedAt,
+          };
     await fetchJson('/v1/pools/add-liquidity/settle', {
       method: 'POST',
-      body: JSON.stringify({
-        poolCid: params.poolId,
-        requestCid: liquidityAcceptanceCid ? undefined : req.requestCid,
-        acceptanceCid: liquidityAcceptanceCid,
-        recipient,
-        lpBaseDepositCid,
-        lpQuoteDepositCid,
-        lpReceiptCid,
-        baseAmount: req.baseAmount,
-        quoteAmount: req.quoteAmount,
-        minLpTokens: params.minLpTokens.toString(),
-        knownTotalLpSupply: req.knownTotalLpSupply,
-        requestedAt,
-      }),
+      body: JSON.stringify(settleBody),
     });
     return { lpTokensMinted: Number(req.lpAmount), primaryCid: req.requestCid };
   },
@@ -678,27 +709,36 @@ export const ledger = {
       lpHoldingCids: holderLpHoldingCids,
     });
     const cids = walletRes.createdAllocationCids;
-    if (!cids || cids.length !== 3) {
-      throw new Error('wallet did not return the 3 created allocation cids for remove-liquidity');
+    const updateId = walletRes.auxiliaryCids?.updateId;
+    if ((!cids || cids.length !== 3) && !updateId) {
+      throw new Error(
+        'wallet returned neither the 3 created allocation cids nor an updateId for remove-liquidity',
+      );
     }
-    const [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid] = cids;
     const liquidityAcceptanceCid = walletRes.auxiliaryCids?.liquidityAcceptanceCid;
+    const common = {
+      poolCid: params.poolId,
+      holder: params.holder,
+      lpTokensToRedeem,
+      knownTotalLpSupply: req.knownTotalLpSupply,
+      minBaseOut: formatDecimal10(params.minBaseOut),
+      minQuoteOut: formatDecimal10(params.minQuoteOut),
+      requestedAt,
+    };
+    const settleBody =
+      cids && cids.length === 3
+        ? {
+            ...common,
+            requestCid: liquidityAcceptanceCid ? undefined : req.requestCid,
+            acceptanceCid: liquidityAcceptanceCid,
+            holderBaseReceiptCid: cids[0],
+            holderQuoteReceiptCid: cids[1],
+            holderBurnSenderCid: cids[2],
+          }
+        : { ...common, updateId }; // operator-discovery path
     return fetchJson<{ result: unknown }>('/v1/pools/remove-liquidity/settle', {
       method: 'POST',
-      body: JSON.stringify({
-        poolCid: params.poolId,
-        requestCid: liquidityAcceptanceCid ? undefined : req.requestCid,
-        acceptanceCid: liquidityAcceptanceCid,
-        holder: params.holder,
-        lpTokensToRedeem,
-        knownTotalLpSupply: req.knownTotalLpSupply,
-        minBaseOut: formatDecimal10(params.minBaseOut),
-        minQuoteOut: formatDecimal10(params.minQuoteOut),
-        holderBaseReceiptCid,
-        holderQuoteReceiptCid,
-        holderBurnSenderCid,
-        requestedAt,
-      }),
+      body: JSON.stringify(settleBody),
     });
   },
 };

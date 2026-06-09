@@ -44,6 +44,7 @@ class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
   servePolicy = true;
   acceptances: LiquidityAllocationAcceptanceContract[] = [];
+  treeEvents: Array<{ contractId: string; templateId: string }> = [];
   private readonly policies: LPTokenPolicy[];
   constructor(private readonly pool: Pool, policyOrPolicies: LPTokenPolicy | LPTokenPolicy[]) {
     this.policies = Array.isArray(policyOrPolicies)
@@ -53,6 +54,9 @@ class CapturingLedger implements LedgerSubmitter {
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.lastSubmit = req;
     return "#result:0" as R;
+  }
+  async treeCreatedEvents() {
+    return this.treeEvents;
   }
   async *subscribe<T>(_f: SubscriptionFilter): AsyncIterable<LedgerEvent<T>> {
     // no streaming in this stub
@@ -205,6 +209,31 @@ describe("PoolService.computeQuote", () => {
 describe("PoolService DvP liquidity", () => {
   const requestedAt = "1970-01-01T00:00:00Z" as never;
 
+  it("recoverDvpAllocations recovers the Allocation cids (in order) + acceptance from updateId", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    // A realistic add-liquidity submission tree: acceptance receipt + a locked
+    // holding + the three Allocation creates, interleaved out of order by node.
+    ledger.treeEvents = [
+      { contractId: "#acc:0", templateId: "pkg:CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance" },
+      { contractId: "#hold:0", templateId: "pkg:CantonDex.Registry.V2:Holding" },
+      { contractId: "#alloc:base", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#alloc:quote", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#alloc:receipt", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+    ];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    const got = await svc.recoverDvpAllocations("update-1", "lp" as never, 3);
+    assert.deepEqual(got.allocationCids, ["#alloc:base", "#alloc:quote", "#alloc:receipt"]);
+    assert.equal(got.acceptanceCid, "#acc:0");
+
+    // Wrong expected count is a loud failure (guards a partial/garbled tree).
+    await assert.rejects(
+      svc.recoverDvpAllocations("update-1", "lp" as never, 4),
+      /expected 4 Allocation creates/,
+    );
+  });
+
   it("requestAddLiquidity creates the LiquidityAllocationRequest with a floored LP quote", async () => {
     const pool = mkPool(0, 0); // unfunded → first-funding sqrt quote
     const ledger = new CapturingLedger(pool, mkLpPolicy());
@@ -299,6 +328,62 @@ describe("PoolService DvP liquidity", () => {
     const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
     assert.equal(cmd.argument.acceptanceCid, "#acc:0", "acceptance evidence threaded to the choice");
     assert.equal(cmd.argument.requestCid, null, "no live request on the acceptance path");
+  });
+
+  it("settleAddLiquidity (operator-discovery) recovers the 3 cids + acceptance from updateId", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    // updateId-only wallet (PartyLayer): the operator recovers the created cids
+    // from the transaction tree. Acceptance + locked holding are present too.
+    ledger.treeEvents = [
+      { contractId: "#acc:0", templateId: "pkg:CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance" },
+      { contractId: "#hold:0", templateId: "pkg:CantonDex.Registry.V2:Holding" },
+      { contractId: "#a:base", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#a:quote", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#a:receipt", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+    ];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    // No explicit cids — only updateId.
+    await svc.settleAddLiquidity({
+      poolCid: pool.contractId,
+      updateId: "update-7",
+      recipient: "lp" as never,
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      minLpTokens: "0.0",
+      knownTotalLpSupply: "0.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
+    assert.equal(cmd.argument.lpBaseDepositCid, "#a:base", "recovered base deposit (order)");
+    assert.equal(cmd.argument.lpQuoteDepositCid, "#a:quote", "recovered quote deposit (order)");
+    assert.equal(cmd.argument.lpReceiptCid, "#a:receipt", "recovered LP receipt (order)");
+    assert.equal(cmd.argument.acceptanceCid, "#acc:0", "recovered acceptance evidence");
+    assert.equal(cmd.argument.requestCid, null, "request consumed on the discovery path");
+  });
+
+  it("swap (operator-discovery) recovers the single input allocation from updateId", async () => {
+    const pool = mkSlicedPool();
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    ledger.treeEvents = [
+      { contractId: "#hold:0", templateId: "pkg:CantonDex.Registry.V2:Holding" },
+      { contractId: "#swapAlloc", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+    ];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    await svc.swap({
+      poolCid: pool.contractId,
+      swapperAccount: { owner: "swapper", provider: null, id: "" } as never,
+      inputInstrumentId: "BTC",
+      inputAmount: "0.01",
+      minOutputAmount: "0",
+      updateId: "u-swap",
+    });
+
+    const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
+    assert.equal(cmd.argument.swapperAllocationCid, "#swapAlloc", "recovered swap input cid");
   });
 
   it("discoverAcceptance disambiguates by originalRequestCid (lp + settlement.id collide)", async () => {

@@ -4,6 +4,7 @@ import type { ContractId, DisclosedContract } from "@canton-dex/registry-client"
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
+import { recoverCreatedAllocations } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import type { Order, Party, V2TransferLeg } from "../types.js";
 import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
@@ -22,7 +23,11 @@ export interface OrderBindResult {
 
 export interface OrderFundInput {
   orderCid: ContractId<"Order">;
-  allocationCid: ContractId<"Allocation">;
+  // Explicit created cid (dApp-return path); omitted when `updateId` is given.
+  allocationCid?: ContractId<"Allocation">;
+  // Operator-discovery path (updateId-only wallet, e.g. PartyLayer): the order's
+  // single funding allocation is recovered from the transaction tree.
+  updateId?: string | null;
 }
 
 export interface OrderMatchInput {
@@ -72,6 +77,18 @@ export class OrderService {
   async fund(
     input: OrderFundInput,
   ): Promise<{ orderCid: ContractId<"Order"> }> {
+    // Operator-discovery: recover the single funding allocation from the tree
+    // when the wallet returned only an updateId (e.g. PartyLayer).
+    let allocationCid = input.allocationCid;
+    if (input.updateId) {
+      const { allocationCids } = await recoverCreatedAllocations(
+        this.ledger, this.operatorParty, input.updateId, 1,
+      );
+      allocationCid = allocationCids[0] as ContractId<"Allocation">;
+    }
+    if (!allocationCid) {
+      throw new Error("order fund: supply allocationCid or an updateId to recover it");
+    }
     return retryOnContention(() =>
       this.ledger.submit<{ orderCid: ContractId<"Order"> }>({
         actAs: [this.operatorParty],
@@ -81,7 +98,7 @@ export class OrderService {
           templateId: "CantonDex.Dex.Order:Order",
           contractId: input.orderCid,
           choice: "Order_Fund",
-          argument: { allocationCid: input.allocationCid },
+          argument: { allocationCid },
         },
       }),
     );

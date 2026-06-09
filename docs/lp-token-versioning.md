@@ -8,15 +8,6 @@ given pool is derived from the pool's pair (e.g., `BTC-USDC-LP`) and does
 
 ## Rationale
 
-This decision follows direct feedback from Simon Meier (Digital Asset) on the
-trade-offs of versioning the LP instrument id:
-
-> Versioning instrument-id means LP tokens are NOT fungible across versions.
-> A v3 holder and a v5 holder can't merge without explicit rebase. Order books
-> quoting LP must disambiguate versions. UX gets harder: "your v5 LP is worth
-> X; rebase to v7 to claim Y fee accrual." Composability with other dApps
-> that treat LP as collateral collapses unless they're version-aware.
-
 The reference DEX prioritises:
 
 1. **Fungibility** — all LP holders for a pool hold the same instrument and
@@ -30,10 +21,10 @@ The reference DEX prioritises:
 
 ## Implications for the Pool Contract
 
-The pool contract template carries `lpInstrumentId : Text` as a static field
-fixed at pool creation. It MUST NOT be derived from the pool's contract id,
-the current settlement iteration, or the pool's status — those all change
-over a pool's life and would re-version the LP behind users' backs.
+The pool contract template carries `lpInstrumentId : V2.InstrumentId` as a
+static field fixed at pool creation. It MUST NOT be derived from the pool's
+contract id, the current settlement iteration, or the pool's status — those
+all change over a pool's life and would re-version the LP behind users' backs.
 
 Concretely:
 
@@ -66,12 +57,7 @@ If the LP token policy itself needs to be replaced (security fix, choice
 signature change), the upgrade path is a Canton package upgrade — same
 `instrumentId`, new package hash. Holders are unaffected.
 
-## Endorsed by the Canton team
-
-We asked Simon Meier (DA) directly whether unversioned LP tokens were the
-right call. His response on 2026-05-18: **"Seems sensible."**
-
-The reasoning the question proposed and that Simon endorsed:
+## Why one LP instrument per pool
 
 - The AMM contract IS the issuer of the LP token. Fee accrual is reserve
   growth on the underlying assets, not a separate coupon event that needs
@@ -94,11 +80,7 @@ problem from the LP token:
   upgrade-on-use inside the transfer/allocation factories (so any holder
   who interacts with their holding implicitly upgrades it) plus a
   `force-upgrade` choice the issuer reserves for passive holders who
-  never touch their balance. Simon (2026-05-18): *"I'd expect that the
-  issuer reserves the right to force-upgrade; and they would do so for
-  passive holders. Issuers might not want to actively force-upgrade, as
-  that impacts ongoing trading flows, and costs extra traffic for the
-  issuer."*
+  never touch their balance.
 - **LP tokens** have the AMM as the issuer. The AMM has no off-ledger
   events. There is nothing the issuer ever needs to crystallize against
   a passive holder's balance. So the upgrade-on-use + force-upgrade
@@ -120,6 +102,4 @@ to exist alongside V2 implementations rather than being bulk-migrated.
 - [docs/registry-prerequisites.md](registry-prerequisites.md) — for how the
   LP `InstrumentConfiguration` is registered at pool creation, and for the
   force-upgrade pattern registry assets may exercise.
-- [docs/v2-migration.md](v2-migration.md) — for the dual-implementation
-  V1→V2 strategy.
 - [docs/workflows.md](workflows.md) — for the add/remove-liquidity flow.

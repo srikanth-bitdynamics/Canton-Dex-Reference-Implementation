@@ -9,7 +9,8 @@ export type DvpReadiness =
   // Proven to complete swap/LP DvP (created cids recoverable: dApp-return or
   // operator-discovery).
   | "ready"
-  // Capable by design but not yet proven on LocalNet (gated on a live run).
+  // Exposes the necessary submit surface, but deployments should verify the
+  // configured wallet returns enough correlation data for DvP discovery.
   | "unproven"
   // Cannot drive DvP (can't surface created cids and the operator can't recover
   // them) — settlement-accept flows only.
@@ -36,7 +37,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
   },
   partylayer: {
     dvp: "unproven",
-    note: "Multi-wallet SDK; tries configured submit-capable wallets. Swap, order funding, and LP DvP use operator-discovery; pending live wallet proof.",
+    note: "Multi-wallet SDK; tries configured submit-capable wallets. Swap, order funding, and LP DvP use operator-discovery.",
   },
   walletconnect: {
     dvp: "unsupported",

@@ -1,8 +1,8 @@
 module CantonDex.Instrument.Holding where
 
 -- Registry-side Holding in the local namespace (so supply changes are easy to
--- reason about). A real registry would have this implement V2.Holding; the
--- prototype keeps it a plain template (tests move holdings via MockRegistry).
+-- reason about). Production registries expose holdings through V2.Holding;
+-- tests move this local template through MockRegistry.
 
 template Holding with
     admin : Party

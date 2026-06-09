@@ -1,6 +1,5 @@
-// Modal shell. Direct port of cdex-primitives.jsx Modal. Closes on
-// Escape, click on backdrop. Width is fixed by the caller via inline
-// style (matches the prototype's cdex-rfq.jsx ComposeRfqSheet usage).
+// Modal shell used by form sheets and detail dialogs. Closes on Escape
+// and backdrop click. Width is fixed by the caller via inline style.
 
 import { useEffect, type ReactNode } from 'react';
 

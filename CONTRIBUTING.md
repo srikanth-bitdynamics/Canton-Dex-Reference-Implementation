@@ -11,7 +11,7 @@ builder evaluating Canton + Token Standard V2.
 - **Documentation fixes**: quickstart, run-testnet, and the builder
   guide are the most exercised paths; clarity wins.
 - **New test cases** that exercise V2-standard edge behaviour (e.g.
-  `Allocation_Adjust` conservation, settlement actor expansion).
+  finalized-allocation funding conservation, settlement actor expansion).
 - **Reuse examples** that build on the reference (see
   `examples/`).
 
@@ -21,8 +21,8 @@ builder evaluating Canton + Token Standard V2.
   oracle integrations) that obscure the reference. Those belong in
   forks, not here.
 - Replacing well-tested patterns with personal preferences.
-- Breaking the smart-upgrade lineage on `canton-dex-trading` without a
-  migration plan; see `docs/run-testnet.md` "Smart upgrade".
+- Breaking deployed `canton-dex-trading` package compatibility without a
+  clear migration plan.
 
 ## Development workflow
 

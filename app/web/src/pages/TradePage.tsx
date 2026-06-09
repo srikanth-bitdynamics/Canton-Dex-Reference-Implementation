@@ -1,7 +1,7 @@
-// Trade page — swap card on the left, pool stats + recent activity on
-// the right. Mirrors cdex-trade.jsx TradeView. The page is a thin shell
-// over <SwapCard> + a pool stats panel; all wallet handoff and on-ledger
-// state still lives behind ledger.executeSwap / useToast.
+// Trade page: swap card on the left, pool stats + recent activity on
+// the right. The page is a thin shell over <SwapCard> + a pool stats
+// panel; wallet handoff and on-ledger state live behind ledger.executeSwap
+// and useToast.
 
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';

@@ -1,7 +1,6 @@
-// Number/time formatting. Mirrors `cdex-data.jsx` helpers (fmt, fmtUsd,
-// fmtUsdK) and `cdex-primitives.jsx formatExpiresIn`. Single
-// implementation for the whole app; pages MUST go through these so the
-// numerical look-and-feel stays consistent.
+// Number/time formatting. Single implementation for the whole app; pages
+// should go through these helpers so the numerical look-and-feel stays
+// consistent.
 
 export function fmt(n: number | null | undefined, dp = 2): string {
   if (n === null || n === undefined || Number.isNaN(n)) return '–';

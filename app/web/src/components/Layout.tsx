@@ -1,7 +1,7 @@
-// Top-level shell. Layout adapted from cdex-app.jsx topbar treatment:
+// Top-level shell:
 //   - brand block on the left with version + network meta
-//   - tab nav with explicit `data-screen-label` attribute (used by
-//     deck/screenshot tooling)
+//   - tab nav with explicit `data-screen-label` attribute for automated
+//     screenshots and regression checks
 //   - status pill (sync state) and wallet block on the right
 //
 // Wallet state is owned by `useWalletStore` and surfaced through

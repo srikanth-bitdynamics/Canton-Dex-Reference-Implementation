@@ -111,9 +111,9 @@ export interface PoolSettleAddLiquidityInput {
   lpBaseDepositCid?: ContractId<"Allocation">;
   lpQuoteDepositCid?: ContractId<"Allocation">;
   lpReceiptCid?: ContractId<"Allocation">;
-  // Operator-discovery path (DEX-92): the wallet (e.g. PartyLayer) returned only
-  // an updateId. The operator recovers the 3 Allocation cids + the acceptance
-  // evidence from the transaction tree. Mutually exclusive with the explicit cids.
+  // Operator-discovery path: the wallet returned only an updateId. The operator
+  // recovers the 3 Allocation cids + the acceptance evidence from the transaction
+  // tree. Mutually exclusive with the explicit cids.
   updateId?: string | null;
   baseAmount: Decimal;
   quoteAmount: Decimal;
@@ -222,15 +222,15 @@ export class PoolService {
     return found.contractId;
   }
 
-  private async lpDvpRules(): Promise<PoolLiquidityRulesContract[]> {
+  private async poolLiquidityRules(): Promise<PoolLiquidityRulesContract[]> {
     return this.ledger.query<PoolLiquidityRulesContract>({
       templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
       observingParty: this.operatorParty,
     });
   }
 
-  async dvpRulesCid(lpRegistrar: Party): Promise<ContractId<"PoolLiquidityRules">> {
-    const all = await this.lpDvpRules();
+  async poolLiquidityRulesCid(lpRegistrar: Party): Promise<ContractId<"PoolLiquidityRules">> {
+    const all = await this.poolLiquidityRules();
     const found = all.find(
       (r) => r.operator === this.operatorParty && r.lpRegistrar === lpRegistrar,
     );
@@ -262,9 +262,9 @@ export class PoolService {
     } catch {
       rulesCid = undefined;
     }
-    const dvpRules = await this.lpDvpRules();
-    const dvpCidFor = (lpRegistrar: Party): ContractId<"PoolLiquidityRules"> | null =>
-      dvpRules.find(
+    const liquidityRules = await this.poolLiquidityRules();
+    const liquidityRulesCidFor = (lpRegistrar: Party): ContractId<"PoolLiquidityRules"> | null =>
+      liquidityRules.find(
         (r) => r.operator === this.operatorParty && r.lpRegistrar === lpRegistrar,
       )?.contractId ?? null;
 
@@ -287,7 +287,7 @@ export class PoolService {
         poolId: cfg.poolId,
         poolStateCid: state.contractId,
         rulesCid: rulesCid ?? ("" as ContractId<"PoolRules">),
-        lpDvpRulesCid: dvpCidFor(cfg.lpRegistrar),
+        poolLiquidityRulesCid: liquidityRulesCidFor(cfg.lpRegistrar),
         operator: cfg.operator,
         lpRegistrar: cfg.lpRegistrar,
         admin: cfg.admin,
@@ -418,18 +418,18 @@ export class PoolService {
 
   // === DvP liquidity ==========================================
 
-  private requireDvpRules(pool: Pool): ContractId<"PoolLiquidityRules"> {
-    if (!pool.lpDvpRulesCid) {
+  private requirePoolLiquidityRules(pool: Pool): ContractId<"PoolLiquidityRules"> {
+    if (!pool.poolLiquidityRulesCid) {
       throw new Error(`pool ${pool.poolId} has no PoolLiquidityRules; run admin bootstrap`);
     }
-    return pool.lpDvpRulesCid;
+    return pool.poolLiquidityRulesCid;
   }
 
-  private async fetchDvpPool(
+  private async fetchLiquidityPool(
     cid: ContractId<"Pool">,
-  ): Promise<{ pool: Pool; dvpRulesCid: ContractId<"PoolLiquidityRules"> }> {
+  ): Promise<{ pool: Pool; liquidityRulesCid: ContractId<"PoolLiquidityRules"> }> {
     const pool = await this.fetchPool(cid);
-    return { pool, dvpRulesCid: this.requireDvpRules(pool) };
+    return { pool, liquidityRulesCid: this.requirePoolLiquidityRules(pool) };
   }
 
   private async loadLiquidityFactories(pool: Pool) {
@@ -440,7 +440,7 @@ export class PoolService {
     return { depositFactories, lpFactories };
   }
 
-  private async loadDvpSurface(pool: Pool) {
+  private async loadLiquiditySurface(pool: Pool) {
     const [{ depositFactories, lpFactories }, depositContext, lpContext] =
       await Promise.all([
         this.loadLiquidityFactories(pool),
@@ -464,8 +464,8 @@ export class PoolService {
   }
 
   /**
-   * Discover the acceptance evidence (DEX-90) by its stable, globally-unique
-   * correlation key: the consumed request's cid (`originalRequestCid`). The
+   * Discover the acceptance evidence by its stable, globally-unique correlation
+   * key: the consumed request's cid (`originalRequestCid`). The
    * operator created the request and knows its cid, so it recovers the matching
    * evidence even though the request itself is archived. (Keying on
    * `(lp, settlement.id)` is NOT unique — `poolSettlement` uses a constant
@@ -494,8 +494,8 @@ export class PoolService {
   }
 
   /**
-   * Operator-discovery (DEX-92): recover the created `Allocation` cids (in
-   * canonical command order) and the `LiquidityAllocationAcceptance` cid from a
+   * Operator-discovery: recover the created `Allocation` cids (in canonical
+   * command order) and the `LiquidityAllocationAcceptance` cid from a
    * committed transaction by `updateId`. Used when the wallet (e.g. PartyLayer)
    * returns only an `updateId` and not the created events, so `/settle` can be
    * driven without the dApp surfacing cids. Throws if the ledger can't serve
@@ -543,7 +543,7 @@ export class PoolService {
   async requestAddLiquidity(
     input: PoolRequestAddLiquidityInput,
   ): Promise<PoolRequestAddLiquidityResult> {
-    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
+    const { pool, liquidityRulesCid } = await this.fetchLiquidityPool(input.poolCid);
     const lpAmount = this.lpQuote(pool, input.baseAmount, input.quoteAmount);
     const requestCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"LiquidityAllocationRequest">>({
@@ -552,7 +552,7 @@ export class PoolService {
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
-          contractId: dvpRulesCid,
+          contractId: liquidityRulesCid,
           choice: "PoolLiquidityRules_RequestAddLiquidity",
           argument: {
             poolCid: input.poolCid,
@@ -568,7 +568,7 @@ export class PoolService {
     );
     const req = await this.fetchRequest(requestCid);
     const { depositFactories, lpFactories, depositContext, lpContext } =
-      await this.loadDvpSurface(pool);
+      await this.loadLiquiditySurface(pool);
     return {
       requestCid,
       lpAmount,
@@ -591,10 +591,10 @@ export class PoolService {
 
   /** Settle a DvP add. */
   async settleAddLiquidity(input: PoolSettleAddLiquidityInput): Promise<unknown> {
-    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
+    const { pool, liquidityRulesCid } = await this.fetchLiquidityPool(input.poolCid);
     const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
     const { depositFactories, lpFactories, depositContext, lpContext } =
-      await this.loadDvpSurface(pool);
+      await this.loadLiquiditySurface(pool);
 
     // Resolve the three created allocation cids + the binding. On the
     // operator-discovery path (updateId-only wallet, e.g. PartyLayer) the
@@ -629,7 +629,7 @@ export class PoolService {
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
-          contractId: dvpRulesCid,
+          contractId: liquidityRulesCid,
           choice: "PoolLiquidityRules_SettleAddLiquidity",
           argument: {
             expectedPoolId: pool.poolId,
@@ -697,7 +697,7 @@ export class PoolService {
   async requestRemoveLiquidity(
     input: PoolRequestRemoveLiquidityInput,
   ): Promise<PoolRequestRemoveLiquidityResult> {
-    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
+    const { pool, liquidityRulesCid } = await this.fetchLiquidityPool(input.poolCid);
     const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, pool.totalLpSupply);
     const requestCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"LiquidityAllocationRequest">>({
@@ -706,7 +706,7 @@ export class PoolService {
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
-          contractId: dvpRulesCid,
+          contractId: liquidityRulesCid,
           choice: "PoolLiquidityRules_RequestRemoveLiquidity",
           argument: {
             poolCid: input.poolCid,
@@ -722,7 +722,7 @@ export class PoolService {
     );
     const req = await this.fetchRequest(requestCid);
     const { depositFactories, lpFactories, depositContext, lpContext } =
-      await this.loadDvpSurface(pool);
+      await this.loadLiquiditySurface(pool);
     return {
       requestCid,
       knownTotalLpSupply: pool.totalLpSupply,
@@ -746,12 +746,12 @@ export class PoolService {
 
   /** Settle a DvP remove. */
   async settleRemoveLiquidity(input: PoolSettleRemoveLiquidityInput): Promise<unknown> {
-    const { pool, dvpRulesCid } = await this.fetchDvpPool(input.poolCid);
+    const { pool, liquidityRulesCid } = await this.fetchLiquidityPool(input.poolCid);
     // Re-derive from current state; drift since /request aborts at settle.
     const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, input.knownTotalLpSupply);
     const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
     const { depositFactories, lpFactories, depositContext, lpContext } =
-      await this.loadDvpSurface(pool);
+      await this.loadLiquiditySurface(pool);
 
     // Operator-discovery path (updateId-only wallet): recover the 3 created
     // allocation cids [base receipt, quote receipt, burn-sender] + acceptance.
@@ -784,7 +784,7 @@ export class PoolService {
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
-          contractId: dvpRulesCid,
+          contractId: liquidityRulesCid,
           choice: "PoolLiquidityRules_SettleRemoveLiquidity",
           argument: {
             expectedPoolId: pool.poolId,

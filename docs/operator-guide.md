@@ -167,8 +167,9 @@ seconds) plus on order-placement events.
 ### Stale RFQ cleanup
 
 `RfqService.sweepExpired(now)` cancels RFQs whose `expiresAt` has
-passed. A periodic task (cron or systemd timer) should call this
-hourly. Endpoint: not exposed yet — call via a backend script for now.
+passed. A periodic task (cron or systemd timer) should call the
+backend maintenance entrypoint hourly from an authenticated operator
+environment.
 
 ### Fee accrual + revenue
 
@@ -181,10 +182,10 @@ on each pool (defaults to 0 — pool fees go to LPs).
 Pair-level pause: Admin → **Pairs** → **Pause**. Underlying:
 `DexPair_SetActive { newActive = False }`.
 
-Pool-level pause: not implemented as a single choice; in incident
-response the operator stops accepting new operator-driven writes
-against the pool while leaving the contract in place. To make a pool
-fully read-only, you'd archive it and re-create.
+Pool-level pause: the operator stops accepting new operator-driven
+writes against the pool while leaving the contract in place. To make a
+pool fully read-only, archive it and re-create when the venue is ready
+to resume.
 
 ---
 
@@ -236,8 +237,8 @@ resume.
 ### Stale idempotency keys
 
 `IdempotentLedger.sweep()` runs hourly to drop keys older than 24h.
-Manual sweep: hit the script via the operator backend's internal
-maintenance hook (not exposed externally).
+Manual sweep: run the operator backend's maintenance command from an
+authenticated operational environment.
 
 ### Recovering a forgotten admin token
 
@@ -268,8 +269,7 @@ operator-tooled.
 ## See also
 
 - [`docs/architecture.md`](architecture.md) — design rationale
-- [`docs/wallet-vs-dapp-boundary.md`](wallet-vs-dapp-boundary.md)
 - [`docs/registry-prerequisites.md`](registry-prerequisites.md)
-- [`docs/operator-notes.md`](operator-notes.md) — incident playbook
+- [`docs/operator-runbook.md`](operator-runbook.md) — incident playbook
 - [`docs/api-reference.md`](api-reference.md) — every HTTP endpoint
 - [`docs/testnet-validator-test-plan.md`](testnet-validator-test-plan.md)

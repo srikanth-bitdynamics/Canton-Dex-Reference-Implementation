@@ -9,7 +9,7 @@ import {
 import type { WalletIntent } from "@/wallet/types";
 
 // A fake @partylayer/sdk client: records the submitted command tree and returns
-// an updateId-only receipt, exactly like the real SDK (DEX-91).
+// an updateId-only receipt, matching the provider contract.
 function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
   const connectCalls: unknown[] = [];
   const calls: Array<Parameters<PartyLayerClient["submitTransaction"]>[0]> = [];

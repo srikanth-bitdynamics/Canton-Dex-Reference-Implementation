@@ -188,7 +188,7 @@ A practical model is:
 - each swap adjusts those allocations, settles them, and rolls forward the
   next-iteration allocations
 
-This is the critical architectural move from the Simon guidance: pool inventory
+This is the critical architectural move: pool inventory
 should be allocation-native, not a custom internal balance model with a
 different settlement bridge behind it.
 
@@ -233,8 +233,8 @@ The data carrier is the standalone `PoolSlice` contract:
 `{ poolId, side, allocationCid, amount }`. The operator indexer supplies
 ordered slice contract IDs to the rules choices; the immutable `Pool` no
 longer stores an unbounded slice list.
-template. The slice's `amount` is reconciled with the underlying allocation's
-funding on every choice that touches it.
+The slice's `amount` is reconciled with the underlying allocation's funding on
+every choice that touches it.
 
 ### LP token layer
 
@@ -371,25 +371,20 @@ same design intent even if field names or result structures move.
 ## Repository Shape
 
 ```text
-Canton-Dex/
-  docs/
-    architecture.md
-    implementation-plan.md
-  daml/
-    dex/
-      Order.daml
-      MatchedTrade.daml
-      Pool.daml
-      Lp/Policy.daml
-      Lp/Instrument.daml
-    instrument/
-      DexInstrumentConfiguration.daml
-      Lifecycle.daml
-    tests/
-      OtcFlows.daml
-      PoolFlows.daml
+canton-dex/
+  trading/
+    CantonDex/
+      Dex/        # pair, order, RFQ, matched-trade, pool, rules
+      Lp/         # LP instrument and policy component
+      Registry/   # reference V2 registry implementation
+  trading-tests/
+    CantonDex/    # Daml Script coverage for the public workflows
   services/
-    matching-engine/
-    pool-operator/
+    operator-backend/
     registry-client/
+  app/web/
+    src/          # React frontend and wallet-provider boundary
+  examples/
+    stable-pool/  # separate Daml project consuming the DEX DAR
+  vendor/splice/  # vendored token-standard packages
 ```

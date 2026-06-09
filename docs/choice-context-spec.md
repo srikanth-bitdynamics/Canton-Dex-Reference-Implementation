@@ -56,7 +56,8 @@ Required inputs:
 Required inputs:
 - `actors : [Party]` — typically `[trader]`. Operator can also accept if
   the implementation allows.
-- `extraArgs.context` — empty in current implementation.
+- `extraArgs.context` — empty for the reference self-registry; production
+  registries may require their own context fields.
 
 The wallet composes this with `AllocationFactory_Allocate` in the
 same submission to avoid creating duplicate allocations.
@@ -83,8 +84,13 @@ Required inputs:
 `V2.FinalizedAllocation.extraTransferLegSides` and
 `V2.FinalizedAllocation.nextIterationFunding` on
 `SettlementFactory_SettleBatch`.
-  pool swaps (so the next iteration is created); `False` to terminate
-  an iterated allocation on this settlement.
+
+Required inputs:
+- `extraTransferLegSides` — concrete settlement leg-sides supplied by
+  the app choice once the trade or pool action is known.
+- `nextIterationFunding` — `Some` when the settlement should create a
+  next-iteration allocation for remaining pool/order funding; `None`
+  when the allocation terminates at this settlement.
 - `extraArgs.context` — registry-supplied choice context for the
   settlement admin. Self-registries may return empty context.
 

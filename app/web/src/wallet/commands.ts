@@ -409,8 +409,8 @@ function composeAcceptRfq(
   };
 }
 
-/** The two intents whose settle needs the wallet's created allocation cids. */
-export function isLpDvpIntent(intent: WalletIntent): boolean {
+/** Intents whose follow-up step needs the wallet-authored allocation cid. */
+export function isAllocationAuthoringIntent(intent: WalletIntent): boolean {
   return (
     intent.kind === "accept-allocation-request" ||
     intent.kind === "add-liquidity" ||
@@ -424,10 +424,9 @@ const ALLOCATION_TEMPLATE_SUFFIX = "CantonDex.Registry.V2:Allocation";
 const LIQUIDITY_ACCEPTANCE_SUFFIX =
   "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance";
 
-// How many V2.Allocation contracts each LP-DvP intent authors (the canonical
-// command shape). Drives the extraction count check independently of how many
-// total commands the submission carries (the accept pairing adds a command but
-// no extra Allocation).
+// How many V2.Allocation contracts each intent authors. Drives the extraction
+// count check independently of how many total commands the submission carries
+// (the accept pairing adds a command but no extra Allocation).
 function expectedAllocationCount(intent: WalletIntent): number {
   switch (intent.kind) {
     case "add-liquidity":
@@ -465,7 +464,7 @@ export function extractCreatedAllocationCids(
     events?: Array<{ created?: CreatedEvent }>;
   },
 ): string[] | undefined {
-  if (!isLpDvpIntent(intent)) return undefined;
+  if (!isAllocationAuthoringIntent(intent)) return undefined;
   const created = createdEventsOf(tx);
   const templated = created.some((e) => e.templateId !== undefined);
   const allocations = templated

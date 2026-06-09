@@ -1,5 +1,4 @@
-// Transaction toast + per-workflow phase progression. Direct port of
-// cdex-primitives.jsx TX_PHASES + TxToast + useToasts. Phase templates
+// Transaction toast + per-workflow phase progression. Phase templates
 // describe the on-ledger sequence per workflow so the user sees what
 // the operator backend is actually doing on their behalf.
 //

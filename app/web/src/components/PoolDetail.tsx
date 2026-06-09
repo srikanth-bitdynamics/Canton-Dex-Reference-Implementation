@@ -1,6 +1,5 @@
-// Pool detail screen — add liquidity, remove liquidity, LP position
-// summary, and on-ledger details. Direct port of `cdex-pools.jsx
-// PoolDetail` adapted to the typed Pool shape.
+// Pool detail screen: add liquidity, remove liquidity, LP position
+// summary, and on-ledger details.
 //
 // Add/remove liquidity are gated through `ledger.addLiquidity` /
 // `ledger.removeLiquidity` (which delegates to wallet handoff for the

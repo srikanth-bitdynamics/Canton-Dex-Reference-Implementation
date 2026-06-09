@@ -21,7 +21,7 @@ Canton-Net teams will use in production.
 | Layer | What | Where |
 |---|---|---|
 | **Daml templates** | DexPair, Pool, Order, Rfq, MatchedTrade, LPToken, V2 Registry | [`trading/CantonDex/`](trading/CantonDex/) |
-| **Daml tests** | 26+ multi-party Daml-Script tests + token-standard harness | [`trading-tests/`](trading-tests/) |
+| **Daml tests** | Multi-party Daml-Script suites + token-standard harness | [`trading-tests/`](trading-tests/) |
 | **Operator backend** | Node + TypeScript, JSON Ledger API, SQLite indexer, idempotency | [`services/operator-backend/`](services/operator-backend/) |
 | **React frontend** | Vite, TanStack Query, WalletConnect + Token Standard wallet | [`app/web/`](app/web/) |
 | **Testnet harnesses** | Real-asset matched-trade + V2-registry trade smoke tests | [`scripts/testnet-*.ts`](scripts/) |
@@ -123,7 +123,7 @@ There are two audiences:
   for the user journey: connect wallet → swap → add liquidity → place
   order → settle RFQ → view portfolio.
 - **Operators / admins** — see
-  [`docs/operator-notes.md`](docs/operator-notes.md) for the operator
+  [`docs/operator-runbook.md`](docs/operator-runbook.md) for the operator
   journey: deploy DARs → bootstrap registry → create pairs/pools →
   monitor settlement → recover from incidents.
 
@@ -131,12 +131,12 @@ There are two audiences:
 
 ## Project status
 
-| Milestone | Focus | Status |
+| Phase | Focus | Status |
 |---|---|---|
-| **M1** | Settlement-pattern + reference DEX baseline | ✅ Released |
-| **M2** | Constant-product pool + LP + public testnet | ✅ Released |
-| **M3** | Order workflows + builder guide + integration readiness | 🚧 In progress |
-| **M4** | Audit, production hardening, 12-month maintenance | ⏳ Planned |
+| **Phase 1** | Settlement-pattern + reference DEX baseline | ✅ Released |
+| **Phase 2** | Constant-product pool + LP + public testnet | ✅ Released |
+| **Phase 3** | Order workflows + builder guide + integration readiness | 🚧 In progress |
+| **Phase 4** | Audit, production hardening, 12-month maintenance | ⏳ Planned |
 
 What works end-to-end today:
 - ✅ RFQ matched-trade settlement on TradingAppV2 surface
@@ -151,10 +151,10 @@ What works end-to-end today:
   WalletConnect (CIP-0103), Direct (testnet bearer-token)
 - ✅ React frontend with all 6 trader/operator views
 
-What's coming (M3):
-- Production-grade order matching engine with TradingAppV2 settle
+What's coming:
+- Production-grade order matching engine refinements
 - E2E test harness against a live testnet
-- V2 MainNet migration (when upstream V2 stable lands EOM July 2026)
+- Compatibility updates as Token Standard V2 evolves upstream
 
 ---
 
@@ -175,10 +175,8 @@ These three upstream sources define the design surface:
   that return rolled-forward allocation state).
 
 The repo ships the V2 token-standard DARs under
-[`vendor/splice/`](vendor/splice/). When upstream V2
-stable lands on MainNet (target EOM July 2026 per the canton-foundation
-team), we cut over to upstream — the migration plan is in
-[`docs/v2-migration.md`](docs/v2-migration.md).
+[`vendor/splice/`](vendor/splice/). Keep those packages aligned with the
+upstream token-standard branch used by your deployment.
 
 ---
 
@@ -193,24 +191,19 @@ Builder reference:
 - [`docs/builder-guide.md`](docs/builder-guide.md) — extending the DEX
 - [`docs/guide-add-trading-pair.md`](docs/guide-add-trading-pair.md)
 - [`docs/guide-new-lp-or-instrument.md`](docs/guide-new-lp-or-instrument.md)
-- [`docs/wallet-vs-dapp-boundary.md`](docs/wallet-vs-dapp-boundary.md)
 - [`docs/api-reference.md`](docs/api-reference.md)
 
 Operations:
 - [`docs/run-testnet.md`](docs/run-testnet.md) — deploy on Canton testnet
 - [`docs/deployment.md`](docs/deployment.md) — Docker-Compose path
-- [`docs/operator-notes.md`](docs/operator-notes.md) — deploy/recover/observe
+- [`docs/operator-runbook.md`](docs/operator-runbook.md) — recover/observe/operate
 - [`docs/testnet-validator-test-plan.md`](docs/testnet-validator-test-plan.md)
 - [`docs/registry-prerequisites.md`](docs/registry-prerequisites.md)
 
-Internals:
+Reference details:
 - [`docs/choice-context-spec.md`](docs/choice-context-spec.md)
-- [`docs/trading-allocation-surface.md`](docs/trading-allocation-surface.md)
-- [`docs/v2-alignment-audit.md`](docs/v2-alignment-audit.md)
-- [`docs/v2-migration.md`](docs/v2-migration.md)
 - [`docs/lp-token-versioning.md`](docs/lp-token-versioning.md)
-- [`docs/source-dependency-status.md`](docs/source-dependency-status.md)
-- [`docs/architecture-non-goals.md`](docs/architecture-non-goals.md)
+- [`docs/pricing-sources.md`](docs/pricing-sources.md)
 
 ---
 
@@ -220,13 +213,13 @@ Internals:
 # Daml stack
 bash scripts/build-vendored-token-standard.sh   # vendored V2 DARs
 bash scripts/build-trading-surface.sh                   # canton-dex DAR
-cd trading-tests && daml test                           # 26+ tests
+cd trading-tests && daml test                           # Daml tests
 
 # Operator backend
 cd services/operator-backend
 npm install
 npm run typecheck
-npm test                                               # 9 tests
+npm test                                               # backend tests
 npm run dev                                            # in-memory dev
 npm start                                              # production (real Canton)
 
@@ -254,10 +247,7 @@ PRs welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines and
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for the community standard.
 Security disclosures: see [`SECURITY.md`](SECURITY.md).
 
-The reference implementation is funded under the
-[Canton Foundation Dev Fund](https://github.com/canton-foundation/canton-dev-fund/pull/108)
-(BitDynamics, 1.1M CC). Roadmap and milestones are tracked in
-[Linear](https://linear.app/bitdynamics/team/DEX/).
+This project is maintained as an open-source reference implementation.
 
 ---
 

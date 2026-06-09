@@ -71,7 +71,7 @@ describe("createDexPartyLayerClient", () => {
     );
   });
 
-  it("allows an explicit 5N Loop probe", async () => {
+  it("allows an explicit 5N Loop wallet selection", async () => {
     sdk.connect.mockResolvedValueOnce({
       partyId: "alice::1220a",
       walletId: "loop",

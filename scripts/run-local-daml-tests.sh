@@ -5,11 +5,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "==> Running local Daml tests"
+
+bash "$ROOT_DIR/scripts/build-trading-surface.sh"
+
 (
-  cd "$ROOT_DIR"
-  daml build
+  cd "$ROOT_DIR/trading-tests"
+  daml test
 )
+
 (
-  cd "$ROOT_DIR/tests"
+  cd "$ROOT_DIR/examples/stable-pool"
   daml test
 )

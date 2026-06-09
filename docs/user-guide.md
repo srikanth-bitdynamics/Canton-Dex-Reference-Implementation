@@ -210,5 +210,5 @@ above goes through your wallet provider:
 
 The wallet provider knows the disclosed factory CIDs, the package hash,
 and the holding CIDs to lock; the dApp passes only the intent verb.
-See [`docs/wallet-vs-dapp-boundary.md`](wallet-vs-dapp-boundary.md) for
-the architectural rationale.
+Trader-authority writes go through the connected wallet; operator-authority
+settlement steps go through the operator backend.

@@ -1,4 +1,4 @@
-# Operator Notes
+# Operator Runbook
 
 Deployment, recovery, and observability guidance for the operator roles
 defined by the reference DEX. It describes the contract surface and the
@@ -97,7 +97,7 @@ on a schedule.
 - Remove-liquidity is slice-local: the `PoolLiquidityRules_SettleRemoveLiquidity`
   settle sources a routine withdrawal from at most ONE boundary
   re-allocation per side. The architecture and workflows docs describe the
-  invariant; `LpDvpPoolTests.daml` exercises the boundary case.
+  invariant; the liquidity rules tests exercise the boundary case.
 
 ### LP supply reconciliation
 

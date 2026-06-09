@@ -1,4 +1,4 @@
-// Portfolio view — direct port of `cdex-portfolio.jsx PortfolioView`.
+// Portfolio view.
 //
 // Surfaces:
 //   - holdings table (asset rows + LP token rows synthesized from

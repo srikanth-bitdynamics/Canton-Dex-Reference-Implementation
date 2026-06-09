@@ -1,182 +1,156 @@
-# Run against the deployed testnet
+# Run Against a Canton Testnet
 
-Concrete recipe to bring up the dApp wired to the real Canton testnet
-at `5.75.216.246:7575`, with the DEX DARs uploaded and an initial
-`DexPair` + `Pool` already on-ledger.
+This guide shows how to point the operator backend and web app at a Canton
+participant that already has the required DEX and token-standard packages
+uploaded and vetted.
 
-## Deployed state on the testnet
+Use your own participant URL, synchronizer id, party ids, package id, and JWT.
+Do not commit tokens, concrete party ids, or validator-specific package hashes.
 
-| Asset | Value |
-| --- | --- |
-| Validator | `http://5.75.216.246:7575` (Canton 3.4.12-SNAPSHOT, plain HTTP) |
-| Synchronizer | `global-domain::1220f22a8b8f2d813c25b9a684dc4dd52b532a0174d8e73a13cdf2baabfff7518337` |
-| `canton-dex-trading` package id (v0.0.6 — current) | `7d66ae82d6de725fda3a12cb4e2e9704a51a4d36f43e426a1ef3fb2573c17fe8` |
-| metadata-v1 (testnet-vetted) | `4ded6b668cb3b64f7a88a30874cd41c75829f5e064b3fbbadf41ec7e8363354f` |
-| Operator party | `bitdynamicsab-testnet-1::1220ed51edaa87ffb050d0533224995ff9e8c211e513bf94b867670d19b909112f6f` |
-| LP registrar party | `amm-dex-testnet-1::1220ed51edaa87ffb050d0533224995ff9e8c211e513bf94b867670d19b909112f6f` |
-| Admin party | `LYRA-Admin::1220ed51edaa87ffb050d0533224995ff9e8c211e513bf94b867670d19b909112f6f` |
-| User id (JWT `sub`) | `ledger-api-user` (ParticipantAdmin, CanActAs ≥ 400 parties) |
-| DexPair CID (BTC/USDC) | `0020b3bf71c43ba5ec04a4fa0a620207698594f4bac7303abe207e0e33284ef4a8ca121220224fe644ba3dc9478281151a15cf43cc30401aacdaff966af82e839b76386385` |
-| Pool CID (BTC/USDC, Unfunded) | `001a8ecaeba0644871d7a5019c2dea7ec00bd0685ac7cbcaa301ded863c438ee30ca1212204da4ed3783bc8a26c84a3874666ebf9fcb0d16a7f0fa16746f6c5cb291474172` |
+## Prerequisites
 
-Other V2 token-standard package ids uploaded alongside our DEX:
+- A Canton participant JSON Ledger API URL.
+- A JWT that can `actAs` the operator party and any bootstrap parties used by
+  the commands you submit.
+- Uploaded and vetted DARs for:
+  - `canton-dex-trading`
+  - the Token Standard V2 packages under `vendor/splice/token-standard`
+- Operator, LP registrar, and asset-admin parties allocated on the participant.
+- Registry factory contracts for the asset admins the DEX will touch.
 
-```
-holding-v2                  b2e23c1a42a66d3286a2b8a8df3fad8db99d580a330ed3d871b58953dfd42565
-allocation-v2               dc9ba9de147bbbe5d155c58dbf10ebabab22436b42a6a005be37fb7052546ab1
-allocation-request-v2       6912769cdaef394ba7d5b8b6771000a882ef7dc283c96ad5364d753ab567bd10
-allocation-instruction-v2   24d26b2de29f3d15fd4832fa5bfabcac331638f4b8aa91e6c37125a70fe7f676
-transfer-events-v2          eef21cbd76e205fcd6a5a928332dbb2bc5a80c6eb294ed30b6eeddbc9c2d73c1
-transfer-instruction-v2     202b778de9b527c24d0d205b8b3743d1dbfdb2340455ff81542d11814143f5f4
-canton-dex-trading v0.0.6    7d66ae82d6de725fda3a12cb4e2e9704a51a4d36f43e426a1ef3fb2573c17fe8
-```
-
-These were built against the testnet-vetted `metadata-v1` (`4ded6b66…`)
-so vetting succeeds without disturbing pre-existing apps (amulet,
-wallet, daml-finance) that reference the same `metadata-v1`. See the
-"build hash alignment" note below for why.
-
-## Quickstart (3 terminals)
-
-The operator backend authenticates against the participant via a JWT.
-How you obtain it is environment-specific (see your validator's user
-management). The backend reads it from `CANTON_LEDGER_TOKEN` and never
-writes it to disk.
-
-You will also need the participant's URL, the synchronizer id, and the
-party ids the operator should `actAs`. These are validator-level facts
-issued when the operator party is allocated.
-
-### Terminal 1 — operator-backend pointed at testnet
+## Start the Operator Backend
 
 ```bash
 cd services/operator-backend
 
-# Provide your participant JWT via env, e.g.:
-#   export CANTON_LEDGER_TOKEN="$(your-jwt-fetch-command)"
-# DO NOT commit the JWT or write it to disk.
+export CANTON_LEDGER_TOKEN="<participant-jwt>"
 
-CANTON_LEDGER_URL="http://<your-participant-host>:7575" \
-CANTON_OPERATOR="bitdynamicsab-testnet-1::1220ed51edaa87ffb050d0533224995ff9e8c211e513bf94b867670d19b909112f6f" \
-CANTON_LP_REGISTRAR="amm-dex-testnet-1::1220ed51edaa87ffb050d0533224995ff9e8c211e513bf94b867670d19b909112f6f" \
-CANTON_ADMIN="LYRA-Admin::1220ed51edaa87ffb050d0533224995ff9e8c211e513bf94b867670d19b909112f6f" \
-CANTON_NETWORK="canton:devnet-utility" \
-CANTON_SYNCHRONIZER="global-domain::1220f22a8b8f2d813c25b9a684dc4dd52b532a0174d8e73a13cdf2baabfff7518337" \
-CANTON_DEX_PACKAGE_ID="7d66ae82d6de725fda3a12cb4e2e9704a51a4d36f43e426a1ef3fb2573c17fe8" \
+CANTON_LEDGER_URL="https://<participant-host>" \
+CANTON_OPERATOR="<operator-party>" \
+CANTON_LP_REGISTRAR="<lp-registrar-party>" \
+CANTON_ADMIN="<asset-admin-party>" \
+CANTON_NETWORK="canton:testnet" \
+CANTON_SYNCHRONIZER="<synchronizer-id>" \
+CANTON_DEX_PACKAGE_ID="<canton-dex-trading-package-id>" \
 PORT=8080 \
 npm run testnet
 ```
 
-### Terminal 2 — UI
+The backend reads the token from the environment and does not write it to disk.
+
+## Start the Web App
 
 ```bash
 cd app/web
-npm run build && npm run preview
+
+VITE_API_BASE="http://localhost:8080" \
+VITE_CANTON_NETWORK_ID="canton:testnet" \
+VITE_CANTON_SYNCHRONIZER="<synchronizer-id>" \
+npm run build
+
+npm run preview
 ```
 
-### Terminal 3 — smoke-test
+Open <http://localhost:4173>. The header should show the configured network and
+the backend status should report `synced: true`.
+
+## PartyLayer Wallet Live Probe
+
+PartyLayer support is integrated into the main web app; no separate probe app is
+needed. Use this checklist when validating a submit-capable wallet adapter
+against a live Canton network.
+
+### Enable the connector
+
+Set the PartyLayer env vars before building or previewing the frontend:
 
 ```bash
-curl -s http://127.0.0.1:8080/v1/context | python3 -m json.tool
-curl -s http://127.0.0.1:8080/v1/status  | python3 -m json.tool
-curl -s http://127.0.0.1:8080/v1/pools   | python3 -m json.tool
-curl -s http://127.0.0.1:8080/v1/pairs   | python3 -m json.tool
+cd app/web
+
+VITE_ENABLE_PARTYLAYER=1 \
+VITE_PARTYLAYER_NETWORK="canton:testnet" \
+VITE_PARTYLAYER_WALLET_IDS="console,nightly,send" \
+VITE_PARTYLAYER_CONNECT_TIMEOUT_MS=180000 \
+VITE_API_BASE="http://localhost:8080" \
+npm run build
+
+npm run preview
 ```
 
-Then open <http://localhost:4173>. The header pill shows the live
-testnet network + slot. The Pools page renders the on-chain Pool
-(unfunded). Trader-authority writes still require a connected wallet
-(WalletConnect path) and a synchronizer-vetted `AllocationFactory`
-instance — see "Not yet wired" below.
+If you are validating a specific adapter, set `VITE_PARTYLAYER_WALLET_IDS`
+to just that adapter id. Optional registry overrides are documented in
+`app/web/.env.example`.
 
-## Build-hash alignment (lesson learned)
+### Validate the flow
 
-The first probe upload failed with `KNOWN_PACKAGE_VERSION`. Root cause:
-this testnet has TWO `splice-api-token-metadata-v1 v1.0.0` packages
-loaded, with different Daml package hashes (`25952a7c…` and
-`4ded6b66…`). Only `4ded6b66` is vetted on the synchronizer (used by
-amulet/wallet/daml-finance). Our local V2 vendored DARs were built
-against `25952a7c`, so vetting their transitive metadata-v1 dep
-collided.
+1. Open the app, click **Connect Wallet**, and select **PartyLayer**.
+   Approve the connection in the wallet and confirm the connected party is the
+   party that owns the test holdings.
+2. Confirm holdings load in **Portfolio**. The PartyLayer provider reads
+   holdings through its `ledgerApi` bridge for the connected party.
+3. Run a small trader-authority action, such as:
+   - **Trade** → small pool swap
+   - **Pools** → add liquidity or remove liquidity
+   - **Orders** → place a prefunded order
+4. Confirm the wallet approval returns an `updateId`. PartyLayer receipts may
+   not include created contract ids directly; the operator backend recovers the
+   created `Allocation`, `LiquidityAllocationAcceptance`, or order-funding
+   evidence by reading the committed transaction tree for that `updateId`.
+5. Confirm the operator settle step completes and the app refreshes holdings,
+   pool reserves, orders, or activity from the backend/indexer.
 
-Fix: built our V2 chain against the testnet-vetted `4ded6b66` metadata
-DAR (found at `~/CantonAMM/Canton-AMM/lib/splice-api-token-metadata-v1-1.0.0.dar`
-on the EC2). Step-by-step:
+### What to record
 
-1. `cp $THAT_DAR vendor/splice/.../splice-api-token-metadata-v1/.daml/dist/splice-api-token-metadata-v1-current.dar`
-2. Skip rebuilding `metadata-v1` itself; rebuild every other V2
-   package via `(cd vendor/splice/token-standard/$pkg && daml build)`.
-3. Rebuild `canton-dex-trading` (`cd trading && daml build`).
-4. All 25 trading-tests still pass against the new metadata hash.
+For each wallet adapter tested, record:
 
-## Full V2-standard registry trade on the live testnet
+- adapter id and network
+- connected party
+- action submitted
+- returned `updateId`
+- whether operator discovery recovered the created contract ids
+- final on-ledger result: swap settled, LP add/remove settled, or order funded
 
-`scripts/testnet-v2registry-trade.ts` drives a real trade through
-**`CantonDex.Registry.V2.Registry`** — a registry implementing every
-CIP-0056 on-ledger interface: `V2.Holding`, `V2.AllocationFactory`,
-`V2.Allocation` (including iterated-settlement funding),
-`V2.SettlementFactory`, `V2.TransferFactory`, `V2.TransferInstruction`,
-`TransferEventsV2.EventLog`. Plus `InstrumentConfig` (decimals, supply
-cap, credential reqs), `Credential` (issuer-signed claims), and
-`Registry_RegisterInstrument` / `Registry_Mint` / `Registry_Burn`
-workflows.
+If discovery fails, capture the operator backend error and the transaction-tree
+lookup response. The usual causes are missing operator visibility on the
+created contracts, a wallet receipt without `updateId`, or a party mismatch
+between the connected wallet and the holdings being spent.
 
-Tested run:
+## Smoke Checks
 
-```
-=== create Registry (full V2 standard) ===                                ✓
-=== Registry_RegisterInstrument (BTC, supply cap 1M) ===                  ✓
-=== Registry_Mint 25 BTC → alice (enforces cap + cred) ===                ✓
-=== pre-state: alice 25 BTC, bob 0 BTC ===                                ✓
-=== create MatchedTrade ===                                               ✓
-=== MatchedTrade_RequestAllocations ===                                   ✓
-=== alice: Accept + AllocationFactory_Allocate (coverage check) ===       ✓
-=== bob: Accept + AllocationFactory_Allocate (receipt) ===                ✓
-=== MatchedTrade_Settle (V2 SettlementFactory_SettleBatch) ===            ✓ (offset 714724)
-=== post-state: bob has 10 BTC, supply intact ===
-  bob holding: amount=10.0000000000, cid=00d00bd39a2170b3f1…
-✅ FULL V2 STANDARD REGISTRY — REAL TRADE complete on testnet
+```bash
+curl -s http://localhost:8080/v1/status  | python3 -m json.tool
+curl -s http://localhost:8080/v1/context | python3 -m json.tool
+curl -s http://localhost:8080/v1/pairs   | python3 -m json.tool
+curl -s http://localhost:8080/v1/pools   | python3 -m json.tool
 ```
 
-Configure with `CANTON_DEX_PACKAGE_ID=518e614a12a08c594c385da32cb49b6d24ca6a8653eea982047670066579bf64`
-(canton-dex-trading v0.0.5, the full-V2 build).
+Expected:
 
-### V2-spec design choices baked into Registry.V2
+- `/v1/status` returns the configured network and a live slot.
+- `/v1/context` returns operator/admin/LP registrar parties and factory CIDs.
+- `/v1/pairs` and `/v1/pools` return the on-ledger contracts visible to the
+  operator party.
 
-- **Receiver-side holdings are minted inside `Allocation_Settle`**, not
-  inside the SettlementFactory. Each allocation is signed by admin +
-  its authorizer, so when the receiver's allocation settles, it has
-  the authority to mint the receiver's new holding. The factory only
-  drives per-allocation settle calls.
-- **`SettlementFactory_SettleBatch` expands `arg.actors` to include
-  the admin** before forwarding to `Allocation_Settle`. V2 spec
-  requires settle actors to include executors + admin, but the typical
-  caller (a DEX) passes only executors. The factory injects admin
-  from its own signatories.
-- **`AllocationFactory_Allocate` enforces per-instrument coverage**:
-  sum of input-holding amounts per instrument id must be ≥ outflow
-  for that instrument across the authorizer's sender-side legs.
-- **Settlement enforces funding conservation**: each
-  extra leg-side's net outflow must be covered by the current
-  `nextIterationFunding` budget; consumed amount is debited from the
-  next-iteration budget. Required for `PoolRules_Swap` and order partial-
-  fill roll-forward.
+## Bootstrap a Pair and Pool
 
-## Not yet wired
+Use the admin endpoints in [operator-guide.md](operator-guide.md):
 
-The end-to-end happy path still needs:
+- `POST /v1/admin/pairs`
+- `POST /v1/admin/pools`
 
-- **`AllocationFactory` and `SettlementFactory` instances** for our V2
-  packages on this synchronizer. `bitdynamicsab-testnet-1` (or another
-  admin) needs to create instances and surface their CIDs into
-  `CANTON_ALLOC_FACTORY_CID` / `CANTON_SETTLE_FACTORY_CID` env vars.
-  Without this, swap / add-liquidity / order intents complete the
-  wallet handoff but the operator cannot drive first funding or
-  `PoolRules_Swap` against real factories.
-- **WalletConnect project id** in `app/web/.env.local`. With one set,
-  the Connect Wallet button opens the real WalletConnect modal; sessions
-  request CIP-0103 methods (`canton_listAccounts`, `canton_prepareExecute`,
-  `canton_signMessage`). Until then the Mock provider stands in.
-- **Holdings minted to a trader party** so the Portfolio page shows
-  non-empty balances. Goes through the registry's Mint workflow once a
-  trader party with credentials exists.
+New pools start in `PS_Unfunded`. The first LP funds the pool through the same
+add-liquidity request/allocate/settle flow used for later deposits.
+
+## Package Hash Alignment
+
+If DAR upload or vetting fails with package-version/hash errors, confirm that
+all local DARs were built against the same upstream Token Standard package
+hashes already accepted by the target network. Rebuild the dependent packages
+against the vetted upstream DARs, then rebuild `trading` and `trading-tests`.
+
+## Wallet Boundary
+
+Operator-authority calls go through the backend. Trader-authority calls, such as
+authoring allocations for add/remove liquidity, swaps, and order funding, must
+go through a wallet or another user-authorized submitter. The backend should not
+sign as traders.

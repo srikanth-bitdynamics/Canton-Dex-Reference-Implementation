@@ -1,7 +1,6 @@
-// Asset glyph + paired-asset glyph + asset chip. Direct port of
-// cdex-primitives.jsx Glyph / PairGlyph / AssetChip. CSS lives in
-// index.css under .glyph and .asset; the components only set sizes
-// and child elements.
+// Asset glyph + paired-asset glyph + asset chip. CSS lives in index.css
+// under .glyph and .asset; the components only set sizes and child
+// elements.
 
 import { ASSETS, GLYPH_LABEL } from './assets';
 

@@ -25,7 +25,7 @@ import type {
   WalletProvider,
   WalletResult,
 } from "./types";
-import { LpDvpUnsupportedError } from "./types";
+import { LiquidityAllocationUnsupportedError } from "./types";
 
 // CIP-0103 method names exposed by Canton wallets over WalletConnect.
 // Listed for session permissions; the wallet must support these to
@@ -41,7 +41,7 @@ const METHODS = [
 const APP_METADATA = {
   name: "Canton DEX",
   description:
-    "Token-standard-native reference DEX for Canton (PR 108 deliverable).",
+    "Token-standard-native reference DEX for Canton.",
   url: typeof window !== "undefined" ? window.location.origin : "",
   icons: [],
 };
@@ -209,7 +209,7 @@ export class WalletConnectProvider implements WalletProvider {
     if (intent.kind === "add-liquidity" || intent.kind === "remove-liquidity") {
       // canton_prepareExecute returns the wallet's own WalletResult; it does
       // not surface the created allocation cids the DvP /settle needs.
-      throw new LpDvpUnsupportedError(this.id);
+      throw new LiquidityAllocationUnsupportedError(this.id);
     }
     const conn = this.connector;
     // The dApp does NOT construct Daml command trees here. CIP-0103's

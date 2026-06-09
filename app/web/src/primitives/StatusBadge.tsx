@@ -1,7 +1,6 @@
-// Status badge. Direct port of cdex-primitives.jsx StatusBadge. The
-// lookup map is the source of truth for "what badge to show for what
-// state" across pages -- when adding a new status, add the mapping
-// here rather than each call-site.
+// Status badge. The lookup map is the source of truth for "what badge
+// to show for what state" across pages; when adding a new status, add
+// the mapping here rather than each call-site.
 
 interface BadgeMeta {
   cls: string;

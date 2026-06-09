@@ -195,7 +195,7 @@ The reference doesn't ship either; build them in your fork.
 
 - Native rebasing tokens: V2 holdings have a fixed `amount`;
   rebases require ACS rewrites which the standard doesn't support
-  natively. Workaround: a wrapper that exposes a rebasing view.
+  natively. Use a wrapper that exposes a rebasing view.
 - Token-bound permissions that don't fit credentials: V2's
   `issuerRequirements` are claim-based. More complex predicates
   (e.g. "holder must be in jurisdiction X but not Y") require

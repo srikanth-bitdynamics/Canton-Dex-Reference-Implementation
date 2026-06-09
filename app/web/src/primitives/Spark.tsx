@@ -1,8 +1,4 @@
-// Inline sparkline. Direct port of cdex-primitives.jsx Spark + genSpark.
-// The deterministic-seeded generator is a development convenience for
-// rendering "looks like a chart" placeholders without a price feed; the
-// production replacement is a real timeseries from the operator
-// backend's /v1/pools/{id}/price-history endpoint (not built yet).
+// Inline sparkline for live price history panels.
 
 interface SparkProps {
   data: number[];
@@ -48,23 +44,4 @@ export function Spark({
       />
     </svg>
   );
-}
-
-/**
- * @deprecated Synthetic random-walk generator. Use `usePriceHistory`
- * from `@/hooks/useStats` to feed Spark from the live `/v1/price-history`
- * indexer endpoint instead. Kept temporarily for any callers that need
- * a placeholder during loading; new code should NOT use this.
- */
-export function genSpark(seed = 1, len = 24, vol = 0.06): number[] {
-  const out: number[] = [];
-  let v = 100;
-  let s = seed * 9301 + 49297;
-  for (let i = 0; i < len; i++) {
-    s = (s * 9301 + 49297) % 233280;
-    const r = s / 233280 - 0.5;
-    v += v * vol * r;
-    out.push(v);
-  }
-  return out;
 }

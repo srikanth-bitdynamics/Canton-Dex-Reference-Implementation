@@ -54,6 +54,67 @@ npm run preview
 Open <http://localhost:4173>. The header should show the configured network and
 the backend status should report `synced: true`.
 
+## PartyLayer Wallet Live Probe
+
+PartyLayer support is integrated into the main web app; no separate probe app is
+needed. Use this checklist when validating a submit-capable wallet adapter
+against a live Canton network.
+
+### Enable the connector
+
+Set the PartyLayer env vars before building or previewing the frontend:
+
+```bash
+cd app/web
+
+VITE_ENABLE_PARTYLAYER=1 \
+VITE_PARTYLAYER_NETWORK="canton:testnet" \
+VITE_PARTYLAYER_WALLET_IDS="console,nightly,send" \
+VITE_PARTYLAYER_CONNECT_TIMEOUT_MS=180000 \
+VITE_API_BASE="http://localhost:8080" \
+npm run build
+
+npm run preview
+```
+
+If you are validating a specific adapter, set `VITE_PARTYLAYER_WALLET_IDS`
+to just that adapter id. Optional registry overrides are documented in
+`app/web/.env.example`.
+
+### Validate the flow
+
+1. Open the app, click **Connect Wallet**, and select **PartyLayer**.
+   Approve the connection in the wallet and confirm the connected party is the
+   party that owns the test holdings.
+2. Confirm holdings load in **Portfolio**. The PartyLayer provider reads
+   holdings through its `ledgerApi` bridge for the connected party.
+3. Run a small trader-authority action, such as:
+   - **Trade** → small pool swap
+   - **Pools** → add liquidity or remove liquidity
+   - **Orders** → place a prefunded order
+4. Confirm the wallet approval returns an `updateId`. PartyLayer receipts may
+   not include created contract ids directly; the operator backend recovers the
+   created `Allocation`, `LiquidityAllocationAcceptance`, or order-funding
+   evidence by reading the committed transaction tree for that `updateId`.
+5. Confirm the operator settle step completes and the app refreshes holdings,
+   pool reserves, orders, or activity from the backend/indexer.
+
+### What to record
+
+For each wallet adapter tested, record:
+
+- adapter id and network
+- connected party
+- action submitted
+- returned `updateId`
+- whether operator discovery recovered the created contract ids
+- final on-ledger result: swap settled, LP add/remove settled, or order funded
+
+If discovery fails, capture the operator backend error and the transaction-tree
+lookup response. The usual causes are missing operator visibility on the
+created contracts, a wallet receipt without `updateId`, or a party mismatch
+between the connected wallet and the holdings being spent.
+
 ## Smoke Checks
 
 ```bash

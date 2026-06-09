@@ -86,35 +86,44 @@ separate.
 ## Core On-Ledger Contracts
 
 - `DexPair`
-- `TradeIntent`
 - `MatchedTrade`
+- `TradeAllocationRequest`
+- `Rfq`
+- `RfqQuote`
+- `OrderFundingRequest`
 - `Order`
+- `OrderAllocationRequest`
 - `Pool`
-- `PoolReserveState`
+- `PoolState`
+- `PoolSlice`
+- `PoolRules`
+- `PoolLiquidityRules`
+- `LiquidityAllocationRequest`
 - `LPTokenPolicy`
-- `LiquidityAction`
 
-The names may change in implementation, but the responsibilities should remain.
+Together these contracts separate market state, pool accounting, LP-token
+policy, and token-standard allocation requests.
 
 ## Dependency Split
 
 There are two distinct workflow families.
 
-### Workflows supported by the current TradingAppV2-style surface
+### Bilateral settlement workflows
 
 - OTC and RFQ trade request
 - matched trade settlement
 - trade cancellation
 
-### Workflows that depend on the V2 allocation shape
+### Pool and prefunded-order workflows
 
 - resting orders backed by prefunded allocations
 - pool reserves represented by committed allocations
 - repeated swaps via iterated settlement
 - reserve roll-forward using `FinalizedAllocation.nextIterationFunding`
 
-This split matters. A clean workflow design should not pretend these are at the
-same maturity level.
+This split matters because the bilateral path and the pool path share the same
+token-standard settlement primitives while preserving different application
+state and cancellation rules.
 
 ## Workflow 1: Pair Listing
 
@@ -150,7 +159,6 @@ Purpose:
 
 Primary contracts:
 
-- `TradeIntent`
 - `MatchedTrade`
 - `TradeAllocationRequest`
 
@@ -186,16 +194,12 @@ Primary contracts:
 - `Order`
 - allocation contract referenced by the order
 
-Required upstream dependency:
-
-- V2-style iterated allocation support
-
 Reason:
 
 - a resting order is an authorization for a future match whose exact transfer
   legs are not yet known
 - that is a much better fit for prefunded, adjustable allocations than for the
-  current one-shot trade allocation shape
+  one-shot bilateral allocation shape
 
 On-ledger flow:
 
@@ -225,10 +229,6 @@ Primary contracts:
 
 - `Order`
 - `MatchedTrade`
-
-Required upstream dependency:
-
-- V2-style adjustable allocations
 
 On-ledger flow:
 
@@ -299,7 +299,8 @@ Purpose:
 Primary contracts:
 
 - `Pool`
-- `LiquidityAction`
+- `PoolLiquidityRules`
+- `LiquidityAllocationRequest`
 
 On-ledger flow:
 
@@ -352,11 +353,8 @@ Purpose:
 Primary contracts:
 
 - `Pool`
-- `LiquidityAction` or `SwapAction`
-
-Required upstream dependency:
-
-- V2-style committed and iterated allocations
+- `PoolRules`
+- `PoolSlice`
 
 On-ledger flow:
 
@@ -410,21 +408,20 @@ Important boundary:
 - the DEX should not calculate coupons or option exercise
 - it should only respond to new tradable instrument versions
 
-## Recommended First Production Scope
+## Implemented Reference Scope
 
-If the goal is a reference DEX plus a production instance, the first release
-should target the following on a V2-compatible branch:
+The reference implementation covers:
 
 1. pair listing
 2. OTC / RFQ trade settlement
-3. one constant-product pool
+3. constant-product pools
 4. add liquidity
 5. remove liquidity
 6. single-hop swaps with slippage bounds
 7. LP token issuance
 8. cancellation, expiry, and operator observability
 
-It should explicitly defer:
+It deliberately defers:
 
 1. concentrated liquidity
 2. multi-hop routing
@@ -432,17 +429,9 @@ It should explicitly defer:
 4. advanced oracle surfaces
 5. NFT-style LP positions
 
-## Recommended Contract Design Order
+## Contract Boundary Summary
 
-The Daml work should proceed in this order:
-
-1. `DexPair`
-2. `MatchedTrade` and trade allocation request flow
-3. `Order` plus funding reference model
-4. `Pool` and reserve reference model
-5. `LPTokenPolicy`
-6. `LiquidityAction` or `SwapAction`
-7. expiry and cancellation workflows
-
-That sequence keeps the workflow model coherent and prevents the pool design
-from drifting into an ad hoc escrow system.
+Keep the market objects (`DexPair`, `Order`, `MatchedTrade`, `Rfq`) separate
+from the pool accounting objects (`Pool`, `PoolState`, `PoolSlice`) and the
+LP-token policy (`LPTokenPolicy`). The shared boundary is the token-standard
+allocation and settlement surface, not a custom internal escrow system.

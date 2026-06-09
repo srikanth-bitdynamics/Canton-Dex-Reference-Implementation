@@ -2,15 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-/* === Visual system ports from the cdex-* mockup ============================
+/* === Visual System ==========================================================
  *
- * The prototype defines its tokens as raw CSS variables under :root and
- * uses them through utility classes (.btn, .card, .badge, etc.). We
- * mirror those names here so the ported components compile against
- * either the prototype's class system OR Tailwind utilities -- callers
- * can mix the two.
- *
- * Tokens kept in sync with cdex-bundle.jsx + Canton DEX.html.
+ * The frontend keeps shared tokens as raw CSS variables under :root and
+ * exposes utility classes (.btn, .card, .badge, etc.) for components that
+ * benefit from stable semantic class names.
  * ============================================================================ */
 
 :root {
@@ -62,10 +58,9 @@
   }
 }
 
-/* === Component classes from the mockup =====================================
- * Components below this point match cdex-primitives.jsx and the static
- * HTML prototype. They're prefixed with the same names so a port from
- * those files renders correctly without rewriting className strings.
+/* === Component classes ======================================================
+ * Shared frontend primitives. Components below this point use stable class
+ * names so route-level pages can compose the same visual language.
  * ============================================================================ */
 
 @layer components {

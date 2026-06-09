@@ -118,13 +118,13 @@ retryable so `retryOnContention` recovers automatically.
 - The token is passed as `Authorization: Bearer ...` on every
   request.
 
-## What this test does NOT cover (yet)
+## What this test does NOT cover
 
 - Pool initialization + add liquidity + swap end-to-end on a live
   ledger. The `testPoolFullLifecycle` and `testPoolSwapEndToEnd`
   Daml Script tests (`trading-tests/`) cover the same ground at the
-  on-chain level; replicating them through `JsonApiLedger` is the
-  next slice.
+  on-chain level; a JSON Ledger API version can be added as an
+  additional integration test.
 - Order placement through the `OrderFundingRequest` →
   `OrderAllocationRequest` → trader-Accept → `Order_Fund` flow with
   a real wallet. The wallet handoff lives in

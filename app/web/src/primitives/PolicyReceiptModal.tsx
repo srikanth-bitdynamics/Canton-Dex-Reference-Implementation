@@ -1,8 +1,6 @@
-// Policy receipt modal. Direct port of the cdex-primitives.jsx
-// PolicyReceiptModal component. Renders an operator-signed
-// PolicyReceipt for a settled MatchedTrade so the trader (or a
-// regulator / losing dealer) can audit the ranking that produced the
-// trade.
+// Policy receipt modal. Renders an operator-signed PolicyReceipt for a
+// settled MatchedTrade so the trader or counterparty can audit the
+// ranking that produced the trade.
 //
 // On-ledger: the receipt rides in MatchedTrade.policyReceipt, folded
 // into SettlementInfo.meta via PolicyReceipt.daml. This modal renders

@@ -19,10 +19,9 @@ A runnable Canton DEX that:
 
 ## Out of scope
 
-See `docs/architecture-non-goals.md` for the full list. Short version:
-no central limit-order-book matcher, no production order routing, no
-oracle integration, no custody, no compliance/KYC layer. Those belong
-in forks.
+Short version: no central limit-order-book matcher, no production order
+routing, no oracle integration, no custody, and no compliance/KYC layer.
+Those belong in forks or deployment-specific services.
 
 ## Contract surface
 
@@ -113,7 +112,7 @@ only orchestrate and settle flows it is authorized to submit.
 | Issue a new LP token or lifecycle-rich instrument (vested LP, dividend-bearing) | `guide-new-lp-or-instrument.md` |
 | Add a different pricing curve (StableSwap, weighted) | See `examples/stable-pool/`. The Pool template is where you fork; the slice model is curve-agnostic. |
 | Add a different RFQ policy (oracle-weighted, multi-tier) | `Rfq.applyPolicy` holds the sort chain. Bump `policyVersion` and mirror in `app/web/src/services/rfq-policy.ts`. |
-| Add a new admin role | Update the party model in `operator-notes.md`. Add observer entries on the relevant templates (smart-upgrade allows adding observers as Optional fields at the end of the record). |
+| Add a new admin role | Update the party model in `operator-runbook.md`. Add observer entries on the relevant templates (smart-upgrade allows adding observers as Optional fields at the end of the record). |
 | Talk to a different participant | Set `CANTON_LEDGER_URL`, `CANTON_LEDGER_TOKEN`, `CANTON_SYNCHRONIZER`. See `docs/run-testnet.md`. |
 
 ## Smart-upgrade discipline
@@ -147,8 +146,9 @@ Testnet smoke:
 node --import tsx scripts/testnet-v2registry-trade.ts   # real V2-standard trade
 ```
 
-## Likely next moves
+## Extension boundaries
 
-Captured in `docs/architecture-non-goals.md`. Some items there are
-deliberate non-goals; others are "not yet". The file separates the
-two.
+Keep deployment-specific responsibilities outside the reference core:
+custody, KYC/compliance, oracle selection, production routing policy, and
+market surveillance should be implemented by the adopter rather than
+hardcoded into the shared templates.

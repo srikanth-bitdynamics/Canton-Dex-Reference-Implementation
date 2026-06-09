@@ -1,4 +1,4 @@
-# Operator Notes
+# Operator Runbook
 
 Deployment, recovery, and observability guidance for the operator roles
 defined by the reference DEX. It describes the contract surface and the

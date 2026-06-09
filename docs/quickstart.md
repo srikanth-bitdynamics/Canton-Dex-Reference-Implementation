@@ -1,8 +1,8 @@
 # Canton-Dex Quickstart
 
-This is the M1 builder onboarding path. It gets a new evaluator from a fresh
-clone to a passing local test run in under 10 minutes, then walks the four
-runnable workflows they can read and adapt.
+This is the builder onboarding path. It gets a new evaluator from a
+fresh clone to a passing local test run in under 10 minutes, then walks
+the runnable workflows they can read and adapt.
 
 ## Prerequisites
 
@@ -34,15 +34,15 @@ bash scripts/build-trading-surface.sh
 ( cd examples/stable-pool && daml test )
 ```
 
-A successful run prints 31 test results in `trading-tests` and 3 in
-`examples/stable-pool` — all marked `ok`. Any `failed` line means
-something broke.
+A successful run prints all `trading-tests` and `examples/stable-pool`
+scenarios as `ok`. Any `failed` line means something broke.
 
 ## What the four runnable workflow families look like
 
-These are the four families called out in PR 108. Each one corresponds to a
-specific test in `trading-tests/CantonDex/Tests/EndToEndTests.daml` and an
-optional `src/`-stack analog.
+These are the main workflow families covered by the Daml test suite.
+Each one corresponds to tests under
+`trading-tests/CantonDex/Tests/EndToEndTests.daml` or the supporting
+test modules.
 
 ### A. Pair / instrument listing
 

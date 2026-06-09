@@ -1,10 +1,9 @@
 /** @type {import('tailwindcss').Config} */
 //
-// Visual tokens ported from the static HTML / cdex-bundle prototype:
-//   - IBM Plex Sans + IBM Plex Mono typography stack (was Inter / JetBrains Mono)
-//   - dark surface palette tightened to match the prototype's black-on-graphite
-//   - accent palette + status-pill colors aligned with the cdex-primitives
-//     `StatusBadge` map (Settled green, Pending amber, Funded blue, etc.)
+// Visual tokens for the DEX frontend:
+//   - IBM Plex Sans + IBM Plex Mono typography stack
+//   - black-on-graphite surface palette
+//   - accent palette + status-pill colors aligned with StatusBadge
 //   - `bg-2` / `bg-3` row tints for expand-in-place patterns
 //
 // CSS variables flow through `index.css` so the existing component code
@@ -22,7 +21,7 @@ export default {
           hover: '#1C2128',
           muted: '#1C2128',
         },
-        // Status-pill palette. Names match cdex-primitives' StatusBadge cls.
+        // Status-pill palette. Names match StatusBadge classes.
         accent: {
           green: '#3FB950',
           red: '#F85149',
@@ -36,9 +35,8 @@ export default {
           secondary: '#8B949E',
           muted: '#484F58',
         },
-        // Raw bg layers used by the prototype's expand-in-place rows.
-        // bg-2 is one shade lighter than the card; bg-3 is the
-        // expanded-row highlight.
+        // Raw bg layers used by expand-in-place rows. bg-2 is one shade
+        // lighter than the card; bg-3 is the expanded-row highlight.
         bg: {
           2: '#161B22',
           3: '#1C2128',

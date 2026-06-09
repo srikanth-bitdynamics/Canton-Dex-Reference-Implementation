@@ -1,6 +1,6 @@
 // RFQ page — bilateral block trades (Workflow 2 / MatchedTrade).
 //
-// Direct port of `cdex-rfq.jsx` from the static prototype:
+// Page structure:
 //   - full-width active list with expand-in-place detail
 //   - operator policy-driven quote ranking with sort-mode comparison
 //   - compose-modal for new RFQs (dealer whitelist, validity window)

@@ -92,11 +92,11 @@ export class TokenStandardProvider implements WalletProvider {
   private session: PersistedSession | null = null;
 
   constructor(
-    // Kept for typed parity with other providers — the actual submit
-    // path routes through the operator backend's proxy to dodge browser
-    // CORS. The user's JWT is the operator backend's JWT in this
-    // deployment; for real CIP-0103 wallets, the wallet would hold its
-    // own JWT and talk to a participant that allows the dApp's origin.
+    // Kept for typed parity with other providers. Browser submissions
+    // route through the operator backend's ledger proxy so local demos
+    // do not require participant CORS configuration. Production wallet
+    // integrations should hold their own credentials and submit through
+    // a participant endpoint that allows the dApp origin.
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _defaultLedgerUrl: string,
     // eslint-disable-next-line @typescript-eslint/no-unused-vars

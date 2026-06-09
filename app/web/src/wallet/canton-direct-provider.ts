@@ -7,7 +7,7 @@
 //
 // Use cases:
 //   - Dev sessions where the user already has a JWT and a participant URL
-//   - Manual validation against a private testnet
+//   - Manual validation against a controlled testnet
 //   - Smoke testing the dApp without a wallet round-trip
 //
 // NOT suitable for end users: relies on the user trusting a long-lived

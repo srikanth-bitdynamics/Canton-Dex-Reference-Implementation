@@ -190,7 +190,7 @@ backend's command path does not cache cids across requests.
 - It does not assume holding precision is uniform. Each
   `InstrumentConfiguration` may have its own scale; the DEX treats
   amounts as `Decimal` and lets the registry enforce its own limits.
-- It does not implement credential verification logic. The
-  `Credentials.daml` model is a placeholder that satisfies the type
-  shape; production replaces `verifyCredentials` with the registry's
-  real verifier (typically calling out to a credential registry).
+- It does not implement deployment-specific credential verification
+  logic. The `Credentials.daml` model provides the reference type
+  shape; production registries can replace `verifyCredentials` with
+  their own verifier, typically backed by a credential registry.

@@ -104,6 +104,6 @@ pool account.
 
 The LP-token mint/burn legs use the special `mintAccount`/`burnAccount`
 (`owner = None`). `Registry.V2` must support them at all three sites that
-currently assume a real owner: the `Allocation` signatory, the settle
-credit loop, and the allocate factory. `RealRegistry` already supports
+currently assume a real owner: the `Allocation` signatory, settlement
+crediting, and the allocate factory. `RealRegistry` already supports
 these semantics.

@@ -21,7 +21,7 @@ Canton-Net teams will use in production.
 | Layer | What | Where |
 |---|---|---|
 | **Daml templates** | DexPair, Pool, Order, Rfq, MatchedTrade, LPToken, V2 Registry | [`trading/CantonDex/`](trading/CantonDex/) |
-| **Daml tests** | 26+ multi-party Daml-Script tests + token-standard harness | [`trading-tests/`](trading-tests/) |
+| **Daml tests** | Multi-party Daml-Script suites + token-standard harness | [`trading-tests/`](trading-tests/) |
 | **Operator backend** | Node + TypeScript, JSON Ledger API, SQLite indexer, idempotency | [`services/operator-backend/`](services/operator-backend/) |
 | **React frontend** | Vite, TanStack Query, WalletConnect + Token Standard wallet | [`app/web/`](app/web/) |
 | **Testnet harnesses** | Real-asset matched-trade + V2-registry trade smoke tests | [`scripts/testnet-*.ts`](scripts/) |
@@ -123,7 +123,7 @@ There are two audiences:
   for the user journey: connect wallet → swap → add liquidity → place
   order → settle RFQ → view portfolio.
 - **Operators / admins** — see
-  [`docs/operator-notes.md`](docs/operator-notes.md) for the operator
+  [`docs/operator-runbook.md`](docs/operator-runbook.md) for the operator
   journey: deploy DARs → bootstrap registry → create pairs/pools →
   monitor settlement → recover from incidents.
 
@@ -131,12 +131,12 @@ There are two audiences:
 
 ## Project status
 
-| Milestone | Focus | Status |
+| Phase | Focus | Status |
 |---|---|---|
-| **M1** | Settlement-pattern + reference DEX baseline | ✅ Released |
-| **M2** | Constant-product pool + LP + public testnet | ✅ Released |
-| **M3** | Order workflows + builder guide + integration readiness | 🚧 In progress |
-| **M4** | Audit, production hardening, 12-month maintenance | ⏳ Planned |
+| **Phase 1** | Settlement-pattern + reference DEX baseline | ✅ Released |
+| **Phase 2** | Constant-product pool + LP + public testnet | ✅ Released |
+| **Phase 3** | Order workflows + builder guide + integration readiness | 🚧 In progress |
+| **Phase 4** | Audit, production hardening, 12-month maintenance | ⏳ Planned |
 
 What works end-to-end today:
 - ✅ RFQ matched-trade settlement on TradingAppV2 surface
@@ -196,7 +196,7 @@ Builder reference:
 Operations:
 - [`docs/run-testnet.md`](docs/run-testnet.md) — deploy on Canton testnet
 - [`docs/deployment.md`](docs/deployment.md) — Docker-Compose path
-- [`docs/operator-notes.md`](docs/operator-notes.md) — deploy/recover/observe
+- [`docs/operator-runbook.md`](docs/operator-runbook.md) — recover/observe/operate
 - [`docs/testnet-validator-test-plan.md`](docs/testnet-validator-test-plan.md)
 - [`docs/registry-prerequisites.md`](docs/registry-prerequisites.md)
 
@@ -213,13 +213,13 @@ Reference details:
 # Daml stack
 bash scripts/build-vendored-token-standard.sh   # vendored V2 DARs
 bash scripts/build-trading-surface.sh                   # canton-dex DAR
-cd trading-tests && daml test                           # 26+ tests
+cd trading-tests && daml test                           # Daml tests
 
 # Operator backend
 cd services/operator-backend
 npm install
 npm run typecheck
-npm test                                               # 9 tests
+npm test                                               # backend tests
 npm run dev                                            # in-memory dev
 npm start                                              # production (real Canton)
 

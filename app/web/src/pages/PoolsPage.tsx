@@ -1,7 +1,6 @@
-// Pools page — list view with click-through to PoolDetail. Mirrors
-// `cdex-pools.jsx PoolsView` (list ↔ detail switching by selected
-// pool id). Add/remove liquidity flows live in PoolDetail; the list
-// view's "Manage" button just selects the pool.
+// Pools page: list view with click-through to PoolDetail. Add/remove
+// liquidity flows live in PoolDetail; the list view's "Manage" button
+// just selects the pool.
 
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';

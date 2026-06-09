@@ -58,10 +58,8 @@ class RegistryApi app where
 
 -- | Generic type to hold any registry implementation, used for testing multi-registry scenarios.
 --
--- List all functiions explicitly instead of capturing the type-class dictionary, as Daml does
+-- List all functions explicitly instead of capturing the type-class dictionary, as Daml does
 -- not support existential types.
---
--- TODO(tech-debt): define registries directly as an instance of this type.
 data GenericRegistry = GenericRegistry with
   ggetTransferFactory
     : V1.TransferFactory_Transfer

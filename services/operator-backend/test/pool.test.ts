@@ -135,7 +135,7 @@ function mkPool(
     poolId: "BTC-USDC",
     poolStateCid: "#ps:0" as never,
     rulesCid: "#rules:0" as never,
-    lpDvpRulesCid: "#dvp:0" as never,
+    poolLiquidityRulesCid: "#liquidity-rules:0" as never,
     operator: "op" as never,
     lpRegistrar: "lp" as never,
     admin: "ad" as never,
@@ -526,10 +526,10 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.lpPolicyCid, "#lp:match");
   });
 
-  it("requireDvpRules fails loudly when the venue has no PoolLiquidityRules", async () => {
+  it("requirePoolLiquidityRules fails loudly when the venue has no PoolLiquidityRules", async () => {
     const pool = mkPool(0, 0);
     const ledger = new CapturingLedger(pool, mkLpPolicy());
-    // Suppress the PoolLiquidityRules row so lpDvpRulesCid resolves to null.
+    // Suppress the PoolLiquidityRules row so poolLiquidityRulesCid resolves to null.
     const origQuery = ledger.query.bind(ledger);
     ledger.query = (async (filter) => {
       if (filter.templateId === "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules") return [];

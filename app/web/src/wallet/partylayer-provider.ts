@@ -5,16 +5,14 @@
 // `WalletProvider` interface and reuses the shared `composeCommands` translator
 // — the wallet only ever sees Daml command trees, never our intents.
 //
-// DEX-91 (resolved from the published package types): PartyLayer's submit result
-// is `TxReceipt { updateId? }` — it does NOT expose the transaction tree or
-// created-contract ids. So this provider deliberately returns only
-// `primaryCid = updateId` and does NOT populate `createdAllocationCids`; the
-// `/settle` (and the swap / order-fund) calls forward `{ updateId }` and the
-// operator recovers the created `Allocation` cids (and, for LP, the
-// `LiquidityAllocationAcceptance` cid) from that update's tree
-// (`recoverCreatedAllocations` / `recoverDvpAllocations`, DEX-92). All DvP flows
-// — LP add/remove, swap, and order funding — support this operator-discovery
-// path, so an updateId-only wallet can complete them.
+// PartyLayer's submit result is `TxReceipt { updateId? }` — it does NOT expose
+// the transaction tree or created-contract ids. So this provider deliberately
+// returns only `primaryCid = updateId` and does NOT populate
+// `createdAllocationCids`; settle, swap, and order-fund calls forward
+// `{ updateId }`, and the operator recovers the created `Allocation` cids (and,
+// for LP, the `LiquidityAllocationAcceptance` cid) from that update's tree.
+// All DvP flows support this operator-discovery path, so an updateId-only wallet
+// can complete them.
 
 import { composeCommands } from "./commands";
 import type { Holding } from "@/types/contracts";
@@ -323,7 +321,7 @@ export class PartyLayerProvider implements WalletProvider {
         `partylayer-provider: submit returned no updateId${hashSuffix}; operator-discovery requires an updateId`,
       );
     }
-    // updateId-only by design (DEX-91). createdAllocationCids is intentionally
+    // updateId-only by design. createdAllocationCids is intentionally
     // omitted: the operator recovers the created cids from the updateId for all
     // DvP flows (LP add/remove, swap, order funding) via operator-discovery.
     return {

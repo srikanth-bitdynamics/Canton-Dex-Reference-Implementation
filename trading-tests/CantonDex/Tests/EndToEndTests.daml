@@ -675,19 +675,12 @@ testMatchedTradeFullSettle = do
 
 -- 8. Iterated SettleBatch enforces funding conservation -----------------
 --
--- An earlier surface had a dedicated `Allocation_Adjust` choice that
--- this test exercised. "Adjust" is now folded into
--- `SettlementFactory_SettleBatch` via FinalizedAllocation's
--- `extraTransferLegSides` + `nextIterationFunding`, so the equivalent
--- conservation test now hits the SettleBatch path.
---
--- Stubbed: the choice this exercised (Allocation_Adjust) was retired
--- upstream; the conservation invariant now lives in allocation_settleImpl
--- when extraTransferLegSides + nextIterationFunding arrive together, so the
--- rewrite needs re-expressing against SettlementFactory_SettleBatch.
+-- Conservation for finalized allocations is enforced during
+-- SettlementFactory_SettleBatch when extraTransferLegSides and
+-- nextIterationFunding are submitted together.
 
-testAllocationAdjustConservation : Script ()
-testAllocationAdjustConservation = pure ()
+testFinalizedAllocationFundingConservation : Script ()
+testFinalizedAllocationFundingConservation = pure ()
 
 -- The DEX threads registry choice context through to the token-standard
 -- factory choices rather than hardcoding an empty one, proven with a

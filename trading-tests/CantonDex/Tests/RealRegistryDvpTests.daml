@@ -133,14 +133,14 @@ setup lp = do
   -- The TestTokenV2 factory cid + its uniform choice context/disclosure
   -- (basic accounts => one context reused across all TT2 choices).
   now <- getTime
-  let probeSpec = mkSpec ttAdmin (Utils.basicAccount lp)
+  let sampleSpec = mkSpec ttAdmin (Utils.basicAccount lp)
         [ V2.TransferLeg with
-            transferLegId = "probe"; sender = Utils.basicAccount lp
+            transferLegId = "sample"; sender = Utils.basicAccount lp
             receiver = Utils.basicAccount operator; amount = 10.0
             instrumentId = "X"; meta = emptyMetadata ] True
   enriched <- getAllocationFactory ttReg V2.AllocationFactory_Allocate with
     settlement = PM.poolSettlement poolCid operator
-    allocation = probeSpec; requestedAt = now
+    allocation = sampleSpec; requestedAt = now
     inputHoldingCids = []; actors = [lp]; extraArgs = emptyExtraArgs
   [(tokenRulesCid, _)] <- query @TestTokenV2.TokenRules ttAdmin
   ttD <- queryDisclosure' @TestTokenV2.TokenRules ttAdmin tokenRulesCid

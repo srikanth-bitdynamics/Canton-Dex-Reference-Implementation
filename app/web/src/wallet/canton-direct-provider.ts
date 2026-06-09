@@ -7,7 +7,7 @@
 //
 // Use cases:
 //   - Dev sessions where the user already has a JWT and a participant URL
-//   - Internal QA against a private testnet
+//   - Manual validation against a private testnet
 //   - Smoke testing the dApp without a wallet round-trip
 //
 // NOT suitable for end users: relies on the user trusting a long-lived
@@ -21,7 +21,7 @@ import type {
   WalletProvider,
   WalletResult,
 } from "./types";
-import { LpDvpUnsupportedError } from "./types";
+import { LiquidityAllocationUnsupportedError } from "./types";
 
 const LS_KEY = "canton-dex:direct:session";
 
@@ -116,7 +116,7 @@ export class CantonDirectProvider implements WalletProvider {
     if (intent.kind === "add-liquidity" || intent.kind === "remove-liquidity") {
       // Operator-relay path cannot surface the created allocation cids the
       // DvP /settle needs; LP DvP requires a CIP-0103 wallet (SDK provider).
-      throw new LpDvpUnsupportedError(this.id);
+      throw new LiquidityAllocationUnsupportedError(this.id);
     }
     // The Direct provider forwards the intent verbatim to the operator
     // backend's intent-execution endpoint. The backend resolves it into

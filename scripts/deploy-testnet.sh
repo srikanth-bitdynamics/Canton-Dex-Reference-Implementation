@@ -44,9 +44,9 @@ AUTH="Authorization: Bearer ${CANTON_LEDGER_TOKEN}"
 
 if [[ "${DEPLOY_SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> Building DARs"
-  (cd "$ROOT_DIR" && daml build)
-  echo "==> Building edge-case test DARs"
-  (cd "$ROOT_DIR/trading-tests" && daml build) || true
+  bash "$ROOT_DIR/scripts/build-trading-surface.sh"
+  (cd "$ROOT_DIR/trading-tests" && daml build)
+  (cd "$ROOT_DIR/examples/stable-pool" && daml build)
 else
   echo "==> Skipping DAR build (DEPLOY_SKIP_BUILD=1)"
 fi
@@ -65,7 +65,10 @@ upload_dar() {
 
 if [[ "${DEPLOY_SKIP_UPLOAD:-0}" != "1" ]]; then
   echo "==> Uploading DARs to $CANTON_LEDGER_URL"
-  for dar in "$ROOT_DIR"/.daml/dist/*.dar; do
+  for dar in \
+    "$ROOT_DIR"/trading/.daml/dist/*.dar \
+    "$ROOT_DIR"/trading-tests/.daml/dist/*.dar \
+    "$ROOT_DIR"/examples/stable-pool/.daml/dist/*.dar; do
     [[ -f "$dar" ]] && upload_dar "$dar"
   done
 else

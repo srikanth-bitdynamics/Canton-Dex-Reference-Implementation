@@ -138,7 +138,7 @@ submitMultiMustFail'' check actAsParties readAsParties cmds = do
   result <- trySubmit (actAs actAsParties <> readAs readAsParties) cmds
   checkSubmitFailure check result
 
--- | Internal helper to validate that a submission failed with the expected 'FailureStatus'.
+-- | Helper to validate that a submission failed with the expected 'FailureStatus'.
 checkSubmitFailure : Show a => FailureStatusCheck -> Either SubmitError a -> Script ()
 checkSubmitFailure check result = do
   case result of
@@ -148,9 +148,6 @@ checkSubmitFailure check result = do
         None -> pure ()
     Left err -> fail $ "Unexpected non-failure status error: " <> show err
     Right val -> fail $ "Expected failure but command succeeded with value: " <> show val
-
-
--- TODO(#3241): polish this approach and use it in all our `xyzMustFail` tests
 
 data FailureStatusCheck = FailureStatusCheck with
   check : (FailureStatus -> Optional Text)

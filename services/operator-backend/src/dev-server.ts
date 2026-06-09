@@ -307,7 +307,7 @@ async function seed(
   });
 
   // Co-controlled liquidity venue rules so add/remove-liquidity can resolve
-  // a PoolLiquidityRules cid (PoolService.listActive / requireDvpRules).
+  // a PoolLiquidityRules cid (PoolService.listActive / requirePoolLiquidityRules).
   await ledger.submit({
     actAs: [operator, lpRegistrar],
     commandId: "seed-pool-liquidity-rules",

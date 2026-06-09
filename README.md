@@ -151,10 +151,10 @@ What works end-to-end today:
   WalletConnect (CIP-0103), Direct (testnet bearer-token)
 - ✅ React frontend with all 6 trader/operator views
 
-What's coming (M3):
-- Production-grade order matching engine with TradingAppV2 settle
+What's coming:
+- Production-grade order matching engine refinements
 - E2E test harness against a live testnet
-- V2 MainNet migration (when upstream V2 stable lands EOM July 2026)
+- Compatibility updates as Token Standard V2 evolves upstream
 
 ---
 
@@ -175,10 +175,8 @@ These three upstream sources define the design surface:
   that return rolled-forward allocation state).
 
 The repo ships the V2 token-standard DARs under
-[`vendor/splice/`](vendor/splice/). When upstream V2
-stable lands on MainNet (target EOM July 2026 per the canton-foundation
-team), we cut over to upstream — the migration plan is in
-[`docs/v2-migration.md`](docs/v2-migration.md).
+[`vendor/splice/`](vendor/splice/). Keep those packages aligned with the
+upstream token-standard branch used by your deployment.
 
 ---
 
@@ -193,7 +191,6 @@ Builder reference:
 - [`docs/builder-guide.md`](docs/builder-guide.md) — extending the DEX
 - [`docs/guide-add-trading-pair.md`](docs/guide-add-trading-pair.md)
 - [`docs/guide-new-lp-or-instrument.md`](docs/guide-new-lp-or-instrument.md)
-- [`docs/wallet-vs-dapp-boundary.md`](docs/wallet-vs-dapp-boundary.md)
 - [`docs/api-reference.md`](docs/api-reference.md)
 
 Operations:
@@ -203,11 +200,9 @@ Operations:
 - [`docs/testnet-validator-test-plan.md`](docs/testnet-validator-test-plan.md)
 - [`docs/registry-prerequisites.md`](docs/registry-prerequisites.md)
 
-Internals:
+Reference details:
 - [`docs/choice-context-spec.md`](docs/choice-context-spec.md)
-- [`docs/trading-allocation-surface.md`](docs/trading-allocation-surface.md)
 - [`docs/v2-alignment-audit.md`](docs/v2-alignment-audit.md)
-- [`docs/v2-migration.md`](docs/v2-migration.md)
 - [`docs/lp-token-versioning.md`](docs/lp-token-versioning.md)
 - [`docs/source-dependency-status.md`](docs/source-dependency-status.md)
 - [`docs/architecture-non-goals.md`](docs/architecture-non-goals.md)
@@ -254,10 +249,7 @@ PRs welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines and
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for the community standard.
 Security disclosures: see [`SECURITY.md`](SECURITY.md).
 
-The reference implementation is funded under the
-[Canton Foundation Dev Fund](https://github.com/canton-foundation/canton-dev-fund/pull/108)
-(BitDynamics, 1.1M CC). Roadmap and milestones are tracked in
-[Linear](https://linear.app/bitdynamics/team/DEX/).
+This project is maintained as an open-source reference implementation.
 
 ---
 

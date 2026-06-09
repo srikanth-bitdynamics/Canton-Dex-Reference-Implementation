@@ -18,8 +18,8 @@ export interface LedgerSubmitter {
   /**
    * Created events of a committed transaction, by `updateId`, in node order.
    * Used to recover created contract ids operator-side when a wallet returns
-   * only an `updateId` and not the transaction tree (DEX-92 operator-discovery
-   * for PartyLayer / any CIP-0103 wallet whose receipt is updateId-only).
+   * only an `updateId` and not the transaction tree (operator-discovery for
+   * PartyLayer or any CIP-0103 wallet whose receipt is updateId-only).
    * Optional: implementations that can't serve trees omit it.
    */
   treeCreatedEvents?(updateId: string, party: Party): Promise<CreatedEventRef[]>;

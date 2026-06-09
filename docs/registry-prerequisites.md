@@ -112,13 +112,8 @@ inputs each registry choice expects.
 
 ## Force-upgrade for passive holders
 
-Registry issuers reserve the right to force-upgrade holdings to a new
-instrument version. Per Simon Meier (DA) on 2026-05-18:
-
-> I'd expect that the issuer reserves the right to force-upgrade; and
-> they would do so for passive holders. Issuers might not want to
-> actively force-upgrade, as that impacts ongoing trading flows, and
-> costs extra traffic for the issuer.
+Registry issuers may reserve the right to force-upgrade holdings to a new
+instrument version.
 
 What this means in practice for a DEX integrator:
 
@@ -184,9 +179,6 @@ action (pre-allocation greedy selection, post-settlement refresh), so
 incidental force-upgrade exposure is minimal. Where it could bite is
 manual replay tooling that caches a stale holding cid — the operator
 backend's command path does not cache cids across requests.
-
-See [docs/v2-migration.md](v2-migration.md) for how this connects to
-the broader V1→V2 dual-implementation strategy.
 
 ## What the DEX does NOT assume
 

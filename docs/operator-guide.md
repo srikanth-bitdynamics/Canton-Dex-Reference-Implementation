@@ -236,8 +236,8 @@ resume.
 ### Stale idempotency keys
 
 `IdempotentLedger.sweep()` runs hourly to drop keys older than 24h.
-Manual sweep: hit the script via the operator backend's internal
-maintenance hook (not exposed externally).
+Manual sweep: run the operator backend's maintenance command from an
+authenticated operational environment.
 
 ### Recovering a forgotten admin token
 
@@ -268,7 +268,6 @@ operator-tooled.
 ## See also
 
 - [`docs/architecture.md`](architecture.md) — design rationale
-- [`docs/wallet-vs-dapp-boundary.md`](wallet-vs-dapp-boundary.md)
 - [`docs/registry-prerequisites.md`](registry-prerequisites.md)
 - [`docs/operator-notes.md`](operator-notes.md) — incident playbook
 - [`docs/api-reference.md`](api-reference.md) — every HTTP endpoint

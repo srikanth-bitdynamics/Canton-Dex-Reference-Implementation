@@ -3,8 +3,7 @@
 // path against the deployed DEX on a remote testnet.
 //
 // Required env vars:
-//   CANTON_LEDGER_URL    Base URL of the JSON Ledger API, e.g.
-//                        http://5.75.216.246:7575
+//   CANTON_LEDGER_URL    Base URL of the JSON Ledger API.
 //   CANTON_LEDGER_TOKEN  Bearer JWT issued by the participant.
 //   CANTON_OPERATOR      Operator party (DEX market venue).
 //   CANTON_LP_REGISTRAR  LP registrar party.

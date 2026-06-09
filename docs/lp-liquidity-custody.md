@@ -1,7 +1,7 @@
-# LP liquidity custody: operator-custodied, DvP at the boundary
+# LP Liquidity Custody Model
 
-Status: **decided** (2026-05-28). This document defines the
-operator-custodied model for LP liquidity and the boundary DvP flow.
+This document explains how the reference pool represents LP liquidity and how
+assets cross the pool boundary during add- and remove-liquidity workflows.
 
 ## The model
 
@@ -19,9 +19,7 @@ operator-custodied model for LP liquidity and the boundary DvP flow.
   and the pool, so it is a **delivery-versus-payment settle batch**,
   symmetric to how Swap already settles delivery to the swapper.
 
-This explicitly **rejects** an earlier draft's per-LP slice ownership +
-"cancel-the-LP's-slice-back-to-the-LP" model. Slices are not owned; there
-is no `PoolSlice.owner`.
+Slices are not owned by individual LPs; there is no `PoolSlice.owner`.
 
 ## Add (DvP at the boundary)
 
@@ -38,7 +36,7 @@ if `pool.admin == pool.lpRegistrar`):
   allocations**. `nextIterationFunding = {instrument: amount}` is applied
   on the `FinalizedAllocation` **at the settle step** (not pre-funded at
   allocate time — that would trip the coverage check in
-  `Registry.V2`), exactly as `PoolRules_Swap` rolls slices forward. The
+	  `Registry.V2`), matching the pool's slice roll-forward model. The
   returned next-iteration allocation cids become the new
   operator-authored `PoolSlice`s.
 - **LP-mint batch** (`pool.lpRegistrar`): the lp-mint leg

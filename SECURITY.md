@@ -43,9 +43,9 @@ Out of scope:
 - Issues in vendored upstream (`vendor/splice*`); report those to
   upstream directly.
 - General Canton synchronizer or participant bugs; those are
-  Digital Asset's responsibility.
+  outside this reference implementation.
 - Reports that boil down to "the operator is trusted" (the
-  reference assumes this; see `docs/architecture-non-goals.md`).
+  reference assumes this; see `docs/architecture.md`).
 
 ## What we won't do
 

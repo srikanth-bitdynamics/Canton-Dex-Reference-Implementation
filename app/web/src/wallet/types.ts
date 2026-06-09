@@ -292,14 +292,14 @@ export interface WalletAccount {
  * `canton-direct`) and the current `walletconnect` paths. LP DvP needs a
  * CIP-0103 wallet (the `sdk` provider) or the dev `mock`.
  */
-export class LpDvpUnsupportedError extends Error {
+export class LiquidityAllocationUnsupportedError extends Error {
   constructor(public readonly providerId: string) {
     super(
       `LP add/remove liquidity is not supported by the "${providerId}" wallet ` +
         `provider (it cannot return created allocation cids for /settle). ` +
         `Use a CIP-0103 wallet (the SDK provider).`,
     );
-    this.name = "LpDvpUnsupportedError";
+    this.name = "LiquidityAllocationUnsupportedError";
   }
 }
 

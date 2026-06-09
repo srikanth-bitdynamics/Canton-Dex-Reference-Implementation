@@ -1,4 +1,4 @@
-module CantonDex.Tests.LpDvpPoolTests where
+module CantonDex.Tests.PoolLiquidityRulesTests where
 
 -- DvP liquidity at the boundary, against Registry.V2 (holding-tracking +
 -- iterated settlement + mint/burn accounts). Proves:
@@ -725,9 +725,8 @@ testAcceptRejectsUnauthorizedActor = do
     (V2.AllocationRequest_Accept with actors = [fx.operator]; extraArgs = emptyExtraArgs)
   pure ()
 
--- DEX-90: the canonical stock-wallet flow. The LP/holder calls the standard
--- `AllocationRequest_Accept` (as a real wallet like Amulet does), which — per
--- Token Standard V2 — consumes the request, but first leaves an
+-- Canonical stock-wallet flow. The LP/holder calls the standard
+-- `AllocationRequest_Accept`, which consumes the request but first leaves an
 -- operator-visible `LiquidityAllocationAcceptance` receipt. The settle then
 -- binds to that evidence (the live request is gone). Also asserts the two
 -- failure modes: binding to the consumed request fails, and settling with no

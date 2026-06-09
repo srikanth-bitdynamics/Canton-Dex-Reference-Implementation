@@ -188,7 +188,7 @@ A practical model is:
 - each swap adjusts those allocations, settles them, and rolls forward the
   next-iteration allocations
 
-This is the critical architectural move from the Simon guidance: pool inventory
+This is the critical architectural move: pool inventory
 should be allocation-native, not a custom internal balance model with a
 different settlement bridge behind it.
 

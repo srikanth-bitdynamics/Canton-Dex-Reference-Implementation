@@ -1,7 +1,7 @@
-// Operator-discovery recovery (DEX-92): recover created contract ids from a
-// committed transaction by `updateId`, for wallets (e.g. PartyLayer) whose
-// receipt is updateId-only. Shared by the pool DvP settle, swap, and order
-// funding so the tree-walk + template classification live in one place.
+// Operator-discovery recovery: recover created contract ids from a committed
+// transaction by `updateId`, for wallets whose receipt is updateId-only. Shared
+// by the pool DvP settle, swap, and order funding so the tree-walk + template
+// classification live in one place.
 
 import type { Party } from "@canton-dex/registry-client";
 import type { LedgerSubmitter } from "./index.js";

@@ -102,7 +102,8 @@ command trees; the wallet signs and submits.
 Read endpoints (`/v1/pools`, `/v1/trades` etc.) are operator-observed
 and served from the backend's indexer cache.
 
-See `docs/wallet-vs-dapp-boundary.md` for the per-choice contract.
+Keep trader-authority writes in the wallet path; the operator backend should
+only orchestrate and settle flows it is authorized to submit.
 
 ## Extending the reference
 

@@ -28,7 +28,7 @@ boot.
 ## Prerequisites
 
 - `daml` CLI ≥ 3.4 on `$PATH`.
-- The `canton-dex-trading-0.0.1.dar` built (`cd trading && daml build`).
+- The `canton-dex-trading` DAR built (`cd trading && daml build`).
 
 ## Run
 
@@ -38,7 +38,7 @@ boot.
 daml sandbox \
   --port 6865 \
   --json-api-port 7575 \
-  --dar trading/.daml/dist/canton-dex-trading-0.0.1.dar \
+  --dar trading/.daml/dist/canton-dex-trading-0.1.0.dar \
   --dar trading/.daml/dist/splice-api-token-allocation-v2-current.dar \
   --dar trading/.daml/dist/splice-api-token-allocation-instruction-v2-current.dar \
   --dar trading/.daml/dist/splice-api-token-allocation-request-v2-current.dar \

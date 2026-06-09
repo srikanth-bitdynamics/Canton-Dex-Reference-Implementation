@@ -104,7 +104,7 @@ optional `src/`-stack analog.
   component. `LPTokenPolicy` is owned by `lpRegistrar`, uses
   `V2.InstrumentId`, and knows nothing about pools or orders.
 - Tests: `EndToEndTests.daml::testPoolFullLifecycle`, `testPoolSwapEndToEnd`;
-  `LpDvpPoolTests.daml` (DvP add, remove-to-holder, boundary slice).
+  `PoolLiquidityRulesTests.daml` (DvP add, remove-to-holder, boundary slice).
 
 ## What to read first
 

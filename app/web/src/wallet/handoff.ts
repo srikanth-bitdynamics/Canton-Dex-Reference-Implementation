@@ -7,7 +7,7 @@
 // What changed: dispatch now goes through the active WalletProvider from
 // `./store`. The first provider is `WalletConnectProvider`; future
 // providers (CIP-0103 native HTTP gateway, Dfns, Fireblocks, embedded
-// internal wallet, ...) plug into the same interface and the rest of
+// wallet, ...) plug into the same interface and the rest of
 // the dApp does not change.
 //
 // If no wallet is connected when an intent is submitted, the call

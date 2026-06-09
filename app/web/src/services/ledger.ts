@@ -3,7 +3,7 @@
 //     operator can answer
 //   - Wallet handoff for trader-authority writes (place order, add
 //     liquidity, swap allocation creation) -- the dApp NEVER signs as
-//     the trader; see docs/wallet-vs-dapp-boundary.md
+//     the trader.
 //
 // This file is the boundary the rest of the dApp imports from. Adding
 // a new method here is an explicit, auditable extension; the React

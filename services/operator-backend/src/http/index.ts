@@ -31,8 +31,7 @@
 // The dApp polls the ledger event stream directly for live state; the
 // HTTP API is for one-shot orchestration calls only. Trader-authority
 // writes (place order, add liquidity, swap-side allocation creation)
-// do NOT have HTTP endpoints -- they go through the trader's wallet
-// per docs/wallet-vs-dapp-boundary.md.
+// do NOT have HTTP endpoints -- they go through the trader's wallet.
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -1048,10 +1047,9 @@ async function routeRequest(
     return;
   }
 
-  // Operator-discovery recovery (DEX-92): given an updateId-only wallet receipt,
-  // recover the created Allocation cids + the acceptance evidence from the
-  // transaction tree. Exposed for the probe spike (3b) and for clients that
-  // prefer to settle in two steps.
+  // Operator-discovery recovery: given an updateId-only wallet receipt, recover
+  // the created Allocation cids + the acceptance evidence from the transaction
+  // tree. Exposed for clients that prefer to settle in two steps.
   if (method === "POST" && path === "/v1/pools/recover-dvp-allocations") {
     const body = await readJson<{ updateId: string; party: string; expected?: number }>(req);
     const result = await backend.pool.recoverDvpAllocations(

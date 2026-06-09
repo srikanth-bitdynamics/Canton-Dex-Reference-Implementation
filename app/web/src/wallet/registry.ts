@@ -2,7 +2,11 @@
 
 import { CantonDirectProvider } from "./canton-direct-provider";
 import { MockWalletProvider } from "./mock-provider";
-import { PartyLayerProvider, type PartyLayerClient } from "./partylayer-provider";
+import {
+  DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
+  PartyLayerProvider,
+  type PartyLayerClient,
+} from "./partylayer-provider";
 import { SdkProvider } from "./sdk-provider";
 import { TokenStandardProvider } from "./token-standard-provider";
 import { WalletConnectProvider } from "./walletconnect-provider";
@@ -16,18 +20,41 @@ export type WalletProviderId =
   | "canton-direct"
   | "mock";
 
-// Concrete PartyLayer client binding. NULL until `@partylayer/sdk` is installed
-// and a createPartyLayer(...) → PartyLayerClient adapter is provided here. While
-// it is null the PartyLayer provider is NOT registered at all, so it never shows
-// up as a dead/selectable option in the connect menu. To enable:
-//   1. `npm i @partylayer/sdk @partylayer/react @partylayer/adapter-*`
-//   2. set this to a factory, e.g.:
-//        const PARTYLAYER_CLIENT_FACTORY = async () => {
-//          const client = createPartyLayer({ network, appName, adapters: [...] });
-//          return adaptToPartyLayerClient(client); // map to the PartyLayerClient seam
-//        };
-// See docs/wallet-providers.md.
-const PARTYLAYER_CLIENT_FACTORY: (() => Promise<PartyLayerClient>) | null = null;
+function optionalEnv(name: string): string | undefined {
+  const value = import.meta.env[name] as string | undefined;
+  return value && value.trim().length > 0 ? value : undefined;
+}
+
+function optionalEnvList(name: string): string[] | undefined {
+  const values = optionalEnv(name)
+    ?.split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return values && values.length > 0 ? values : undefined;
+}
+
+function optionalPositiveInt(name: string): number | undefined {
+  const raw = optionalEnv(name);
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function partyLayerClientFactory(networkId: string): () => Promise<PartyLayerClient> {
+  return async () => {
+    const { createDexPartyLayerClient } = await import("./partylayer-client");
+    return createDexPartyLayerClient({
+      appName: optionalEnv("VITE_PARTYLAYER_APP_NAME") ?? "Canton DEX",
+      network: optionalEnv("VITE_PARTYLAYER_NETWORK") ?? networkId,
+      walletIds: optionalEnvList("VITE_PARTYLAYER_WALLET_IDS"),
+      registryUrl: optionalEnv("VITE_PARTYLAYER_REGISTRY_URL"),
+      channel:
+        optionalEnv("VITE_PARTYLAYER_REGISTRY_CHANNEL") === "beta"
+          ? "beta"
+          : "stable",
+    });
+  };
+}
 
 let providers: Map<WalletProviderId, WalletProvider> | null = null;
 
@@ -49,13 +76,17 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   const map = new Map<WalletProviderId, WalletProvider>();
 
   if (enableSdk) map.set("sdk", new SdkProvider(packagePrefix));
-  // Register PartyLayer only when BOTH the env flag is on AND the real client
-  // binding exists — otherwise it would be a selectable dead option that throws
-  // on connect. (#review-fix)
-  if (enablePartyLayer && PARTYLAYER_CLIENT_FACTORY) {
+  // PartyLayer is env-gated because it opens external wallet surfaces. The real
+  // SDK client is lazily imported only when selected.
+  if (enablePartyLayer) {
     map.set(
       "partylayer",
-      new PartyLayerProvider(packagePrefix, PARTYLAYER_CLIENT_FACTORY),
+      new PartyLayerProvider(
+        packagePrefix,
+        partyLayerClientFactory(networkId),
+        optionalPositiveInt("VITE_PARTYLAYER_CONNECT_TIMEOUT_MS") ??
+          DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
+      ),
     );
   }
   map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));

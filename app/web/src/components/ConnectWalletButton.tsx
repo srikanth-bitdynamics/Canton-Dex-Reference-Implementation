@@ -13,7 +13,14 @@ import { useEffect, useRef, useState } from "react";
 
 import { DEFAULT_PROVIDER_ID } from "@/wallet/registry";
 import { useWalletStore } from "@/wallet/store";
+import { capabilityFor, dvpBadge } from "@/wallet/capabilities";
 import type { WalletProviderId } from "@/wallet/registry";
+
+const BADGE_TONE: Record<"ok" | "warn" | "muted", string> = {
+  ok: "var(--green, #22c55e)",
+  warn: "var(--amber, #f59e0b)",
+  muted: "var(--text-2)",
+};
 
 function truncate(s: string | null | undefined, head = 6, tail = 4): string {
   if (!s) return "—";
@@ -152,7 +159,7 @@ export function ConnectWalletButton() {
             top: "calc(100% + 6px)",
             right: 0,
             zIndex: 50,
-            maxWidth: 320,
+            maxWidth: 420,
             padding: "8px 10px",
             borderRadius: 6,
             background: "var(--bg-3)",
@@ -160,6 +167,7 @@ export function ConnectWalletButton() {
             color: "var(--text-2)",
             fontSize: 12,
             lineHeight: 1.4,
+            wordBreak: "break-word",
           }}
         >
           {status.message}
@@ -180,37 +188,76 @@ export function ConnectWalletButton() {
             boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
           }}
         >
-          {listProviders().map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => handleConnect(p.id)}
-              style={{
-                display: "block",
-                width: "100%",
-                textAlign: "left",
-                padding: "8px 10px",
-                borderRadius: 6,
-                background: p.id === DEFAULT_PROVIDER_ID
-                  ? "var(--bg-3)"
-                  : "transparent",
-                border: "none",
-                color: "inherit",
-                cursor: "pointer",
-                fontSize: 13,
-              }}
-            >
-              {p.label}
-              {p.id === DEFAULT_PROVIDER_ID && (
-                <span
-                  className="mono text-[10px]"
-                  style={{ marginLeft: 8, color: "var(--text-2)" }}
+          <div
+            style={{
+              padding: "6px 10px 8px",
+              fontSize: 11,
+              lineHeight: 1.4,
+              color: "var(--text-2)",
+              borderBottom: "1px solid var(--border)",
+              marginBottom: 4,
+            }}
+          >
+            You approve the prepared DEX action in your wallet — you never build
+            allocations by hand.
+          </div>
+          {listProviders().map((p) => {
+            const cap = capabilityFor(p.id);
+            const badge = dvpBadge(cap.dvp);
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => handleConnect(p.id)}
+                title={cap.note}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "8px 10px",
+                  borderRadius: 6,
+                  background: p.id === DEFAULT_PROVIDER_ID
+                    ? "var(--bg-3)"
+                    : "transparent",
+                  border: "none",
+                  color: "inherit",
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <span>{p.label}</span>
+                  <span
+                    className="mono text-[10px]"
+                    style={{
+                      marginLeft: "auto",
+                      color: BADGE_TONE[badge.tone],
+                      border: `1px solid ${BADGE_TONE[badge.tone]}`,
+                      borderRadius: 4,
+                      padding: "0 4px",
+                    }}
+                    title={cap.note}
+                  >
+                    {badge.label}
+                  </span>
+                  {p.id === DEFAULT_PROVIDER_ID && (
+                    <span
+                      className="mono text-[10px]"
+                      style={{ color: "var(--text-2)" }}
+                    >
+                      recommended
+                    </span>
+                  )}
+                </div>
+                <div
+                  className="text-[10px]"
+                  style={{ color: "var(--text-2)", marginTop: 2 }}
                 >
-                  recommended
-                </span>
-              )}
-            </button>
-          ))}
+                  {cap.note}
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

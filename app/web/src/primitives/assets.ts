@@ -17,6 +17,7 @@ export interface AssetMeta {
 
 export const ASSETS: Record<string, AssetMeta> = {
   BTC: { sym: 'BTC', name: 'Bitcoin', decimals: 6, glyph: 'btc' },
+  CBTC: { sym: 'CBTC', name: 'Canton Bitcoin', decimals: 6, glyph: 'btc' },
   ETH: { sym: 'ETH', name: 'Ether', decimals: 6, glyph: 'eth' },
   USDC: { sym: 'USDC', name: 'USD Coin', decimals: 2, glyph: 'usdc' },
   CC: { sym: 'CC', name: 'Canton Coin', decimals: 4, glyph: 'cc' },
@@ -30,6 +31,7 @@ export const ASSETS: Record<string, AssetMeta> = {
 
 export const GLYPH_LABEL: Record<string, string> = {
   BTC: '₿',
+  CBTC: '₿',
   ETH: 'Ξ',
   USDC: '$',
   CC: 'C',

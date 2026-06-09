@@ -11,6 +11,7 @@
 
 import { OperatorApi } from './operator-api';
 import { handToWallet } from '@/wallet/handoff';
+import { getProvider } from '@/wallet/registry';
 import { useWalletStore } from '@/wallet/store';
 import type {
   ContractId,
@@ -72,6 +73,21 @@ function connectedParty(): string {
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
 
 const operator = new OperatorApi(API_BASE);
+
+async function getWalletNativeHoldings(owner: string): Promise<Holding[] | null> {
+  const walletState = useWalletStore.getState();
+  const providerId = walletState.activeProviderId;
+  if (!providerId || walletState.account?.party !== owner) return null;
+
+  try {
+    const provider = getProvider(providerId);
+    if (!provider.listHoldings) return null;
+    return await provider.listHoldings(owner);
+  } catch (err) {
+    console.warn('[wallet] falling back to operator holdings read', err);
+    return null;
+  }
+}
 
 export function formatDecimal10(value: number): string {
   return value.toFixed(10);
@@ -370,6 +386,9 @@ export const ledger = {
     }));
   },
   getHoldings: async (owner: string): Promise<Holding[]> => {
+    const walletHoldings = await getWalletNativeHoldings(owner);
+    if (walletHoldings) return walletHoldings;
+
     const raw = await fetchJson<Holding[]>(
       `/v1/holdings?owner=${encodeURIComponent(owner)}`,
     );

@@ -14,6 +14,8 @@
 // whatever provider is currently active. Swapping providers later is
 // adding one file under `./wallet/` and wiring it in the registry.
 
+import type { Holding } from "@/types/contracts";
+
 export type Party = string;
 export type ContractId<_T> = string;
 
@@ -334,4 +336,11 @@ export interface WalletProvider {
    * cancel, timeout, or any submission error.
    */
   submit(intent: WalletIntent): Promise<WalletResult>;
+
+  /**
+   * Optional wallet-native balance source. Providers that can proxy ledger reads
+   * through the connected wallet should return the owner's visible holdings here;
+   * callers fall back to the operator backend when this is absent or fails.
+   */
+  listHoldings?(owner: Party): Promise<Holding[]>;
 }

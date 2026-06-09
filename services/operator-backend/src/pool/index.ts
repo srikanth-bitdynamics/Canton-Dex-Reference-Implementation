@@ -10,6 +10,7 @@ import * as dec from "./decimal.js";
 import type {
   Decimal,
   LiquidityAllocationRequestContract,
+  LiquidityAllocationAcceptanceContract,
   PoolLiquidityRulesContract,
   LPTokenPolicy,
   Party,
@@ -93,7 +94,11 @@ export interface PoolRequestAddLiquidityResult {
 
 export interface PoolSettleAddLiquidityInput {
   poolCid: ContractId<"Pool">;
-  requestCid: ContractId<"LiquidityAllocationRequest">;
+  // The settle binds to EITHER the live request (legacy direct-allocation
+  // flow) OR the acceptance evidence (canonical accept flow, where accept
+  // consumed the request). Exactly one is supplied.
+  requestCid?: ContractId<"LiquidityAllocationRequest"> | null;
+  acceptanceCid?: ContractId<"LiquidityAllocationAcceptance"> | null;
   recipient: Party;
   lpBaseDepositCid: ContractId<"Allocation">;
   lpQuoteDepositCid: ContractId<"Allocation">;
@@ -136,7 +141,9 @@ export interface PoolRequestRemoveLiquidityResult {
 
 export interface PoolSettleRemoveLiquidityInput {
   poolCid: ContractId<"Pool">;
-  requestCid: ContractId<"LiquidityAllocationRequest">;
+  // Bind to the live request OR the acceptance evidence (see settle-add).
+  requestCid?: ContractId<"LiquidityAllocationRequest"> | null;
+  acceptanceCid?: ContractId<"LiquidityAllocationAcceptance"> | null;
   holder: Party;
   lpTokensToRedeem: Decimal;
   knownTotalLpSupply: Decimal;
@@ -429,6 +436,36 @@ export class PoolService {
     return found;
   }
 
+  /**
+   * Discover the acceptance evidence (DEX-90) by its stable, globally-unique
+   * correlation key: the consumed request's cid (`originalRequestCid`). The
+   * operator created the request and knows its cid, so it recovers the matching
+   * evidence even though the request itself is archived. (Keying on
+   * `(lp, settlement.id)` is NOT unique — `poolSettlement` uses a constant
+   * settlement id per pool, so an LP with two pending requests would be
+   * ambiguous.) Used when the wallet result did not surface the acceptance cid.
+   */
+  async discoverAcceptance(
+    requestCid: ContractId<"LiquidityAllocationRequest">,
+  ): Promise<ContractId<"LiquidityAllocationAcceptance">> {
+    const accs = await this.ledger.query<LiquidityAllocationAcceptanceContract>({
+      templateId:
+        "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance",
+      observingParty: this.operatorParty,
+    });
+    const [match, ...rest] = accs.filter((a) => a.originalRequestCid === requestCid);
+    if (!match) {
+      throw new Error(`no LiquidityAllocationAcceptance for requestCid=${requestCid}`);
+    }
+    if (rest.length > 0) {
+      // requestCid is unique, so this should be unreachable; guard anyway.
+      throw new Error(
+        `ambiguous LiquidityAllocationAcceptance for requestCid=${requestCid} (${rest.length + 1} matches)`,
+      );
+    }
+    return match.contractId;
+  }
+
   /** LP quote in fixed-point decimal. */
   private lpQuote(pool: Pool, baseAmount: Decimal, quoteAmount: Decimal): Decimal {
     const b = dec.parseDecimal(baseAmount);
@@ -507,7 +544,7 @@ export class PoolService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        commandId: `lp-add-settle:${input.requestCid}`,
+        commandId: `lp-add-settle:${input.requestCid ?? input.acceptanceCid}`,
         disclosure: [
           ...depositFactories.disclosure,
           ...lpFactories.disclosure,
@@ -524,7 +561,8 @@ export class PoolService {
             poolCid: input.poolCid,
             poolStateCid: pool.poolStateCid,
             lpPolicyCid,
-            requestCid: input.requestCid,
+            requestCid: input.requestCid ?? null,
+            acceptanceCid: input.acceptanceCid ?? null,
             recipient: input.recipient,
             lpBaseDepositCid: input.lpBaseDepositCid,
             lpQuoteDepositCid: input.lpQuoteDepositCid,
@@ -645,7 +683,7 @@ export class PoolService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        commandId: `lp-remove-settle:${input.requestCid}`,
+        commandId: `lp-remove-settle:${input.requestCid ?? input.acceptanceCid}`,
         disclosure: [
           ...depositFactories.disclosure,
           ...lpFactories.disclosure,
@@ -662,7 +700,8 @@ export class PoolService {
             poolCid: input.poolCid,
             poolStateCid: pool.poolStateCid,
             lpPolicyCid,
-            requestCid: input.requestCid,
+            requestCid: input.requestCid ?? null,
+            acceptanceCid: input.acceptanceCid ?? null,
             holder: input.holder,
             lpTokensToRedeem: input.lpTokensToRedeem,
             knownTotalLpSupply: input.knownTotalLpSupply,

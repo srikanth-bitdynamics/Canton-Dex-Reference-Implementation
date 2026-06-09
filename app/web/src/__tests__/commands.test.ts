@@ -2,7 +2,12 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { composeCommands, type ComposeContext } from '@/wallet/commands';
+import {
+  composeCommands,
+  extractCreatedAllocationCids,
+  extractLiquidityAcceptanceCid,
+  type ComposeContext,
+} from '@/wallet/commands';
 import type { WalletIntent, RequestSwapIntent } from '@/wallet/types';
 
 const FIXED_NOW = new Date('2026-05-19T12:00:00.000Z');
@@ -269,7 +274,7 @@ describe('composeCommands', () => {
     meta: { values: {} },
   });
 
-  it('add-liquidity authors 3 allocations (base+quote deposits, LP receipt)', () => {
+  it('add-liquidity = accept + 3 allocations (base+quote deposits, LP receipt)', () => {
     const baseSpec = mkSpec('lp-base-deposit', 'BTC', 'SenderSide', true);
     const quoteSpec = mkSpec('lp-quote-deposit', 'USDC', 'SenderSide', true);
     const receiptSpec = mkSpec('lp-mint', 'BTC-USDC-LP', 'ReceiverSide', false);
@@ -282,32 +287,37 @@ describe('composeCommands', () => {
       lpFactoryCid: 'lpF',
       depositFactoryExtraArgs: allocationFactoryExtraArgs,
       lpFactoryExtraArgs,
+      allocationRequestExtraArgs,
       disclosure,
       baseHoldingCids: ['b1'],
       quoteHoldingCids: ['q1', 'q2'],
     };
     const out = composeCommands(intent, ctx);
     expect(out.actAs).toEqual(['alice::1220a']);
-    expect(out.commands).toHaveLength(3);
-    const cmds = out.commands.map((c) => (c as { ExerciseCommand: { contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand);
+    // Canonical Token Standard V2 shape: accept first, then 3 allocates.
+    expect(out.commands).toHaveLength(4);
+    const all = out.commands.map((c) => (c as { ExerciseCommand: { templateId: string; contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand);
+    // [0] AllocationRequest_Accept on the request, actors + context threaded.
+    expect(all[0].choice).toBe('AllocationRequest_Accept');
+    expect(all[0].contractId).toBe('reqABCDEFGH12');
+    expect(all[0].choiceArgument.actors).toEqual(['alice::1220a']);
+    expect(all[0].choiceArgument.extraArgs).toEqual(allocationRequestExtraArgs);
+    // [1..3] the three AllocationFactory_Allocate exercises.
+    const cmds = all.slice(1);
     expect(cmds.every((c) => c.choice === 'AllocationFactory_Allocate')).toBe(true);
-    // base deposit → deposit factory, base holdings
     expect(cmds[0].contractId).toBe('depF');
     expect(cmds[0].choiceArgument.inputHoldingCids).toEqual(['b1']);
     expect(cmds[0].choiceArgument.allocation).toEqual(baseSpec);
-    // quote deposit → deposit factory, quote holdings
     expect(cmds[1].contractId).toBe('depF');
     expect(cmds[1].choiceArgument.inputHoldingCids).toEqual(['q1', 'q2']);
-    // LP receipt → LP factory, no input holdings
     expect(cmds[2].contractId).toBe('lpF');
     expect(cmds[2].choiceArgument.inputHoldingCids).toEqual([]);
     expect(cmds[2].choiceArgument.allocation).toEqual(receiptSpec);
-    // interface-targeted exercise + actors threaded
-    expect((out.commands[0] as { ExerciseCommand: { templateId: string } }).ExerciseCommand.templateId).toBe(ALLOC_FACTORY_IID);
+    expect(cmds[0].templateId).toBe(ALLOC_FACTORY_IID);
     expect(cmds[0].choiceArgument.actors).toEqual(['alice::1220a']);
   });
 
-  it('remove-liquidity authors 3 allocations (base+quote receipts, LP burn-sender)', () => {
+  it('remove-liquidity = accept + 3 allocations (base+quote receipts, LP burn-sender)', () => {
     const baseRcpt = mkSpec('lp-base-out-0', 'BTC', 'ReceiverSide', false);
     const quoteRcpt = mkSpec('lp-quote-out-0', 'USDC', 'ReceiverSide', false);
     const burnSpec = mkSpec('lp-burn', 'BTC-USDC-LP', 'SenderSide', true);
@@ -320,12 +330,16 @@ describe('composeCommands', () => {
       lpFactoryCid: 'lpF',
       depositFactoryExtraArgs: allocationFactoryExtraArgs,
       lpFactoryExtraArgs,
+      allocationRequestExtraArgs,
       disclosure,
       lpHoldingCids: ['lp1', 'lp2'],
     };
     const out = composeCommands(intent, ctx);
-    expect(out.commands).toHaveLength(3);
-    const cmds = out.commands.map((c) => (c as { ExerciseCommand: { contractId: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand);
+    expect(out.commands).toHaveLength(4);
+    const all = out.commands.map((c) => (c as { ExerciseCommand: { contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand);
+    expect(all[0].choice).toBe('AllocationRequest_Accept');
+    expect(all[0].contractId).toBe('reqREMOVE1234');
+    const cmds = all.slice(1);
     expect(cmds[0].contractId).toBe('depF');
     expect(cmds[0].choiceArgument.inputHoldingCids).toEqual([]);
     expect(cmds[1].contractId).toBe('depF');
@@ -335,6 +349,40 @@ describe('composeCommands', () => {
     expect(cmds[2].contractId).toBe('lpF');
     expect(cmds[2].choiceArgument.inputHoldingCids).toEqual(['lp1', 'lp2']);
     expect(cmds[2].choiceArgument.allocation).toEqual(burnSpec);
+  });
+
+  it('extractCreatedAllocationCids ignores the acceptance-evidence create', () => {
+    const intent: WalletIntent = {
+      kind: 'add-liquidity',
+      requestCid: 'reqABCDEFGH12',
+      settlement,
+      allocations: [
+        mkSpec('lp-base-deposit', 'BTC', 'SenderSide', true),
+        mkSpec('lp-quote-deposit', 'USDC', 'SenderSide', true),
+        mkSpec('lp-mint', 'BTC-USDC-LP', 'ReceiverSide', false),
+      ],
+      depositFactoryCid: 'depF',
+      lpFactoryCid: 'lpF',
+      depositFactoryExtraArgs: allocationFactoryExtraArgs,
+      lpFactoryExtraArgs,
+      allocationRequestExtraArgs,
+      disclosure,
+      baseHoldingCids: ['b1'],
+      quoteHoldingCids: ['q1'],
+    };
+    // A realistic submit result: the acceptance receipt + a locked holding +
+    // the three Allocation creates, interleaved.
+    const tx = {
+      createdEvents: [
+        { contractId: 'acc1', templateId: 'pkg:CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance' },
+        { contractId: 'hold1', templateId: 'pkg:CantonDex.Registry.V2:Holding' },
+        { contractId: 'alloc0', templateId: 'pkg:CantonDex.Registry.V2:Allocation' },
+        { contractId: 'alloc1', templateId: 'pkg:CantonDex.Registry.V2:Allocation' },
+        { contractId: 'alloc2', templateId: 'pkg:CantonDex.Registry.V2:Allocation' },
+      ],
+    };
+    expect(extractCreatedAllocationCids(intent, tx)).toEqual(['alloc0', 'alloc1', 'alloc2']);
+    expect(extractLiquidityAcceptanceCid(tx)).toBe('acc1');
   });
 
   it('post-rfq-quote', () => {

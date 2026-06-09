@@ -17,7 +17,7 @@ import type {
 } from "../src/ledger/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
-import type { LPTokenPolicy, Pool } from "../src/types.js";
+import type { LPTokenPolicy, Pool, LiquidityAllocationAcceptanceContract } from "../src/types.js";
 
 class StubRegistry extends RegistryClient {
   constructor() {
@@ -43,6 +43,7 @@ const LP_ID = { admin: "lp", id: "BTC-USDC-LP" };
 class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
   servePolicy = true;
+  acceptances: LiquidityAllocationAcceptanceContract[] = [];
   private readonly policies: LPTokenPolicy[];
   constructor(private readonly pool: Pool, policyOrPolicies: LPTokenPolicy | LPTokenPolicy[]) {
     this.policies = Array.isArray(policyOrPolicies)
@@ -93,6 +94,8 @@ class CapturingLedger implements LedgerSubmitter {
         } as unknown as T];
       case "CantonDex.Lp.Policy:LPTokenPolicy":
         return this.servePolicy ? (this.policies as unknown as T[]) : [];
+      case "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance":
+        return this.acceptances as unknown as T[];
       default:
         return [];
     }
@@ -259,6 +262,8 @@ describe("PoolService DvP liquidity", () => {
       "settle is co-signed [operator, lpRegistrar]",
     );
     assert.equal(cmd.argument.requestCid, "#req:0");
+    // Legacy direct-allocation path binds to the live request, not evidence.
+    assert.equal(cmd.argument.acceptanceCid, null, "no acceptance evidence on the legacy path");
     assert.equal(cmd.argument.lpBaseDepositCid, "#b:0");
     assert.equal(cmd.argument.lpReceiptCid, "#r:0");
     assert.ok(cmd.argument.baseFactoryCid, "base/quote factory present");
@@ -268,6 +273,66 @@ describe("PoolService DvP liquidity", () => {
     assert.ok(cmd.argument.poolAdminExtraArgs, "pool.admin choice context threaded");
     assert.ok(cmd.argument.lpRegistrarExtraArgs, "lpRegistrar choice context threaded");
     assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");
+  });
+
+  it("settleAddLiquidity binds to acceptance evidence when no live request is supplied", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    // Canonical stock-wallet flow: accept consumed the request, so the dApp
+    // forwards the acceptance evidence cid instead.
+    await svc.settleAddLiquidity({
+      poolCid: pool.contractId,
+      acceptanceCid: "#acc:0" as never,
+      recipient: "lp" as never,
+      lpBaseDepositCid: "#b:0" as never,
+      lpQuoteDepositCid: "#q:0" as never,
+      lpReceiptCid: "#r:0" as never,
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      minLpTokens: "0.0",
+      knownTotalLpSupply: "0.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
+    assert.equal(cmd.argument.acceptanceCid, "#acc:0", "acceptance evidence threaded to the choice");
+    assert.equal(cmd.argument.requestCid, null, "no live request on the acceptance path");
+  });
+
+  it("discoverAcceptance disambiguates by originalRequestCid (lp + settlement.id collide)", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const mkAcc = (
+      contractId: string, originalRequestCid: string,
+    ): LiquidityAllocationAcceptanceContract => ({
+      contractId: contractId as never,
+      operator: "op" as never,
+      lp: "lp" as never,
+      // Same lp AND the same constant settlement id ("DexPool", as poolSettlement
+      // produces in prod) across all rows — only originalRequestCid disambiguates.
+      settlement: { executors: ["op"], id: "DexPool", cid: null, meta: { values: {} } } as never,
+      allocations: [],
+      settleAt: null,
+      acceptedAt: "1970-01-01T00:00:00Z" as never,
+      originalRequestCid: originalRequestCid as never,
+    });
+    ledger.acceptances = [
+      mkAcc("#acc:req-A", "#req:A"),
+      mkAcc("#acc:req-B", "#req:B"),
+    ];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    // The (lp, settlement.id) key would be ambiguous here; the requestCid key is unique.
+    const cid = await svc.discoverAcceptance("#req:B" as never);
+    assert.equal(cid, "#acc:req-B", "matches the unique originalRequestCid");
+
+    await assert.rejects(
+      svc.discoverAcceptance("#req:none" as never),
+      /no LiquidityAllocationAcceptance/,
+      "throws when no acceptance matches the request cid",
+    );
   });
 
   // A pool whose 15 BTC / 300k USDC reserves are split across two slices

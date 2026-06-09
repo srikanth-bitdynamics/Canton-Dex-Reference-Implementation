@@ -142,7 +142,7 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
       poolCid
       poolStateCid = stateCid
       lpPolicyCid = policyCid
-      requestCid = reqCid
+      requestCid = Some reqCid; acceptanceCid = None
       recipient
       lpBaseDepositCid = baseAllocCid
       lpQuoteDepositCid = quoteAllocCid
@@ -817,7 +817,7 @@ testDvpSettleThreadsBothAdminContexts = do
   let settleAdd poolAdminCtx lpRegistrarCtx =
         exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
           expectedPoolId = poolId; poolCid; poolStateCid = stateCid; lpPolicyCid = policyCid
-          requestCid = reqCid; recipient = lpRegistrar
+          requestCid = Some reqCid; acceptanceCid = None; recipient = lpRegistrar
           lpBaseDepositCid = baseCid; lpQuoteDepositCid = quoteCid; lpReceiptCid = receiptCid
           baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid; lpFactoryCid = factoryCid
           baseQuoteSettleCid = settleCid; lpSettleCid = settleCid
@@ -841,7 +841,7 @@ testDvpSettleRequiresPoolAdminContext = do
   submitMultiMustFail [operator, lpRegistrar] [] $
     exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = poolId; poolCid; poolStateCid = stateCid; lpPolicyCid = policyCid
-      requestCid = reqCid; recipient = lpRegistrar
+      requestCid = Some reqCid; acceptanceCid = None; recipient = lpRegistrar
       lpBaseDepositCid = baseCid; lpQuoteDepositCid = quoteCid; lpReceiptCid = receiptCid
       baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid; lpFactoryCid = factoryCid
       baseQuoteSettleCid = settleCid; lpSettleCid = settleCid
@@ -862,7 +862,7 @@ testDvpSettleRequiresLpRegistrarContext = do
   submitMultiMustFail [operator, lpRegistrar] [] $
     exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = poolId; poolCid; poolStateCid = stateCid; lpPolicyCid = policyCid
-      requestCid = reqCid; recipient = lpRegistrar
+      requestCid = Some reqCid; acceptanceCid = None; recipient = lpRegistrar
       lpBaseDepositCid = baseCid; lpQuoteDepositCid = quoteCid; lpReceiptCid = receiptCid
       baseFactoryCid = factoryCid; quoteFactoryCid = factoryCid; lpFactoryCid = factoryCid
       baseQuoteSettleCid = settleCid; lpSettleCid = settleCid

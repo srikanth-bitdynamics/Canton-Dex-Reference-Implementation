@@ -70,10 +70,15 @@ export class MockWalletProvider implements WalletProvider {
     const id = crypto.randomUUID().slice(0, 8);
     // LP DvP intents author 3 allocations; surface deterministic created cids
     // so the dApp's two-call settle flow has something to forward in dev.
-    const createdAllocationCids =
-      intent.kind === "add-liquidity" || intent.kind === "remove-liquidity"
-        ? [`#mock-alloc-${id}-0:0`, `#mock-alloc-${id}-1:0`, `#mock-alloc-${id}-2:0`]
-        : undefined;
+    const isLpDvp = intent.kind === "add-liquidity" || intent.kind === "remove-liquidity";
+    const createdAllocationCids = isLpDvp
+      ? [`#mock-alloc-${id}-0:0`, `#mock-alloc-${id}-1:0`, `#mock-alloc-${id}-2:0`]
+      : undefined;
+    // The canonical accept pairing leaves an acceptance receipt the settle
+    // binds to; surface a deterministic one so the dev two-call flow forwards it.
+    const auxiliaryCids = isLpDvp
+      ? { liquidityAcceptanceCid: `#mock-acceptance-${id}:0` }
+      : undefined;
     const createdHoldingCids =
       intent.kind === "split-holding"
         ? [`#mock-holding-${id}-0:0`, `#mock-holding-${id}-1:0`]
@@ -85,6 +90,7 @@ export class MockWalletProvider implements WalletProvider {
       primaryCid: `#mock-${id}:0`,
       createdAllocationCids,
       createdHoldingCids,
+      auxiliaryCids,
     };
   }
 }

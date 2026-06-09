@@ -26,6 +26,10 @@ import type {
   Pool as PoolType,
 } from '@/types/contracts';
 
+// Empty Token Standard V2 choice context (our own DAR's AllocationRequest
+// needs no external registry context to accept).
+const EMPTY_EXTRA_ARGS: V2ExtraArgs = { context: { values: {} }, meta: { values: {} } };
+
 // Shapes of the operator-backend DvP /request responses.
 interface RequestAddResult {
   requestCid: string;
@@ -588,6 +592,8 @@ export const ledger = {
       lpFactoryCid: req.lpFactoryCid,
       depositFactoryExtraArgs: req.depositFactoryExtraArgs,
       lpFactoryExtraArgs: req.lpFactoryExtraArgs,
+      // The request lives in our own DAR; accept needs no registry context.
+      allocationRequestExtraArgs: EMPTY_EXTRA_ARGS,
       disclosure: [...req.depositFactoryDisclosure, ...req.lpFactoryDisclosure],
       baseHoldingCids: params.baseHoldingCids ?? [],
       quoteHoldingCids: params.quoteHoldingCids ?? [],
@@ -597,11 +603,16 @@ export const ledger = {
       throw new Error('wallet did not return the 3 created allocation cids for add-liquidity');
     }
     const [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] = cids;
+    // Canonical accept flow consumes the request and leaves acceptance
+    // evidence; bind settle to that. Fall back to the live request only if no
+    // acceptance surfaced (legacy direct-allocation path).
+    const liquidityAcceptanceCid = walletRes.auxiliaryCids?.liquidityAcceptanceCid;
     await fetchJson('/v1/pools/add-liquidity/settle', {
       method: 'POST',
       body: JSON.stringify({
         poolCid: params.poolId,
-        requestCid: req.requestCid,
+        requestCid: liquidityAcceptanceCid ? undefined : req.requestCid,
+        acceptanceCid: liquidityAcceptanceCid,
         recipient,
         lpBaseDepositCid,
         lpQuoteDepositCid,
@@ -662,6 +673,7 @@ export const ledger = {
       lpFactoryCid: req.lpFactoryCid,
       depositFactoryExtraArgs: req.depositFactoryExtraArgs,
       lpFactoryExtraArgs: req.lpFactoryExtraArgs,
+      allocationRequestExtraArgs: EMPTY_EXTRA_ARGS,
       disclosure: [...req.depositFactoryDisclosure, ...req.lpFactoryDisclosure],
       lpHoldingCids: holderLpHoldingCids,
     });
@@ -670,11 +682,13 @@ export const ledger = {
       throw new Error('wallet did not return the 3 created allocation cids for remove-liquidity');
     }
     const [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid] = cids;
+    const liquidityAcceptanceCid = walletRes.auxiliaryCids?.liquidityAcceptanceCid;
     return fetchJson<{ result: unknown }>('/v1/pools/remove-liquidity/settle', {
       method: 'POST',
       body: JSON.stringify({
         poolCid: params.poolId,
-        requestCid: req.requestCid,
+        requestCid: liquidityAcceptanceCid ? undefined : req.requestCid,
+        acceptanceCid: liquidityAcceptanceCid,
         holder: params.holder,
         lpTokensToRedeem,
         knownTotalLpSupply: req.knownTotalLpSupply,

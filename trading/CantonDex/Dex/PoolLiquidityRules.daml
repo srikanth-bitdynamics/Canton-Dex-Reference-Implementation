@@ -92,20 +92,48 @@ allocationLegAmount legId cid = do
     Some s -> pure s.amount
     None -> abort ("allocation missing expected leg: " <> legId)
 
--- Bind the settle to one `LiquidityAllocationRequest`.
-validateAgainstRequest
-  : ContractId LAR.LiquidityAllocationRequest
+-- The validation terms the settle binds to, sourced from either the live
+-- request (legacy direct-allocation flow) or the acceptance evidence
+-- (stock-wallet accept flow, where accept has already consumed the request).
+data LiquidityBinding = LiquidityBinding with
+    lp : Party
+    settlement : V2.SettlementInfo
+    allocations : [V2.AllocationSpecification]
+    settleAt : Optional Time
+
+-- Resolve the settle binding. Prefer the live request when supplied; otherwise
+-- fall back to the acceptance evidence. Exactly one must be present.
+resolveBinding
+  : Optional (ContractId LAR.LiquidityAllocationRequest)
+  -> Optional (ContractId LAR.LiquidityAllocationAcceptance)
+  -> Update LiquidityBinding
+resolveBinding mReq mAcc = case (mReq, mAcc) of
+  (Some r, _) -> do
+    req <- fetch r
+    pure LiquidityBinding with
+      lp = req.lp; settlement = req.settlement
+      allocations = req.allocations; settleAt = req.settleAt
+  (None, Some a) -> do
+    acc <- fetch a
+    pure LiquidityBinding with
+      lp = acc.lp; settlement = acc.settlement
+      allocations = acc.allocations; settleAt = acc.settleAt
+  (None, None) ->
+    abort "settle requires a live request or acceptance evidence"
+
+-- Validate the supplied allocations against the resolved binding.
+validateAgainstBinding
+  : LiquidityBinding
   -> Party
   -> V2.SettlementInfo
   -> [ContractId V2.Allocation]
   -> Update ()
-validateAgainstRequest requestCid expectedParty settlement allocCids = do
-  req <- fetch requestCid
-  assertMsg "settle settlement must match the accepted request"
-    (req.settlement == settlement)
+validateAgainstBinding binding expectedParty settlement allocCids = do
+  assertMsg "settle settlement must match the accepted request/evidence"
+    (binding.settlement == settlement)
   assertMsg "request party must match the settle recipient/holder"
-    (req.lp == expectedParty)
-  case req.settleAt of
+    (binding.lp == expectedParty)
+  case binding.settleAt of
     None -> pure ()
     Some deadline -> do
       now <- getTime
@@ -114,7 +142,17 @@ validateAgainstRequest requestCid expectedParty settlement allocCids = do
   forA_ allocCids $ \cid -> do
     v <- view <$> fetch cid
     assertMsg "supplied allocation does not match any spec in the request"
-      (v.allocation `elem` req.allocations)
+      (v.allocation `elem` binding.allocations)
+
+-- Archive whichever binding source(s) were supplied, as settle-time cleanup
+-- (the canonical pattern: the app consumes the request/evidence at settle).
+archiveBinding
+  : Optional (ContractId LAR.LiquidityAllocationRequest)
+  -> Optional (ContractId LAR.LiquidityAllocationAcceptance)
+  -> Update ()
+archiveBinding mReq mAcc = do
+  forA_ mReq archive
+  forA_ mAcc archive
 
 -- Canonical leg + spec builders shared by request creation, tests, and
 -- wallet flows.
@@ -215,7 +253,12 @@ template PoolLiquidityRules with
         poolCid : ContractId Pool
         poolStateCid : ContractId PS.PoolState
         lpPolicyCid : ContractId LP.LPTokenPolicy
-        requestCid : ContractId LAR.LiquidityAllocationRequest
+        requestCid : Optional (ContractId LAR.LiquidityAllocationRequest)
+          -- ^ Live request (legacy direct-allocation flow). Mutually exclusive
+          -- with `acceptanceCid`; exactly one must be present.
+        acceptanceCid : Optional (ContractId LAR.LiquidityAllocationAcceptance)
+          -- ^ Acceptance evidence (stock-wallet flow where accept consumed the
+          -- request).
         recipient : Party
         lpBaseDepositCid : ContractId V2.Allocation
         lpQuoteDepositCid : ContractId V2.Allocation
@@ -240,7 +283,8 @@ template PoolLiquidityRules with
         -- Every LP-authored allocation must be unexpired (the registry does
         -- not enforce settlementDeadline per-settle).
         forA_ [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] enforceAllocationDeadline
-        validateAgainstRequest requestCid recipient (PM.poolSettlement poolCid operator)
+        binding <- resolveBinding requestCid acceptanceCid
+        validateAgainstBinding binding recipient (PM.poolSettlement poolCid operator)
           [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid]
         (pool, state) <- PM.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         -- First-funding (Unfunded) or a funded pool (Active); paused rejects.
@@ -334,7 +378,7 @@ template PoolLiquidityRules with
 
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordMint with amount = lpAmount
 
-        archive requestCid
+        archiveBinding requestCid acceptanceCid
         archive poolStateCid
         newStateCid <- create state with
           status = PS_Active
@@ -358,7 +402,12 @@ template PoolLiquidityRules with
         poolCid : ContractId Pool
         poolStateCid : ContractId PS.PoolState
         lpPolicyCid : ContractId LP.LPTokenPolicy
-        requestCid : ContractId LAR.LiquidityAllocationRequest
+        requestCid : Optional (ContractId LAR.LiquidityAllocationRequest)
+          -- ^ Live request (legacy direct-allocation flow). Mutually exclusive
+          -- with `acceptanceCid`; exactly one must be present.
+        acceptanceCid : Optional (ContractId LAR.LiquidityAllocationAcceptance)
+          -- ^ Acceptance evidence (stock-wallet flow where accept consumed the
+          -- request).
         holder : Party
         lpTokensToRedeem : Decimal
         knownTotalLpSupply : Decimal
@@ -382,7 +431,8 @@ template PoolLiquidityRules with
       do
         forA_ [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
           enforceAllocationDeadline
-        validateAgainstRequest requestCid holder (PM.poolSettlement poolCid operator)
+        binding <- resolveBinding requestCid acceptanceCid
+        validateAgainstBinding binding holder (PM.poolSettlement poolCid operator)
           [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid]
         (pool, state) <- PM.fetchPoolContext operator expectedPoolId poolCid poolStateCid
         assertMsg "Pool must be Active to remove liquidity" (state.status == PS_Active)
@@ -476,7 +526,7 @@ template PoolLiquidityRules with
 
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordBurn with amount = lpTokensToRedeem
 
-        archive requestCid
+        archiveBinding requestCid acceptanceCid
 
         let newBase = state.reserves.baseAmount - baseOut
             newQuote = state.reserves.quoteAmount - quoteOut

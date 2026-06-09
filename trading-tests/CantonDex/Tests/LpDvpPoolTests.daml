@@ -165,7 +165,7 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
   submitMulti [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
-      lpPolicyCid = policyCid; requestCid = reqCid; recipient = lp
+      lpPolicyCid = policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = lp
       lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
@@ -203,7 +203,7 @@ dvpAddWithLp fx stateCid policyCid lp baseAmount quoteAmount lpAmount now = do
   submitMulti [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
-      lpPolicyCid = policyCid; requestCid = reqCid; recipient = lp
+      lpPolicyCid = policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = lp
       lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
@@ -279,7 +279,7 @@ testDvpRemoveDeliversToHolder = do
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = reqCid
+      requestCid = Some reqCid; acceptanceCid = None
       holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
       minBaseOut = 0.0; minQuoteOut = 0.0
       baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
@@ -340,7 +340,7 @@ testStaleQuoteRejected = do
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = bReq; recipient = bob
+      requestCid = Some bReq; acceptanceCid = None; recipient = bob
       lpBaseDepositCid = bBase; lpQuoteDepositCid = bQuote; lpReceiptCid = bRcpt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
@@ -362,7 +362,7 @@ testSettleRequiresCoControl = do
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = coerceContractId addRes.baseSliceCid
+      requestCid = Some (coerceContractId addRes.baseSliceCid); acceptanceCid = None
       holder = alice; lpTokensToRedeem = PM.sqrtDecimal 2000000.0
       knownTotalLpSupply = PM.sqrtDecimal 2000000.0
       minBaseOut = 0.0; minQuoteOut = 0.0
@@ -423,7 +423,7 @@ testDvpMultiSliceRemove = do
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = add2.poolStateCid; lpPolicyCid = add2.lpPolicyCid
-      requestCid = reqCid
+      requestCid = Some reqCid; acceptanceCid = None
       holder = alice; lpTokensToRedeem = total; knownTotalLpSupply = total
       minBaseOut = 0.0; minQuoteOut = 0.0
       baseSliceCids = [add1.baseSliceCid, add2.baseSliceCid]
@@ -503,7 +503,7 @@ testExpiredAddRejected = do
   submitMultiMustFail [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = alice
+      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
       lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
@@ -549,7 +549,7 @@ testExpiredRemoveRejected = do
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = reqCid
+      requestCid = Some reqCid; acceptanceCid = None
       holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
       minBaseOut = 0.0; minQuoteOut = 0.0
       baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
@@ -593,7 +593,7 @@ testSettleRejectsForeignAllocation = do
   submitMultiMustFail [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = alice
+      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
       lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
@@ -635,7 +635,7 @@ testSettleRejectsExpiredRequest = do
   submitMultiMustFail [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = alice
+      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
       lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
@@ -678,7 +678,7 @@ testAddRejectsOverMint = do
   submitMultiMustFail [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = alice
+      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
       lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
@@ -706,13 +706,34 @@ testAddAcceptsWithinDust = do
   state.totalLpSupply === nearLp
   pure ()
 
--- 3b review #1: the canonical DvP flow consumes the request via the settle,
--- NOT via AllocationRequest_Accept (which is standard-conformant but
--- optional). Calling accept out-of-band consumes the request, so a later
--- settle binding to it fails — a documented fail-safe. (The happy-path
--- no-accept flow is covered by testDvpAddLiquidity et al.)
-testAcceptConsumesRequestThenSettleFails : Script ()
-testAcceptConsumesRequestThenSettleFails = do
+-- TSv2 actor authorization: accept must check the actor list. The operator is
+-- the request signatory (so it can see the request) but is NOT the targeted lp;
+-- it must not be able to consume the request with its own actor list.
+testAcceptRejectsUnauthorizedActor : Script ()
+testAcceptRejectsUnauthorizedActor = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  let lpAmount = PM.sqrtDecimal 2000000.0
+  reqCid <- requestAdd fx alice 10.0 200000.0 lpAmount None now
+  let reqIface = toInterfaceContractId @V2.AllocationRequest reqCid
+  -- operator accepting with its own actor list → rejected.
+  submitMustFail fx.operator $ exerciseCmd reqIface
+    (V2.AllocationRequest_Accept with actors = [fx.operator]; extraArgs = emptyExtraArgs)
+  -- alice supplying a non-lp actor list → rejected.
+  submitMustFail alice $ exerciseCmd reqIface
+    (V2.AllocationRequest_Accept with actors = [fx.operator]; extraArgs = emptyExtraArgs)
+  pure ()
+
+-- DEX-90: the canonical stock-wallet flow. The LP/holder calls the standard
+-- `AllocationRequest_Accept` (as a real wallet like Amulet does), which — per
+-- Token Standard V2 — consumes the request, but first leaves an
+-- operator-visible `LiquidityAllocationAcceptance` receipt. The settle then
+-- binds to that evidence (the live request is gone). Also asserts the two
+-- failure modes: binding to the consumed request fails, and settling with no
+-- binding at all fails.
+testAcceptCreatesEvidenceThenSettleSucceeds : Script ()
+testAcceptCreatesEvidenceThenSettleSucceeds = do
   alice <- allocateParty "alice"
   fx <- setup [alice]
   now <- getTime
@@ -737,7 +758,8 @@ testAcceptConsumesRequestThenSettleFails = do
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
 
-  -- alice (the request observer) exercises the standard accept → consumes it.
+  -- alice (the request observer) exercises the standard accept → consumes the
+  -- request and leaves the acceptance evidence.
   _ <- submit alice $ exerciseCmd (toInterfaceContractId @V2.AllocationRequest reqCid)
     (V2.AllocationRequest_Accept with actors = [alice]; extraArgs = emptyExtraArgs)
 
@@ -745,7 +767,8 @@ testAcceptConsumesRequestThenSettleFails = do
   submitMultiMustFail [fx.operator, fx.registry] [] $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = reqCid; recipient = alice
+      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None
+      recipient = alice
       lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
       lpReceiptCid = lpReceipt
       baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
@@ -754,4 +777,43 @@ testAcceptConsumesRequestThenSettleFails = do
       baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
       knownTotalLpSupply = 0.0
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+
+  -- Settling with neither request nor evidence fails (no binding to validate
+  -- against): proves the evidence is load-bearing, not optional.
+  submitMultiMustFail [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+      lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = None
+      recipient = alice
+      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+      lpReceiptCid = lpReceipt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+      knownTotalLpSupply = 0.0
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+
+  -- The operator discovers the acceptance evidence and settles against it.
+  accs <- query @LAR.LiquidityAllocationAcceptance fx.operator
+  accCid <- case accs of
+    ((cid, _) :: _) -> pure cid
+    [] -> abort "accept must leave acceptance evidence"
+  res <- submitMulti [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+      lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = Some accCid
+      recipient = alice
+      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+      lpReceiptCid = lpReceipt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+      knownTotalLpSupply = 0.0
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  res.lpTokensMinted === lpAmount
+  -- The evidence is consumed by settle (cleanup); none left behind.
+  remaining <- query @LAR.LiquidityAllocationAcceptance fx.operator
+  remaining === []
   pure ()

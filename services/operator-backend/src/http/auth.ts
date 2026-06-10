@@ -72,6 +72,11 @@ export function checkAdminAuth(
 // operator token. /v1/admin/* is handled separately by checkAdminAuth.
 // Exact paths plus a few cid-suffixed patterns matched via regex.
 const OPERATOR_WRITE_EXACT = new Set<string>([
+  // The wallet relay forwards arbitrary commands under the operator's JWT;
+  // it must carry the operator token like every other state-changing route.
+  // (It is additionally gated by walletRelayEnabled + a party allowlist in
+  // the handler, but the auth gate is the first line of defence.)
+  "/v1/wallet/submit",
   "/v1/pools/swap",
   "/v1/pools/swap/request",
   "/v1/pools/add-liquidity/request",

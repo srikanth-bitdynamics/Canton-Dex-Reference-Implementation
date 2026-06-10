@@ -78,7 +78,9 @@ export type RegistryErrorKind =
   | "factory-stale"
   | "preapproval-revoked"
   | "transport"
-  | "auth";
+  | "auth"
+  // Response did not match the declared shape (runtime validation, R-1).
+  | "malformed";
 
 export class RegistryError extends Error {
   constructor(

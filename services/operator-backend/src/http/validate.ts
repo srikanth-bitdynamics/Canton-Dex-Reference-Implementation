@@ -24,9 +24,29 @@ export class ValidationError extends Error {
 // Up to 10 fractional digits (Daml Decimal scale). No exponent form.
 const DECIMAL_RE = /^-?\d+(\.\d{1,10})?$/;
 
-// Party id: non-empty, no whitespace. Canton party ids are "hint::fingerprint"
-// but dev/in-memory parties are bare hints, so we only reject whitespace/empty.
-const PARTY_RE = /^\S+$/;
+// Party id format.
+//
+// Real Canton party ids are "<hint>::<fingerprint>" where the fingerprint is a
+// hex namespace key (e.g. "alice::1220ab…"). Accepting any non-whitespace
+// string lets a caller pass an arbitrary label the operator would then actAs
+// on a shared token (finding B-2). By default we require the canonical
+// "hint::hexfingerprint" form so a client cannot smuggle in a bare label.
+//
+// The in-memory dev-server uses bare hints ("trader-demo"); set
+// DEX_ALLOW_BARE_PARTIES=1 (only meaningful alongside DEX_DEV_OPEN) to relax
+// the check there. Production (token configured) always enforces the strict form.
+const STRICT_PARTY_RE = /^[A-Za-z0-9_-]+::[0-9a-fA-F]{8,}$/;
+const BARE_PARTY_RE = /^\S+$/;
+
+function allowBareParties(): boolean {
+  return process.env.DEX_ALLOW_BARE_PARTIES === "1";
+}
+
+function partyMatches(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  if (STRICT_PARTY_RE.test(v)) return true;
+  return allowBareParties() && BARE_PARTY_RE.test(v);
+}
 
 // Contract id: non-empty, no whitespace. Canton cids look like "<hash>:<idx>"
 // or the dev "#<n>:0"; we keep this permissive and only reject empty/spaces.
@@ -61,11 +81,11 @@ export function validateDecimal(o: Record<string, unknown>, field: string): void
 
 export function validateParty(o: Record<string, unknown>, field: string): void {
   const v = o[field];
-  if (typeof v !== "string" || !PARTY_RE.test(v)) {
-    throw new ValidationError(`field ${field} must be a party id`, {
-      field,
-      value: v,
-    });
+  if (!partyMatches(v)) {
+    throw new ValidationError(
+      `field ${field} must be a canonical Canton party id (hint::fingerprint)`,
+      { field, value: v },
+    );
   }
 }
 
@@ -84,7 +104,7 @@ export function isDecimalString(v: unknown): v is string {
 }
 
 export function isPartyString(v: unknown): v is string {
-  return typeof v === "string" && PARTY_RE.test(v);
+  return partyMatches(v);
 }
 
 export function isCidString(v: unknown): v is string {

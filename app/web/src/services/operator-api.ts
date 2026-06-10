@@ -37,7 +37,6 @@ export interface Pool {
   totalLpSupply: Decimal;
   baseSlices: PoolSlice[];
   quoteSlices: PoolSlice[];
-  accumulatedOperatorFees: Record<string, Decimal> | null;
   publicReaders: Party[] | null;
 }
 

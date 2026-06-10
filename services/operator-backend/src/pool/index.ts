@@ -317,8 +317,6 @@ export class PoolService {
         totalLpSupply: state.totalLpSupply,
         baseSlices: poolSlices.filter((s) => s.side === "BaseSide").map(toSlice),
         quoteSlices: poolSlices.filter((s) => s.side === "QuoteSide").map(toSlice),
-        // Retained for wire-shape stability.
-        accumulatedOperatorFees: null,
         publicReaders: state.publicReaders,
       });
     }

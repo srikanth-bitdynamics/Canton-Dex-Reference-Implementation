@@ -82,7 +82,6 @@ export interface Pool {
   totalLpSupply: number;
   baseSlices: PoolSlice[];
   quoteSlices: PoolSlice[];
-  accumulatedOperatorFees: Record<string, number> | null;
   publicReaders: string[] | null;
 }
 

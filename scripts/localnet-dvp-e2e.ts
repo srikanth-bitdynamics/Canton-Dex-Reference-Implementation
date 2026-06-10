@@ -203,7 +203,7 @@ async function main() {
         createArguments: {
           poolId, operator: cfg.operator, lpRegistrar, admin: cfg.admin,
           baseInstrumentId: BASE, quoteInstrumentId: QUOTE, lpInstrumentId,
-          feeBps: "30", operatorFeeBps: "0",
+          feeBps: "30",
         },
       },
     }]);

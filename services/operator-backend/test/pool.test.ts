@@ -69,7 +69,7 @@ class CapturingLedger implements LedgerSubmitter {
           contractId: p.contractId, poolId: p.poolId, operator: p.operator,
           lpRegistrar: p.lpRegistrar, admin: p.admin,
           baseInstrumentId: p.baseInstrumentId, quoteInstrumentId: p.quoteInstrumentId,
-          lpInstrumentId: p.lpInstrumentId, feeBps: p.feeBps, operatorFeeBps: 0,
+          lpInstrumentId: p.lpInstrumentId, feeBps: p.feeBps,
         } as unknown as T];
       case "CantonDex.Dex.PoolState:PoolState":
         return [{
@@ -151,7 +151,6 @@ function mkPool(
     totalLpSupply: Math.sqrt(baseReserve * quoteReserve).toFixed(10) as never,
     baseSlices: [],
     quoteSlices: [],
-    operatorFeeBps: null,
     accumulatedOperatorFees: null,
     publicReaders: null,
   } as unknown as Pool;

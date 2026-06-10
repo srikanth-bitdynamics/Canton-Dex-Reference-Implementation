@@ -116,6 +116,12 @@ const MIGRATIONS: string[] = [
     updatedAt INTEGER NOT NULL
   );
   `,
+  // v5: replay-detection hash of the request args per commandId (DEX-107).
+  // A same-commandId submit with a different argsHash is a replay/conflict
+  // and must be rejected rather than silently re-fired or cache-hit.
+  `
+  ALTER TABLE command_submissions ADD COLUMN argsHash TEXT;
+  `,
 ];
 
 export function openDb(path: string): Db {

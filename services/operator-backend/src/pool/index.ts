@@ -1,12 +1,13 @@
 // Pool orchestration and read models.
 
+import { createHash } from "node:crypto";
+
 import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
 import { recoverCreatedAllocations } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
-import { toFloat } from "../policy/index.js";
 import * as dec from "./decimal.js";
 import type {
   Decimal,
@@ -44,6 +45,20 @@ export interface PoolSwapInput {
   // Operator-discovery path (updateId-only wallet, e.g. PartyLayer): the
   // swapper's single input allocation is recovered from the tree.
   updateId?: string | null;
+  // Optional client-supplied idempotency key. When present the swap
+  // commandId is derived from it; otherwise the commandId is derived
+  // deterministically from the request content (DEX-107).
+  idempotencyKey?: string;
+}
+
+// Short stable hash of request content for deterministic, replay-safe
+// commandIds (DEX-107). Same content => same commandId, so a retried
+// request collapses onto the cached submission instead of re-firing.
+function contentHash(parts: unknown): string {
+  return createHash("sha256")
+    .update(JSON.stringify(parts))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 // The wallet-facing request for a swap: the operator builds (in Daml) the
@@ -182,13 +197,15 @@ export interface RemovePlan {
   quote: RemoveSidePlan;
 }
 
-// Select the head-first slice prefix that covers `target`.
-function selectCoveringPrefix(slices: PoolSlice[], target: number): ContractId<"PoolSlice">[] {
+// Select the head-first slice prefix that covers `target` (a scaled-BigInt
+// decimal). Uses exact decimal arithmetic so the prefix matches the
+// on-ledger reserve accounting (DEX-106).
+function selectCoveringPrefix(slices: PoolSlice[], target: bigint): ContractId<"PoolSlice">[] {
   const out: ContractId<"PoolSlice">[] = [];
-  let acc = 0;
+  let acc = 0n;
   for (const s of slices) {
     out.push(s.contractId);
-    acc += toFloat(s.amount);
+    acc += dec.parseDecimal(s.amount);
     if (acc >= target) break;
   }
   return out;
@@ -300,7 +317,6 @@ export class PoolService {
         totalLpSupply: state.totalLpSupply,
         baseSlices: poolSlices.filter((s) => s.side === "BaseSide").map(toSlice),
         quoteSlices: poolSlices.filter((s) => s.side === "QuoteSide").map(toSlice),
-        operatorFeeBps: cfg.operatorFeeBps,
         // Retained for wire-shape stability.
         accumulatedOperatorFees: null,
         publicReaders: state.publicReaders,
@@ -309,7 +325,12 @@ export class PoolService {
     return combined;
   }
 
-  /** Off-chain quote computation for the constant-product pool. */
+  /**
+   * Off-chain quote computation for the constant-product pool, in exact
+   * fixed-point decimal (10dp, round-half-even) so it agrees with the
+   * on-ledger PoolRules_Swap computation to the last digit (DEX-106). This
+   * is advisory; the on-chain choice re-validates.
+   */
   computeQuote(
     pool: Pool,
     inputInstrumentId: string,
@@ -319,10 +340,14 @@ export class PoolService {
       inputInstrumentId === pool.baseInstrumentId
         ? [pool.reserves.baseAmount, pool.reserves.quoteAmount]
         : [pool.reserves.quoteAmount, pool.reserves.baseAmount];
-    const feeMul = (10000 - pool.feeBps) / 10000;
-    const dx = toFloat(inputAmount) * feeMul;
-    const out = (toFloat(reserveOut) * dx) / (toFloat(reserveIn) + dx);
-    return out.toFixed(10);
+    const rIn = dec.parseDecimal(reserveIn);
+    const rOut = dec.parseDecimal(reserveOut);
+    // feeMul = (10000 - feeBps) / 10000, as a scaled decimal.
+    const feeNum = dec.parseDecimal(String(10000 - pool.feeBps));
+    const feeDen = dec.parseDecimal("10000");
+    const dx = dec.div(dec.mul(dec.parseDecimal(inputAmount), feeNum), feeDen);
+    const out = dec.div(dec.mul(rOut, dx), rIn + dx);
+    return dec.formatDecimal(out);
   }
 
   async swap(input: PoolSwapInput): Promise<unknown> {
@@ -346,13 +371,29 @@ export class PoolService {
     const outputSlices = inputIsBase ? pool.quoteSlices : pool.baseSlices;
     const headInput = inputSlices[0];
     if (!headInput) throw new Error("pool has no input-side slice");
-    const amountOut = toFloat(this.computeQuote(pool, input.inputInstrumentId, input.inputAmount));
+    const amountOut = dec.parseDecimal(
+      this.computeQuote(pool, input.inputInstrumentId, input.inputAmount),
+    );
     const outputSliceCids = selectCoveringPrefix(outputSlices, amountOut);
+    // Deterministic, replay-safe commandId (DEX-107): computed ONCE here,
+    // outside the retry closure, from a client key or the request content.
+    const swapKey =
+      input.idempotencyKey ??
+      contentHash({
+        poolCid: input.poolCid,
+        swapper: input.swapperAccount.owner,
+        inputInstrumentId: input.inputInstrumentId,
+        inputAmount: input.inputAmount,
+        minOutputAmount: input.minOutputAmount,
+        swapperAllocationCid,
+        updateId: input.updateId ?? null,
+      });
+    const commandId = `pool-swap:${input.poolCid}:${swapKey}`;
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         readAs: input.swapperAccount.owner ? [input.swapperAccount.owner] : [],
-        commandId: `pool-swap:${input.poolCid}:${Date.now()}`,
+        commandId,
         disclosure: [...factories.disclosure, ...ctx.disclosure],
         command: {
           kind: "exercise",
@@ -393,7 +434,11 @@ export class PoolService {
       allocationSpec: V2AllocationSpecification;
     }>({
       actAs: [this.operatorParty],
-      commandId: `pool-swap-req:${input.poolCid}:${Date.now()}`,
+      commandId: `pool-swap-req:${input.poolCid}:${contentHash({
+        swapper: input.swapper,
+        inputInstrumentId: input.inputInstrumentId,
+        inputAmount: input.inputAmount,
+      })}`,
       command: {
         kind: "exercise",
         templateId: "CantonDex.Dex.PoolRules:PoolRules",

@@ -19,6 +19,8 @@
 // TTL: rows older than the configured TTL are eligible for overwrite.
 // We also expose a sweep() to delete old rows on demand.
 
+import { createHash } from "node:crypto";
+
 import type { Db } from "./db.js";
 import type {
   LedgerSubmitter,
@@ -30,6 +32,20 @@ import type {
 const PENDING_STALE_MS = 60_000;
 const TTL_MS = 24 * 60 * 60 * 1000;
 
+// Hash of the request args (command + acting parties). Used to detect a
+// replay: same commandId, different content (DEX-107).
+export function hashSubmitRequest(req: SubmitRequest): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        command: req.command,
+        actAs: req.actAs ?? [],
+        readAs: req.readAs ?? [],
+      }),
+    )
+    .digest("hex");
+}
+
 export class IdempotentLedger implements LedgerSubmitter {
   constructor(
     private readonly inner: LedgerSubmitter,
@@ -38,19 +54,31 @@ export class IdempotentLedger implements LedgerSubmitter {
 
   async submit<R>(req: SubmitRequest): Promise<R> {
     const now = Date.now();
+    const argsHash = hashSubmitRequest(req);
     const existing = this.db
       .prepare(
-        "SELECT submittedAt, status, resultJson FROM command_submissions WHERE commandId = ?",
+        "SELECT submittedAt, status, resultJson, argsHash FROM command_submissions WHERE commandId = ?",
       )
       .get(req.commandId) as
       | {
           submittedAt: number;
           status: "pending" | "ok" | "error";
           resultJson: string | null;
+          argsHash: string | null;
         }
       | undefined;
 
     if (existing) {
+      // Replay guard (DEX-107): the same commandId with different args is a
+      // conflict — a deterministic commandId must map to exactly one request.
+      // Reject rather than serving a stale cached result or re-firing. (A
+      // legacy row predating the argsHash column has argsHash === null; treat
+      // it as unknown and let it proceed/overwrite.)
+      if (existing.argsHash !== null && existing.argsHash !== argsHash) {
+        throw new Error(
+          `idempotency: commandId ${req.commandId} replayed with different args`,
+        );
+      }
       if (existing.status === "ok" && existing.resultJson) {
         return JSON.parse(existing.resultJson) as R;
       }
@@ -67,15 +95,16 @@ export class IdempotentLedger implements LedgerSubmitter {
 
     this.db
       .prepare(
-        `INSERT INTO command_submissions (commandId, submittedAt, status)
-         VALUES (?, ?, 'pending')
+        `INSERT INTO command_submissions (commandId, submittedAt, status, argsHash)
+         VALUES (?, ?, 'pending', ?)
          ON CONFLICT(commandId) DO UPDATE SET
            submittedAt = excluded.submittedAt,
            status = 'pending',
            resultJson = NULL,
-           completedAt = NULL`,
+           completedAt = NULL,
+           argsHash = excluded.argsHash`,
       )
-      .run(req.commandId, now);
+      .run(req.commandId, now, argsHash);
 
     try {
       const result = await this.inner.submit<R>(req);

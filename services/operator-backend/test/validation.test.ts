@@ -52,6 +52,9 @@ before(async () => {
       allocationFactoryDisclosure: [],
       network: "canton:test",
     },
+    // Dev-open so the operator-auth gate (DEX-96) does not 401 the write
+    // routes this suite exercises; auth itself is covered in auth.test.ts.
+    devOpen: true,
   });
   baseUrl = handle.url;
   close = handle.close;
@@ -129,5 +132,58 @@ describe("HTTP input validation", () => {
   it("unknown route → 404", async () => {
     const r = await getJson("/v1/does-not-exist");
     assert.equal(r.status, 404);
+  });
+});
+
+// DEX-108: runtime validation of write bodies (decimal/party/cid/presence).
+describe("DEX-108 write-body validation", () => {
+  it("POST /v1/pools/swap rejects a non-decimal inputAmount → 400", async () => {
+    const r = await postJson("/v1/pools/swap", {
+      poolCid: "#p:0",
+      inputInstrumentId: "BTC",
+      inputAmount: "not-a-number",
+      minOutputAmount: "0.0",
+    });
+    assert.equal(r.status, 400);
+    assert.equal((r.body as { code?: string }).code, "bad_request");
+  });
+
+  it("POST /v1/pools/swap rejects a missing required field → 400", async () => {
+    const r = await postJson("/v1/pools/swap", {
+      poolCid: "#p:0",
+      inputInstrumentId: "BTC",
+      // inputAmount missing
+      minOutputAmount: "0.0",
+    });
+    assert.equal(r.status, 400);
+  });
+
+  it("POST /v1/pools/swap/request rejects a whitespace party → 400", async () => {
+    const r = await postJson("/v1/pools/swap/request", {
+      poolCid: "#p:0",
+      swapper: "bad party",
+      inputInstrumentId: "BTC",
+      inputAmount: "1.0",
+    });
+    assert.equal(r.status, 400);
+  });
+
+  it("POST /v1/rfq rejects a non-decimal size → 400", async () => {
+    const r = await postJson("/v1/rfq", {
+      trader: "alice",
+      rfqId: "r1",
+      pair: "BTC/USDC",
+      side: "RFQ_Buy",
+      size: "lots",
+      expiresAt: "2099-01-01T00:00:00Z",
+      whitelist: [],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    assert.equal(r.status, 400);
+  });
+
+  it("POST /v1/orders/fund rejects an empty cid → 400", async () => {
+    const r = await postJson("/v1/orders/fund", { orderCid: "" });
+    assert.equal(r.status, 400);
   });
 });

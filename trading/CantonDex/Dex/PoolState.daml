@@ -13,6 +13,20 @@ module CantonDex.Dex.PoolState where
 -- quote) `PoolSlice.amount` MUST equal `reserves.baseAmount` (resp.
 -- `quoteAmount`). The slices are the source of truth for funds; this
 -- aggregate exists so a swap can price in one transaction.
+--
+-- How that invariant is protected:
+--   * Per-choice delta conservation is asserted ON-LEDGER: every
+--     PoolRules / PoolLiquidityRules choice that rewrites `reserves` asserts
+--     that its reserve delta equals the net slice-amount change the same
+--     choice performs, so a code change cannot silently drift them apart.
+--   * Global reserves<->slices equality is auditable ON-LEDGER via the
+--     nonconsuming `PoolRules_ReconcileState` choice, given the full active
+--     slice set for the pool (completeness of that list is the caller's
+--     responsibility — pair it with the indexer's slice count).
+--   * Residual trust boundary: PoolState is operator-signed, so a malicious
+--     operator could fabricate a parallel PoolState contract. Listing-trust
+--     in the operator is assumed; production hardening would bind state
+--     updates to an admin-co-signed Pool.
 
 import CantonDex.Dex.Pool (PoolId, PoolReserves, PoolStatus (..))
 

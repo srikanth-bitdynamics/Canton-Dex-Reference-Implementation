@@ -1,0 +1,184 @@
+module CantonDex.Tests.PoolStateInvariantTests where
+
+-- DEX-101: PoolState.reserves integrity.
+--
+-- Drives the on-ledger audit anchor `PoolRules_ReconcileState` against the
+-- Registry.V2 fixture from PoolLiquidityRulesTests:
+--   * reconcile succeeds after a full add -> swap -> remove lifecycle,
+--     at every stage, with the then-active slice set;
+--   * reconcile fails when the slice list omits a slice;
+--   * reconcile catches a desynced (operator-fabricated) PoolState;
+--   * reconcile rejects a slice belonging to a different pool.
+
+import DA.Assert
+import DA.List (head)
+import DA.Optional (fromSome)
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+import Splice.Testing.Utils (emptyExtraArgs)
+
+import CantonDex.Dex.Pool
+import CantonDex.Dex.PoolState qualified as PS
+import CantonDex.Dex.PoolSlice qualified as PSlice
+import CantonDex.Dex.PoolRules qualified as PRules
+import CantonDex.Dex.PoolModel qualified as PM
+import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
+import CantonDex.Lp.Instrument qualified as Lp
+import CantonDex.Registry.V2 qualified as RegV2
+import CantonDex.Tests.PoolLiquidityRulesTests qualified as PLT
+import CantonDex.Trading.Utils qualified as Utils
+
+mkRules : PLT.Fixture -> Script (ContractId PRules.PoolRules)
+mkRules fx = submit fx.operator $ createCmd PRules.PoolRules with operator = fx.operator
+
+reconcileCmd
+  : PLT.Fixture -> ContractId PRules.PoolRules -> ContractId PS.PoolState
+  -> [ContractId PSlice.PoolSlice]
+  -> Commands PRules.PoolRules_ReconcileResult
+reconcileCmd fx rulesCid stateCid sliceCids =
+  exerciseCmd rulesCid PRules.PoolRules_ReconcileState with
+    expectedPoolId = fx.poolId
+    poolCid = fx.poolCid
+    poolStateCid = stateCid
+    sliceCids
+
+-- Full lifecycle: add -> swap (through Registry.V2) -> full remove, with a
+-- clean reconcile after every stage.
+testReconcileAfterAddSwapRemove : Script ()
+testReconcileAfterAddSwapRemove = do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  fx <- PLT.setup [alice, bob]
+  rulesCid <- mkRules fx
+  now <- getTime
+
+  -- Add: 10 BTC / 200000 USDC.
+  addRes <- PLT.dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  rec1 <- submit fx.operator $
+    reconcileCmd fx rulesCid addRes.poolStateCid [addRes.baseSliceCid, addRes.quoteSliceCid]
+  rec1.sliceCount === 2
+  rec1.baseTotal === 10.0
+  rec1.quoteTotal === 200000.0
+
+  -- Swap: bob swaps 100 USDC -> BTC through the same Registry.V2.
+  reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+    poolCid = fx.poolCid; swapper = bob
+    inputInstrumentId = "USDC"; inputAmount = 100.0
+  usdcHold <- PLT.mintHolding fx.registry bob "USDC" 100.0
+  swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
+    [toInterfaceContractId usdcHold] now
+  -- readAs registry: the settle fetches the swapper's locked holding
+  -- (admin+owner stakeholders); on a real ledger the wallet discloses it
+  -- (see RealRegistryDvpTests), in-script readAs stands in for that.
+  swapRes <- submitMulti [fx.operator] [fx.registry] $ exerciseCmd rulesCid PRules.PoolRules_Swap with
+    expectedPoolId = fx.poolId; poolCid = fx.poolCid
+    poolStateCid = addRes.poolStateCid
+    swapperAccount = Utils.basicAccount bob
+    inputInstrumentId = "USDC"; inputAmount = 100.0; minOutputAmount = 0.0
+    swapperAllocationCid = swapAlloc
+    inputSliceCid = addRes.quoteSliceCid
+    outputSliceCids = [addRes.baseSliceCid]
+    factoryCid = fx.settleCid
+    extraArgs = emptyExtraArgs
+  let newBaseSliceCid = fromSome swapRes.boundaryOutputSliceCid
+  rec2 <- submit fx.operator $
+    reconcileCmd fx rulesCid swapRes.poolStateCid [swapRes.inputSliceCid, newBaseSliceCid]
+  rec2.sliceCount === 2
+  rec2.baseTotal === 10.0 - swapRes.amountOut
+  rec2.quoteTotal === 200100.0
+
+  -- Remove: alice redeems the full LP position; the pool drains.
+  let lpAmount = PM.sqrtDecimal 2000000.0
+      baseOut = 10.0 - swapRes.amountOut
+      quoteOut = 200100.0
+      aliceAcct = Utils.basicAccount alice
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PM.poolSettlement fx.poolCid fx.operator
+      baseOutLeg = V2.TransferLeg with
+        transferLegId = "lp-base-out-0"; sender = opAcct; receiver = aliceAcct
+        amount = baseOut; instrumentId = "BTC"; meta = emptyMetadata
+      quoteOutLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-out-0"; sender = opAcct; receiver = aliceAcct
+        amount = quoteOut; instrumentId = "USDC"; meta = emptyMetadata
+      burnLeg = Lp.lpBurnLeg fx.registry aliceAcct PLT.lpId lpAmount
+  aliceHs <- query @RegV2.Holding alice
+  let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == PLT.lpId && not h.locked) aliceHs)
+  reqCid <- PLT.requestRemove fx alice [baseOut] [quoteOut] lpAmount None now
+  baseReceipt <- PLT.mkAlloc fx.factoryCid alice settlement
+    (PLT.mkSpec fx.registry aliceAcct [baseOutLeg] False) [] now
+  quoteReceipt <- PLT.mkAlloc fx.factoryCid alice settlement
+    (PLT.mkSpec fx.registry aliceAcct [quoteOutLeg] False) [] now
+  burnSender <- PLT.mkAlloc fx.factoryCid alice settlement
+    (PLT.mkSpec fx.registry aliceAcct [burnLeg] True) [toInterfaceContractId lpHoldCid] now
+  remRes <- submitMulti [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = swapRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+      requestCid = Some reqCid; acceptanceCid = None
+      holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
+      minBaseOut = 0.0; minQuoteOut = 0.0
+      baseSliceCids = [newBaseSliceCid]; quoteSliceCids = [swapRes.inputSliceCid]
+      holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
+      holderBurnSenderCid = burnSender
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  remRes.baseReturned === baseOut
+  remRes.quoteReturned === quoteOut
+  -- Drained pool reconciles against the empty slice set.
+  rec3 <- submit fx.operator $ reconcileCmd fx rulesCid remRes.poolStateCid []
+  rec3.sliceCount === 0
+  rec3.baseTotal === 0.0
+  rec3.quoteTotal === 0.0
+
+-- An incomplete slice list understates the sum and must abort.
+testReconcileFailsOnMissingSlice : Script ()
+testReconcileFailsOnMissingSlice = do
+  alice <- allocateParty "alice"
+  fx <- PLT.setup [alice]
+  rulesCid <- mkRules fx
+  now <- getTime
+  addRes <- PLT.dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  -- Quote slice omitted: quote sum 0 /= 200000.
+  submitMustFail fx.operator $
+    reconcileCmd fx rulesCid addRes.poolStateCid [addRes.baseSliceCid]
+
+-- A desynced PoolState (operator CAN fabricate one — it is the documented
+-- trust boundary) is caught by reconcile against the real slices.
+testReconcileCatchesDesyncedReserves : Script ()
+testReconcileCatchesDesyncedReserves = do
+  alice <- allocateParty "alice"
+  fx <- PLT.setup [alice]
+  rulesCid <- mkRules fx
+  now <- getTime
+  addRes <- PLT.dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  badStateCid <- submit fx.operator $ createCmd PS.PoolState with
+    poolId = fx.poolId; operator = fx.operator; lpRegistrar = fx.registry
+    status = PS_Active
+    reserves = PoolReserves with baseAmount = 999.0; quoteAmount = 200000.0
+    totalLpSupply = PM.sqrtDecimal 2000000.0
+    publicReaders = []
+  submitMustFail fx.operator $
+    reconcileCmd fx rulesCid badStateCid [addRes.baseSliceCid, addRes.quoteSliceCid]
+
+-- A slice from a different pool must be rejected even when the sums would
+-- otherwise be inflated to match.
+testReconcileRejectsForeignSlice : Script ()
+testReconcileRejectsForeignSlice = do
+  alice <- allocateParty "alice"
+  fx <- PLT.setup [alice]
+  rulesCid <- mkRules fx
+  now <- getTime
+  addRes <- PLT.dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  foreignSliceCid <- submit fx.operator $ createCmd PSlice.PoolSlice with
+    poolId = "SOME-OTHER-POOL"
+    operator = fx.operator
+    side = BaseSide
+    allocationCid = coerceContractId addRes.baseSliceCid  -- never fetched
+    amount = 1.0
+  submitMustFail fx.operator $
+    reconcileCmd fx rulesCid addRes.poolStateCid
+      [addRes.baseSliceCid, addRes.quoteSliceCid, foreignSliceCid]

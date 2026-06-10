@@ -1,0 +1,256 @@
+module CantonDex.Tests.RegistryConservationTests where
+
+-- DEX-98: settle-time conservation in Registry.V2.
+--
+-- Proves, against the production reference registry:
+--   * executor-supplied extraTransferLegSides cannot draw more than the
+--     allocation's locked backing (+ this iteration's receiver credits);
+--   * sent + nextIterationFunding is bounded by that backing;
+--   * roll-forward carries REAL locked backing: the next-iteration
+--     allocation is backed by freshly locked holdings worth its funding,
+--     so a second settle within the funding succeeds and one exceeding
+--     it fails;
+--   * surplus backing returns to the authorizer as an unlocked holding;
+--   * the SettlementFactory batch rejects per-instrument sender/receiver
+--     imbalance (an unbacked receiver leg with no matching sender).
+
+import DA.Assert
+import DA.TextMap qualified as TextMap
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+import Splice.Testing.Utils (emptyExtraArgs)
+
+import CantonDex.Registry.V2 qualified as RegV2
+import CantonDex.Trading.Utils qualified as Utils
+
+data Fixture = Fixture with
+    admin : Party
+    alice : Party
+    bob : Party
+    factoryCid : ContractId V2.AllocationFactory
+    settleCid : ContractId V2.SettlementFactory
+    settlement : V2.SettlementInfo
+
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "registry-admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  reg <- submit admin $ createCmd RegV2.Registry with admin; users = [alice, bob]
+  let settlement = V2.SettlementInfo with
+        executors = [admin]
+        id = "conservation-test"
+        cid = None
+        meta = emptyMetadata
+  pure Fixture with
+    admin; alice; bob
+    factoryCid = toInterfaceContractId reg
+    settleCid = toInterfaceContractId reg
+    settlement
+
+mintHolding : Fixture -> Party -> Text -> Decimal -> Script (ContractId RegV2.Holding)
+mintHolding fx owner instrumentId amount =
+  submitMulti [fx.admin, owner] [] $ createCmd RegV2.Holding with
+    admin = fx.admin; owner; instrumentId; amount; locked = False
+
+mkAlloc
+  : Fixture -> Party -> V2.AllocationSpecification -> [ContractId RegV2.Holding]
+  -> Script (ContractId V2.Allocation)
+mkAlloc fx party spec holds = do
+  now <- getTime
+  res <- submit party $ exerciseCmd fx.factoryCid V2.AllocationFactory_Allocate with
+    settlement = fx.settlement; allocation = spec; requestedAt = now
+    inputHoldingCids = map toInterfaceContractId holds
+    actors = [party]; extraArgs = emptyExtraArgs
+  case res.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "allocation must complete"
+
+-- Prefunded (iterated-enabled) allocation locking `amount` of `iid`.
+prefunded : Fixture -> Party -> Text -> Decimal -> Script (ContractId V2.Allocation)
+prefunded fx party iid amount = do
+  hold <- mintHolding fx party iid amount
+  let spec = Utils.mkPrefundedAllocationSpecification
+        fx.admin (Utils.basicAccount party) None (TextMap.fromList [(iid, amount)])
+  mkAlloc fx party spec [hold]
+
+-- Plain (non-iterated) allocation authorizing `legs` for `party`; receiver
+-- sides need no backing.
+sidedAlloc : Fixture -> Party -> [V2.TransferLeg] -> Script (ContractId V2.Allocation)
+sidedAlloc fx party legs = do
+  let acct = Utils.basicAccount party
+      spec = V2.AllocationSpecification with
+        admin = fx.admin
+        authorizer = acct
+        transferLegSides = Utils.legsToSides acct legs
+        settlementDeadline = None
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+  mkAlloc fx party spec []
+
+mkLeg : Text -> Party -> Party -> Decimal -> Text -> V2.TransferLeg
+mkLeg legId sender receiver amount instrumentId = V2.TransferLeg with
+  transferLegId = legId
+  sender = Utils.basicAccount sender
+  receiver = Utils.basicAccount receiver
+  amount; instrumentId
+  meta = emptyMetadata
+
+settleBatchCmd
+  : Fixture -> [V2.TransferLeg] -> [V2.FinalizedAllocation]
+  -> Commands V2.SettlementFactory_SettleBatchResult
+settleBatchCmd fx legs allocations =
+  exerciseCmd fx.settleCid V2.SettlementFactory_SettleBatch with
+    settlement = fx.settlement
+    transferLegs = legs
+    allocations
+    actors = [fx.admin]
+    extraArgs = emptyExtraArgs
+
+unlockedOf : Party -> Text -> Script [Decimal]
+unlockedOf owner iid = do
+  hs <- query @RegV2.Holding owner
+  pure [ h.amount | (_, h) <- hs, h.instrumentId == iid, h.owner == owner, not h.locked ]
+
+lockedOf : Party -> Text -> Script [Decimal]
+lockedOf owner iid = do
+  hs <- query @RegV2.Holding owner
+  pure [ h.amount | (_, h) <- hs, h.instrumentId == iid, h.owner == owner, h.locked ]
+
+-- 1. Executor-supplied extra sender leg exceeding the locked backing -------
+
+testExtraLegBeyondBackingRejected : Script ()
+testExtraLegBeyondBackingRejected = do
+  fx <- setup
+  aliceAlloc <- prefunded fx fx.alice "X" 100.0
+  -- The batch itself is balanced (sender 150 == receiver 150), so the
+  -- failure isolates the PER-ALLOCATION draw-down check.
+  let leg = mkLeg "over-1" fx.alice fx.bob 150.0 "X"
+  bobAlloc <- sidedAlloc fx fx.bob [leg]
+  submitMustFail fx.admin $ settleBatchCmd fx [leg]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [leg]) None
+    , Utils.finalAllocation bobAlloc
+    ]
+
+-- 2. sent + nextIterationFunding exceeding the locked backing --------------
+
+testNextFundingBeyondBackingRejected : Script ()
+testNextFundingBeyondBackingRejected = do
+  fx <- setup
+  aliceAlloc <- prefunded fx fx.alice "X" 100.0
+  let leg = mkLeg "spend-1" fx.alice fx.bob 60.0 "X"
+  bobAlloc <- sidedAlloc fx fx.bob [leg]
+  -- 60 spent + 50 reserved > 100 locked.
+  submitMustFail fx.admin $ settleBatchCmd fx [leg]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [leg])
+        (Some (TextMap.fromList [("X", 50.0)]))
+    , Utils.finalAllocation bobAlloc
+    ]
+
+-- 3. Roll-forward carries locked backing; the next iteration settles
+--    within its funding ----------------------------------------------------
+
+testRollForwardCarriesLockedBacking : Script ()
+testRollForwardCarriesLockedBacking = do
+  fx <- setup
+  aliceAlloc <- prefunded fx fx.alice "X" 100.0
+  let leg1 = mkLeg "iter-1" fx.alice fx.bob 40.0 "X"
+  bob1 <- sidedAlloc fx fx.bob [leg1]
+  res1 <- submit fx.admin $ settleBatchCmd fx [leg1]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [leg1])
+        (Some (TextMap.fromList [("X", 60.0)]))
+    , Utils.finalAllocation bob1
+    ]
+  nextCid <- case Utils.nextIterationAllocationCids res1 of
+    [Some cid, None] -> pure cid
+    _ -> abort "expected exactly the alice allocation to roll forward"
+
+  -- The rolled-forward allocation's view exposes its locked backing, and
+  -- the backing exists as a LOCKED holding worth exactly the funding.
+  Some v <- queryInterfaceContractId @V2.Allocation fx.admin nextCid
+  length v.holdingCids === 1
+  aliceLocked <- lockedOf fx.alice "X"
+  aliceLocked === [60.0]
+
+  -- Second settle within the funding succeeds; bob ends with 40 + 60.
+  let leg2 = mkLeg "iter-2" fx.alice fx.bob 60.0 "X"
+  bob2 <- sidedAlloc fx fx.bob [leg2]
+  _ <- submit fx.admin $ settleBatchCmd fx [leg2]
+    [ Utils.mkFinalizedAllocation nextCid
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [leg2]) None
+    , Utils.finalAllocation bob2
+    ]
+  bobAmounts <- unlockedOf fx.bob "X"
+  sum bobAmounts === 100.0
+  -- Alice's backing is fully consumed: nothing locked, nothing returned.
+  aliceLockedAfter <- lockedOf fx.alice "X"
+  aliceLockedAfter === []
+  aliceUnlockedAfter <- unlockedOf fx.alice "X"
+  aliceUnlockedAfter === []
+
+-- 4. A second settle EXCEEDING the rolled-forward funding fails ------------
+
+testSecondIterationCannotExceedFunding : Script ()
+testSecondIterationCannotExceedFunding = do
+  fx <- setup
+  aliceAlloc <- prefunded fx fx.alice "X" 100.0
+  let leg1 = mkLeg "iter-1" fx.alice fx.bob 40.0 "X"
+  bob1 <- sidedAlloc fx fx.bob [leg1]
+  res1 <- submit fx.admin $ settleBatchCmd fx [leg1]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [leg1])
+        (Some (TextMap.fromList [("X", 60.0)]))
+    , Utils.finalAllocation bob1
+    ]
+  nextCid <- case Utils.nextIterationAllocationCids res1 of
+    [Some cid, None] -> pure cid
+    _ -> abort "expected exactly the alice allocation to roll forward"
+  -- 70 > the 60 rolled forward; before DEX-98 this minted from thin air.
+  let leg2 = mkLeg "iter-2" fx.alice fx.bob 70.0 "X"
+  bob2 <- sidedAlloc fx fx.bob [leg2]
+  submitMustFail fx.admin $ settleBatchCmd fx [leg2]
+    [ Utils.mkFinalizedAllocation nextCid
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [leg2]) None
+    , Utils.finalAllocation bob2
+    ]
+
+-- 5. Surplus backing returns unlocked to the authorizer --------------------
+
+testSurplusReturnedUnlocked : Script ()
+testSurplusReturnedUnlocked = do
+  fx <- setup
+  aliceAlloc <- prefunded fx fx.alice "X" 100.0
+  let leg = mkLeg "partial-1" fx.alice fx.bob 40.0 "X"
+  bobAlloc <- sidedAlloc fx fx.bob [leg]
+  _ <- submit fx.admin $ settleBatchCmd fx [leg]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [leg]) None
+    , Utils.finalAllocation bobAlloc
+    ]
+  -- locked 100 - sent 40 - next 0 = 60 change, unlocked, back to alice.
+  aliceUnlocked <- unlockedOf fx.alice "X"
+  aliceUnlocked === [60.0]
+  aliceLocked <- lockedOf fx.alice "X"
+  aliceLocked === []
+  bobAmounts <- unlockedOf fx.bob "X"
+  bobAmounts === [40.0]
+
+-- 6. Batch-level balance: a receiver leg with no matching sender (and no
+--    mint allocation) is an unbacked credit and aborts the batch ----------
+
+testBatchRejectsUnbalancedReceiverLeg : Script ()
+testBatchRejectsUnbalancedReceiverLeg = do
+  fx <- setup
+  let leg = mkLeg "unbacked-1" fx.alice fx.bob 50.0 "X"
+  -- Only the receiver authorizes; sender side appears in no allocation.
+  bobAlloc <- sidedAlloc fx fx.bob [leg]
+  submitMustFail fx.admin $ settleBatchCmd fx [leg]
+    [ Utils.finalAllocation bobAlloc ]

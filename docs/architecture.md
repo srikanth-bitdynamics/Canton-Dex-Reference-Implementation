@@ -236,6 +236,32 @@ longer stores an unbounded slice list.
 The slice's `amount` is reconciled with the underlying allocation's funding on
 every choice that touches it.
 
+### Reserves integrity and the pool trust boundary
+
+`PoolState.reserves` is derived pricing state; the slices are the source of
+truth for funds. The invariant `reserves == sum of active slice amounts per
+side` is protected at three levels:
+
+- **Per-choice delta conservation, asserted on-ledger.** Every
+  `PoolRules` / `PoolLiquidityRules` choice that rewrites `reserves` asserts
+  inside the choice that its reserve delta equals the net slice-amount change
+  the same choice performs (created slice amounts minus consumed/drained
+  slice amounts). These are assertions on the choice's own arithmetic — cheap
+  and contention-free — so a future code change cannot silently let reserves
+  and slices drift apart.
+- **Global equality, auditable on-ledger on demand.** The nonconsuming
+  `PoolRules_ReconcileState` choice takes the `PoolState` and the full list
+  of active `PoolSlice` contract IDs, verifies every slice belongs to the
+  pool, and asserts the per-side sums equal the reserves exactly. It does not
+  run on the hot path. Completeness of the slice list is the caller's
+  responsibility: an omitted slice understates the sum, so a clean reconcile
+  proves `reserves <= sum over all active slices`; pair the call with the
+  indexer's active-slice count to close that gap.
+- **Residual trust boundary.** `PoolState` is operator-signed, so a malicious
+  operator could fabricate a parallel `PoolState` with arbitrary reserves.
+  Listing-trust in the operator is assumed by this reference implementation;
+  production hardening would bind state updates to an admin-co-signed `Pool`.
+
 ### LP token layer
 
 The DEX should mint its own LP token instrument.

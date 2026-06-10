@@ -3,6 +3,7 @@ module CantonDex.Dex.PoolRules where
 -- Operational rules for one pool venue.
 
 import DA.Foldable (forA_)
+import DA.List (dedup)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
@@ -35,6 +36,13 @@ data PoolRules_SwapResult = PoolRules_SwapResult with
 data PoolRules_RequestSwapResult = PoolRules_RequestSwapResult with
     settlement : V2.SettlementInfo
     allocationSpec : V2.AllocationSpecification
+  deriving (Eq, Show)
+
+-- Result of PoolRules_ReconcileState: the audited slice totals.
+data PoolRules_ReconcileResult = PoolRules_ReconcileResult with
+    sliceCount : Int
+    baseTotal : Decimal
+    quoteTotal : Decimal
   deriving (Eq, Show)
 
 -- The constant-product math, settlement descriptor, pool-context guard, and
@@ -192,6 +200,25 @@ template PoolRules with
               then (state.reserves.baseAmount + inputAmount, state.reserves.quoteAmount - amountOut)
               else (state.reserves.baseAmount - amountOut, state.reserves.quoteAmount + inputAmount)
 
+        -- DEX-101: per-choice delta conservation. The reserve delta this
+        -- choice writes must equal the net slice-amount change it performs
+        -- (created slice amounts minus consumed slice amounts), so a future
+        -- code change cannot silently drift reserves and slices apart.
+        let outputConsumedTotal =
+              foldl (\acc (_, s) -> acc + s.amount) 0.0 draw.fullyConsumed
+                + (case draw.boundary of Some (_, s, _, _) -> s.amount; None -> 0.0)
+            outputLeftover = case draw.boundary of Some (_, _, _, lo) -> lo; None -> 0.0
+            outputSliceDelta = outputLeftover - outputConsumedTotal
+            inputSliceDelta = inputAmount  -- new input slice amount - old
+        assertMsg "swap: net output-slice delta must equal -amountOut"
+          (outputSliceDelta == negate amountOut)
+        assertMsg "swap: base reserve delta must equal net base slice delta"
+          (newBaseReserve - state.reserves.baseAmount
+            == (if inputIsBase then inputSliceDelta else outputSliceDelta))
+        assertMsg "swap: quote reserve delta must equal net quote slice delta"
+          (newQuoteReserve - state.reserves.quoteAmount
+            == (if inputIsBase then outputSliceDelta else inputSliceDelta))
+
         archive poolStateCid
         newStateCid <- create state with
           reserves = PoolReserves with baseAmount = newBaseReserve; quoteAmount = newQuoteReserve
@@ -227,3 +254,48 @@ template PoolRules with
         assertMsg "Pool must be Paused to resume" (state.status == PS_Paused)
         archive poolStateCid
         create state with status = PS_Active
+
+    -- DEX-101: on-demand reserves<->slices reconcile (the on-ledger audit
+    -- anchor). Fetches every supplied slice, asserts each belongs to this
+    -- pool/operator, and asserts the per-side amount sums equal
+    -- `reserves.baseAmount` / `reserves.quoteAmount` EXACTLY. Runs off the
+    -- hot path (nonconsuming, touches no slice state), so an operator or
+    -- auditor can exercise it periodically without contending with swaps.
+    --
+    -- Completeness of `sliceCids` is the CALLER's responsibility: an omitted
+    -- slice understates the sums, so a clean reconcile proves
+    -- `reserves <= sum over ALL active slices`. Pair the call with the
+    -- indexer's active-slice count for the pool to close that gap.
+    -- Duplicate cids are deduplicated defensively.
+    nonconsuming choice PoolRules_ReconcileState : PoolRules_ReconcileResult
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PoolState
+        sliceCids : [ContractId PoolSlice]
+          -- ^ The FULL list of active slices for the pool (indexer-supplied).
+      controller operator
+      do
+        (pool, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
+        let uniqueCids = dedup sliceCids
+        slices <- forA uniqueCids fetch
+        forA_ slices $ \s -> do
+          assertMsg "reconcile: slice belongs to a different pool"
+            (s.poolId == pool.poolId)
+          assertMsg "reconcile: slice operator mismatch" (s.operator == operator)
+        let baseTotal = foldl (\acc s -> acc + s.amount) 0.0
+              (filter (\s -> s.side == BaseSide) slices)
+            quoteTotal = foldl (\acc s -> acc + s.amount) 0.0
+              (filter (\s -> s.side == QuoteSide) slices)
+        assertMsg
+          ("reconcile: base slice sum " <> show baseTotal
+            <> " does not equal base reserve " <> show state.reserves.baseAmount)
+          (baseTotal == state.reserves.baseAmount)
+        assertMsg
+          ("reconcile: quote slice sum " <> show quoteTotal
+            <> " does not equal quote reserve " <> show state.reserves.quoteAmount)
+          (quoteTotal == state.reserves.quoteAmount)
+        pure PoolRules_ReconcileResult with
+          sliceCount = length slices
+          baseTotal
+          quoteTotal

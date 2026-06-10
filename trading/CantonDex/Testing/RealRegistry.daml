@@ -98,6 +98,12 @@ template RealAllocation with
 
       -- The settlement factory does the credits; this side just archives
       -- self + its locked holdings.
+      --
+      -- HARNESS LIMITATION: returns `Settled None` unconditionally —
+      -- `nextIterationFunding` / iterated settlement is NOT modeled, and no
+      -- settle-time conservation (draw-down or roll-forward backing) is
+      -- enforced. The production reference `CantonDex.Registry.V2` enforces
+      -- both; do not use this harness for pool-slice (roll-forward) flows.
       allocation_settleImpl self _arg = do
         archive self
         forA_ lockedHoldings $ \cid -> archive cid
@@ -188,6 +194,10 @@ template RealRegistry with
         -- deliberate no-op that trusts the caller (also why mint "locks
         -- nothing" works). A production registry MUST enforce per-instrument
         -- coverage; "tests pass" does not mean coverage is validated.
+        -- The production reference `CantonDex.Registry.V2` enforces coverage
+        -- at allocate time AND at settle time (draw-down + roll-forward
+        -- backing + batch-level sender/receiver balance); this harness
+        -- enforces none of that.
         forA_ sendSides $ \_side -> pure ()
         now <- getTime
         allocationCid <- create RealAllocation with

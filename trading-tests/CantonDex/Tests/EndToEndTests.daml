@@ -758,6 +758,85 @@ testFinalizedAllocationFundingConservation = do
   OME.remainderFunding sellerAcct sellerBudget fullLegs === None
   pure ()
 
+-- 8b. OrderMatchExecution enforces the limit price at match time (D-1) -----
+--
+-- A resting bid @ 100 and ask @ 90 cross; any cleared price must sit in
+-- [90, 100]. OrderMatchExecution_Execute fetches both orders and refuses a
+-- fill outside that band (or with mismatched instruments / quantities /
+-- accounts), so a buggy or malicious matcher cannot fill a resting order on
+-- terms its owner never agreed to.
+testOrderMatchEnforcesLimitPrice : Script ()
+testOrderMatchEnforcesLimitPrice = do
+  operator <- allocateParty "ome-op"
+  admin <- allocateParty "ome-admin"
+  buyer <- allocateParty "ome-bid"
+  seller <- allocateParty "ome-ask"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, buyer, seller]
+
+  let buyerAcct = Utils.basicAccount buyer
+      sellerAcct = Utils.basicAccount seller
+      fillQty = 4.0
+
+  -- Resting bid: willing to pay up to 100 quote/base for 10 base.
+  buyOrderCid <- submit operator $ createCmd Order.Order with
+    operator; trader = buyer; admin
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    side = Order.Bid; limitPrice = 100.0; remainingQty = 10.0
+    expiry = None; status = Order.OS_Funded
+    allocationCid = None; settlementRef = Order.makeOrderRefFromText "bid"
+  -- Resting ask: willing to sell down to 90 quote/base for 10 base.
+  sellOrderCid <- submit operator $ createCmd Order.Order with
+    operator; trader = seller; admin
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    side = Order.Ask; limitPrice = 90.0; remainingQty = 10.0
+    expiry = None; status = Order.OS_Funded
+    allocationCid = None; settlementRef = Order.makeOrderRefFromText "ask"
+
+  -- Each side prefunds an allocation (bid locks quote, ask locks base).
+  let mkAlloc party acct funding =
+        let settlement = V2.SettlementInfo with
+              executors = [operator]; id = "OrderMatch-m1"; cid = None
+              meta = emptyMetadata
+            arg = WC.mkPrefundedAllocationFactoryAllocate
+              admin acct settlement None funding now [] [party] emptyExtraArgs
+        in do
+          r <- submit party $ exerciseCmd factoryCid arg
+          case r.output of
+            V2.AllocationInstructionResult_Completed cid -> pure cid
+            _ -> abort "alloc must complete"
+  buyerAllocationCid <- mkAlloc buyer buyerAcct (TextMap.fromList [("USDC", 400.0)])
+  sellerAllocationCid <- mkAlloc seller sellerAcct (TextMap.fromList [("BTC", 10.0)])
+
+  let mkExec fillPrice = OME.OrderMatchExecution with
+        operator; matchId = "m1"
+        match = OME.MatchedOrderPair with
+          buyerAccount = buyerAcct; sellerAccount = sellerAcct
+          baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+          fillQty; fillPrice
+        buyOrderCid; sellOrderCid
+        buyerAllocationCid; sellerAllocationCid
+        buyerCommittedFunding = TextMap.fromList [("USDC", 400.0)]
+        sellerCommittedFunding = TextMap.fromList [("BTC", 10.0)]
+
+  -- Above the bid limit: the buyer would overpay -> rejected.
+  tooHigh <- submit operator $ createCmd (mkExec 101.0)
+  submitMustFail operator $ exerciseCmd tooHigh OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  -- Below the ask limit: the seller would undersell -> rejected.
+  tooLow <- submit operator $ createCmd (mkExec 89.0)
+  submitMustFail operator $ exerciseCmd tooLow OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  -- Inside the band [90, 100]: accepted, settles both allocations.
+  ok <- submit operator $ createCmd (mkExec 95.0)
+  res <- submit operator $ exerciseCmd ok OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+  length res.settleResult.allocationSettleResults === 2
+  pure ()
+
 -- The DEX threads registry choice context through to the token-standard
 -- factory choices rather than hardcoding an empty one, proven with a
 -- context-requiring mock factory: DvP add succeeds only when the caller

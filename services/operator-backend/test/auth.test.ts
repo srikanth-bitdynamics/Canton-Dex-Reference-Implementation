@@ -91,6 +91,9 @@ describe("auth unit helpers", () => {
     assert.equal(isOperatorWrite("POST", "/v1/orders/abc123/cancel"), true);
     assert.equal(isOperatorWrite("POST", "/v1/rfq/xyz/cancel"), true);
     assert.equal(isOperatorWrite("POST", "/v1/matched-trades/settle"), true);
+    // The wallet relay forwards commands under the operator JWT and must be
+    // operator-gated (finding B-1).
+    assert.equal(isOperatorWrite("POST", "/v1/wallet/submit"), true);
     // Reads and admin routes are not operator-write gated.
     assert.equal(isOperatorWrite("GET", "/v1/pools"), false);
     assert.equal(isOperatorWrite("POST", "/v1/admin/pools"), false);
@@ -200,6 +203,24 @@ describe("wallet relay + CORS", () => {
     try {
       const status = await post(url, "/v1/wallet/submit", { actAs: ["op"] });
       assert.equal(status, 404);
+    } finally {
+      await close();
+    }
+  });
+
+  it("wallet relay is operator-gated: 401 with a token set and no auth header (B-1)", async () => {
+    // Token configured, no dev bypass: the relay must require the operator
+    // token like every other write, even before its own relay flag is checked.
+    const { url, close } = startServer({
+      operatorToken: "op-secret",
+      walletRelayEnabled: true,
+      walletRelayParties: ["allowed-party"],
+      ledgerUrl: "http://ledger.invalid",
+      ledgerToken: "t",
+    });
+    try {
+      const status = await post(url, "/v1/wallet/submit", { actAs: ["allowed-party"] });
+      assert.equal(status, 401);
     } finally {
       await close();
     }

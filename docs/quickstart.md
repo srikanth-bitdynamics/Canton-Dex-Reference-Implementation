@@ -83,7 +83,7 @@ test modules.
   `FinalizedAllocation.extraTransferLegSides` at batch settlement time;
   next-iteration CIDs roll forward onto partial fills.
 - Tests: `EndToEndTests.daml::testOrderFundingFlow`,
-  `testAllocationAdjustConservation`.
+  `testFinalizedAllocationFundingConservation`.
 
 ### D. Constant-product pool with committed allocations
 

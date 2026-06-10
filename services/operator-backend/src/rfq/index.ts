@@ -10,7 +10,6 @@
 // follow the same shape; if you read one well, you've read them all.
 
 import type { ContractId } from "@canton-dex/registry-client";
-import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
@@ -44,7 +43,6 @@ export interface RfqCreateInput {
 export class RfqService {
   constructor(
     private readonly ledger: LedgerSubmitter,
-    private readonly _registry: RegistryClient,
     private readonly operatorParty: Party,
   ) {}
 

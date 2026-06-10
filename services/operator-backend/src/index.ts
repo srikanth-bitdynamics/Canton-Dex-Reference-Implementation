@@ -66,7 +66,7 @@ export class OperatorBackend {
     this.ledger = cfg.ledger;
     this.registry = cfg.registry;
     this.operatorParty = cfg.operatorParty;
-    this.rfq = new RfqService(cfg.ledger, cfg.registry, cfg.operatorParty);
+    this.rfq = new RfqService(cfg.ledger, cfg.operatorParty);
     this.order = new OrderService(cfg.ledger, cfg.registry, cfg.operatorParty);
     this.pool = new PoolService(cfg.ledger, cfg.registry, cfg.operatorParty);
     this.matchedTrade = new MatchedTradeService(

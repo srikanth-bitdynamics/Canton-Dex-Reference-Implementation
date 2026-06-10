@@ -138,29 +138,6 @@ template Order with
               cancelResult = Some result
               releasedHoldings = result.authorizerHoldingCids
 
-    choice Order_Expire : Order_CancelResult
-      with
-        currentTime : Time
-        extraArgs : ExtraArgs
-      controller operator
-      do
-        case expiry of
-          Some expiryTime ->
-            assertMsg "Order has not expired yet" (currentTime >= expiryTime)
-          None ->
-            abort "Order has no expiry set"
-        case allocationCid of
-          None ->
-            pure Order_CancelResult with
-              cancelResult = None
-              releasedHoldings = TextMap.empty
-          Some allocCid -> do
-            let cancelArg = WC.mkAllocationCancel [operator] extraArgs
-            result <- exercise allocCid cancelArg
-            pure Order_CancelResult with
-              cancelResult = Some result
-              releasedHoldings = result.authorizerHoldingCids
-
     -- Records a fill against the resting order. A partial fill (remainder > 0)
     -- rolls a new order forward and returns its cid; an exact full fill
     -- (remainder == 0) archives the order cleanly and returns None — the

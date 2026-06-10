@@ -216,16 +216,6 @@ export class OperatorApi {
     );
   }
 
-  async updateTradingMode(
-    pairCid: ContractId<"DexPair">,
-    newTradingMode: "TM_OrderBook" | "TM_Pool" | "TM_Both",
-  ): Promise<{ pairCid: ContractId<"DexPair"> }> {
-    return this.post(
-      `/v1/admin/pairs/${encodeURIComponent(pairCid)}/trading-mode`,
-      { newTradingMode },
-    );
-  }
-
   async createPool(req: {
     lpRegistrar: Party;
     admin: Party;

@@ -468,31 +468,6 @@ async function routeRequest(
     return;
   }
 
-  // === wallet pass-through (browsers can't talk to the validator directly
-  // due to CORS). The wallet provider POSTs the Daml command it wants
-  // submitted; we forward to the participant with our JWT and return
-  // the result. In production, replace this with a participant whose
-  // CORS allow-list includes the dApp host. ==============================
-
-  if (method === "GET" && path === "/v1/wallet/whoami") {
-    if (!ledgerUrl || !ledgerToken) {
-      respondJson(res, 503, { error: "ledger not configured" });
-      return;
-    }
-    try {
-      const r = await fetch(`${ledgerUrl.replace(/\/$/, "")}/v2/users/current`, {
-        headers: { Authorization: `Bearer ${ledgerToken}` },
-      });
-      const text = await r.text();
-      res.statusCode = r.status;
-      res.setHeader("Content-Type", "application/json");
-      res.end(text);
-    } catch (e) {
-      respondJson(res, 502, { error: `whoami proxy failed: ${e instanceof Error ? e.message : String(e)}` });
-    }
-    return;
-  }
-
   // Execute path: discover crossing orders and create MatchedTrade
   // contracts. Operator-auth gated (state-changing). The read-only preview
   // is GET /v1/orders/matches, above.
@@ -590,47 +565,6 @@ async function routeRequest(
       volume24h: rows.length > 0 ? volume : null,
       swapCount24h: rows.length,
     });
-    return;
-  }
-
-  // GET /v1/stats/tvl-24h — pool TVL delta over the last 24h.
-  // Compares earliest pool_states snapshot in the window to the most
-  // recent for each pool. Returns null change when no historical row
-  // exists yet.
-  if (method === "GET" && path === "/v1/stats/tvl-24h") {
-    if (!db) {
-      respondJson(res, 503, { error: "indexer disabled" });
-      return;
-    }
-    const since = Math.floor(Date.now() / 1000) - 24 * 3600;
-    const rows = db
-      .prepare(
-        `SELECT poolCid, MIN(ts) as firstTs, MAX(ts) as lastTs FROM pool_states
-         WHERE ts >= ? GROUP BY poolCid`,
-      )
-      .all(since) as Array<{ poolCid: string; firstTs: number; lastTs: number }>;
-    if (rows.length === 0) {
-      respondJson(res, 200, { tvlChange24h: null, pools: [] });
-      return;
-    }
-    // For each pool, fetch first and last reserve states.
-    type Row = { poolCid: string; baseAmount: string; quoteAmount: string };
-    const firstStmt = db.prepare(
-      `SELECT poolCid, baseAmount, quoteAmount FROM pool_states
-       WHERE poolCid = ? AND ts = ?`,
-    );
-    const pools = rows.map((r) => {
-      const a = firstStmt.get(r.poolCid, r.firstTs) as Row | undefined;
-      const b = firstStmt.get(r.poolCid, r.lastTs) as Row | undefined;
-      return {
-        poolCid: r.poolCid,
-        firstBase: a ? parseFloat(a.baseAmount) : null,
-        firstQuote: a ? parseFloat(a.quoteAmount) : null,
-        lastBase: b ? parseFloat(b.baseAmount) : null,
-        lastQuote: b ? parseFloat(b.quoteAmount) : null,
-      };
-    });
-    respondJson(res, 200, { pools });
     return;
   }
 

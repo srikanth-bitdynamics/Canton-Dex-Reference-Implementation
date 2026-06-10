@@ -28,7 +28,3 @@ template InstrumentConfiguration with
       do create this with
            holderRequirements = newHolderRequirements
            issuerRequirements = newIssuerRequirements
-
-    choice InstrumentConfiguration_Archive : ()
-      controller admin
-      do pure ()

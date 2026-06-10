@@ -20,11 +20,10 @@ factual, file-anchored delta; the architecture doc is the design context.
 - Vendor pin (upstream repo, branch, commit):
   [`vendor/splice/VENDOR_PIN.md`](../vendor/splice/VENDOR_PIN.md)
 - DEX consumers:
-  - [`trading/CantonDex/Trading/AllocationSurface.daml`](../trading/CantonDex/Trading/AllocationSurface.daml)
-    — build-time anchor module that names every upstream symbol the DEX depends
-    on, so the build fails fast if a vendored package drifts.
   - [`trading/CantonDex/Trading/Utils.daml`](../trading/CantonDex/Trading/Utils.daml)
     — funding arithmetic, leg→leg-side projection, allocation/spec builders.
+    Together with the registry below it consumes the full vendored surface, so
+    the build fails fast if a vendored package drifts.
   - [`trading/CantonDex/Registry/V2.daml`](../trading/CantonDex/Registry/V2.daml)
     — the registry that implements `AllocationFactory` / `Allocation` /
     `SettlementFactory`.
@@ -56,10 +55,9 @@ an allocation that an LP cannot casually pull back.
 
 DEX usage:
 
-- `Utils.mkCommittedPoolAllocationSpecification`
-  (`trading/CantonDex/Trading/Utils.daml`) builds a committed spec for pool
-  slices.
-- `AllocationSurface.tradingCommittedAllocationAnchor` anchors the symbol.
+- `PoolLiquidityRules.mkOperatorReceiver` and `PoolLiquidityRules.dvpSpec`
+  (`trading/CantonDex/Dex/PoolLiquidityRules.daml`) build committed specs for
+  pool slices and LP DvP legs.
 
 ### `nextIterationFunding` — on `AllocationSpecification`, `FinalizedAllocation`, and `Allocation_Settle`
 
@@ -82,8 +80,7 @@ DEX usage:
   `Utils.normalizeFunding` compute the per-instrument funding map the authorizer
   must cover.
 - `Utils.mkIteratedAllocationSpecification` /
-  `mkPrefundedAllocationSpecification` / `mkCommittedPoolAllocationSpecification`
-  set it on the spec.
+  `mkPrefundedAllocationSpecification` set it on the spec.
 - `Registry.V2.allocationFactory_allocateImpl` validates that the locked input
   holdings cover the sender-side legs **plus** `nextIterationFunding`
   (`required = sideRequired ∪ funding`).
@@ -119,7 +116,7 @@ settle path.
 
 DEX usage:
 
-- `Utils.mkFinalizedAllocation` (aliased `AllocationSurface.tradingFinalizedAllocationAnchor`)
+- `Utils.mkFinalizedAllocation`
   builds a `FinalizedAllocation` carrying extra leg sides + optional funding;
   `Utils.finalAllocation` is the settle-as-is form (no extra legs, no next
   iteration).

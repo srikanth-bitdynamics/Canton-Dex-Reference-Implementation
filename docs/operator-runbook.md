@@ -65,18 +65,18 @@ on a schedule.
 
 ### Stale or expired orders
 
-- `Order_Expire` (operator-driven) — checks `expiry` and cancels the bound
-  allocation via `Allocation_Cancel`. Releases the trader's locked
-  holdings back to their authorizer account.
-- `Order_Cancel` (operator-driven) — same as expire but without the time
-  check. Use for operator-initiated takedowns (compliance, fat-finger
-  cancels, pair de-listing).
+- `Order_Cancel` (operator-driven) — cancels the bound allocation via
+  `Allocation_Cancel`, releasing the trader's locked holdings back to their
+  authorizer account. The operator's sweep uses it both for orders past
+  `expiry` (checked off-ledger when scheduling the cancel) and for
+  operator-initiated takedowns (compliance, fat-finger cancels, pair
+  de-listing).
 
 ### Stale RFQs and quotes
 
-- `Rfq_Expire` (operator-driven) — operator declares an RFQ expired past
-  `expiresAt`. The RFQ contract is consumed but quote contracts stay until
-  their own `expiresAt`. Operator runs a separate sweep that exercises
+- An RFQ past `expiresAt` is inert: `Rfq_Accept` asserts
+  `currentTime < expiresAt`, so nothing can settle against it. Quote
+  contracts stay until their own `expiresAt`; the operator sweep exercises
   `RfqQuote_Withdraw` (dealer-driven) or lets quotes age out.
 - `Rfq_Cancel` (trader-driven) — the trader retracts before any quote
   acceptance.

@@ -1,8 +1,9 @@
 // Order flow. Same shape as RFQ; see RFQ comments for the worked example.
 
-import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
+import type { ContractId } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
+import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { recoverCreatedAllocations } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
@@ -44,18 +45,8 @@ export class OrderService {
     private readonly operatorParty: Party,
   ) {}
 
-  private async choiceContext(admin: Party): Promise<{
-    extraArgs: {
-      context: { values: Record<string, unknown> };
-      meta: { values: Record<string, unknown> };
-    };
-    disclosure: DisclosedContract[];
-  }> {
-    const ctx = await this.registry.getChoiceContext(admin);
-    return {
-      extraArgs: { context: ctx.context, meta: { values: {} } },
-      disclosure: ctx.disclosure,
-    };
+  private choiceContext(admin: Party): Promise<ChoiceContext> {
+    return fetchChoiceContext(this.registry, admin);
   }
 
   async bind(input: OrderBindInput): Promise<OrderBindResult> {

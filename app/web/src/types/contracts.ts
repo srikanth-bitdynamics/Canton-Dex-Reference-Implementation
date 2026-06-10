@@ -82,7 +82,6 @@ export interface Pool {
   totalLpSupply: number;
   baseSlices: PoolSlice[];
   quoteSlices: PoolSlice[];
-  operatorFeeBps: number | null;
   accumulatedOperatorFees: Record<string, number> | null;
   publicReaders: string[] | null;
 }
@@ -102,6 +101,14 @@ export interface Holding {
   admin: string;
   instrumentId: string;
   amount: number;
+  /**
+   * The exact decimal amount as it came off the wire (Canton Numeric string).
+   * `amount` is the float coercion kept for display/math; `amountRaw` preserves
+   * full precision for funding-cid selection so large/precise holdings are not
+   * rounded at the service boundary (DEX-115). Optional: absent when the source
+   * only provided a number.
+   */
+  amountRaw?: string;
   locked: boolean;
 }
 

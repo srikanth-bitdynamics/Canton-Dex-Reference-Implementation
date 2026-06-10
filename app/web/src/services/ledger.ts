@@ -12,6 +12,7 @@
 import { OperatorApi } from './operator-api';
 import { handToWallet } from '@/wallet/handoff';
 import { getProvider } from '@/wallet/registry';
+import { coSignsAdmin } from '@/wallet/capabilities';
 import { useWalletStore } from '@/wallet/store';
 import type {
   ContractId,
@@ -89,18 +90,81 @@ async function getWalletNativeHoldings(owner: string): Promise<Holding[] | null>
   }
 }
 
-export function formatDecimal10(value: number): string {
-  return value.toFixed(10);
+/**
+ * Render a number as a plain decimal string, never scientific notation.
+ * `Number.prototype.toString()` emits `1e+21` for large magnitudes and
+ * `1e-7` for small ones; both are rejected by Canton's Numeric wire format
+ * and by our `decimal10StringUnits` parser (DEX-115). This expands the
+ * exponent into a fixed-point string instead.
+ */
+export function formatDecimal(value: number): string {
+  if (!Number.isFinite(value)) {
+    throw new Error(`formatDecimal: non-finite amount ${value}`);
+  }
+  const str = String(value);
+  if (!/e/i.test(str)) return str;
+
+  // Expand scientific notation manually.
+  const [mantissa, expRaw] = str.split(/e/i);
+  const exp = Number(expRaw);
+  const sign = mantissa.startsWith('-') ? '-' : '';
+  const digits = mantissa.replace('-', '');
+  const [intPart, fracPart = ''] = digits.split('.');
+  const allDigits = intPart + fracPart;
+  // Position of the decimal point measured from the left of `allDigits`.
+  const pointPos = intPart.length + exp;
+
+  let out: string;
+  if (pointPos <= 0) {
+    out = `0.${'0'.repeat(-pointPos)}${allDigits}`;
+  } else if (pointPos >= allDigits.length) {
+    out = `${allDigits}${'0'.repeat(pointPos - allDigits.length)}`;
+  } else {
+    out = `${allDigits.slice(0, pointPos)}.${allDigits.slice(pointPos)}`;
+  }
+  // Trim a trailing bare dot, if any.
+  return `${sign}${out}`.replace(/\.$/, '');
 }
 
-function multiplyDecimal10(left: number, right: number): string {
-  const scaled = decimal10Units(left) * decimal10Units(right);
+export function formatDecimal10(value: number): string {
+  if (!Number.isFinite(value)) {
+    throw new Error(`formatDecimal10: non-finite amount ${value}`);
+  }
+  // toFixed(10) is safe for the magnitudes the UI handles, but it also emits
+  // scientific notation above ~1e21. Round-trip through the non-scientific
+  // formatter + the string→units parser so callers always get a plain
+  // 10-dp decimal string (DEX-115).
+  if (Math.abs(value) < 1e21) return value.toFixed(10);
+  return unitsToDecimal10(decimal10StringUnits(formatDecimal(value)));
+}
+
+function multiplyDecimal10(left: number | string, right: number | string): string {
+  const scaled = toUnits(left) * toUnits(right);
   return unitsToDecimal10(scaled / 10_000_000_000n);
 }
 
+/** Coerce a number-or-string amount to scaled 10-dp integer units. */
+function toUnits(value: number | string): bigint {
+  return typeof value === 'string'
+    ? decimal10StringUnits(value)
+    : decimal10StringUnits(formatDecimal10(value));
+}
+
 function decimal10Units(value: number): bigint {
-  const [whole, frac = ''] = formatDecimal10(value).split('.');
-  return BigInt(`${whole}${frac.padEnd(10, '0')}`);
+  // Route through the string parser so values ≥1e21 (where toFixed/String
+  // emit scientific notation) no longer throw in BigInt() (DEX-115).
+  return decimal10StringUnits(formatDecimal10(value));
+}
+
+/**
+ * Scaled 10-dp integer units for a holding, preferring the exact wire string
+ * (`amountRaw`) over the float `amount` so funding-cid selection keeps full
+ * precision at the service boundary (DEX-115).
+ */
+function holdingUnits(h: Holding): bigint {
+  return h.amountRaw != null
+    ? decimal10StringUnits(h.amountRaw)
+    : decimal10Units(h.amount);
 }
 
 function decimal10StringUnits(value: string): bigint {
@@ -149,7 +213,7 @@ function unlockedInstrumentHoldings(
     )
     .map((h) => ({
       contractId: h.contractId,
-      units: decimal10Units(h.amount),
+      units: holdingUnits(h),
     }))
     .filter((h) => h.units > 0n);
 }
@@ -221,7 +285,7 @@ export function pickExactHoldingCids(
     )
     .map((h) => ({
       contractId: h.contractId,
-      units: decimal10Units(h.amount),
+      units: holdingUnits(h),
     }))
     .filter((h) => h.units > 0n)
     .sort((a, b) => Number(a.units - b.units));
@@ -247,13 +311,80 @@ export function pickExactHoldingCids(
   return search(0, target) ? [...chosen] : null;
 }
 
-async function normalizeSwapFunding(params: {
+/**
+ * Whether the active wallet can co-sign as the instrument admin. The registry's
+ * Holding_Split/Holding_Merge are `controller admin, owner`, so split/merge
+ * normalization is only authorized through providers that route an admin
+ * co-sign (operator relay / dev). Real external wallets cannot, so for them we
+ * must not compose split/merge and instead fall back to exact-subset selection
+ * (DEX-111).
+ */
+function activeWalletCoSignsAdmin(): boolean {
+  const providerId = useWalletStore.getState().activeProviderId;
+  if (!providerId) return false;
+  return coSignsAdmin(providerId);
+}
+
+/**
+ * Resolve the cid of the holding produced by a merge, given the running set of
+ * already-consumed cids and the accumulated units. Providers like PartyLayer
+ * return only an `updateId` (no `createdHoldingCids`), so we re-query the ACS
+ * and pick the new unlocked holding matching the merged amount. Falls back to
+ * the provider-returned cid when present (DEX-110).
+ */
+async function resolveMergedHoldingCid(params: {
+  party: string;
+  instrumentId: string;
+  admin: string;
+  accumulatedUnits: bigint;
+  consumedCids: Set<string>;
+  providerReturnedCid?: string;
+}): Promise<string | null> {
+  if (params.providerReturnedCid) return params.providerReturnedCid;
+  const holdings = await ledger.getHoldings(params.party);
+  // Prefer an exact amount match on a cid we have not seen before.
+  const fresh = holdings.filter(
+    (h) =>
+      h.instrumentId === params.instrumentId &&
+      !h.locked &&
+      h.admin === params.admin &&
+      !params.consumedCids.has(h.contractId),
+  );
+  const exact = fresh.find((h) => holdingUnits(h) === params.accumulatedUnits);
+  if (exact) return exact.contractId;
+  // Otherwise the largest fresh holding is the merge result.
+  const largest = [...fresh].sort((a, b) =>
+    Number(holdingUnits(b) - holdingUnits(a)),
+  )[0];
+  return largest?.contractId ?? null;
+}
+
+// Exported for orchestration tests (DEX-110/111). Production callers reach it
+// through executeSwap/placeOrder/removeLiquidity.
+export async function normalizeSwapFunding(params: {
   admin: string;
   party: string;
   instrumentId: string;
   amount: number | string;
 }): Promise<string[] | null> {
   let holdings = await ledger.getHoldings(params.party);
+
+  // First, always try an exact unlocked subset — this never needs admin
+  // authority and works on every provider.
+  const exactCids = pickExactHoldingCids(
+    holdings,
+    params.instrumentId,
+    params.amount,
+    params.admin,
+  );
+  if (exactCids) return exactCids;
+
+  // No exact subset. Split/merge normalization needs an admin co-sign. If the
+  // active wallet can't provide it (real external wallet), do NOT compose
+  // split/merge (it would fail on the live path); return null so the caller
+  // surfaces a clear "split holdings first" error (DEX-111).
+  if (!activeWalletCoSignsAdmin()) return null;
+
   let plan = planSwapFunding(
     holdings,
     params.instrumentId,
@@ -279,15 +410,41 @@ async function normalizeSwapFunding(params: {
     );
   }
 
+  // merge-then-split: chain merges, resolving the freshly-created holding cid
+  // after each step (the provider may only return an updateId — DEX-110).
+  const consumedCids = new Set<string>([
+    plan.primaryHoldingCid,
+    ...plan.otherHoldingCids,
+  ]);
   let currentCid = plan.primaryHoldingCid;
+  let accumulatedUnits = holdingUnitsForCid(holdings, currentCid);
   for (const otherCid of plan.otherHoldingCids) {
+    accumulatedUnits += holdingUnitsForCid(holdings, otherCid);
     const result = await handToWallet({
       kind: 'merge-holdings',
       holdingCid: currentCid,
       otherCid,
       admin: params.admin,
     });
-    currentCid = result.createdHoldingCids?.[0] ?? currentCid;
+    const resolved = await resolveMergedHoldingCid({
+      party: params.party,
+      instrumentId: params.instrumentId,
+      admin: params.admin,
+      accumulatedUnits,
+      consumedCids,
+      providerReturnedCid: result.createdHoldingCids?.[0],
+    });
+    if (!resolved) {
+      throw new Error(
+        'merge-then-split: could not resolve the merged holding cid after a ' +
+          'merge step (wallet returned no createdHoldingCids and the merged ' +
+          'holding was not found in the ACS).',
+      );
+    }
+    // The merged holding now stands in for both inputs; mark it consumed so a
+    // later step never re-selects it as a "fresh" merge output.
+    currentCid = resolved;
+    consumedCids.add(resolved);
   }
   await handToWallet({
     kind: 'split-holding',
@@ -302,6 +459,12 @@ async function normalizeSwapFunding(params: {
     params.amount,
     params.admin,
   );
+}
+
+/** Units for a specific cid in a holdings list (0 if not found). */
+function holdingUnitsForCid(holdings: Holding[], cid: string): bigint {
+  const h = holdings.find((x) => x.contractId === cid);
+  return h ? holdingUnits(h) : 0n;
 }
 
 /**
@@ -357,7 +520,6 @@ export const ledger = {
         allocationCid: s.allocationCid,
         amount: num(s.amount),
       })),
-      operatorFeeBps: p.operatorFeeBps != null ? num(p.operatorFeeBps) : null,
     })) as PoolType[];
   },
   getPairs: async (): Promise<DexPair[]> => {
@@ -394,7 +556,13 @@ export const ledger = {
     );
     const num = (v: unknown): number =>
       typeof v === 'number' ? v : parseFloat(String(v ?? 0));
-    return raw.map((h) => ({ ...h, amount: num(h.amount) }));
+    // Preserve the exact wire string in `amountRaw` so funding-cid selection
+    // keeps full precision; `amount` stays a float for display/math (DEX-115).
+    return raw.map((h) => ({
+      ...h,
+      amount: num(h.amount),
+      amountRaw: typeof h.amount === 'string' ? h.amount : h.amountRaw,
+    }));
   },
 
   computeSwapQuote: async (
@@ -405,7 +573,7 @@ export const ledger = {
     const out = await operator.computeSwapQuote({
       poolId,
       inputInstrumentId,
-      inputAmount: inputAmount.toString(),
+      inputAmount: formatDecimal(inputAmount),
     });
     return { outputAmount: parseFloat(out.outputAmount) };
   },
@@ -501,84 +669,117 @@ export const ledger = {
     limitPrice: number;
     quantity: number;
     expiry: string | null;
+    /**
+     * Real-step progress callback. Phases map to the `placeOrder` toast
+     * lifecycle: 0 Submitted, 1 Bound, 2 Locked, 3 Open (DEX-113).
+     */
+    onProgress?: (phase: number) => void;
   }) => {
+    const progress = params.onProgress ?? (() => {});
     const trader = connectedParty();
     const result = await handToWallet({
       kind: 'place-order',
       pair: { base: params.pairBase, quote: params.pairQuote },
       side: params.side,
-      limitPrice: params.limitPrice.toString(),
-      quantity: params.quantity.toString(),
+      limitPrice: formatDecimal(params.limitPrice),
+      quantity: formatDecimal(params.quantity),
       expiry: params.expiry,
       operator: params.context.operator,
       admin: params.context.admin,
     });
+    progress(0); // Submitted to operator.
     const settlementRef = `web-${Date.now()}`;
     const bindRes = await operator.bindOrder({
       fundingRequestCid: result.primaryCid as ContractId<'OrderFundingRequest'>,
       settlementRef,
     });
+    progress(1); // Bound: order + allocation request now exist on-ledger.
 
-    const lockInstrumentId =
-      params.side === 'Bid' ? params.pairQuote : params.pairBase;
-    const lockAmount =
-      params.side === 'Bid'
-        ? multiplyDecimal10(params.limitPrice, params.quantity)
-        : formatDecimal10(params.quantity);
-    const inputHoldingCids = await normalizeSwapFunding({
-      admin: params.context.admin,
-      party: trader,
-      instrumentId: lockInstrumentId,
-      amount: lockAmount,
-    });
-    if (!inputHoldingCids || inputHoldingCids.length === 0) {
-      throw new Error(
-        `order funding: no exact unlocked ${lockInstrumentId} holdings cover ${lockAmount}; split holdings first`,
-      );
-    }
-
-    const walletRes = await handToWallet({
-      kind: 'accept-allocation-request',
-      requestCid: bindRes.allocationRequestCid as ContractId<'AllocationRequest'>,
-      factoryCid: params.context.allocationFactoryCid as ContractId<'AllocationFactory'>,
-      allocationRequestExtraArgs: params.context.allocationFactoryExtraArgs,
-      allocationFactoryExtraArgs: params.context.allocationFactoryExtraArgs,
-      disclosure: params.context.allocationFactoryDisclosure,
-      settlement: {
-        executors: [params.context.operator],
-        id: `DexOrder-${settlementRef}`,
-        cid: null,
-        meta: { values: {} },
-      },
-      allocationSpec: {
+    // Everything past bind operates on a live on-ledger Order. If any of it
+    // throws, the order is bound-but-unfunded ("stuck"): surface a warning that
+    // names the order cid and best-effort cancel it (DEX-113).
+    const orderCid = bindRes.orderCid as ContractId<'Order'>;
+    try {
+      const lockInstrumentId =
+        params.side === 'Bid' ? params.pairQuote : params.pairBase;
+      const lockAmount =
+        params.side === 'Bid'
+          ? multiplyDecimal10(params.limitPrice, params.quantity)
+          : formatDecimal10(params.quantity);
+      const inputHoldingCids = await normalizeSwapFunding({
         admin: params.context.admin,
-        authorizer: { owner: trader, provider: null, id: '' },
-        transferLegSides: [],
-        settlementDeadline: params.expiry,
-        nextIterationFunding: { [lockInstrumentId]: lockAmount },
-        committed: true,
-        meta: { values: {} },
-      },
-      inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
-      hint: { instrumentId: lockInstrumentId, amount: lockAmount },
-    });
-    const allocationCid = walletRes.createdAllocationCids?.[0];
-    // updateId-only wallets (e.g. PartyLayer): the operator recovers the order's
-    // funding allocation from the tree by updateId.
-    const updateId = walletRes.auxiliaryCids?.updateId;
-    if (!allocationCid && !updateId) {
+        party: trader,
+        instrumentId: lockInstrumentId,
+        amount: lockAmount,
+      });
+      if (!inputHoldingCids || inputHoldingCids.length === 0) {
+        throw new Error(
+          `order funding: no exact unlocked ${lockInstrumentId} holdings cover ${lockAmount}; split holdings first`,
+        );
+      }
+
+      const walletRes = await handToWallet({
+        kind: 'accept-allocation-request',
+        requestCid: bindRes.allocationRequestCid as ContractId<'AllocationRequest'>,
+        factoryCid: params.context.allocationFactoryCid as ContractId<'AllocationFactory'>,
+        allocationRequestExtraArgs: params.context.allocationFactoryExtraArgs,
+        allocationFactoryExtraArgs: params.context.allocationFactoryExtraArgs,
+        disclosure: params.context.allocationFactoryDisclosure,
+        settlement: {
+          executors: [params.context.operator],
+          id: `DexOrder-${settlementRef}`,
+          cid: null,
+          meta: { values: {} },
+        },
+        allocationSpec: {
+          admin: params.context.admin,
+          authorizer: { owner: trader, provider: null, id: '' },
+          transferLegSides: [],
+          settlementDeadline: params.expiry,
+          nextIterationFunding: { [lockInstrumentId]: lockAmount },
+          committed: true,
+          meta: { values: {} },
+        },
+        inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
+        hint: { instrumentId: lockInstrumentId, amount: lockAmount },
+      });
+      progress(2); // Funding allocation locked.
+      const allocationCid = walletRes.createdAllocationCids?.[0];
+      // updateId-only wallets (e.g. PartyLayer): the operator recovers the
+      // order's funding allocation from the tree by updateId.
+      const updateId = walletRes.auxiliaryCids?.updateId;
+      if (!allocationCid && !updateId) {
+        throw new Error(
+          'order funding: wallet returned neither a created allocation cid nor an updateId',
+        );
+      }
+
+      const fundRes = await operator.fundOrder({
+        orderCid,
+        ...(allocationCid
+          ? { allocationCid: allocationCid as ContractId<'Allocation'> }
+          : { updateId }),
+      });
+      progress(3); // In book — awaiting match.
+      return { orderId: fundRes.orderCid };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      // Best-effort cancel of the stranded order so the trader isn't left with
+      // a bound-but-unfunded order silently sitting on-ledger.
+      let cancelNote = '';
+      try {
+        await ledger.cancelOrder(orderCid);
+        cancelNote = ' The bound order was cancelled.';
+      } catch (cancelErr) {
+        const cancelMsg =
+          cancelErr instanceof Error ? cancelErr.message : String(cancelErr);
+        cancelNote =
+          ` Automatic cancel also failed (${cancelMsg}); cancel order ${orderCid} manually.`;
+      }
       throw new Error(
-        'order funding: wallet returned neither a created allocation cid nor an updateId',
+        `Order ${orderCid} is stuck: bound on-ledger but funding did not complete (${reason}).${cancelNote}`,
       );
     }
-
-    const fundRes = await operator.fundOrder({
-      orderCid: bindRes.orderCid as ContractId<'Order'>,
-      ...(allocationCid
-        ? { allocationCid: allocationCid as ContractId<'Allocation'> }
-        : { updateId }),
-    });
-    return { orderId: fundRes.orderCid };
   },
 
   // Operator-authority write -- straight HTTP, no wallet involvement.
@@ -608,8 +809,8 @@ export const ledger = {
       body: JSON.stringify({
         poolCid: params.poolId,
         recipient,
-        baseAmount: params.baseAmount.toString(),
-        quoteAmount: params.quoteAmount.toString(),
+        baseAmount: formatDecimal(params.baseAmount),
+        quoteAmount: formatDecimal(params.quoteAmount),
         requestedAt,
       }),
     });
@@ -655,7 +856,7 @@ export const ledger = {
             lpReceiptCid: cids[2],
             baseAmount: req.baseAmount,
             quoteAmount: req.quoteAmount,
-            minLpTokens: params.minLpTokens.toString(),
+            minLpTokens: formatDecimal(params.minLpTokens),
             knownTotalLpSupply: req.knownTotalLpSupply,
             requestedAt,
           }
@@ -666,7 +867,7 @@ export const ledger = {
             recipient,
             baseAmount: req.baseAmount,
             quoteAmount: req.quoteAmount,
-            minLpTokens: params.minLpTokens.toString(),
+            minLpTokens: formatDecimal(params.minLpTokens),
             knownTotalLpSupply: req.knownTotalLpSupply,
             requestedAt,
           };

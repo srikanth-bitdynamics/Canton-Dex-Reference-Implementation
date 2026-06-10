@@ -210,6 +210,7 @@ describe("PartyLayerProvider", () => {
         admin: "cbtc-admin",
         instrumentId: "CBTC",
         amount: 1,
+        amountRaw: "1.0000000000",
         locked: false,
       },
       {
@@ -218,6 +219,7 @@ describe("PartyLayerProvider", () => {
         admin: "dex-admin",
         instrumentId: "BTC",
         amount: 0.335,
+        amountRaw: "0.3350000000",
         locked: false,
       },
     ]);
@@ -264,6 +266,7 @@ describe("PartyLayerProvider", () => {
         admin: "dex-admin",
         instrumentId: "USDC",
         amount: 125.25,
+        amountRaw: "125.2500000000",
         locked: false,
       },
     ]);
@@ -298,6 +301,7 @@ describe("PartyLayerProvider", () => {
         admin: "cbtc-admin",
         instrumentId: "CBTC",
         amount: 1,
+        amountRaw: "1.0000000000",
         locked: false,
       },
     ]);

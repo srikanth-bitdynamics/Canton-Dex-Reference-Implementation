@@ -21,13 +21,21 @@ describe("wallet capabilities", () => {
     for (const id of ALL_IDS) {
       const cap = WALLET_CAPABILITIES[id];
       expect(cap, `missing capability for ${id}`).toBeDefined();
-      expect(["ready", "unproven", "unsupported"]).toContain(cap.dvp);
+      expect(["ready", "unproven", "dev-only", "unsupported"]).toContain(cap.dvp);
       expect(cap.note.length).toBeGreaterThan(0);
     }
   });
 
   it("partylayer is DvP-unproven (operator-discovery, pending LocalNet)", () => {
     expect(capabilityFor("partylayer").dvp).toBe("unproven");
+  });
+
+  it("token-standard operator relay is marked dev-only, not recommended (DEX-97)", () => {
+    const cap = capabilityFor("token-standard");
+    expect(cap.dvp).toBe("dev-only");
+    // The note must flag the relay clearly, not advertise it as DvP-ready.
+    expect(cap.note.toLowerCase()).toContain("dev only");
+    expect(cap.note.toLowerCase()).not.toContain("recommended");
   });
 
   it("relay-only providers are marked no-DvP", () => {
@@ -38,6 +46,7 @@ describe("wallet capabilities", () => {
   it("dvpBadge maps readiness → tone", () => {
     expect(dvpBadge("ready").tone).toBe("ok");
     expect(dvpBadge("unproven").tone).toBe("warn");
+    expect(dvpBadge("dev-only")).toEqual({ label: "dev only", tone: "warn" });
     expect(dvpBadge("unsupported").tone).toBe("muted");
   });
 });

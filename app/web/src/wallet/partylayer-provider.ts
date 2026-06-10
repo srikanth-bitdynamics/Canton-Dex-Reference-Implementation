@@ -207,6 +207,10 @@ function parseHoldingPayload(
     admin,
     instrumentId,
     amount: parseAmount(payload.amount),
+    // Preserve the exact wire string for precise funding-cid selection (DEX-115).
+    ...(typeof payload.amount === 'string'
+      ? { amountRaw: payload.amount }
+      : {}),
     locked,
   };
 }

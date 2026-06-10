@@ -71,6 +71,13 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
 
   const handleSwap = useCallback(async () => {
     if (parsedInput <= 0 || outputAmount <= 0 || !context) return;
+    // Hard guard: never submit a swap without a connected party. The previous
+    // `party ?? ''` fallback would send an empty swapperParty and fail opaquely
+    // (or worse, misroute) — refuse and surface an error instead (DEX-112).
+    if (!party) {
+      setSwapError('Connect a wallet before swapping.');
+      return;
+    }
     setSwapError(null);
     setIsSubmitting(true);
     const label = `Swap ${parsedInput} ${inputInstrumentId} → ${outputInstrumentId}`;
@@ -94,7 +101,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
         inputInstrumentId,
         inputAmount: parsedInput,
         minOutputAmount: minReceived,
-        swapperParty: party ?? '',
+        swapperParty: party,
       });
       setInputAmount('');
       onSwapComplete?.();
@@ -104,7 +111,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
     } finally {
       setIsSubmitting(false);
     }
-  }, [parsedInput, outputAmount, pool, context, inputInstrumentId, outputInstrumentId, minReceived, onSwapComplete, toast, queryClient]);
+  }, [party, parsedInput, outputAmount, pool, context, inputInstrumentId, outputInstrumentId, minReceived, onSwapComplete, toast, queryClient]);
 
   return (
     <div className="bg-surface-card rounded-lg border border-surface-border p-6 max-w-md mx-auto">

@@ -113,6 +113,10 @@ template Order with
         assertMsg "Order must be Funded or PartiallyFilled to match" $
           status == OS_Funded || status == OS_PartiallyFilled
         let allocCid = fromSomeNote "Order has no allocation to adjust" allocationCid
+        -- Assert the bound allocation is still live before handing its cid to
+        -- the match flow: a fetch of an archived/consumed contract aborts, so
+        -- this rejects a stale (cancelled/settled) allocation cid.
+        _ <- fetch allocCid
         let _ = (matchTransferLegs, allowFutureIterations)
         pure Order_MatchResult with
           adjustedAllocationCid = allocCid
@@ -134,30 +138,12 @@ template Order with
               cancelResult = Some result
               releasedHoldings = result.authorizerHoldingCids
 
-    choice Order_Expire : Order_CancelResult
-      with
-        currentTime : Time
-        extraArgs : ExtraArgs
-      controller operator
-      do
-        case expiry of
-          Some expiryTime ->
-            assertMsg "Order has not expired yet" (currentTime >= expiryTime)
-          None ->
-            abort "Order has no expiry set"
-        case allocationCid of
-          None ->
-            pure Order_CancelResult with
-              cancelResult = None
-              releasedHoldings = TextMap.empty
-          Some allocCid -> do
-            let cancelArg = WC.mkAllocationCancel [operator] extraArgs
-            result <- exercise allocCid cancelArg
-            pure Order_CancelResult with
-              cancelResult = Some result
-              releasedHoldings = result.authorizerHoldingCids
-
-    choice Order_RecordPartialFill : ContractId Order
+    -- Records a fill against the resting order. A partial fill (remainder > 0)
+    -- rolls a new order forward and returns its cid; an exact full fill
+    -- (remainder == 0) archives the order cleanly and returns None — the
+    -- template's `ensure remainingQty > 0.0` forbids carrying a zero-qty order.
+    -- Overfill (remainder < 0) is rejected.
+    choice Order_RecordPartialFill : Optional (ContractId Order)
       with
         filledQty : Decimal
         newAllocationCid : Optional (ContractId V2.Allocation)
@@ -166,11 +152,14 @@ template Order with
         assertMsg "Fill quantity must be positive" (filledQty > 0.0)
         assertMsg "Fill quantity must not exceed remaining" (filledQty <= remainingQty)
         let newRemaining = remainingQty - filledQty
-        assertMsg "Partial fill must leave remaining quantity" (newRemaining > 0.0)
-        create this with
-          remainingQty = newRemaining
-          status = OS_PartiallyFilled
-          allocationCid = newAllocationCid
+        if newRemaining == 0.0
+          then pure None  -- exact full fill: order archived (self consumed)
+          else do
+            cid <- create this with
+              remainingQty = newRemaining
+              status = OS_PartiallyFilled
+              allocationCid = newAllocationCid
+            pure (Some cid)
 
 -- | Trader-observed request issued by the operator to fund a specific Order.
 -- The trader accepts (AllocationRequest_Accept, archiving self) and composes

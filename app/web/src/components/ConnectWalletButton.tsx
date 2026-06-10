@@ -204,6 +204,12 @@ export function ConnectWalletButton() {
           {listProviders().map((p) => {
             const cap = capabilityFor(p.id);
             const badge = dvpBadge(cap.dvp);
+            const isDefault = p.id === DEFAULT_PROVIDER_ID;
+            const isDevOnly = cap.dvp === "dev-only";
+            // Only a real-wallet default earns the "recommended" tag. A dev-only
+            // relay is never recommended even if it happens to be the dev
+            // default.
+            const showRecommended = isDefault && !isDevOnly;
             return (
               <button
                 key={p.id}
@@ -216,7 +222,7 @@ export function ConnectWalletButton() {
                   textAlign: "left",
                   padding: "8px 10px",
                   borderRadius: 6,
-                  background: p.id === DEFAULT_PROVIDER_ID
+                  background: showRecommended
                     ? "var(--bg-3)"
                     : "transparent",
                   border: "none",
@@ -240,12 +246,20 @@ export function ConnectWalletButton() {
                   >
                     {badge.label}
                   </span>
-                  {p.id === DEFAULT_PROVIDER_ID && (
+                  {showRecommended && (
                     <span
                       className="mono text-[10px]"
                       style={{ color: "var(--text-2)" }}
                     >
                       recommended
+                    </span>
+                  )}
+                  {isDevOnly && (
+                    <span
+                      className="mono text-[10px]"
+                      style={{ color: BADGE_TONE.warn }}
+                    >
+                      dev only
                     </span>
                   )}
                 </div>

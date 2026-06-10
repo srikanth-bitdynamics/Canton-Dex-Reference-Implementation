@@ -69,6 +69,12 @@ export interface Toast {
   onComplete?: () => void;
   _notified?: boolean;
   _dismissScheduled?: boolean;
+  /**
+   * Set once a caller drives this toast's phase explicitly (via `setPhase`).
+   * The 900ms auto-advance timer then leaves this toast alone so its progress
+   * reflects real pipeline step completion rather than a cosmetic timer.
+   */
+  _manual?: boolean;
 }
 
 export function useToasts() {
@@ -76,13 +82,28 @@ export function useToasts() {
 
   const advance = useCallback(() => {
     setToasts((cur) =>
-      cur.map((t) => (t.phase < t.phaseCount ? { ...t, phase: t.phase + 1 } : t)),
+      cur.map((t) =>
+        // Timer only nudges toasts that aren't being driven explicitly.
+        t.phase < t.phaseCount && !t._manual ? { ...t, phase: t.phase + 1 } : t,
+      ),
+    );
+  }, []);
+
+  // Drive a specific toast to a real pipeline phase. Marks it `_manual` so the
+  // cosmetic timer stops advancing it.
+  const setPhase = useCallback((id: number, phase: number) => {
+    setToasts((cur) =>
+      cur.map((t) =>
+        t.id === id
+          ? { ...t, phase: Math.min(Math.max(phase, t.phase), t.phaseCount), _manual: true }
+          : t,
+      ),
     );
   }, []);
 
   useEffect(() => {
     if (!toasts.length) return;
-    const stillRunning = toasts.some((t) => t.phase < t.phaseCount);
+    const stillRunning = toasts.some((t) => t.phase < t.phaseCount && !t._manual);
     if (!stillRunning) return;
     const id = setTimeout(advance, 900);
     return () => clearTimeout(id);
@@ -133,7 +154,7 @@ export function useToasts() {
     };
   }, [dismiss, toasts]);
 
-  return { toasts, push, dismiss };
+  return { toasts, push, dismiss, setPhase };
 }
 
 interface TxToastProps {

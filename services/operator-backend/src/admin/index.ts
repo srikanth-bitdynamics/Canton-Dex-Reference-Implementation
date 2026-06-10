@@ -155,7 +155,6 @@ export class AdminService {
             quoteInstrumentId: input.quoteInstrumentId,
             lpInstrumentId,
             feeBps: damlInt(input.feeBps),
-            operatorFeeBps: damlInt(0),
           },
         },
       }),

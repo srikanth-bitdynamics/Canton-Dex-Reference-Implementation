@@ -161,21 +161,6 @@ mkPrefundedAllocationSpecification admin authorizer settlementDeadline nextItera
     (Some nextIterationFunding)
     False
 
-mkCommittedPoolAllocationSpecification
-  : Party
-  -> HoldingV2.Account
-  -> Optional Time
-  -> Funding
-  -> V2.AllocationSpecification
-mkCommittedPoolAllocationSpecification admin authorizer settlementDeadline nextIterationFunding =
-  mkIteratedAllocationSpecification
-    admin
-    authorizer
-    settlementDeadline
-    []
-    (Some nextIterationFunding)
-    True
-
 -- | FinalizedAllocation carrying extra leg-sides and optional
 -- next-iteration funding.
 mkFinalizedAllocation

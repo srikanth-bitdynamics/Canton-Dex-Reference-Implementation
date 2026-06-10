@@ -293,6 +293,19 @@ bash scripts/build-trading-surface.sh
 ./scripts/e2e-smoke.sh
 ```
 
+## Token Standard Dependency
+
+This reference builds against a **pre-release** Token Standard V2 branch, not
+released TSV2. The vendored sources under [`vendor/splice/`](vendor/splice/) are
+pinned to upstream `token-standard-v2-upcoming` at a specific commit, recorded
+in [`vendor/splice/VENDOR_PIN.md`](vendor/splice/VENDOR_PIN.md). The pool design
+depends on iterated-settlement and committed-allocation semantics that live on
+that branch but are not yet part of a released TSV2; the field-by-field delta is
+documented in [`docs/allocation-surface.md`](docs/allocation-surface.md).
+
+This is not a long-term fork: when those semantics land in a released Token
+Standard V2, the repo will re-pin `vendor/splice/` to that release.
+
 ## Project Maturity
 
 This is a reference implementation with active development. It is appropriate

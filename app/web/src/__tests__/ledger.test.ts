@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  formatDecimal,
   formatDecimal10,
   pickExactHoldingCids,
   planSwapFunding,
@@ -96,5 +97,54 @@ describe('ledger helpers', () => {
       otherHoldingCids: ['h1'],
       splitAmount: '0.1000000000',
     });
+  });
+});
+
+describe('decimal formatting', () => {
+  it('formatDecimal never emits scientific notation', () => {
+    // Plain numbers pass through untouched.
+    expect(formatDecimal(1.5)).toBe('1.5');
+    expect(formatDecimal(0)).toBe('0');
+    // Large magnitude that String() would render as 1e+21.
+    expect(String(1e21)).toMatch(/e/i);
+    expect(formatDecimal(1e21)).toBe('1000000000000000000000');
+    expect(formatDecimal(1.23e21)).toBe('1230000000000000000000');
+    // Small magnitude that String() would render as 1e-7.
+    expect(String(1e-7)).toMatch(/e/i);
+    expect(formatDecimal(1e-7)).toBe('0.0000001');
+    // Negative large magnitude.
+    expect(formatDecimal(-1e21)).toBe('-1000000000000000000000');
+  });
+
+  it('formatDecimal rejects non-finite amounts', () => {
+    expect(() => formatDecimal(NaN)).toThrow();
+    expect(() => formatDecimal(Infinity)).toThrow();
+  });
+
+  it('formatDecimal10 does not crash at or above 1e21', () => {
+    // Previously decimal10Units(value) threw because toFixed/String emitted
+    // scientific notation that BigInt() rejected.
+    expect(() => formatDecimal10(1e21)).not.toThrow();
+    expect(formatDecimal10(1e21)).toBe('1000000000000000000000.0000000000');
+    expect(formatDecimal10(100)).toBe('100.0000000000');
+  });
+
+  it('pickExactHoldingCids round-trips a precise decimal string target', () => {
+    const holdings = [
+      holding('h1', 'USDC', 0, false), // amount float ignored when amountRaw set
+    ];
+    // amountRaw preserves wire precision; the float `amount` is lossy.
+    holdings[0]!.amountRaw = '123.4567890123';
+    expect(
+      pickExactHoldingCids(holdings, 'USDC', '123.4567890123'),
+    ).toEqual(['h1']);
+  });
+
+  it('selects funding for very large holdings without overflow', () => {
+    const holdings = [holding('big', 'USDC', 0, false)];
+    holdings[0]!.amountRaw = '1000000000000000000000.0000000000'; // 1e21
+    expect(
+      pickExactHoldingCids(holdings, 'USDC', '1000000000000000000000'),
+    ).toEqual(['big']);
   });
 });

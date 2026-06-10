@@ -41,23 +41,29 @@ import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
 import { DealersService } from "../dealers/index.js";
-import { checkAdminAuth } from "./auth.js";
+import { checkAdminAuth, checkOperatorAuth, bearerMatches } from "./auth.js";
+import { validateWriteBody, ValidationError } from "./validate.js";
 import { rootLogger } from "../lib/logger.js";
 
 const httpLog = rootLogger.child({ component: "http" });
 
 // Allowed origins for CORS, derived from ALLOWED_ORIGINS env var (csv).
-// Empty list means allow-all (legacy behaviour).
+// Empty list means deny: no Access-Control-Allow-Origin header is
+// emitted, so browsers reject cross-origin reads. Only echo back origins on
+// the allowlist.
 function parseAllowedOrigins(): string[] {
   const raw = process.env.ALLOWED_ORIGINS;
   if (!raw) return [];
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
-function originAllowed(origin: string | undefined, allowed: string[]): string {
-  if (allowed.length === 0) return "*";
-  if (!origin) return allowed[0]!;
-  return allowed.includes(origin) ? origin : allowed[0]!;
+// Returns the origin to echo in Access-Control-Allow-Origin, or null to emit
+// no CORS header at all (default-deny when the allowlist is empty or the
+// request origin is not on it).
+function originAllowed(origin: string | undefined, allowed: string[]): string | null {
+  if (allowed.length === 0) return null;
+  if (origin && allowed.includes(origin)) return origin;
+  return null;
 }
 
 class HttpError extends Error {
@@ -130,6 +136,14 @@ export interface HttpServerConfig {
   db?: Db;
   /** Shared bearer token required for /v1/admin/* writes. */
   adminToken?: string;
+  /** Bearer token required for all non-admin state-changing routes. */
+  operatorToken?: string;
+  /** Dev bypass: allow operator writes without a token (in-memory dev only). */
+  devOpen?: boolean;
+  /** Gate /v1/wallet/submit behind this flag; default OFF. */
+  walletRelayEnabled?: boolean;
+  /** Allowlist of actAs parties the wallet relay may forward for. */
+  walletRelayParties?: string[];
   /** JSON LAPI base URL — used to poll the real ledger offset for /v1/status. */
   ledgerUrl?: string;
   /** JWT used to read the ledger offset. */
@@ -198,19 +212,21 @@ export function startHttpServer(cfg: HttpServerConfig): {
     const started = Date.now();
     try {
       await routeRequest(
-        cfg.backend,
+        cfg,
         cfg.context,
         () => slot,
         cfg.db,
-        cfg.adminToken,
-        cfg.ledgerUrl,
-        cfg.ledgerToken,
         allowedOrigins,
         req,
         res,
       );
       reqLog.info("request completed", { status: res.statusCode, durationMs: Date.now() - started });
     } catch (e) {
+      if (e instanceof ValidationError) {
+        reqLog.warn("request rejected", { status: 400, code: "bad_request", error: e.message });
+        respondJson(res, 400, { error: e.message, code: "bad_request", details: e.details, requestId });
+        return;
+      }
       if (e instanceof HttpError) {
         reqLog.warn("request rejected", { status: e.status, code: e.code, error: e.message });
         respondJson(res, e.status, { error: e.message, code: e.code, details: e.details, requestId });
@@ -237,25 +253,28 @@ export function startHttpServer(cfg: HttpServerConfig): {
 }
 
 async function routeRequest(
-  backend: OperatorBackend,
+  cfg: HttpServerConfig,
   context: DexContext,
   getSlot: () => number,
   db: Db | undefined,
-  adminToken: string | undefined,
-  ledgerUrl: string | undefined,
-  ledgerToken: string | undefined,
   allowedOrigins: string[],
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  const backend = cfg.backend;
+  const adminToken = cfg.adminToken;
+  const ledgerUrl = cfg.ledgerUrl;
+  const ledgerToken = cfg.ledgerToken;
   const url = new URL(req.url ?? "/", "http://x");
   const path = url.pathname;
   const method = req.method ?? "GET";
 
-  // CORS: narrow to ALLOWED_ORIGINS if set, else allow-all (dev).
+  // CORS: echo only allowlisted origins; default-deny (no header)
+  // when ALLOWED_ORIGINS is unset or the origin is not on the list.
   const origin = req.headers["origin"] as string | undefined;
-  res.setHeader("Access-Control-Allow-Origin", originAllowed(origin, allowedOrigins));
-  if (allowedOrigins.length > 0) res.setHeader("Vary", "Origin");
+  const corsOrigin = originAllowed(origin, allowedOrigins);
+  if (corsOrigin) res.setHeader("Access-Control-Allow-Origin", corsOrigin);
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id");
   res.setHeader("Access-Control-Expose-Headers", "X-Request-Id");
@@ -265,10 +284,22 @@ async function routeRequest(
     return;
   }
 
-  // Admin auth gate: writes to /v1/admin/* require the bearer token.
+  // Admin auth gate: writes to /v1/admin/* require the admin bearer token.
   const auth = checkAdminAuth(req, adminToken, path);
   if (!auth.ok) {
     respondJson(res, auth.status, { error: auth.message, code: auth.code });
+    return;
+  }
+
+  // Operator auth gate: all other state-changing routes require
+  // the operator bearer token (fail-closed unless DEX_DEV_OPEN).
+  const opAuth = checkOperatorAuth(
+    req,
+    { operatorToken: cfg.operatorToken, devOpen: cfg.devOpen ?? false },
+    path,
+  );
+  if (!opAuth.ok) {
+    respondJson(res, opAuth.status, { error: opAuth.message, code: opAuth.code });
     return;
   }
 
@@ -377,15 +408,18 @@ async function routeRequest(
     return;
   }
 
-  if (method === "POST" && path === "/v1/orders/match") {
-    const body = await readJson<{ base: string; quote: string }>(req);
-    if (!body.base || !body.quote) {
-      respondJson(res, 400, { error: "expected { base, quote }" });
+  // Read-only match preview: discover crossing orders without settling.
+  // The execute path is POST /v1/orders/match (runMatching), below.
+  if (method === "GET" && path === "/v1/orders/matches") {
+    const base = url.searchParams.get("base");
+    const quote = url.searchParams.get("quote");
+    if (!base || !quote) {
+      respondJson(res, 400, { error: "missing ?base= or ?quote=" });
       return;
     }
     const matches = await backend.order.findMatches({
-      baseInstrumentId: body.base,
-      quoteInstrumentId: body.quote,
+      baseInstrumentId: base,
+      quoteInstrumentId: quote,
     });
     respondJson(res, 200, { matches });
     return;
@@ -434,46 +468,9 @@ async function routeRequest(
     return;
   }
 
-  // === wallet pass-through (browsers can't talk to the validator directly
-  // due to CORS). The wallet provider POSTs the Daml command it wants
-  // submitted; we forward to the participant with our JWT and return
-  // the result. In production, replace this with a participant whose
-  // CORS allow-list includes the dApp host. ==============================
-
-  if (method === "GET" && path === "/v1/wallet/whoami") {
-    if (!ledgerUrl || !ledgerToken) {
-      respondJson(res, 503, { error: "ledger not configured" });
-      return;
-    }
-    try {
-      const r = await fetch(`${ledgerUrl.replace(/\/$/, "")}/v2/users/current`, {
-        headers: { Authorization: `Bearer ${ledgerToken}` },
-      });
-      const text = await r.text();
-      res.statusCode = r.status;
-      res.setHeader("Content-Type", "application/json");
-      res.end(text);
-    } catch (e) {
-      respondJson(res, 502, { error: `whoami proxy failed: ${e instanceof Error ? e.message : String(e)}` });
-    }
-    return;
-  }
-
-  if (method === "GET" && path === "/v1/orders/book") {
-    const base = url.searchParams.get("base");
-    const quote = url.searchParams.get("quote");
-    if (!base || !quote) {
-      respondJson(res, 400, { error: "missing ?base= or ?quote=" });
-      return;
-    }
-    const book = await backend.order.book({
-      baseInstrumentId: base,
-      quoteInstrumentId: quote,
-    });
-    respondJson(res, 200, book);
-    return;
-  }
-
+  // Execute path: discover crossing orders and create MatchedTrade
+  // contracts. Operator-auth gated (state-changing). The read-only preview
+  // is GET /v1/orders/matches, above.
   if (method === "POST" && path === "/v1/orders/match") {
     const body = await readJson<{ base: string; quote: string }>(req);
     if (!body.base || !body.quote) {
@@ -487,18 +484,6 @@ async function routeRequest(
       admin: context.admin as Party,
     });
     respondJson(res, 200, { matches: results });
-    return;
-  }
-
-  if (method === "GET" && path === "/v1/prices") {
-    const pairsParam = url.searchParams.get("pairs");
-    if (!pairsParam) {
-      respondJson(res, 400, { error: "missing ?pairs=BASE/QUOTE,BASE/QUOTE" });
-      return;
-    }
-    const pairs = pairsParam.split(",").map((s) => s.trim()).filter(Boolean);
-    const prices = await backend.pricing.quoteMany(pairs);
-    respondJson(res, 200, { prices });
     return;
   }
 
@@ -583,47 +568,6 @@ async function routeRequest(
     return;
   }
 
-  // GET /v1/stats/tvl-24h — pool TVL delta over the last 24h.
-  // Compares earliest pool_states snapshot in the window to the most
-  // recent for each pool. Returns null change when no historical row
-  // exists yet.
-  if (method === "GET" && path === "/v1/stats/tvl-24h") {
-    if (!db) {
-      respondJson(res, 503, { error: "indexer disabled" });
-      return;
-    }
-    const since = Math.floor(Date.now() / 1000) - 24 * 3600;
-    const rows = db
-      .prepare(
-        `SELECT poolCid, MIN(ts) as firstTs, MAX(ts) as lastTs FROM pool_states
-         WHERE ts >= ? GROUP BY poolCid`,
-      )
-      .all(since) as Array<{ poolCid: string; firstTs: number; lastTs: number }>;
-    if (rows.length === 0) {
-      respondJson(res, 200, { tvlChange24h: null, pools: [] });
-      return;
-    }
-    // For each pool, fetch first and last reserve states.
-    type Row = { poolCid: string; baseAmount: string; quoteAmount: string };
-    const firstStmt = db.prepare(
-      `SELECT poolCid, baseAmount, quoteAmount FROM pool_states
-       WHERE poolCid = ? AND ts = ?`,
-    );
-    const pools = rows.map((r) => {
-      const a = firstStmt.get(r.poolCid, r.firstTs) as Row | undefined;
-      const b = firstStmt.get(r.poolCid, r.lastTs) as Row | undefined;
-      return {
-        poolCid: r.poolCid,
-        firstBase: a ? parseFloat(a.baseAmount) : null,
-        firstQuote: a ? parseFloat(a.quoteAmount) : null,
-        lastBase: b ? parseFloat(b.baseAmount) : null,
-        lastQuote: b ? parseFloat(b.quoteAmount) : null,
-      };
-    });
-    respondJson(res, 200, { pools });
-    return;
-  }
-
   // === dealer registry =================================================
   // GET /v1/dealers     — public list (no auth)
   // PUT /v1/admin/dealers  — admin upsert
@@ -644,8 +588,7 @@ async function routeRequest(
       respondJson(res, 503, { error: "dealer registry requires the SQLite indexer" });
       return;
     }
-    const auth = req.headers["authorization"];
-    if (!adminToken || auth !== `Bearer ${adminToken}`) {
+    if (!adminToken || !bearerMatches(req.headers["authorization"], adminToken)) {
       respondJson(res, 401, { error: "missing or invalid admin token" });
       return;
     }
@@ -673,8 +616,7 @@ async function routeRequest(
       respondJson(res, 503, { error: "dealer registry requires the SQLite indexer" });
       return;
     }
-    const auth = req.headers["authorization"];
-    if (!adminToken || auth !== `Bearer ${adminToken}`) {
+    if (!adminToken || !bearerMatches(req.headers["authorization"], adminToken)) {
       respondJson(res, 401, { error: "missing or invalid admin token" });
       return;
     }
@@ -685,11 +627,33 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/wallet/submit") {
+    // The wallet relay forwards client bodies under the operator JWT.
+    // It is OFF by default; enable with DEX_DEV_WALLET_RELAY=1. When ON the
+    // forwarded actAs parties are restricted to DEX_DEV_RELAY_PARTIES.
+    if (!cfg.walletRelayEnabled) {
+      respondJson(res, 404, {
+        error: "wallet relay disabled; set DEX_DEV_WALLET_RELAY=1 to enable",
+        code: "not_found",
+      });
+      return;
+    }
     if (!ledgerUrl || !ledgerToken) {
       respondJson(res, 503, { error: "ledger not configured" });
       return;
     }
     const body = await readJson<Record<string, unknown>>(req);
+    // Restrict the relayed authority to the allowlisted parties.
+    const allowParties = cfg.walletRelayParties ?? [];
+    const requestedActAs = ((body.actAs as string[] | undefined) ?? []).filter(Boolean);
+    const disallowed = requestedActAs.filter((p) => !allowParties.includes(p));
+    if (allowParties.length === 0 || requestedActAs.length === 0 || disallowed.length > 0) {
+      respondJson(res, 403, {
+        error: "wallet relay actAs party not allowlisted",
+        code: "forbidden",
+        details: { requestedActAs, disallowed, allowParties },
+      });
+      return;
+    }
     const base = ledgerUrl.replace(/\/$/, "");
     try {
       const r = await fetch(`${base}/v2/commands/submit-and-wait`, {
@@ -814,17 +778,14 @@ async function routeRequest(
       respondJson(res, 503, { error: "config disabled" });
       return;
     }
-    const auth = req.headers["authorization"];
     const okWrite =
-      adminToken &&
-      typeof auth === "string" &&
-      auth === `Bearer ${adminToken}`;
-    const cfg = new OperatorConfig(db);
+      !!adminToken && bearerMatches(req.headers["authorization"], adminToken);
+    const opCfg = new OperatorConfig(db);
 
     if (method === "GET" && path === "/v1/admin/config") {
       // Read is open by default — config is not sensitive (dealer
       // whitelist, policy params); production may want to gate this.
-      respondJson(res, 200, cfg.list());
+      respondJson(res, 200, opCfg.list());
       return;
     }
     if (method === "PUT" && path === "/v1/admin/config") {
@@ -836,7 +797,7 @@ async function routeRequest(
         respondJson(res, 400, { error: "expected { key, value: string }" });
         return;
       }
-      cfg.set(body.key, body.value);
+      opCfg.set(body.key, body.value);
       respondJson(res, 200, { ok: true });
       return;
     }
@@ -845,7 +806,7 @@ async function routeRequest(
         throw new HttpError(401, "unauthorized", "missing or invalid admin token");
       }
       const key = decodeURIComponent(path.slice("/v1/admin/config/".length));
-      cfg.delete(key);
+      opCfg.delete(key);
       respondJson(res, 200, { ok: true });
       return;
     }
@@ -875,7 +836,7 @@ async function routeRequest(
   // === quote ============================================================
 
   if (method === "POST" && path === "/v1/swaps/quote") {
-    const raw = await readJson<unknown>(req);
+    const raw = await readValidatedJson<unknown>(req, "POST /v1/swaps/quote");
     const poolId = expectString(raw, "poolId");
     const inputInstrumentId = expectString(raw, "inputInstrumentId");
     const inputAmount = expectString(raw, "inputAmount");
@@ -905,7 +866,7 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/rfq") {
-    const body = await readJson<Parameters<typeof backend.rfq.create>[0]>(req);
+    const body = await readValidatedJson<Parameters<typeof backend.rfq.create>[0]>(req, "POST /v1/rfq");
     const result = await backend.rfq.create(body);
     respondJson(res, 200, result);
     return;
@@ -921,21 +882,21 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/rfq/accept") {
-    const body = await readJson<Parameters<typeof backend.rfq.accept>[0]>(req);
+    const body = await readValidatedJson<Parameters<typeof backend.rfq.accept>[0]>(req, "POST /v1/rfq/accept");
     const result = await backend.rfq.accept(body);
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/orders/bind") {
-    const body = await readJson<Parameters<typeof backend.order.bind>[0]>(req);
+    const body = await readValidatedJson<Parameters<typeof backend.order.bind>[0]>(req, "POST /v1/orders/bind");
     const result = await backend.order.bind(body);
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/orders/fund") {
-    const body = await readJson<Parameters<typeof backend.order.fund>[0]>(req);
+    const body = await readValidatedJson<Parameters<typeof backend.order.fund>[0]>(req, "POST /v1/orders/fund");
     const result = await backend.order.fund(body);
     respondJson(res, 200, result);
     return;
@@ -950,16 +911,78 @@ async function routeRequest(
     return;
   }
 
+  // === matched-trade settlement (TradingAppV2) =========================
+  // The on-chain choices are MatchedTrade_RequestAllocations →
+  // MatchedTrade_Settle → (or MatchedTrade_Cancel). Operator-auth gated.
+  // The settle/cancel bodies carry a `batchesByAdmin` / `allocationsByAdmin`
+  // JSON object keyed by admin party; we convert to the Map the service wants.
+
+  if (method === "POST" && path === "/v1/matched-trades/request-allocations") {
+    const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/request-allocations");
+    const tradeCid = expectString(body, "tradeCid");
+    const result = await backend.matchedTrade.requestAllocations({
+      tradeCid: tradeCid as never,
+    });
+    respondJson(res, 200, { allocationRequestCids: result });
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/matched-trades/settle") {
+    const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/settle");
+    const tradeCid = expectString(body, "tradeCid");
+    const batchesByAdminRaw = expectField<Record<string, { allocationCids: string[] }>>(
+      body,
+      "batchesByAdmin",
+    );
+    const allocationRequestCids = expectField<string[]>(body, "allocationRequestCids");
+    const batchesByAdmin = new Map(
+      Object.entries(batchesByAdminRaw).map(([admin, batch]) => [
+        admin as Party,
+        { allocationCids: (batch.allocationCids ?? []) as never[] },
+      ]),
+    );
+    const result = await backend.matchedTrade.settle({
+      tradeCid: tradeCid as never,
+      batchesByAdmin,
+      allocationRequestCids: allocationRequestCids as never[],
+    });
+    respondJson(res, 200, { result });
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/matched-trades/cancel") {
+    const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/cancel");
+    const tradeCid = expectString(body, "tradeCid");
+    const allocationsByAdminRaw = expectField<Record<string, string[]>>(
+      body,
+      "allocationsByAdmin",
+    );
+    const allocationRequestCids = expectField<string[]>(body, "allocationRequestCids");
+    const allocationsByAdmin = new Map(
+      Object.entries(allocationsByAdminRaw).map(([admin, cids]) => [
+        admin as Party,
+        (cids ?? []) as never[],
+      ]),
+    );
+    const result = await backend.matchedTrade.cancel({
+      tradeCid: tradeCid as never,
+      allocationsByAdmin,
+      allocationRequestCids: allocationRequestCids as never[],
+    });
+    respondJson(res, 200, { result });
+    return;
+  }
+
   if (method === "POST" && path === "/v1/pools/swap/request") {
     const body =
-      await readJson<Parameters<typeof backend.pool.requestSwap>[0]>(req);
+      await readValidatedJson<Parameters<typeof backend.pool.requestSwap>[0]>(req, "POST /v1/pools/swap/request");
     const result = await backend.pool.requestSwap(body);
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/pools/swap") {
-    const body = await readJson<Parameters<typeof backend.pool.swap>[0]>(req);
+    const body = await readValidatedJson<Parameters<typeof backend.pool.swap>[0]>(req, "POST /v1/pools/swap");
     const result = await backend.pool.swap(body);
     respondJson(res, 200, result);
     return;
@@ -1030,18 +1053,18 @@ async function routeRequest(
   // === DvP liquidity ==========================================
 
   if (method === "POST" && path === "/v1/pools/add-liquidity/request") {
-    const body = await readJson<
+    const body = await readValidatedJson<
       Parameters<typeof backend.pool.requestAddLiquidity>[0]
-    >(req);
+    >(req, "POST /v1/pools/add-liquidity/request");
     const result = await backend.pool.requestAddLiquidity(body);
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/pools/add-liquidity/settle") {
-    const body = await readJson<
+    const body = await readValidatedJson<
       Parameters<typeof backend.pool.settleAddLiquidity>[0]
-    >(req);
+    >(req, "POST /v1/pools/add-liquidity/settle");
     const result = await backend.pool.settleAddLiquidity(body);
     respondJson(res, 200, { result });
     return;
@@ -1062,24 +1085,36 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/pools/remove-liquidity/request") {
-    const body = await readJson<
+    const body = await readValidatedJson<
       Parameters<typeof backend.pool.requestRemoveLiquidity>[0]
-    >(req);
+    >(req, "POST /v1/pools/remove-liquidity/request");
     const result = await backend.pool.requestRemoveLiquidity(body);
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/pools/remove-liquidity/settle") {
-    const body = await readJson<
+    const body = await readValidatedJson<
       Parameters<typeof backend.pool.settleRemoveLiquidity>[0]
-    >(req);
+    >(req, "POST /v1/pools/remove-liquidity/settle");
     const result = await backend.pool.settleRemoveLiquidity(body);
     respondJson(res, 200, { result });
     return;
   }
 
   throw new HttpError(404, "not_found", `no route: ${method} ${path}`);
+}
+
+// Read the JSON body and validate it against the write spec for this route.
+// `routeKey` is "${method} ${path}". Throws ValidationError (→ 400)
+// on a malformed amount / party / cid / missing required field.
+async function readValidatedJson<T>(
+  req: IncomingMessage,
+  routeKey: string,
+): Promise<T> {
+  const body = await readJson<T>(req);
+  validateWriteBody(routeKey, body);
+  return body;
 }
 
 async function readJson<T>(req: IncomingMessage): Promise<T> {

@@ -4,8 +4,6 @@ module CantonDex.Trading.WorkflowConstructors where
 -- adjust step: extra legs + residual funding ride on FinalizedAllocation
 -- and are consumed by SettlementFactory_SettleBatch.
 
-import DA.TextMap qualified as TextMap
-
 import CantonDex.Trading.Utils qualified as Utils
 
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
@@ -50,82 +48,7 @@ mkPrefundedAllocationFactoryAllocate admin authorizer settlement settlementDeadl
     actors
     extraArgs
 
--- `extraArgs` carries the registry's off-ledger choice context; an empty
--- one only works against registries that don't require it.
-mkCommittedPoolAllocationFactoryAllocate
-  : Party
-  -> HoldingV2.Account
-  -> V2.SettlementInfo
-  -> Optional Time
-  -> Utils.Funding
-  -> Time
-  -> [ContractId HoldingV2.Holding]
-  -> [Party]
-  -> ExtraArgs
-  -> AllocationInstructionV2.AllocationFactory_Allocate
-mkCommittedPoolAllocationFactoryAllocate admin authorizer settlement settlementDeadline nextIterationFunding requestedAt inputHoldingCids actors extraArgs =
-  mkAllocationFactoryAllocate
-    settlement
-    (Utils.mkCommittedPoolAllocationSpecification admin authorizer settlementDeadline nextIterationFunding)
-    requestedAt
-    inputHoldingCids
-    actors
-    extraArgs
-
--- | FinalizedAllocation carrying the extra legs projected to the
--- authorizer's sides, plus next-iteration funding if any.
-mkFinalizedAllocationFromLegs
-  : ContractId V2.Allocation
-  -> HoldingV2.Account
-  -> [V2.TransferLeg]
-  -> Optional Utils.Funding
-  -> V2.FinalizedAllocation
-mkFinalizedAllocationFromLegs allocationCid authorizer transferLegs nextIterationFunding =
-  Utils.mkFinalizedAllocation
-    allocationCid
-    (Utils.legsToSides authorizer transferLegs)
-    nextIterationFunding
-
-mkBatchSettlement
-  : V2.SettlementInfo
-  -> [V2.TransferLeg]
-  -> [V2.FinalizedAllocation]
-  -> [Party]
-  -> ExtraArgs
-  -> V2.SettlementFactory_SettleBatch
-mkBatchSettlement settlement transferLegs allocations actors extraArgs =
-  V2.SettlementFactory_SettleBatch with
-    settlement
-    transferLegs
-    allocations
-    actors
-    extraArgs
-
 mkAllocationCancel : [Party] -> ExtraArgs -> V2.Allocation_Cancel
 mkAllocationCancel actors extraArgs = V2.Allocation_Cancel with
   actors
   extraArgs
-
-extractCompletedAllocationCid
-  : AllocationInstructionV2.AllocationInstructionResult
-  -> Optional (ContractId V2.Allocation)
-extractCompletedAllocationCid result = case result.output of
-  AllocationInstructionV2.AllocationInstructionResult_Completed allocCid ->
-    Some allocCid
-  AllocationInstructionV2.AllocationInstructionResult_Pending _ ->
-    None
-  AllocationInstructionV2.AllocationInstructionResult_Failed ->
-    None
-
--- | Next-iteration cids from a batch settle, dropping fully-settled (None)
--- entries. For order-preserving pairing use Utils.nextIterationAllocationCids.
-extractNextIterationAllocationCids
-  : V2.SettlementFactory_SettleBatchResult
-  -> [ContractId V2.Allocation]
-extractNextIterationAllocationCids result =
-  [ cid | Some cid <- Utils.nextIterationAllocationCids result ]
-
-extractReturnedHoldings
-  : V2.AllocationResult
-  -> TextMap.TextMap [ContractId HoldingV2.Holding]
-extractReturnedHoldings result = result.authorizerHoldingCids

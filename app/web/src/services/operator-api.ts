@@ -37,8 +37,6 @@ export interface Pool {
   totalLpSupply: Decimal;
   baseSlices: PoolSlice[];
   quoteSlices: PoolSlice[];
-  operatorFeeBps: number | null;
-  accumulatedOperatorFees: Record<string, Decimal> | null;
   publicReaders: Party[] | null;
 }
 
@@ -215,16 +213,6 @@ export class OperatorApi {
     return this.post(
       `/v1/admin/pairs/${encodeURIComponent(pairCid)}/fee-model`,
       { newFeeModel },
-    );
-  }
-
-  async updateTradingMode(
-    pairCid: ContractId<"DexPair">,
-    newTradingMode: "TM_OrderBook" | "TM_Pool" | "TM_Both",
-  ): Promise<{ pairCid: ContractId<"DexPair"> }> {
-    return this.post(
-      `/v1/admin/pairs/${encodeURIComponent(pairCid)}/trading-mode`,
-      { newTradingMode },
     );
   }
 

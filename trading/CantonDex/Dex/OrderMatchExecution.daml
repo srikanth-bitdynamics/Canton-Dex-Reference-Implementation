@@ -50,14 +50,38 @@ mkMatchTransferLegs match =
           meta = emptyMetadata
       ]
 
+-- | Remainder funding for one side: the committed budget the side's
+-- allocation locked, minus what this fill spends out of it (the side's
+-- sender-side outflows). Non-positive entries are dropped. `None` (no
+-- committed budget) means the allocation fully settles with no roll-forward.
+remainderFunding : V2.Account -> Utils.Funding -> [V2.TransferLeg] -> Optional Utils.Funding
+remainderFunding authorizer committedBudget transferLegs =
+  let spent = TextMap.fromListWithR (+)
+        [ (leg.instrumentId, leg.amount)
+        | leg <- transferLegs
+        , leg.sender == authorizer
+        ]
+      remaining = Utils.textMapUnionWith (-) committedBudget spent
+  in case Utils.normalizeFunding remaining of
+       -- An empty residual (fill consumed the whole budget) must roll nothing
+       -- forward: the allocation fully settles, so signal None rather than a
+       -- zero-funded next iteration.
+       Some f | null (TextMap.toList f) -> None
+       other -> other
+
 template OrderMatchExecution with
     operator : Party
     matchId : Text
     match : MatchedOrderPair
     buyerAllocationCid : ContractId V2.Allocation
     sellerAllocationCid : ContractId V2.Allocation
-    buyerHasRemainder : Bool
-    sellerHasRemainder : Bool
+    buyerCommittedFunding : Utils.Funding
+      -- ^ The committed next-iteration budget the buyer's allocation locked
+      --   (e.g. quote = remainingQty * limitPrice). The remainder rolled
+      --   forward after this fill is this minus the buyer's spend.
+    sellerCommittedFunding : Utils.Funding
+      -- ^ The committed budget the seller's allocation locked (e.g. base =
+      --   remainingQty). Remainder = this minus the seller's spend.
   where
     signatory operator
 
@@ -78,10 +102,11 @@ template OrderMatchExecution with
               meta = emptyMetadata
 
         -- Each side authorizes both legs; legsToSides projects each account's
-        -- own sides. `Some empty` vs `None` funding signals whether the
-        -- registry rebuilds a next-iteration allocation for the remainder.
-        let buyerFunding = if buyerHasRemainder then Some TextMap.empty else None
-            sellerFunding = if sellerHasRemainder then Some TextMap.empty else None
+        -- own sides. The next-iteration funding the registry rolls forward is
+        -- the explicit remainder = committed budget minus this fill's spend.
+        -- `None` (empty remainder) means the side fully settles.
+        let buyerFunding = remainderFunding match.buyerAccount buyerCommittedFunding transferLegs
+            sellerFunding = remainderFunding match.sellerAccount sellerCommittedFunding transferLegs
             buyerFinalized = Utils.mkFinalizedAllocation
               buyerAllocationCid
               (Utils.legsToSides match.buyerAccount transferLegs)

@@ -258,7 +258,6 @@ async function seed(
         quoteInstrumentId: "USDC",
         lpInstrumentId: { admin: lpRegistrar, id: "BTC-USDC-LP" },
         feeBps: 30,
-        operatorFeeBps: 0,
       },
     },
   });
@@ -392,6 +391,18 @@ async function main(): Promise<void> {
       allocationFactoryDisclosure: [],
       network: process.env.CANTON_NETWORK ?? "canton:devnet",
     },
+    // Operator-write auth: the dev server has no token, so default to the
+    // explicit dev-open bypass unless an operator token is supplied.
+    operatorToken: process.env.DEX_OPERATOR_API_TOKEN,
+    devOpen: process.env.DEX_OPERATOR_API_TOKEN
+      ? false
+      : process.env.DEX_DEV_OPEN === "1",
+    // Wallet relay is OFF unless explicitly enabled.
+    walletRelayEnabled: process.env.DEX_DEV_WALLET_RELAY === "1",
+    walletRelayParties: (process.env.DEX_DEV_RELAY_PARTIES ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   });
   // eslint-disable-next-line no-console
   console.log(`[operator-backend] dev server listening at ${url}`);

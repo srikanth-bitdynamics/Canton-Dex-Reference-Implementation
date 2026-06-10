@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { OrderBook } from '@/components/OrderBook';
 import { ledger } from '@/services/ledger';
@@ -12,6 +12,7 @@ export function OrdersPage() {
   const [side, setSide] = useState<'Bid' | 'Ask'>('Bid');
   const [limitPrice, setLimitPrice] = useState('');
   const [quantity, setQuantity] = useState('');
+  const [placeError, setPlaceError] = useState<string | null>(null);
 
   const { data: pairs } = useQuery({ queryKey: ['pairs'], queryFn: ledger.getPairs });
   const activePair = pairs?.[0];
@@ -38,27 +39,54 @@ export function OrdersPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
   });
 
+  // Track the in-flight place-order toast so onError can dismiss it and show
+  // the failure instead of leaving a success-looking lifecycle card.
+  const placeToastId = useRef<number | null>(null);
+
   const placeMutation = useMutation({
     mutationFn: async (params: Parameters<typeof ledger.placeOrder>[0]) => {
-      toast.push(
+      const id = toast.push(
         `${params.side === 'Bid' ? 'BUY' : 'SELL'} ${params.quantity} ${params.pairBase} @ ${params.limitPrice}`,
         'placeOrder',
         () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
       );
-      return ledger.placeOrder(params);
+      placeToastId.current = id;
+      // Advance the toast on real pipeline step completion rather than the
+      // cosmetic timer.
+      return ledger.placeOrder({
+        ...params,
+        onProgress: (phase) => toast.setPhase(id, phase),
+      });
     },
     onSuccess: () => {
+      placeToastId.current = null;
       queryClient.invalidateQueries({ queryKey: ['orders'] });
       setLimitPrice('');
       setQuantity('');
     },
+    onError: (error) => {
+      // The mutationFn pushed an optimistic lifecycle toast; on failure that
+      // toast would otherwise advance to "success" on its timer. Dismiss it and
+      // surface the real error.
+      if (placeToastId.current != null) {
+        toast.dismiss(placeToastId.current);
+        placeToastId.current = null;
+      }
+      setPlaceError(error instanceof Error ? error.message : 'Order placement failed');
+    },
   });
 
   const handlePlace = useCallback(() => {
+    setPlaceError(null);
     if (!activePair || !context) return;
     const price = parseFloat(limitPrice);
     const qty = parseFloat(quantity);
-    if (price <= 0 || qty <= 0) return;
+    // Explicit NaN guards: `NaN <= 0` is false, so a blank/garbage field would
+    // otherwise slip past a bare `<= 0` check.
+    if (!Number.isFinite(price) || !Number.isFinite(qty) || price <= 0 || qty <= 0) {
+      setPlaceError('Enter a valid positive limit price and amount.');
+      return;
+    }
     placeMutation.mutate({
       context,
       pairBase: activePair.baseInstrumentId,
@@ -150,6 +178,19 @@ export function OrdersPage() {
             </div>
           )}
         </div>
+
+        {placeError && (
+          <div
+            className="mb-3 rounded px-3 py-2 text-sm"
+            style={{
+              background: 'rgba(248, 81, 73, 0.08)',
+              border: '1px solid var(--red)',
+              color: 'var(--red)',
+            }}
+          >
+            {placeError}
+          </div>
+        )}
 
         <button
           onClick={handlePlace}

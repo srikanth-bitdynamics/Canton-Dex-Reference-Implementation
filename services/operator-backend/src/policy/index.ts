@@ -1,8 +1,9 @@
 // Operator policy module. Mirrors the on-ledger ranking applied by
 // Rfq_Accept in trading/CantonDex/Dex/Rfq.daml. The two MUST agree.
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
+import { parseDecimal } from "../pool/decimal.js";
 import type {
   Decimal,
   Party,
@@ -16,6 +17,15 @@ import type {
 export const POLICY_VERSION = "v1.4";
 export const POLICY_HASH = "sha256:rfq-policy-v1.4";
 
+// Compare two Daml Decimal strings exactly (10dp, no IEEE-754) so the
+// ranking agrees with the on-ledger Decimal ordering in
+// trading/CantonDex/Dex/Rfq.daml. Returns -1 / 0 / 1.
+export function compareDecimal(a: string, b: string): number {
+  const da = parseDecimal(a);
+  const db = parseDecimal(b);
+  return da < db ? -1 : da > db ? 1 : 0;
+}
+
 export function rankQuotes(
   side: RfqSide,
   quotes: RfqQuote[],
@@ -28,9 +38,9 @@ export function rankQuotes(
     const tierA = a.tier === "TierTrusted" ? 0 : 1;
     const tierB = b.tier === "TierTrusted" ? 0 : 1;
     if (tierA !== tierB) return tierA - tierB;
-    const pa = parseFloat(a.price);
-    const pb = parseFloat(b.price);
-    if (pa !== pb) return side === "RFQ_Buy" ? pa - pb : pb - pa;
+    // Exact decimal-string price comparison (matches the Daml Decimal order).
+    const priceCmp = compareDecimal(a.price, b.price);
+    if (priceCmp !== 0) return side === "RFQ_Buy" ? priceCmp : -priceCmp;
     const ta = Date.parse(a.postedAt);
     const tb = Date.parse(b.postedAt);
     if (ta !== tb) return ta - tb;
@@ -82,6 +92,14 @@ export function buildReceipt(args: {
   return { ...unsigned, signature: signReceipt(unsigned) };
 }
 
+// The `signature` field is an off-chain *replay digest*, not the
+// trust anchor — origin authenticity is established on-ledger by the
+// MatchedTrade signatory (PolicyReceipt.signedBy == venue, enforced by the
+// Daml `ensure`). On-ledger the string is stored opaquely (it is never
+// recomputed), so off-chain we are free to upgrade the digest to a keyed
+// HMAC-SHA256 when DEX_RECEIPT_HMAC_KEY is configured; otherwise we keep the
+// historical unkeyed SHA-256 so existing digest-parity holds. Either way the
+// digest only proves the receipt inputs were not tampered with in transit.
 export function signReceipt(r: Omit<PolicyReceipt, "signature">): string {
   const canonical = JSON.stringify({
     policyHash: r.policyHash,
@@ -95,6 +113,10 @@ export function signReceipt(r: Omit<PolicyReceipt, "signature">): string {
     acceptedRank: r.acceptedRank,
     signedAt: r.signedAt,
   });
+  const key = process.env.DEX_RECEIPT_HMAC_KEY;
+  if (key) {
+    return "0x" + createHmac("sha256", key).update(canonical).digest("hex");
+  }
   return "0x" + createHash("sha256").update(canonical).digest("hex");
 }
 

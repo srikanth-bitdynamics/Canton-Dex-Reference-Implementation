@@ -13,14 +13,16 @@ import { TxToast, useToasts, type TxPhaseKind } from './toasts';
 interface ToastApi {
   push: (label: string, kind?: TxPhaseKind, onComplete?: () => void) => number;
   dismiss: (id: number) => void;
+  /** Drive a toast to a real pipeline phase (stops the cosmetic timer). */
+  setPhase: (id: number, phase: number) => void;
 }
 
 const Ctx = createContext<ToastApi | null>(null);
 
 export function ToastProvider({ children }: { children: ReactNode }): JSX.Element {
-  const { toasts, push, dismiss } = useToasts();
+  const { toasts, push, dismiss, setPhase } = useToasts();
   return (
-    <Ctx.Provider value={{ push, dismiss }}>
+    <Ctx.Provider value={{ push, dismiss, setPhase }}>
       {children}
       <div className="toast-stack">
         {toasts.map((t) => (
@@ -43,6 +45,9 @@ export function useToast(): ToastApi {
         return 0;
       },
       dismiss: () => {
+        /* no provider */
+      },
+      setPhase: () => {
         /* no provider */
       },
     }

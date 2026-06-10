@@ -44,8 +44,12 @@ export class CantonDirectProvider implements WalletProvider {
     private readonly defaultToken: string,
   ) {
     // Auto-restore prior session on construction so a page reload keeps
-    // the user signed in.
-    const stored = typeof window !== "undefined" ? window.localStorage.getItem(LS_KEY) : null;
+    // the user signed in. Dev-only: in prod we never rehydrate a persisted
+    // bearer-token session.
+    const stored =
+      import.meta.env.DEV && typeof window !== "undefined"
+        ? window.localStorage.getItem(LS_KEY)
+        : null;
     if (stored) {
       try {
         this.session = JSON.parse(stored) as PersistedSession;
@@ -77,6 +81,15 @@ export class CantonDirectProvider implements WalletProvider {
 
   async connect(): Promise<WalletAccount> {
     if (this.status.kind === "connected") return this.status.account;
+    // Never read/persist a long-lived bearer token outside dev.
+    if (!import.meta.env.DEV) {
+      const msg =
+        "canton-direct is a dev-only provider and is disabled in production builds";
+      // eslint-disable-next-line no-console
+      console.error(`[wallet] ${msg}`);
+      this.setStatus({ kind: "error", message: msg });
+      throw new Error(msg);
+    }
     if (!this.defaultLedgerUrl || !this.defaultToken) {
       const msg = "VITE_CANTON_LEDGER_URL and VITE_CANTON_AUTH_TOKEN must be set";
       this.setStatus({ kind: "error", message: msg });

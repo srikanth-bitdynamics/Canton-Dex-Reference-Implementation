@@ -15,6 +15,12 @@ import CantonDex.Dex.PoolSlice
 
 -- Math --------------------------------------------------------------------
 
+-- | Floor a Decimal to 10 dp toward zero. Payouts sourced from the pool
+-- (constant-product output, pro-rata redemption) round DOWN so the pool never
+-- pays out more than the exact amount, keeping x*y=k non-decreasing.
+floorDecimal10 : Decimal -> Decimal
+floorDecimal10 x = intToDecimal (floor (x * 1e10)) / 1e10
+
 newtonSqrt : Decimal -> Decimal -> Int -> Decimal
 newtonSqrt target guess iteration
   | iteration >= 50 = guess
@@ -30,7 +36,7 @@ constantProductOut : Decimal -> Decimal -> Int -> Decimal -> Decimal
 constantProductOut reserveIn reserveOut feeBps inputAmount =
   let feeMultiplier = (10000.0 - intToDecimal feeBps) / 10000.0
       amountInAfterFee = inputAmount * feeMultiplier
-  in (amountInAfterFee * reserveOut) / (reserveIn + amountInAfterFee)
+  in floorDecimal10 ((amountInAfterFee * reserveOut) / (reserveIn + amountInAfterFee))
 
 -- Helpers -----------------------------------------------------------------
 

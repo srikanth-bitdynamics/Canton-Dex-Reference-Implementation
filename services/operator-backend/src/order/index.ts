@@ -1,11 +1,13 @@
 // Order flow. Same shape as RFQ; see RFQ comments for the worked example.
 
-import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
+import type { ContractId } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
+import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { recoverCreatedAllocations } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
+import * as dec from "../pool/decimal.js";
 import type { Order, Party, V2TransferLeg } from "../types.js";
 import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
 
@@ -43,18 +45,8 @@ export class OrderService {
     private readonly operatorParty: Party,
   ) {}
 
-  private async choiceContext(admin: Party): Promise<{
-    extraArgs: {
-      context: { values: Record<string, unknown> };
-      meta: { values: Record<string, unknown> };
-    };
-    disclosure: DisclosedContract[];
-  }> {
-    const ctx = await this.registry.getChoiceContext(admin);
-    return {
-      extraArgs: { context: ctx.context, meta: { values: {} } },
-      disclosure: ctx.disclosure,
-    };
+  private choiceContext(admin: Party): Promise<ChoiceContext> {
+    return fetchChoiceContext(this.registry, admin);
   }
 
   async bind(input: OrderBindInput): Promise<OrderBindResult> {
@@ -227,9 +219,12 @@ export class OrderService {
     }> = [];
     for (const m of matches) {
       try {
-        const quoteAmount = (
-          Number(m.price) * Number(m.quantity)
-        ).toFixed(10);
+        // Quote-leg amount = price * quantity at 10dp, round-half-even, via
+        // the BigInt decimal module so it agrees with the on-ledger Decimal
+        // multiply to the last digit. Never IEEE-754 floats.
+        const quoteAmount = dec.formatDecimal(
+          dec.mul(dec.parseDecimal(m.price), dec.parseDecimal(m.quantity)),
+        );
         const transferLegs = [
           {
             sender: m.buy.trader,
@@ -246,10 +241,15 @@ export class OrderService {
             meta: { values: {} },
           },
         ];
+        // Deterministic, replay-safe commandId: derived once from
+        // the matched order cids + the cleared price/qty, NOT Date.now(), so a
+        // retry of the same match collapses onto the cached submission rather
+        // than creating a duplicate MatchedTrade.
+        const commandId = `match:${m.buy.contractId.slice(0, 12)}:${m.sell.contractId.slice(0, 12)}:${m.price}:${m.quantity}`;
         const tradeCid = await retryOnContention(() =>
           this.ledger.submit<ContractId<"MatchedTrade">>({
             actAs: [input.venue],
-            commandId: `match-${m.buy.contractId.slice(0, 12)}-${m.sell.contractId.slice(0, 12)}-${Date.now()}`,
+            commandId,
             command: {
               kind: "create",
               templateId: "CantonDex.Dex.MatchedTrade:MatchedTrade",

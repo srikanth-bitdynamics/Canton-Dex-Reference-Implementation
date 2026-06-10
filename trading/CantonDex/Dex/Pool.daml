@@ -39,9 +39,8 @@ template Pool with
     quoteInstrumentId : Text
     lpInstrumentId : V2.InstrumentId
     feeBps : Int
-      -- ^ Total swap fee in bps; operator takes operatorFeeBps, LPs the rest.
-    operatorFeeBps : Int
-      -- ^ Operator's share of the swap fee in bps (<= feeBps). 0 = all to LPs.
+      -- ^ Total swap fee in bps; accrues entirely to LPs via x*y=k. An
+      --   operator fee split is intentionally out of scope (reference impl).
   where
     signatory operator
     observer lpRegistrar

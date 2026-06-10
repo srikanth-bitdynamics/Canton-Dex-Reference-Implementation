@@ -10,7 +10,6 @@
 // follow the same shape; if you read one well, you've read them all.
 
 import type { ContractId } from "@canton-dex/registry-client";
-import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
@@ -44,7 +43,6 @@ export interface RfqCreateInput {
 export class RfqService {
   constructor(
     private readonly ledger: LedgerSubmitter,
-    private readonly _registry: RegistryClient,
     private readonly operatorParty: Party,
   ) {}
 
@@ -77,23 +75,46 @@ export class RfqService {
   }
 
   /**
-   * Sweep expired RFQs by cancelling them on the trader's behalf. Returns
-   * the list of RFQ ids that were cancelled. Errors per RFQ are logged
-   * and swallowed so one stale row does not block the sweep.
+   * Sweep expired RFQs under the operator's own authority via the
+   * operator-controlled Rfq_Expire choice (Rfq_Cancel is trader-controlled,
+   * and the operator cannot act as external-wallet traders). Returns the
+   * list of RFQ ids that were expired. Errors per RFQ are logged and
+   * swallowed so one stale row does not block the sweep.
    */
   async sweepExpired(now: Time): Promise<string[]> {
     const expired = await this.listExpired(now);
-    const cancelled: string[] = [];
+    const swept: string[] = [];
     for (const r of expired) {
       try {
-        await this.cancel({ rfqCid: r.contractId });
-        cancelled.push(r.rfqId);
+        await this.expire({ rfqCid: r.contractId, rfqId: r.rfqId, now });
+        swept.push(r.rfqId);
       } catch (e) {
         // eslint-disable-next-line no-console
-        console.warn(`[rfq] failed to cancel expired ${r.rfqId}: ${e instanceof Error ? e.message : String(e)}`);
+        console.warn(`[rfq] failed to expire ${r.rfqId}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
-    return cancelled;
+    return swept;
+  }
+
+  /** Archive an expired RFQ under operator authority (Rfq_Expire). */
+  async expire(input: {
+    rfqCid: ContractId<"Rfq">;
+    rfqId: string;
+    now: Time;
+  }): Promise<void> {
+    await retryOnContention(() =>
+      this.ledger.submit({
+        actAs: [this.operatorParty],
+        commandId: `rfq-expire:${input.rfqId}`,
+        command: {
+          kind: "exercise",
+          templateId: "CantonDex.Dex.Rfq:Rfq",
+          contractId: input.rfqCid,
+          choice: "Rfq_Expire",
+          argument: { currentTime: input.now },
+        },
+      }),
+    );
   }
 
   /**

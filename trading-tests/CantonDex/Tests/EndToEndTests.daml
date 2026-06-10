@@ -33,6 +33,7 @@ import CantonDex.Lp.Policy qualified as LP
 import CantonDex.Dex.MatchedTrade qualified as MT
 import CantonDex.Dex.Order qualified as Order
 import CantonDex.Dex.OrderFundingRequest qualified as OFR
+import CantonDex.Dex.OrderMatchExecution qualified as OME
 import CantonDex.Dex.Pool qualified as Pool
 import CantonDex.Dex.PoolState qualified as PState
 import CantonDex.Dex.PoolSlice qualified as PSlice
@@ -70,7 +71,6 @@ setupPool operator lpRegistrar admin = do
     quoteInstrumentId = "USDC"
     lpInstrumentId
     feeBps = 30
-    operatorFeeBps = 0
   stateCid <- submit operator $ createCmd PState.PoolState with
     poolId
     operator
@@ -403,6 +403,44 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
 
   pure ()
 
+-- Rfq_Expire: operator-authority cleanup of an expired RFQ. Rfq_Cancel is
+-- trader-controlled, so this is the only path that works once external
+-- wallets hold trader authority.
+testRfqExpireOperatorCleanup : Script ()
+testRfqExpireOperatorCleanup = do
+  operator <- allocateParty "operator-exp"
+  alice <- allocateParty "alice-exp"
+  orca <- allocateParty "orca-exp"
+  now <- getTime
+
+  let expiresAt = addRelTime now (hours 1)
+
+  rfqCid <- submit alice $ createCmd Rfq.Rfq with
+    trader = alice
+    operator
+    rfqId = "rfq-expire-001"
+    pair = "BTC/USDC"
+    side = Rfq.RFQ_Buy
+    size = 1.0
+    expiresAt
+    whitelist = [orca]
+    createdAt = now
+
+  -- Before the deadline the operator cannot expire it.
+  submitMustFail operator $ exerciseCmd rfqCid Rfq.Rfq_Expire with
+    currentTime = now
+
+  -- The trader is not the controller of Rfq_Expire.
+  submitMustFail alice $ exerciseCmd rfqCid Rfq.Rfq_Expire with
+    currentTime = addRelTime now (hours 2)
+
+  -- After the deadline the operator sweeps it.
+  submit operator $ exerciseCmd rfqCid Rfq.Rfq_Expire with
+    currentTime = addRelTime now (hours 2)
+
+  remaining <- queryContractId operator rfqCid
+  remaining === None
+
 -- 6. PoolRules_Swap end-to-end through the mock registry ------------------
 --
 -- Trader pre-funds a swap by creating their own prefunded allocation
@@ -679,8 +717,46 @@ testMatchedTradeFullSettle = do
 -- SettlementFactory_SettleBatch when extraTransferLegSides and
 -- nextIterationFunding are submitted together.
 
+-- Conservation invariant for the order-match remainder funding: the residual
+-- next-iteration funding rolled forward to a partially-filled order equals the
+-- committed budget the order locked minus what the fill spent. Equivalently,
+-- committed == spent + residual on the locked instrument (nothing is created
+-- or destroyed). Checked here for a partial fill (residual > 0) and an exact
+-- full fill (residual drops to None) on both the buy and sell sides.
 testFinalizedAllocationFundingConservation : Script ()
-testFinalizedAllocationFundingConservation = pure ()
+testFinalizedAllocationFundingConservation = do
+  -- Build accounts from real allocatable parties so the legs route correctly.
+  alice <- allocateParty "ome-buyer"
+  bob <- allocateParty "ome-seller"
+  let buyerAcct = Utils.basicAccount alice
+      sellerAcct = Utils.basicAccount bob
+      -- A bid for 10 base @ 5 quote locks 50 quote; a partial fill of 4 base
+      -- spends 4*5 = 20 quote, leaving 30. The ask locks 10 base; the fill
+      -- spends 4 base, leaving 6.
+      partialMatch = OME.MatchedOrderPair with
+        buyerAccount = buyerAcct
+        sellerAccount = sellerAcct
+        baseInstrumentId = "BTC"
+        quoteInstrumentId = "USDC"
+        fillQty = 4.0
+        fillPrice = 5.0
+      partialLegs = OME.mkMatchTransferLegs partialMatch
+      buyerBudget = TextMap.fromList [("USDC", 50.0)]
+      sellerBudget = TextMap.fromList [("BTC", 10.0)]
+
+  -- Partial fill: residual = committed - spent on the locked instrument.
+  OME.remainderFunding buyerAcct buyerBudget partialLegs
+    === Some (TextMap.fromList [("USDC", 30.0)])
+  OME.remainderFunding sellerAcct sellerBudget partialLegs
+    === Some (TextMap.fromList [("BTC", 6.0)])
+
+  -- Exact full fill: 10 base @ 5 spends the whole 50-quote / 10-base budget,
+  -- so the residual is empty -> None (the allocation fully settles).
+  let fullMatch = partialMatch with fillQty = 10.0
+      fullLegs = OME.mkMatchTransferLegs fullMatch
+  OME.remainderFunding buyerAcct buyerBudget fullLegs === None
+  OME.remainderFunding sellerAcct sellerBudget fullLegs === None
+  pure ()
 
 -- The DEX threads registry choice context through to the token-standard
 -- factory choices rather than hardcoding an empty one, proven with a
@@ -708,7 +784,7 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
   poolCid <- submit operator $ createCmd Pool.Pool with
     poolId; operator; lpRegistrar; admin
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId = lpId
-    feeBps = 30; operatorFeeBps = 0
+    feeBps = 30
   stateCid <- submit operator $ createCmd PState.PoolState with
     poolId; operator; lpRegistrar
     status = Pool.PS_Unfunded

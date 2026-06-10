@@ -57,7 +57,24 @@ type AppKitUniversalConnector = {
 const LS_LAST_PARTY = "canton-dex:wc:last-party";
 const CONNECT_TIMEOUT_MS = 60_000;
 const SUBMIT_TIMEOUT_MS = 30_000;
-const SUBMIT_RETRIES = 2;
+// Idempotent reads may be retried; submits must NOT.
+const READ_RETRIES = 2;
+
+/**
+ * Raised when a submit times out: we cannot tell whether the wallet authorized
+ * the transaction or not, so the caller must NOT auto-retry (that risks a
+ * duplicate authorization). The user should check their wallet.
+ */
+export class WalletStatusUnknownError extends Error {
+  constructor(label: string) {
+    super(
+      `${label}: status unknown — the request may or may not have been ` +
+        `authorized. Check your wallet before retrying to avoid a duplicate ` +
+        `submission.`,
+    );
+    this.name = "WalletStatusUnknownError";
+  }
+}
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -163,9 +180,17 @@ export class WalletConnectProvider implements WalletProvider {
 
       await withTimeout(this.connector.connect(), CONNECT_TIMEOUT_MS, "wc connect");
 
-      const accounts = await withTimeout(
-        this.connector.request<{ party: string }[]>({ method: "canton_listAccounts" }),
-        CONNECT_TIMEOUT_MS,
+      // canton_listAccounts is an idempotent read, so it is safe to retry on a
+      // transient relay timeout.
+      const conn = this.connector;
+      const accounts = await withRetry(
+        () =>
+          withTimeout(
+            conn.request<{ party: string }[]>({ method: "canton_listAccounts" }),
+            CONNECT_TIMEOUT_MS,
+            "canton_listAccounts",
+          ),
+        READ_RETRIES,
         "canton_listAccounts",
       );
       const primary = accounts[0];
@@ -212,21 +237,34 @@ export class WalletConnectProvider implements WalletProvider {
       throw new LiquidityAllocationUnsupportedError(this.id);
     }
     const conn = this.connector;
+    // Idempotency key threaded to the wallet so that IF it dedupes on
+    // commandId, a user-driven retry can't double-authorize. We still do NOT
+    // auto-retry submits ourselves.
+    const commandId = `wc-${intent.kind}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
     // The dApp does NOT construct Daml command trees here. CIP-0103's
     // canton_prepareExecute takes the dApp's intent and the wallet
     // builds the correct Daml commands.
-    return withRetry(
-      () =>
-        withTimeout(
-          conn.request<WalletResult>({
-            method: "canton_prepareExecute",
-            params: [intent],
-          }),
-          SUBMIT_TIMEOUT_MS,
-          "canton_prepareExecute",
-        ),
-      SUBMIT_RETRIES,
-      "submit",
-    );
+    //
+    // Submits are NOT retried on timeout: a timed-out submit may already have
+    // been authorized by the wallet, so retrying risks a duplicate. On timeout
+    // we surface a "status unknown — check your wallet" error instead.
+    try {
+      return await withTimeout(
+        conn.request<WalletResult>({
+          method: "canton_prepareExecute",
+          params: [{ ...intent, commandId }],
+        }),
+        SUBMIT_TIMEOUT_MS,
+        "canton_prepareExecute",
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("timed out")) {
+        throw new WalletStatusUnknownError("canton_prepareExecute");
+      }
+      throw e;
+    }
   }
 }

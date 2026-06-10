@@ -1,8 +1,9 @@
 // MatchedTrade flow.
 
-import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
+import type { ContractId } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
+import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import type { Party } from "../types.js";
@@ -34,18 +35,8 @@ export class MatchedTradeService {
     private readonly operatorParty: Party,
   ) {}
 
-  private async choiceContext(admin: Party): Promise<{
-    extraArgs: {
-      context: { values: Record<string, unknown> };
-      meta: { values: Record<string, unknown> };
-    };
-    disclosure: DisclosedContract[];
-  }> {
-    const ctx = await this.registry.getChoiceContext(admin);
-    return {
-      extraArgs: { context: ctx.context, meta: { values: {} } },
-      disclosure: ctx.disclosure,
-    };
+  private choiceContext(admin: Party): Promise<ChoiceContext> {
+    return fetchChoiceContext(this.registry, admin);
   }
 
   async requestAllocations(

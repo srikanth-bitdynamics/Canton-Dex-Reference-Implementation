@@ -109,7 +109,6 @@ export interface PoolConfigContract {
   quoteInstrumentId: string;
   lpInstrumentId: InstrumentId;
   feeBps: number;
-  operatorFeeBps: number;
 }
 
 export interface PoolStateContract {
@@ -189,8 +188,6 @@ export interface Pool {
   totalLpSupply: Decimal;
   baseSlices: PoolSlice[];
   quoteSlices: PoolSlice[];
-  operatorFeeBps: number | null;
-  accumulatedOperatorFees: Record<string, Decimal> | null;
   publicReaders: Party[] | null;
 }
 

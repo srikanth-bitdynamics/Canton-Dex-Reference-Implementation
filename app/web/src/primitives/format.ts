@@ -34,27 +34,3 @@ export function formatExpiresIn(totalSeconds: number | null | undefined): string
   return m + 'm ' + rem.toString().padStart(2, '0') + 's';
 }
 
-/**
- * Constant-product swap output mirror of PoolModel.daml's quote math.
- * Used for the dApp's quote panel before round-tripping the operator
- * backend's /v1/swaps/quote endpoint -- gives a snappy preview without
- * a network call. The on-chain choice re-validates against
- * `minOutputAmount`.
- */
-export function quoteSwap(
-  reserveIn: number,
-  reserveOut: number,
-  amountIn: number,
-  feeBps: number,
-): { out: number; priceImpact: number; mid: number } {
-  if (!amountIn || amountIn <= 0) {
-    return { out: 0, priceImpact: 0, mid: reserveOut / reserveIn };
-  }
-  const feeMul = (10000 - feeBps) / 10000;
-  const dx = amountIn * feeMul;
-  const out = (reserveOut * dx) / (reserveIn + dx);
-  const mid = reserveOut / reserveIn;
-  const exec = out / amountIn;
-  const priceImpact = Math.abs(1 - exec / mid);
-  return { out, priceImpact, mid };
-}

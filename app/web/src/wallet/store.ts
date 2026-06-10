@@ -25,25 +25,44 @@ interface WalletStore {
   listProviders(): { id: WalletProviderId; label: string }[];
 }
 
+// Single active status subscription. `connect` previously subscribed per
+// attempt and only unsubscribed on a `disconnected` status, so repeated
+// connects / provider switches / errors leaked listeners. We keep one
+// handle here and tear down the previous subscription before installing a new
+// one (and on error).
+let activeUnsubscribe: (() => void) | null = null;
+
+function clearActiveSubscription(): void {
+  if (activeUnsubscribe) {
+    activeUnsubscribe();
+    activeUnsubscribe = null;
+  }
+}
+
 export const useWalletStore = create<WalletStore>((set, get) => ({
   activeProviderId: null,
   status: { kind: "disconnected" },
   account: null,
 
   async connect(providerId: WalletProviderId) {
-    // Tear down any previous session before swapping providers.
+    // Tear down any previous session + its status subscription before swapping
+    // providers (or re-connecting the same one).
     const current = get().activeProviderId;
     if (current && current !== providerId) {
       await getProvider(current).disconnect();
     }
+    clearActiveSubscription();
+
     const provider = getProvider(providerId);
-    const unsubscribe = provider.onStatusChange((status) => {
+    activeUnsubscribe = provider.onStatusChange((status) => {
       set({
         status,
         account: status.kind === "connected" ? status.account : null,
       });
-      if (status.kind === "disconnected") {
-        unsubscribe();
+      if (status.kind === "disconnected" || status.kind === "error") {
+        // Drop the subscription once the provider reaches a terminal state so
+        // we never accumulate stale listeners.
+        clearActiveSubscription();
         if (get().activeProviderId === providerId) {
           set({ activeProviderId: null });
         }
@@ -54,8 +73,10 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
       const account = await provider.connect();
       set({ account, status: provider.getStatus() });
     } catch (e) {
-      // Status was already set to `error` by the provider; just
-      // unwind the activeProviderId so the UI offers reconnection.
+      // Status was already set to `error` by the provider (which also fired the
+      // subscription above, clearing it). Make sure it's gone and unwind the
+      // activeProviderId so the UI offers reconnection.
+      clearActiveSubscription();
       set({ activeProviderId: null });
       throw e;
     }
@@ -63,6 +84,7 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
 
   async disconnect() {
     const id = get().activeProviderId;
+    clearActiveSubscription();
     if (!id) return;
     await getProvider(id).disconnect();
     set({ activeProviderId: null, status: { kind: "disconnected" }, account: null });

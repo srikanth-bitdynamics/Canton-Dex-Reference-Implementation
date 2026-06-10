@@ -90,28 +90,33 @@ template Rfq with
       do
         assertMsg "RFQ must not be expired" (currentTime < expiresAt)
 
-        considered <- forA consideredQuoteCids fetch
+        consideredPairs <- forA consideredQuoteCids (\cid -> do q <- fetch cid; pure (cid, q))
         accepted <- fetch acceptedQuoteCid
+        -- Match the accepted quote by contract id, not by (dealer, price)
+        -- value: distinct quotes can share a dealer+price, so value matching
+        -- could resolve to the wrong contract.
         assertMsg "Accepted quote must be in considered set" $
-          any (\q -> q.dealer == accepted.dealer && q.price == accepted.price) considered
+          acceptedQuoteCid `elem` consideredQuoteCids
         assertMsg "Accepted quote must reference this RFQ" $
           accepted.rfqId == rfqId
-        forA_ considered $ \q -> do
+        forA_ consideredPairs $ \(_, q) -> do
           assertMsg "All considered quotes must reference this RFQ" $
             q.rfqId == rfqId
           assertMsg "Considered quote must still be valid" $
             currentTime < q.expiresAt
 
-        let ranked = applyPolicy side considered
-            n = length ranked
-            indexed = zip ranked [1..n]
-            acceptedRank = case List.find (\(q, _) -> q.dealer == accepted.dealer) indexed of
+        -- Rank the (cid, quote) pairs so identity stays attached through the
+        -- policy sort; the accepted rank is then looked up by cid.
+        let rankedPairs = applyPolicyPairs side consideredPairs
+            n = length rankedPairs
+            indexed = zip rankedPairs [1..n]
+            acceptedRank = case List.find (\((cid, _), _) -> cid == acceptedQuoteCid) indexed of
               Some (_, r) -> r
               None -> 0
-        assertMsg "Accepted dealer must be in the ranked list" (acceptedRank > 0)
+        assertMsg "Accepted quote must be in the ranked list" (acceptedRank > 0)
 
         let rankedDealers = do
-              (q, r) <- indexed
+              ((_, q), r) <- indexed
               pure PR.RankedDealer with
                 party = q.dealer
                 rank = r
@@ -220,24 +225,29 @@ template RfqQuote with
 -- expiresAt (more time to act), then earlier postedAt (first-mover), then a
 -- deterministic dealer-party-id tie-break. `side` is unused in policy mode
 -- (the trader picks among ranked candidates) but kept for the other UI modes.
-applyPolicy : RfqSide -> [RfqQuote] -> [RfqQuote]
-applyPolicy _side quotes =
-  List.sortBy policyCmp quotes
-  where
-    policyCmp a b =
-      let tierA = if a.tier == TierTrusted then 0 else 1
-          tierB = if b.tier == TierTrusted then 0 else 1
-          tierCmp = compare tierA tierB
-          expiryCmp = compare b.expiresAt a.expiresAt
-          postedCmp = compare a.postedAt b.postedAt
-          venueCmp = compare (partyToText a.dealer) (partyToText b.dealer)
-      in case tierCmp of
-           EQ -> case expiryCmp of
-             EQ -> case postedCmp of
-               EQ -> venueCmp
-               c -> c
-             c -> c
+policyCmp : RfqQuote -> RfqQuote -> Ordering
+policyCmp a b =
+  let tierA = if a.tier == TierTrusted then 0 else 1
+      tierB = if b.tier == TierTrusted then 0 else 1
+      tierCmp = compare tierA tierB
+      expiryCmp = compare b.expiresAt a.expiresAt
+      postedCmp = compare a.postedAt b.postedAt
+      venueCmp = compare (partyToText a.dealer) (partyToText b.dealer)
+  in case tierCmp of
+       EQ -> case expiryCmp of
+         EQ -> case postedCmp of
+           EQ -> venueCmp
            c -> c
+         c -> c
+       c -> c
+
+applyPolicy : RfqSide -> [RfqQuote] -> [RfqQuote]
+applyPolicy _side quotes = List.sortBy policyCmp quotes
+
+-- | Same ranking as applyPolicy, but keeps each quote's contract id attached
+-- so the accepted quote can be identified by cid after the sort.
+applyPolicyPairs : RfqSide -> [(ContractId RfqQuote, RfqQuote)] -> [(ContractId RfqQuote, RfqQuote)]
+applyPolicyPairs _side pairs = List.sortBy (\x y -> policyCmp x._2 y._2) pairs
 
 -- | Split "BASE/QUOTE"; returns ("","") on malformed input.
 splitPair : Text -> (Text, Text)

@@ -97,6 +97,10 @@ template PoolRules with
       do
         (pool, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
         assertMsg "Pool must be Active" (state.status == PS_Active)
+        assertMsg "inputInstrumentId is not a pool instrument"
+          (inputInstrumentId == pool.baseInstrumentId
+            || inputInstrumentId == pool.quoteInstrumentId)
+        assertMsg "inputAmount must be positive" (inputAmount > 0.0)
         assertMsg "Swap needs at least one output slice" (not (null outputSliceCids))
 
         let inputIsBase = inputInstrumentId == pool.baseInstrumentId
@@ -180,11 +184,9 @@ template PoolRules with
           (None, _) -> pure None
           _ -> abort "swap: missing boundary next-iteration allocation"
 
-        -- The whole fee (incl. the operator's operatorFeeBps share) stays in
-        -- the pool and accrues to LPs via x*y=k: the input slice and reserves
-        -- grow by the full inputAmount. Carving out the operator's share needs
-        -- a dedicated collection path (future work), so there is no accrual
-        -- counter here — one without that path would mislead.
+        -- Fee accrues entirely to LPs; operator fee split intentionally out of
+        -- scope. The whole fee stays in the pool and accrues to LPs via x*y=k:
+        -- the input slice and reserves grow by the full inputAmount.
         let (newBaseReserve, newQuoteReserve) =
               if inputIsBase
               then (state.reserves.baseAmount + inputAmount, state.reserves.quoteAmount - amountOut)

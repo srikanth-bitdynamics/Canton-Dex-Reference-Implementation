@@ -85,24 +85,8 @@ template DexPair with
           accumulatedMakerFees = Some bumpedMaker
           accumulatedTakerFees = Some bumpedTaker
 
-    -- Operator collect. STUB: zeroes the accrual counters and returns the
-    -- cleared totals; actual asset emission (operator-side holdings for the
-    -- accrued amounts) is future work.
-    choice DexPair_CollectFees : DexPair_CollectFeesResult
-      controller operator
-      do
-        let makerCleared = optional TextMap.empty identity accumulatedMakerFees
-            takerCleared = optional TextMap.empty identity accumulatedTakerFees
-        cid <- create this with
-          accumulatedMakerFees = Some TextMap.empty
-          accumulatedTakerFees = Some TextMap.empty
-        pure DexPair_CollectFeesResult with
-          pairCid = cid
-          makerFees = makerCleared
-          takerFees = takerCleared
-
-data DexPair_CollectFeesResult = DexPair_CollectFeesResult with
-    pairCid : ContractId DexPair
-    makerFees : TextMap.TextMap Decimal
-    takerFees : TextMap.TextMap Decimal
-  deriving (Eq, Show)
+    -- Operator fee collection (DexPair_CollectFees) is intentionally out of
+    -- scope for this reference implementation: there is no asset-emission path
+    -- for the accrued maker/taker counters, so a collect choice would only
+    -- zero the counters without moving funds and would mislead. The counters
+    -- remain as a read-only accrual record.

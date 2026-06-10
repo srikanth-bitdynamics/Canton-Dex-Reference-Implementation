@@ -445,8 +445,10 @@ template PoolLiquidityRules with
           (knownTotalLpSupply == state.totalLpSupply)
 
         let share = lpTokensToRedeem / knownTotalLpSupply
-            baseOut = state.reserves.baseAmount * share
-            quoteOut = state.reserves.quoteAmount * share
+            -- Redemption rounds DOWN (floor to 10 dp): the pool never pays out
+            -- more than the exact pro-rata share, keeping x*y=k non-decreasing.
+            baseOut = PM.floorDecimal10 (state.reserves.baseAmount * share)
+            quoteOut = PM.floorDecimal10 (state.reserves.quoteAmount * share)
         assertMsg "Base output below minimum" (baseOut >= minBaseOut)
         assertMsg "Quote output below minimum" (quoteOut >= minQuoteOut)
 

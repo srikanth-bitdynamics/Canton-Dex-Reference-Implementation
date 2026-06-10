@@ -118,7 +118,7 @@ setup lp = do
   poolCid <- submit operator $ createCmd Pool with
     poolId; operator; lpRegistrar; admin = ttAdmin
     baseInstrumentId = "X"; quoteInstrumentId = "Y"; lpInstrumentId
-    feeBps = 30; operatorFeeBps = 0
+    feeBps = 30
   stateCid <- submit operator $ createCmd PS.PoolState with
     poolId; operator; lpRegistrar
     status = PS_Unfunded

@@ -62,7 +62,7 @@ setup lps = do
   poolCid <- submit operator $ createCmd Pool with
     poolId; operator; lpRegistrar = registry; admin = registry
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId
-    feeBps = 30; operatorFeeBps = 0
+    feeBps = 30
   stateCid <- submit operator $ createCmd PS.PoolState with
     poolId; operator; lpRegistrar = registry
     status = PS_Unfunded

@@ -27,7 +27,7 @@ interface WalletStore {
 
 // Single active status subscription. `connect` previously subscribed per
 // attempt and only unsubscribed on a `disconnected` status, so repeated
-// connects / provider switches / errors leaked listeners (DEX-116). We keep one
+// connects / provider switches / errors leaked listeners. We keep one
 // handle here and tear down the previous subscription before installing a new
 // one (and on error).
 let activeUnsubscribe: (() => void) | null = null;

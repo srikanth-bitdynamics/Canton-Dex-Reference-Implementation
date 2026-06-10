@@ -221,7 +221,7 @@ export class OrderService {
       try {
         // Quote-leg amount = price * quantity at 10dp, round-half-even, via
         // the BigInt decimal module so it agrees with the on-ledger Decimal
-        // multiply to the last digit (DEX-106). Never IEEE-754 floats.
+        // multiply to the last digit. Never IEEE-754 floats.
         const quoteAmount = dec.formatDecimal(
           dec.mul(dec.parseDecimal(m.price), dec.parseDecimal(m.quantity)),
         );
@@ -241,7 +241,7 @@ export class OrderService {
             meta: { values: {} },
           },
         ];
-        // Deterministic, replay-safe commandId (DEX-107): derived once from
+        // Deterministic, replay-safe commandId: derived once from
         // the matched order cids + the cleared price/qty, NOT Date.now(), so a
         // retry of the same match collapses onto the cached submission rather
         // than creating a duplicate MatchedTrade.

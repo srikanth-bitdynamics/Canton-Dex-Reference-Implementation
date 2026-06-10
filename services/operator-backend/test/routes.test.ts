@@ -1,4 +1,4 @@
-// DEX-105 regression: the hand-rolled node:http router dispatches via inline
+// Regression: the hand-rolled node:http router dispatches via inline
 // `if (method === "X" && path === "/y")` blocks. Before the fix, three routes
 // were registered twice (POST /v1/orders/match, GET /v1/orders/book, GET
 // /v1/prices) so the second handler was dead. This test statically scans the
@@ -31,7 +31,7 @@ function exactRouteGuards(src: string): string[] {
   return out;
 }
 
-describe("DEX-105: no duplicate route registration", () => {
+describe("no duplicate route registration", () => {
   it("each (method, exact-path) guard appears at most once", () => {
     const guards = exactRouteGuards(routerSrc);
     const seen = new Map<string, number>();

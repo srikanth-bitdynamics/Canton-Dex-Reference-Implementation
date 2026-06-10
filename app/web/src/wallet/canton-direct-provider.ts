@@ -45,7 +45,7 @@ export class CantonDirectProvider implements WalletProvider {
   ) {
     // Auto-restore prior session on construction so a page reload keeps
     // the user signed in. Dev-only: in prod we never rehydrate a persisted
-    // bearer-token session (DEX-117).
+    // bearer-token session.
     const stored =
       import.meta.env.DEV && typeof window !== "undefined"
         ? window.localStorage.getItem(LS_KEY)
@@ -81,7 +81,7 @@ export class CantonDirectProvider implements WalletProvider {
 
   async connect(): Promise<WalletAccount> {
     if (this.status.kind === "connected") return this.status.account;
-    // DEX-117: never read/persist a long-lived bearer token outside dev.
+    // Never read/persist a long-lived bearer token outside dev.
     if (!import.meta.env.DEV) {
       const msg =
         "canton-direct is a dev-only provider and is disabled in production builds";

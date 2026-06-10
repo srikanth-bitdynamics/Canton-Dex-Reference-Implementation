@@ -30,7 +30,7 @@ export interface WalletCapability {
    * splits/merges holdings needs admin authority. Only the operator-relay /
    * dev providers route through a path that can co-sign as admin; real external
    * wallets (sdk, partylayer, walletconnect) hold only the user's authority and
-   * must NOT compose split/merge commands (DEX-111).
+   * must NOT compose split/merge commands.
    */
   coSignsAdmin: boolean;
 }
@@ -39,7 +39,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
   "token-standard": {
     // The operator signing relay: the operator signs trader writes on the
     // user's behalf. Convenient for local dev, but it is NOT a real wallet and
-    // must not be the production default (DEX-97).
+    // must not be the production default.
     dvp: "dev-only",
     note: "Dev only — operator signing relay (operator co-signs your actions). Not a real wallet.",
     coSignsAdmin: true,
@@ -74,7 +74,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
 /**
  * Whether the given provider can co-sign as the instrument admin (needed for
  * the registry's Holding_Split/Holding_Merge normalization). Unknown providers
- * are treated as user-authority-only (the safe default) — DEX-111.
+ * are treated as user-authority-only (the safe default).
  */
 export function coSignsAdmin(id: WalletProviderId): boolean {
   return WALLET_CAPABILITIES[id]?.coSignsAdmin ?? false;

@@ -94,7 +94,7 @@ async function getWalletNativeHoldings(owner: string): Promise<Holding[] | null>
  * Render a number as a plain decimal string, never scientific notation.
  * `Number.prototype.toString()` emits `1e+21` for large magnitudes and
  * `1e-7` for small ones; both are rejected by Canton's Numeric wire format
- * and by our `decimal10StringUnits` parser (DEX-115). This expands the
+ * and by our `decimal10StringUnits` parser. This expands the
  * exponent into a fixed-point string instead.
  */
 export function formatDecimal(value: number): string {
@@ -133,7 +133,7 @@ export function formatDecimal10(value: number): string {
   // toFixed(10) is safe for the magnitudes the UI handles, but it also emits
   // scientific notation above ~1e21. Round-trip through the non-scientific
   // formatter + the string→units parser so callers always get a plain
-  // 10-dp decimal string (DEX-115).
+  // 10-dp decimal string.
   if (Math.abs(value) < 1e21) return value.toFixed(10);
   return unitsToDecimal10(decimal10StringUnits(formatDecimal(value)));
 }
@@ -152,14 +152,14 @@ function toUnits(value: number | string): bigint {
 
 function decimal10Units(value: number): bigint {
   // Route through the string parser so values ≥1e21 (where toFixed/String
-  // emit scientific notation) no longer throw in BigInt() (DEX-115).
+  // emit scientific notation) no longer throw in BigInt().
   return decimal10StringUnits(formatDecimal10(value));
 }
 
 /**
  * Scaled 10-dp integer units for a holding, preferring the exact wire string
  * (`amountRaw`) over the float `amount` so funding-cid selection keeps full
- * precision at the service boundary (DEX-115).
+ * precision at the service boundary.
  */
 function holdingUnits(h: Holding): bigint {
   return h.amountRaw != null
@@ -316,8 +316,7 @@ export function pickExactHoldingCids(
  * Holding_Split/Holding_Merge are `controller admin, owner`, so split/merge
  * normalization is only authorized through providers that route an admin
  * co-sign (operator relay / dev). Real external wallets cannot, so for them we
- * must not compose split/merge and instead fall back to exact-subset selection
- * (DEX-111).
+ * must not compose split/merge and instead fall back to exact-subset selection.
  */
 function activeWalletCoSignsAdmin(): boolean {
   const providerId = useWalletStore.getState().activeProviderId;
@@ -330,7 +329,7 @@ function activeWalletCoSignsAdmin(): boolean {
  * already-consumed cids and the accumulated units. Providers like PartyLayer
  * return only an `updateId` (no `createdHoldingCids`), so we re-query the ACS
  * and pick the new unlocked holding matching the merged amount. Falls back to
- * the provider-returned cid when present (DEX-110).
+ * the provider-returned cid when present.
  */
 async function resolveMergedHoldingCid(params: {
   party: string;
@@ -359,7 +358,7 @@ async function resolveMergedHoldingCid(params: {
   return largest?.contractId ?? null;
 }
 
-// Exported for orchestration tests (DEX-110/111). Production callers reach it
+// Exported for orchestration tests. Production callers reach it
 // through executeSwap/placeOrder/removeLiquidity.
 export async function normalizeSwapFunding(params: {
   admin: string;
@@ -382,7 +381,7 @@ export async function normalizeSwapFunding(params: {
   // No exact subset. Split/merge normalization needs an admin co-sign. If the
   // active wallet can't provide it (real external wallet), do NOT compose
   // split/merge (it would fail on the live path); return null so the caller
-  // surfaces a clear "split holdings first" error (DEX-111).
+  // surfaces a clear "split holdings first" error.
   if (!activeWalletCoSignsAdmin()) return null;
 
   let plan = planSwapFunding(
@@ -411,7 +410,7 @@ export async function normalizeSwapFunding(params: {
   }
 
   // merge-then-split: chain merges, resolving the freshly-created holding cid
-  // after each step (the provider may only return an updateId — DEX-110).
+  // after each step (the provider may only return an updateId).
   const consumedCids = new Set<string>([
     plan.primaryHoldingCid,
     ...plan.otherHoldingCids,
@@ -557,7 +556,7 @@ export const ledger = {
     const num = (v: unknown): number =>
       typeof v === 'number' ? v : parseFloat(String(v ?? 0));
     // Preserve the exact wire string in `amountRaw` so funding-cid selection
-    // keeps full precision; `amount` stays a float for display/math (DEX-115).
+    // keeps full precision; `amount` stays a float for display/math.
     return raw.map((h) => ({
       ...h,
       amount: num(h.amount),
@@ -671,7 +670,7 @@ export const ledger = {
     expiry: string | null;
     /**
      * Real-step progress callback. Phases map to the `placeOrder` toast
-     * lifecycle: 0 Submitted, 1 Bound, 2 Locked, 3 Open (DEX-113).
+     * lifecycle: 0 Submitted, 1 Bound, 2 Locked, 3 Open.
      */
     onProgress?: (phase: number) => void;
   }) => {
@@ -697,7 +696,7 @@ export const ledger = {
 
     // Everything past bind operates on a live on-ledger Order. If any of it
     // throws, the order is bound-but-unfunded ("stuck"): surface a warning that
-    // names the order cid and best-effort cancel it (DEX-113).
+    // names the order cid and best-effort cancel it.
     const orderCid = bindRes.orderCid as ContractId<'Order'>;
     try {
       const lockInstrumentId =

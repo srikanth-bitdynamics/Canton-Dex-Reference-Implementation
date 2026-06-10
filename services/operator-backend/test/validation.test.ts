@@ -52,7 +52,7 @@ before(async () => {
       allocationFactoryDisclosure: [],
       network: "canton:test",
     },
-    // Dev-open so the operator-auth gate (DEX-96) does not 401 the write
+    // Dev-open so the operator-auth gate does not 401 the write
     // routes this suite exercises; auth itself is covered in auth.test.ts.
     devOpen: true,
   });
@@ -135,8 +135,8 @@ describe("HTTP input validation", () => {
   });
 });
 
-// DEX-108: runtime validation of write bodies (decimal/party/cid/presence).
-describe("DEX-108 write-body validation", () => {
+// Runtime validation of write bodies (decimal/party/cid/presence).
+describe("write-body validation", () => {
   it("POST /v1/pools/swap rejects a non-decimal inputAmount → 400", async () => {
     const r = await postJson("/v1/pools/swap", {
       poolCid: "#p:0",

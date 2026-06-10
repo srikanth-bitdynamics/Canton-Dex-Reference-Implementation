@@ -100,8 +100,7 @@ describe('ledger helpers', () => {
   });
 });
 
-// DEX-115: decimal string handling at the service boundary.
-describe('decimal formatting (DEX-115)', () => {
+describe('decimal formatting', () => {
   it('formatDecimal never emits scientific notation', () => {
     // Plain numbers pass through untouched.
     expect(formatDecimal(1.5)).toBe('1.5');

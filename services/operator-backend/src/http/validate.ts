@@ -1,4 +1,4 @@
-// Runtime validation for write-route JSON bodies (DEX-108).
+// Runtime validation for write-route JSON bodies.
 //
 // Write POSTs previously cast JSON straight to the service's parameter type
 // via `Parameters<...>[0]` with no runtime check, so a malformed amount or a

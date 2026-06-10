@@ -34,7 +34,7 @@ function connectedProvider(request: any) {
   return { p, request, fakeConnector };
 }
 
-describe('WalletConnectProvider submit retry safety (DEX-114)', () => {
+describe('WalletConnectProvider submit retry safety', () => {
   it('does NOT retry a submit on timeout — surfaces status-unknown', async () => {
     vi.useFakeTimers();
     // request never resolves -> withTimeout rejects with "timed out".

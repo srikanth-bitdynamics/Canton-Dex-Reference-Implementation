@@ -1,6 +1,6 @@
 // Operator backend entry point.
 //
-// B7 source-driven guardrail (encoded structurally):
+// Source-driven guardrail (encoded structurally):
 //
 //   - Every flow module submits ledger commands through the shared
 //     LedgerSubmitter interface. The set of choice names that appear

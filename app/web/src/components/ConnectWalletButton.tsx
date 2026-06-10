@@ -208,7 +208,7 @@ export function ConnectWalletButton() {
             const isDevOnly = cap.dvp === "dev-only";
             // Only a real-wallet default earns the "recommended" tag. A dev-only
             // relay is never recommended even if it happens to be the dev
-            // default (DEX-97).
+            // default.
             const showRecommended = isDefault && !isDevOnly;
             return (
               <button

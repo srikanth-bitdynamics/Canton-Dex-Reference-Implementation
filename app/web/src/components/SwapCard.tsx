@@ -73,7 +73,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
     if (parsedInput <= 0 || outputAmount <= 0 || !context) return;
     // Hard guard: never submit a swap without a connected party. The previous
     // `party ?? ''` fallback would send an empty swapperParty and fail opaquely
-    // (or worse, misroute) — refuse and surface an error instead (DEX-112).
+    // (or worse, misroute) — refuse and surface an error instead.
     if (!party) {
       setSwapError('Connect a wallet before swapping.');
       return;

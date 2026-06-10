@@ -1,4 +1,4 @@
-// DEX-107: IdempotentLedger transitions — cache hit on success, in-flight
+// IdempotentLedger transitions — cache hit on success, in-flight
 // rejection, and the new replay guard (same commandId, different args).
 
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -62,7 +62,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("DEX-107 IdempotentLedger", () => {
+describe("IdempotentLedger", () => {
   it("caches the result and does not re-fire on a same-arg retry", async () => {
     const r1 = await ledger.submit(req("cmd-1", "10.0"));
     const r2 = await ledger.submit(req("cmd-1", "10.0"));

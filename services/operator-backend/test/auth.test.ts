@@ -1,4 +1,4 @@
-// DEX-96 / DEX-97: auth gate on state-changing routes, the wallet-relay
+// Auth gate on state-changing routes, the wallet-relay
 // flag, and CORS default-deny. Starts the HTTP shim against an InMemoryLedger
 // with various auth configs and asserts the gate behaviour.
 
@@ -76,7 +76,7 @@ async function post(
   return res.status;
 }
 
-describe("DEX-96 auth unit helpers", () => {
+describe("auth unit helpers", () => {
   it("bearerMatches is exact and length-guarded", () => {
     assert.equal(bearerMatches("Bearer secret", "secret"), true);
     assert.equal(bearerMatches("Bearer secret", "secre"), false);
@@ -115,7 +115,7 @@ describe("DEX-96 auth unit helpers", () => {
   });
 });
 
-describe("DEX-96 fail-closed (no token, no devOpen)", () => {
+describe("fail-closed (no token, no devOpen)", () => {
   let url: string;
   let close: () => Promise<void>;
   before(() => {
@@ -147,7 +147,7 @@ describe("DEX-96 fail-closed (no token, no devOpen)", () => {
   });
 });
 
-describe("DEX-96 with operator token", () => {
+describe("with operator token", () => {
   let url: string;
   let close: () => Promise<void>;
   before(() => {
@@ -190,7 +190,7 @@ describe("DEX-96 with operator token", () => {
   });
 });
 
-describe("DEX-97 wallet relay + CORS", () => {
+describe("wallet relay + CORS", () => {
   it("wallet relay is 404 when the flag is OFF", async () => {
     const { url, close } = startServer({
       devOpen: true,

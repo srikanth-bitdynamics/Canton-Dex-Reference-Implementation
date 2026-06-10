@@ -57,7 +57,7 @@ function partyLayerClientFactory(networkId: string): () => Promise<PartyLayerCli
 }
 
 /**
- * Read VITE_CANTON_AUTH_TOKEN only in dev builds (DEX-117). In prod this
+ * Read VITE_CANTON_AUTH_TOKEN only in dev builds. In prod this
  * returns "" and logs an error if a token was nonetheless baked in, so the
  * relay/direct providers that depend on it stay disabled rather than shipping
  * a long-lived bearer credential to end users.
@@ -83,7 +83,7 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
     "canton:devnet") as string;
   const ledgerUrl = (import.meta.env.VITE_CANTON_LEDGER_URL ?? "") as string;
   // VITE_CANTON_AUTH_TOKEN is a long-lived bearer credential. It must never be
-  // read into a production bundle (DEX-117). In prod we refuse to read it and
+  // read into a production bundle. In prod we refuse to read it and
   // log an error so a misconfigured deploy is loud, not silently insecure.
   const authToken = devOnlyAuthToken();
   const apiBase =
@@ -114,7 +114,7 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));
   if (projectId) map.set("walletconnect", new WalletConnectProvider(projectId, networkId));
   // canton-direct relies on a long-lived bearer token in localStorage, so it is
-  // gated to dev like `mock` (DEX-117). `authToken` is already "" in prod.
+  // gated to dev like `mock`. `authToken` is already "" in prod.
   if (import.meta.env.DEV && ledgerUrl && authToken) {
     map.set("canton-direct", new CantonDirectProvider(ledgerUrl, authToken));
   }
@@ -134,7 +134,7 @@ export function getProvider(id: WalletProviderId): WalletProvider {
   return p;
 }
 
-// Default provider selection (DEX-97).
+// Default provider selection.
 //
 // We must NOT default to `token-standard` in real builds: that provider routes
 // every trader-authority write through the operator signing relay, so the

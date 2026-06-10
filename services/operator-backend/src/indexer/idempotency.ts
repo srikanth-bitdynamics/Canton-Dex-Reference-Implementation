@@ -33,7 +33,7 @@ const PENDING_STALE_MS = 60_000;
 const TTL_MS = 24 * 60 * 60 * 1000;
 
 // Hash of the request args (command + acting parties). Used to detect a
-// replay: same commandId, different content (DEX-107).
+// replay: same commandId, different content.
 export function hashSubmitRequest(req: SubmitRequest): string {
   return createHash("sha256")
     .update(
@@ -69,7 +69,7 @@ export class IdempotentLedger implements LedgerSubmitter {
       | undefined;
 
     if (existing) {
-      // Replay guard (DEX-107): the same commandId with different args is a
+      // Replay guard: the same commandId with different args is a
       // conflict — a deterministic commandId must map to exactly one request.
       // Reject rather than serving a stale cached result or re-firing. (A
       // legacy row predating the argsHash column has argsHash === null; treat

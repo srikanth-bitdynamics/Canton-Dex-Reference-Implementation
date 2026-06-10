@@ -48,12 +48,12 @@ export interface PoolSwapInput {
   updateId?: string | null;
   // Optional client-supplied idempotency key. When present the swap
   // commandId is derived from it; otherwise the commandId is derived
-  // deterministically from the request content (DEX-107).
+  // deterministically from the request content.
   idempotencyKey?: string;
 }
 
 // Short stable hash of request content for deterministic, replay-safe
-// commandIds (DEX-107). Same content => same commandId, so a retried
+// commandIds. Same content => same commandId, so a retried
 // request collapses onto the cached submission instead of re-firing.
 function contentHash(parts: unknown): string {
   return createHash("sha256")
@@ -200,7 +200,7 @@ export interface RemovePlan {
 
 // Select the head-first slice prefix that covers `target` (a scaled-BigInt
 // decimal). Uses exact decimal arithmetic so the prefix matches the
-// on-ledger reserve accounting (DEX-106).
+// on-ledger reserve accounting.
 function selectCoveringPrefix(slices: PoolSlice[], target: bigint): ContractId<"PoolSlice">[] {
   const out: ContractId<"PoolSlice">[] = [];
   let acc = 0n;
@@ -320,7 +320,7 @@ export class PoolService {
   /**
    * Off-chain quote computation for the constant-product pool, in exact
    * fixed-point decimal (10dp, round-half-even) so it agrees with the
-   * on-ledger PoolRules_Swap computation to the last digit (DEX-106). This
+   * on-ledger PoolRules_Swap computation to the last digit. This
    * is advisory; the on-chain choice re-validates.
    */
   computeQuote(
@@ -367,7 +367,7 @@ export class PoolService {
       this.computeQuote(pool, input.inputInstrumentId, input.inputAmount),
     );
     const outputSliceCids = selectCoveringPrefix(outputSlices, amountOut);
-    // Deterministic, replay-safe commandId (DEX-107): computed ONCE here,
+    // Deterministic, replay-safe commandId: computed ONCE here,
     // outside the retry closure, from a client key or the request content.
     const swapKey =
       input.idempotencyKey ??

@@ -57,13 +57,13 @@ type AppKitUniversalConnector = {
 const LS_LAST_PARTY = "canton-dex:wc:last-party";
 const CONNECT_TIMEOUT_MS = 60_000;
 const SUBMIT_TIMEOUT_MS = 30_000;
-// Idempotent reads may be retried; submits must NOT (DEX-114).
+// Idempotent reads may be retried; submits must NOT.
 const READ_RETRIES = 2;
 
 /**
  * Raised when a submit times out: we cannot tell whether the wallet authorized
  * the transaction or not, so the caller must NOT auto-retry (that risks a
- * duplicate authorization). The user should check their wallet (DEX-114).
+ * duplicate authorization). The user should check their wallet.
  */
 export class WalletStatusUnknownError extends Error {
   constructor(label: string) {
@@ -181,7 +181,7 @@ export class WalletConnectProvider implements WalletProvider {
       await withTimeout(this.connector.connect(), CONNECT_TIMEOUT_MS, "wc connect");
 
       // canton_listAccounts is an idempotent read, so it is safe to retry on a
-      // transient relay timeout (DEX-114).
+      // transient relay timeout.
       const conn = this.connector;
       const accounts = await withRetry(
         () =>
@@ -239,7 +239,7 @@ export class WalletConnectProvider implements WalletProvider {
     const conn = this.connector;
     // Idempotency key threaded to the wallet so that IF it dedupes on
     // commandId, a user-driven retry can't double-authorize. We still do NOT
-    // auto-retry submits ourselves (DEX-114).
+    // auto-retry submits ourselves.
     const commandId = `wc-${intent.kind}-${Date.now()}-${Math.random()
       .toString(36)
       .slice(2, 10)}`;

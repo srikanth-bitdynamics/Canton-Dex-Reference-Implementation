@@ -30,7 +30,7 @@ describe("wallet capabilities", () => {
     expect(capabilityFor("partylayer").dvp).toBe("unproven");
   });
 
-  it("token-standard operator relay is marked dev-only, not recommended (DEX-97)", () => {
+  it("token-standard operator relay is marked dev-only, not recommended", () => {
     const cap = capabilityFor("token-standard");
     expect(cap.dvp).toBe("dev-only");
     // The note must flag the relay clearly, not advertise it as DvP-ready.

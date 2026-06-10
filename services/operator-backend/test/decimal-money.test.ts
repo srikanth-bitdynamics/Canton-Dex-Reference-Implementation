@@ -1,4 +1,4 @@
-// DEX-106: on-ledger amounts must go through the BigInt decimal module, not
+// On-ledger amounts must go through the BigInt decimal module, not
 // IEEE-754. Pins (1) the matching-engine quote-leg amount = price*quantity at
 // 10dp round-half-even, and (2) rankQuotes price ordering via exact decimal
 // comparison.
@@ -10,7 +10,7 @@ import * as dec from "../src/pool/decimal.js";
 import { rankQuotes, compareDecimal } from "../src/policy/index.js";
 import type { RfqQuote } from "../src/types.js";
 
-describe("DEX-106: quote-leg amount via decimal module", () => {
+describe("quote-leg amount via decimal module", () => {
   // The matching engine computes the quote leg as price*quantity. A naive
   // Number(price)*Number(quantity) drifts in the low digits; the decimal
   // module's mul/format is exact at 10dp round-half-even.
@@ -42,7 +42,7 @@ describe("DEX-106: quote-leg amount via decimal module", () => {
   });
 });
 
-describe("DEX-106: compareDecimal is exact", () => {
+describe("compareDecimal is exact", () => {
   it("orders by decimal value, not float", () => {
     assert.equal(compareDecimal("60510.00", "60530.00"), -1);
     assert.equal(compareDecimal("60530.00", "60510.00"), 1);
@@ -71,7 +71,7 @@ function mkQuote(o: {
   };
 }
 
-describe("DEX-106: rankQuotes ordering uses decimal comparison", () => {
+describe("rankQuotes ordering uses decimal comparison", () => {
   const now = "2026-01-01T00:00:00Z";
 
   it("RFQ_Buy: cheapest first (decimal order)", () => {

@@ -76,7 +76,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('normalizeSwapFunding merge-then-split chain (DEX-110)', () => {
+describe('normalizeSwapFunding merge-then-split chain', () => {
   it('chains merges using the re-queried cid when the wallet returns only updateId', async () => {
     // Three fragments, no exact subset for 0.10 -> plan is merge h2,h1 then
     // merge into h3? No: planSwapFunding merges descending until >= target.
@@ -116,12 +116,12 @@ describe('normalizeSwapFunding merge-then-split chain (DEX-110)', () => {
     const split = calls.find((c) => c.kind === 'split-holding');
     expect(merge).toMatchObject({ holdingCid: 'h2', otherCid: 'h1' });
     // Crucially the split must NOT reference the archived h2 — it must use the
-    // freshly resolved merged cid (DEX-110).
+    // freshly resolved merged cid.
     expect(split).toMatchObject({ holdingCid: 'h-merged', splitAmount: '0.1000000000' });
   });
 });
 
-describe('normalizeSwapFunding admin co-sign gating (DEX-111)', () => {
+describe('normalizeSwapFunding admin co-sign gating', () => {
   it('returns an exact subset without any split/merge when one exists', async () => {
     activeProviderId = 'partylayer'; // external wallet, cannot co-sign admin
     mockHoldings([[h('h1', '0.1000000000'), h('h2', '5.0000000000')]]);

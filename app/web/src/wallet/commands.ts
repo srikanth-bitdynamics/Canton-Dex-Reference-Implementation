@@ -207,7 +207,7 @@ function composeRequestSwap(
 // authority in `actAs`. Only providers that route an admin co-sign (the
 // operator relay / dev) ever reach these intents: `normalizeSwapFunding` in
 // services/ledger.ts gates split/merge behind `activeWalletCoSignsAdmin()` and
-// falls back to exact-subset selection for real external wallets (DEX-111). So
+// falls back to exact-subset selection for real external wallets. So
 // `actAs: [party, admin]` here is correct for the only callers that hit it.
 function composeSplitHolding(
   intent: Extract<WalletIntent, { kind: "split-holding" }>,

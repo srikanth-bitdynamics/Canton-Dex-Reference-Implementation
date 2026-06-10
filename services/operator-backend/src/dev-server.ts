@@ -392,12 +392,12 @@ async function main(): Promise<void> {
       network: process.env.CANTON_NETWORK ?? "canton:devnet",
     },
     // Operator-write auth: the dev server has no token, so default to the
-    // explicit dev-open bypass unless an operator token is supplied (DEX-96).
+    // explicit dev-open bypass unless an operator token is supplied.
     operatorToken: process.env.DEX_OPERATOR_API_TOKEN,
     devOpen: process.env.DEX_OPERATOR_API_TOKEN
       ? false
       : process.env.DEX_DEV_OPEN === "1",
-    // Wallet relay is OFF unless explicitly enabled (DEX-97).
+    // Wallet relay is OFF unless explicitly enabled.
     walletRelayEnabled: process.env.DEX_DEV_WALLET_RELAY === "1",
     walletRelayParties: (process.env.DEX_DEV_RELAY_PARTIES ?? "")
       .split(",")

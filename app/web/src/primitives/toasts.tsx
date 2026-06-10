@@ -72,8 +72,7 @@ export interface Toast {
   /**
    * Set once a caller drives this toast's phase explicitly (via `setPhase`).
    * The 900ms auto-advance timer then leaves this toast alone so its progress
-   * reflects real pipeline step completion rather than a cosmetic timer
-   * (DEX-113).
+   * reflects real pipeline step completion rather than a cosmetic timer.
    */
   _manual?: boolean;
 }
@@ -91,7 +90,7 @@ export function useToasts() {
   }, []);
 
   // Drive a specific toast to a real pipeline phase. Marks it `_manual` so the
-  // cosmetic timer stops advancing it (DEX-113).
+  // cosmetic timer stops advancing it.
   const setPhase = useCallback((id: number, phase: number) => {
     setToasts((cur) =>
       cur.map((t) =>

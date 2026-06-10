@@ -19,7 +19,7 @@ export const POLICY_HASH = "sha256:rfq-policy-v1.4";
 
 // Compare two Daml Decimal strings exactly (10dp, no IEEE-754) so the
 // ranking agrees with the on-ledger Decimal ordering in
-// trading/CantonDex/Dex/Rfq.daml (DEX-106). Returns -1 / 0 / 1.
+// trading/CantonDex/Dex/Rfq.daml. Returns -1 / 0 / 1.
 export function compareDecimal(a: string, b: string): number {
   const da = parseDecimal(a);
   const db = parseDecimal(b);
@@ -92,7 +92,7 @@ export function buildReceipt(args: {
   return { ...unsigned, signature: signReceipt(unsigned) };
 }
 
-// DEX-109: the `signature` field is an off-chain *replay digest*, not the
+// The `signature` field is an off-chain *replay digest*, not the
 // trust anchor — origin authenticity is established on-ledger by the
 // MatchedTrade signatory (PolicyReceipt.signedBy == venue, enforced by the
 // Daml `ensure`). On-ledger the string is stored opaquely (it is never

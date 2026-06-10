@@ -116,7 +116,7 @@ const MIGRATIONS: string[] = [
     updatedAt INTEGER NOT NULL
   );
   `,
-  // v5: replay-detection hash of the request args per commandId (DEX-107).
+  // v5: replay-detection hash of the request args per commandId.
   // A same-commandId submit with a different argsHash is a replay/conflict
   // and must be rejected rather than silently re-fired or cache-hit.
   `

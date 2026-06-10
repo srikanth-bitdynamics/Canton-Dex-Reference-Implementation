@@ -40,7 +40,7 @@ export function OrdersPage() {
   });
 
   // Track the in-flight place-order toast so onError can dismiss it and show
-  // the failure instead of leaving a success-looking lifecycle card (DEX-113).
+  // the failure instead of leaving a success-looking lifecycle card.
   const placeToastId = useRef<number | null>(null);
 
   const placeMutation = useMutation({
@@ -52,7 +52,7 @@ export function OrdersPage() {
       );
       placeToastId.current = id;
       // Advance the toast on real pipeline step completion rather than the
-      // cosmetic timer (DEX-113).
+      // cosmetic timer.
       return ledger.placeOrder({
         ...params,
         onProgress: (phase) => toast.setPhase(id, phase),
@@ -67,7 +67,7 @@ export function OrdersPage() {
     onError: (error) => {
       // The mutationFn pushed an optimistic lifecycle toast; on failure that
       // toast would otherwise advance to "success" on its timer. Dismiss it and
-      // surface the real error (DEX-113).
+      // surface the real error.
       if (placeToastId.current != null) {
         toast.dismiss(placeToastId.current);
         placeToastId.current = null;
@@ -82,7 +82,7 @@ export function OrdersPage() {
     const price = parseFloat(limitPrice);
     const qty = parseFloat(quantity);
     // Explicit NaN guards: `NaN <= 0` is false, so a blank/garbage field would
-    // otherwise slip past a bare `<= 0` check (DEX-113/DEX-115).
+    // otherwise slip past a bare `<= 0` check.
     if (!Number.isFinite(price) || !Number.isFinite(qty) || price <= 0 || qty <= 0) {
       setPlaceError('Enter a valid positive limit price and amount.');
       return;

@@ -48,7 +48,7 @@ import { rootLogger } from "../lib/logger.js";
 const httpLog = rootLogger.child({ component: "http" });
 
 // Allowed origins for CORS, derived from ALLOWED_ORIGINS env var (csv).
-// Empty list means deny (DEX-97): no Access-Control-Allow-Origin header is
+// Empty list means deny: no Access-Control-Allow-Origin header is
 // emitted, so browsers reject cross-origin reads. Only echo back origins on
 // the allowlist.
 function parseAllowedOrigins(): string[] {
@@ -136,13 +136,13 @@ export interface HttpServerConfig {
   db?: Db;
   /** Shared bearer token required for /v1/admin/* writes. */
   adminToken?: string;
-  /** Bearer token required for all non-admin state-changing routes (DEX-96). */
+  /** Bearer token required for all non-admin state-changing routes. */
   operatorToken?: string;
   /** Dev bypass: allow operator writes without a token (in-memory dev only). */
   devOpen?: boolean;
-  /** Gate /v1/wallet/submit behind this flag; default OFF (DEX-97). */
+  /** Gate /v1/wallet/submit behind this flag; default OFF. */
   walletRelayEnabled?: boolean;
-  /** Allowlist of actAs parties the wallet relay may forward for (DEX-97). */
+  /** Allowlist of actAs parties the wallet relay may forward for. */
   walletRelayParties?: string[];
   /** JSON LAPI base URL — used to poll the real ledger offset for /v1/status. */
   ledgerUrl?: string;
@@ -269,7 +269,7 @@ async function routeRequest(
   const path = url.pathname;
   const method = req.method ?? "GET";
 
-  // CORS (DEX-97): echo only allowlisted origins; default-deny (no header)
+  // CORS: echo only allowlisted origins; default-deny (no header)
   // when ALLOWED_ORIGINS is unset or the origin is not on the list.
   const origin = req.headers["origin"] as string | undefined;
   const corsOrigin = originAllowed(origin, allowedOrigins);
@@ -291,7 +291,7 @@ async function routeRequest(
     return;
   }
 
-  // Operator auth gate (DEX-96): all other state-changing routes require
+  // Operator auth gate: all other state-changing routes require
   // the operator bearer token (fail-closed unless DEX_DEV_OPEN).
   const opAuth = checkOperatorAuth(
     req,
@@ -627,7 +627,7 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/wallet/submit") {
-    // DEX-97: the wallet relay forwards client bodies under the operator JWT.
+    // The wallet relay forwards client bodies under the operator JWT.
     // It is OFF by default; enable with DEX_DEV_WALLET_RELAY=1. When ON the
     // forwarded actAs parties are restricted to DEX_DEV_RELAY_PARTIES.
     if (!cfg.walletRelayEnabled) {
@@ -1105,8 +1105,8 @@ async function routeRequest(
   throw new HttpError(404, "not_found", `no route: ${method} ${path}`);
 }
 
-// Read the JSON body and validate it against the write spec for this route
-// (DEX-108). `routeKey` is "${method} ${path}". Throws ValidationError (→ 400)
+// Read the JSON body and validate it against the write spec for this route.
+// `routeKey` is "${method} ${path}". Throws ValidationError (→ 400)
 // on a malformed amount / party / cid / missing required field.
 async function readValidatedJson<T>(
   req: IncomingMessage,

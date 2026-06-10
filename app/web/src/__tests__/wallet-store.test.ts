@@ -7,8 +7,7 @@ import type {
 } from '@/wallet/types';
 
 // A fake provider that tracks how many status subscriptions are currently
-// live, so the store-lifecycle tests can assert there is never a listener leak
-// (DEX-116).
+// live, so the store-lifecycle tests can assert there is never a listener leak.
 class FakeProvider implements WalletProvider {
   readonly label: string;
   liveSubscriptions = 0;
@@ -96,7 +95,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('wallet store lifecycle (DEX-116)', () => {
+describe('wallet store lifecycle', () => {
   it('keeps exactly one live subscription after repeated connects to the same provider', async () => {
     const mock = providers.get('mock')!;
     await useWalletStore.getState().connect('mock');

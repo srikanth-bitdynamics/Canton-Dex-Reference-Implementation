@@ -200,7 +200,7 @@ template PoolRules with
               then (state.reserves.baseAmount + inputAmount, state.reserves.quoteAmount - amountOut)
               else (state.reserves.baseAmount - amountOut, state.reserves.quoteAmount + inputAmount)
 
-        -- DEX-101: per-choice delta conservation. The reserve delta this
+        -- Per-choice delta conservation. The reserve delta this
         -- choice writes must equal the net slice-amount change it performs
         -- (created slice amounts minus consumed slice amounts), so a future
         -- code change cannot silently drift reserves and slices apart.
@@ -255,7 +255,7 @@ template PoolRules with
         archive poolStateCid
         create state with status = PS_Active
 
-    -- DEX-101: on-demand reserves<->slices reconcile (the on-ledger audit
+    -- On-demand reserves<->slices reconcile (the on-ledger audit
     -- anchor). Fetches every supplied slice, asserts each belongs to this
     -- pool/operator, and asserts the per-side amount sums equal
     -- `reserves.baseAmount` / `reserves.quoteAmount` EXACTLY. Runs off the

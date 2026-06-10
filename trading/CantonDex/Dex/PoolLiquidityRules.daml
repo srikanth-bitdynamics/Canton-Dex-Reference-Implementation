@@ -379,7 +379,7 @@ template PoolLiquidityRules with
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordMint with amount = lpAmount
 
         archiveBinding requestCid acceptanceCid
-        -- DEX-101: per-choice delta conservation. This choice creates exactly
+        -- Per-choice delta conservation. This choice creates exactly
         -- one slice per side; the reserve deltas it writes must equal those
         -- created slice amounts.
         newBaseSlice <- fetch baseSliceCid
@@ -539,7 +539,7 @@ template PoolLiquidityRules with
 
         archiveBinding requestCid acceptanceCid
 
-        -- DEX-101: per-choice delta conservation. The reserve delta per side
+        -- Per-choice delta conservation. The reserve delta per side
         -- must equal the net slice-amount change this choice performed:
         -- consumed slice amounts (drained + old boundary) minus the re-wrapped
         -- boundary leftover.

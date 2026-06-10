@@ -1,6 +1,6 @@
 module CantonDex.Tests.RegistryConservationTests where
 
--- DEX-98: settle-time conservation in Registry.V2.
+-- Settle-time conservation in Registry.V2.
 --
 -- Proves, against the production reference registry:
 --   * executor-supplied extraTransferLegSides cannot draw more than the
@@ -213,7 +213,7 @@ testSecondIterationCannotExceedFunding = do
   nextCid <- case Utils.nextIterationAllocationCids res1 of
     [Some cid, None] -> pure cid
     _ -> abort "expected exactly the alice allocation to roll forward"
-  -- 70 > the 60 rolled forward; before DEX-98 this minted from thin air.
+  -- 70 > the 60 rolled forward: must be rejected, not minted from thin air.
   let leg2 = mkLeg "iter-2" fx.alice fx.bob 70.0 "X"
   bob2 <- sidedAlloc fx fx.bob [leg2]
   submitMustFail fx.admin $ settleBatchCmd fx [leg2]

@@ -14,7 +14,7 @@ module CantonDex.Dex.PoolState where
 -- `quoteAmount`). The slices are the source of truth for funds; this
 -- aggregate exists so a swap can price in one transaction.
 --
--- How that invariant is protected (DEX-101):
+-- How that invariant is protected:
 --   * Per-choice delta conservation is asserted ON-LEDGER: every
 --     PoolRules / PoolLiquidityRules choice that rewrites `reserves` asserts
 --     that its reserve delta equals the net slice-amount change the same

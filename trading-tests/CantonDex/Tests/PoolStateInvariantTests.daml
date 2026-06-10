@@ -1,6 +1,6 @@
 module CantonDex.Tests.PoolStateInvariantTests where
 
--- DEX-101: PoolState.reserves integrity.
+-- PoolState.reserves integrity.
 --
 -- Drives the on-ledger audit anchor `PoolRules_ReconcileState` against the
 -- Registry.V2 fixture from PoolLiquidityRulesTests:

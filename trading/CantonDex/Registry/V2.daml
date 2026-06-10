@@ -8,7 +8,7 @@
 -- admin+sender. Mint/burn/allocate/transfer enforce the InstrumentConfig
 -- credential requirements (empty list = open access).
 --
--- Conservation (DEX-98): settle enforces per-allocation draw-down
+-- Conservation: settle enforces per-allocation draw-down
 -- (sent + next-iteration funding <= locked backing + receiver credits),
 -- backs every rolled-forward allocation with freshly locked holdings worth
 -- its funding, and the SettlementFactory batch asserts per-instrument
@@ -189,7 +189,7 @@ template Allocation with
       allocation_cancelExtraObservers _ = []
       allocation_withdrawExtraObservers _ = []
 
-      -- Per-side settle with on-ledger conservation (DEX-98). For real
+      -- Per-side settle with on-ledger conservation. For real
       -- accounts (owner = Some), per instrument:
       --
       --   sent + nextIterationFunding <= locked backing + receiver credits
@@ -651,7 +651,7 @@ template Registry with
               if admin `elem` arg.actors
                 then arg.actors
                 else admin :: arg.actors
-        -- Batch-level conservation (DEX-98): per instrument, sender-side and
+        -- Batch-level conservation: per instrument, sender-side and
         -- receiver-side totals across ALL legs of ALL allocations in the
         -- batch (spec sides + executor-supplied extras) must balance
         -- exactly. Each settled leg appears twice — as a sender side in the

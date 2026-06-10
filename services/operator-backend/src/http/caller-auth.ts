@@ -29,6 +29,12 @@ import type { AuthCheck } from "./auth.js";
 export interface CallerAuthConfig {
   /** HS256 secret for the per-caller party JWT. Binding is off when unset. */
   callerJwtSecret: string | undefined;
+  /**
+   * Required `aud` claim. When set, a caller token whose audience does not
+   * include this value is rejected — stops a token minted for another service
+   * (e.g. the ledger API) from being replayed against this operator backend.
+   */
+  callerJwtAudience?: string | undefined;
 }
 
 // Map each operator-write route to the request-body field naming the party the
@@ -60,11 +66,27 @@ function base64UrlDecode(s: string): Buffer {
   return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
+export interface VerifyOptions {
+  /** Required audience. When set, the token's `aud` must include it. */
+  audience?: string | undefined;
+  /**
+   * Require an `exp` claim. Defaults to true: a caller token with no expiry is
+   * rejected, so a leaked token cannot be replayed forever.
+   */
+  requireExp?: boolean;
+}
+
 /**
  * Verify an HS256 JWT against the shared secret and return its claims. Returns
- * null on any structural / signature / parse failure (never throws).
+ * null on any structural / signature / parse / expiry / audience failure
+ * (never throws). By default an `exp` claim is REQUIRED.
  */
-export function verifyHs256(token: string, secret: string): Record<string, unknown> | null {
+export function verifyHs256(
+  token: string,
+  secret: string,
+  opts: VerifyOptions = {},
+): Record<string, unknown> | null {
+  const requireExp = opts.requireExp ?? true;
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [headerB64, payloadB64, sigB64] = parts as [string, string, string];
@@ -91,23 +113,47 @@ export function verifyHs256(token: string, secret: string): Record<string, unkno
   } catch {
     return null;
   }
-  // Honour exp if present (seconds since epoch).
-  if (typeof payload.exp === "number" && Date.now() / 1000 > payload.exp) {
+
+  // Expiry: required by default, and honoured when present.
+  if (typeof payload.exp === "number") {
+    if (Date.now() / 1000 > payload.exp) return null;
+  } else if (requireExp) {
     return null;
   }
+
+  // Audience: when an expected aud is configured, the token's `aud` (string or
+  // string[]) must include it.
+  if (opts.audience !== undefined) {
+    const aud = payload.aud;
+    const ok =
+      aud === opts.audience ||
+      (Array.isArray(aud) && aud.includes(opts.audience));
+    if (!ok) return null;
+  }
+
   return payload;
 }
 
-function callerPartyFromRequest(
+/**
+ * Extract + verify the caller's party from the X-Caller-Token header. Returns
+ * null when the header is absent or the token fails verification (signature,
+ * expiry, audience, or no `sub`). Exported so service routes whose subject
+ * party is on-ledger (RFQ accept/cancel) can do a fetch-based binding the
+ * body-map cannot express.
+ */
+export function callerPartyFromRequest(
   req: IncomingMessage,
-  secret: string,
+  cfg: CallerAuthConfig,
 ): string | null {
+  if (!cfg.callerJwtSecret) return null;
   const raw = req.headers["x-caller-token"];
   const header = Array.isArray(raw) ? raw[0] : raw;
   if (typeof header !== "string" || header.length === 0) return null;
   // Accept "Bearer <jwt>" or a bare token.
   const token = header.startsWith("Bearer ") ? header.slice(7) : header;
-  const claims = verifyHs256(token, secret);
+  const claims = verifyHs256(token, cfg.callerJwtSecret, {
+    audience: cfg.callerJwtAudience,
+  });
   if (!claims) return null;
   const sub = claims.sub;
   return typeof sub === "string" && sub.length > 0 ? sub : null;
@@ -139,7 +185,7 @@ export function checkCallerBinding(
   if (!spec) return { ok: true };
   if (!cfg.callerJwtSecret) return { ok: true }; // binding disabled
 
-  const caller = callerPartyFromRequest(req, cfg.callerJwtSecret);
+  const caller = callerPartyFromRequest(req, cfg);
   if (!caller) {
     return {
       ok: false,

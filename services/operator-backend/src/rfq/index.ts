@@ -22,6 +22,20 @@ export interface RfqAcceptInput {
   consideredQuoteCids: ContractId<"RfqQuote">[];
   admin: Party;
   now: Time;
+  /**
+   * Per-caller party binding (B-2): when set, the fetched RFQ's `trader` must
+   * equal this, so a caller can only accept on behalf of itself. The handler
+   * passes the verified caller party; undefined = binding disabled.
+   */
+  requireTrader?: Party;
+}
+
+/** Thrown when a caller tries to act on an RFQ that is not its own. */
+export class RfqAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RfqAuthError";
+  }
 }
 
 export interface RfqAcceptResult {
@@ -151,8 +165,13 @@ export class RfqService {
   /** Cancel an open RFQ. Trader-controlled choice. */
   async cancel(input: {
     rfqCid: ContractId<"Rfq">;
+    /** Per-caller binding (B-2): when set, must equal the RFQ's trader. */
+    requireTrader?: Party;
   }): Promise<void> {
     const rfq = await this.fetchRfq(input.rfqCid);
+    if (input.requireTrader !== undefined && rfq.trader !== input.requireTrader) {
+      throw new RfqAuthError("caller may only cancel its own RFQ");
+    }
     await retryOnContention(() =>
       this.ledger.submit({
         actAs: [rfq.trader],
@@ -171,6 +190,9 @@ export class RfqService {
   async accept(input: RfqAcceptInput): Promise<RfqAcceptResult> {
     return retryOnContention(async () => {
       const rfq = await this.fetchRfq(input.rfqCid);
+      if (input.requireTrader !== undefined && rfq.trader !== input.requireTrader) {
+        throw new RfqAuthError("caller may only accept its own RFQ");
+      }
       const quotes = await this.fetchQuotes(input.consideredQuoteCids);
       const ranked = rankQuotes(rfq.side, quotes, input.now);
       const accepted = quotes.find(

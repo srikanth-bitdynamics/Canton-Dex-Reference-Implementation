@@ -64,6 +64,17 @@ template Rfq with
       controller trader
       do pure ()
 
+    -- Operator-authority cleanup of an expired RFQ. Rfq_Cancel is
+    -- trader-controlled, so without this choice the operator cannot keep
+    -- the ACS clean once external wallets hold trader authority.
+    choice Rfq_Expire : ()
+      with
+        currentTime : Time
+      controller operator
+      do
+        assertMsg "RFQ has not expired yet" (currentTime >= expiresAt)
+        pure ()
+
     -- Joint trader+operator accept: picks a quote, builds the PolicyReceipt
     -- from the considered quote set, and creates the MatchedTrade. Both
     -- authorities are needed (trader consumes Rfq+quotes; operator signs the

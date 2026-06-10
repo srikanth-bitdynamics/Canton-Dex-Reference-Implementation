@@ -254,15 +254,18 @@ Purpose:
 
 On-ledger flow:
 
-1. trader or `DexOperator` exercises order cancellation or expiry choice
+1. `DexOperator` exercises `Order_Cancel` (the single operator-controlled
+   cancellation path; it covers both trader-requested cancels relayed via
+   the operator API and post-expiry cleanup)
 2. the referenced allocation is cancelled
 3. the order is archived
 4. any residual state is recorded for auditability
 
 Important policy choice:
 
-- trader-initiated cancel should be allowed before match
-- operator-initiated expiry should be allowed after expiry time
+- trader-requested cancel should be honoured before match
+- the operator should sweep orders past their expiry time; for RFQs the
+  operator-controlled `Rfq_Expire` choice enforces the deadline on-ledger
 
 ## Workflow 6: Pool Creation
 

@@ -310,3 +310,77 @@ test("RFQ list / create / cancel through operator backend", async () => {
     "cancelled Rfq is gone",
   );
 });
+
+test("sweepExpired archives expired RFQs under operator authority only", async () => {
+  const ledger = setupLedger();
+  // Rfq_Expire handler: mimics the Daml choice — controller operator,
+  // asserts the deadline has passed, archives self.
+  ledger.registerChoice<Record<string, never>>(
+    "CantonDex.Dex.Rfq:Rfq",
+    "Rfq_Expire",
+    (ctx) => {
+      const rfq = ctx.self.payload as Rfq;
+      const arg = ctx.arg as { currentTime: string };
+      if (!ctx.actAs.has(rfq.operator)) {
+        throw new Error("Rfq_Expire requires operator authority");
+      }
+      if (ctx.actAs.has(rfq.trader)) {
+        throw new Error(
+          "sweep must not rely on trader authority (external wallets)",
+        );
+      }
+      if (Date.parse(arg.currentTime) < Date.parse(rfq.expiresAt)) {
+        throw new Error("RFQ has not expired yet");
+      }
+      ctx.archive(ctx.self.contractId);
+      return {};
+    },
+  );
+  const registry = new StubRegistry();
+  const operator: Party = "operator::test";
+  const trader: Party = "alice::test";
+  const orca: Party = "orca-mm::test";
+
+  const backend = new OperatorBackend({
+    ledger,
+    registry,
+    operatorParty: operator,
+  });
+
+  const createdAt = "2026-05-06T10:00:00Z";
+  const expired = await backend.rfq.create({
+    trader,
+    rfqId: "rfq-sweep-expired",
+    pair: "BTC/USDC",
+    side: "RFQ_Buy",
+    size: "1.0",
+    expiresAt: "2026-05-06T11:00:00Z",
+    whitelist: [orca],
+    createdAt,
+  });
+  const live = await backend.rfq.create({
+    trader,
+    rfqId: "rfq-sweep-live",
+    pair: "BTC/USDC",
+    side: "RFQ_Buy",
+    size: "1.0",
+    expiresAt: "2026-05-06T18:00:00Z",
+    whitelist: [orca],
+    createdAt,
+  });
+  assert.ok(expired.rfqCid && live.rfqCid);
+
+  const swept = await backend.rfq.sweepExpired("2026-05-06T12:00:00Z");
+  assert.deepEqual(swept, ["rfq-sweep-expired"], "only the expired RFQ swept");
+
+  const after = await backend.rfq.list();
+  assert.equal(
+    after.rfqs.find((r) => r.rfqId === "rfq-sweep-expired"),
+    undefined,
+    "expired Rfq archived",
+  );
+  assert.ok(
+    after.rfqs.find((r) => r.rfqId === "rfq-sweep-live"),
+    "live Rfq untouched",
+  );
+});

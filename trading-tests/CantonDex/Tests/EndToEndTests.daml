@@ -403,6 +403,44 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
 
   pure ()
 
+-- Rfq_Expire: operator-authority cleanup of an expired RFQ. Rfq_Cancel is
+-- trader-controlled, so this is the only path that works once external
+-- wallets hold trader authority.
+testRfqExpireOperatorCleanup : Script ()
+testRfqExpireOperatorCleanup = do
+  operator <- allocateParty "operator-exp"
+  alice <- allocateParty "alice-exp"
+  orca <- allocateParty "orca-exp"
+  now <- getTime
+
+  let expiresAt = addRelTime now (hours 1)
+
+  rfqCid <- submit alice $ createCmd Rfq.Rfq with
+    trader = alice
+    operator
+    rfqId = "rfq-expire-001"
+    pair = "BTC/USDC"
+    side = Rfq.RFQ_Buy
+    size = 1.0
+    expiresAt
+    whitelist = [orca]
+    createdAt = now
+
+  -- Before the deadline the operator cannot expire it.
+  submitMustFail operator $ exerciseCmd rfqCid Rfq.Rfq_Expire with
+    currentTime = now
+
+  -- The trader is not the controller of Rfq_Expire.
+  submitMustFail alice $ exerciseCmd rfqCid Rfq.Rfq_Expire with
+    currentTime = addRelTime now (hours 2)
+
+  -- After the deadline the operator sweeps it.
+  submit operator $ exerciseCmd rfqCid Rfq.Rfq_Expire with
+    currentTime = addRelTime now (hours 2)
+
+  remaining <- queryContractId operator rfqCid
+  remaining === None
+
 -- 6. PoolRules_Swap end-to-end through the mock registry ------------------
 --
 -- Trader pre-funds a swap by creating their own prefunded allocation

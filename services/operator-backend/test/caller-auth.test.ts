@@ -26,8 +26,12 @@ function b64url(buf: Buffer | string): string {
 }
 
 function signHs256(payload: Record<string, unknown>, secret = SECRET): string {
+  // verifyHs256 requires an `exp` by default; default to a far-future expiry so
+  // callers that don't care about expiry get a valid token. Explicit `exp` in
+  // `payload` overrides this.
+  const withExp = { exp: Math.floor(Date.now() / 1000) + 3600, ...payload };
   const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const body = b64url(JSON.stringify(payload));
+  const body = b64url(JSON.stringify(withExp));
   const sig = b64url(createHmac("sha256", secret).update(`${header}.${body}`).digest());
   return `${header}.${body}.${sig}`;
 }
@@ -58,6 +62,36 @@ describe("verifyHs256", () => {
   it("rejects an expired token", () => {
     const past = Math.floor(Date.now() / 1000) - 60;
     assert.equal(verifyHs256(signHs256({ sub: ALICE, exp: past }), SECRET), null);
+  });
+  it("rejects a token with no exp by default (Low residual #2)", () => {
+    // Build a token whose payload deliberately has no exp claim.
+    const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+    const body = b64url(JSON.stringify({ sub: ALICE }));
+    const sig = b64url(createHmac("sha256", SECRET).update(`${header}.${body}`).digest());
+    const noExp = `${header}.${body}.${sig}`;
+    assert.equal(verifyHs256(noExp, SECRET), null);
+    // ...but accepted when exp is explicitly not required.
+    assert.equal(verifyHs256(noExp, SECRET, { requireExp: false })?.sub, ALICE);
+  });
+  it("enforces the audience claim when configured (Low residual #2)", () => {
+    const aud = "canton-dex-operator";
+    // No aud in token → rejected when an audience is required.
+    assert.equal(verifyHs256(signHs256({ sub: ALICE }), SECRET, { audience: aud }), null);
+    // Matching aud (string) → accepted.
+    assert.equal(
+      verifyHs256(signHs256({ sub: ALICE, aud }), SECRET, { audience: aud })?.sub,
+      ALICE,
+    );
+    // Matching aud (array) → accepted.
+    assert.equal(
+      verifyHs256(signHs256({ sub: ALICE, aud: ["other", aud] }), SECRET, { audience: aud })?.sub,
+      ALICE,
+    );
+    // Wrong aud → rejected.
+    assert.equal(
+      verifyHs256(signHs256({ sub: ALICE, aud: "someone-else" }), SECRET, { audience: aud }),
+      null,
+    );
   });
 });
 

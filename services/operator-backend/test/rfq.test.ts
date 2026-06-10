@@ -21,6 +21,7 @@ import type {
   RfqQuote,
   PolicyReceipt,
 } from "../src/types.ts";
+import { RfqAuthError } from "../src/rfq/index.ts";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type { ChoiceContextRef } from "@canton-dex/registry-client";
 
@@ -136,6 +137,16 @@ function setupLedger(): InMemoryLedger {
 
     return { tradeCid, receipt };
   });
+
+  // Rfq_Cancel handler: archives the RFQ (trader-controlled choice).
+  ledger.registerChoice<Record<string, never>>(
+    "CantonDex.Dex.Rfq:Rfq",
+    "Rfq_Cancel",
+    (ctx) => {
+      ctx.archive(ctx.self.contractId);
+      return {};
+    },
+  );
 
   return ledger;
 }
@@ -383,4 +394,122 @@ test("sweepExpired archives expired RFQs under operator authority only", async (
     after.rfqs.find((r) => r.rfqId === "rfq-sweep-live"),
     "live Rfq untouched",
   );
+});
+
+// Per-caller binding (finding B-2, Low residual #1): cancel/accept act as the
+// fetched RFQ's `trader`. When the handler passes a `requireTrader` (the
+// verified caller party), the service must reject a mismatch so an operator-
+// token holder cannot grief/cancel or accept on another trader's behalf.
+test("cancel rejects a caller bound to a different party (B-2)", async () => {
+  const ledger = setupLedger();
+  const registry = new StubRegistry();
+  const operator: Party = "operator::test";
+  const trader: Party = "alice::test";
+  const mallory: Party = "mallory::test";
+  const backend = new OperatorBackend({ ledger, registry, operatorParty: operator });
+
+  const created = await backend.rfq.create({
+    trader,
+    rfqId: "rfq-bind-cancel",
+    pair: "BTC/USDC",
+    side: "RFQ_Buy",
+    size: "1.0",
+    expiresAt: "2026-05-06T13:00:00Z",
+    whitelist: ["orca::test"],
+    createdAt: "2026-05-06T12:00:00Z",
+  });
+
+  // Wrong caller → rejected, RFQ still present.
+  await assert.rejects(
+    () => backend.rfq.cancel({ rfqCid: created.rfqCid, requireTrader: mallory }),
+    RfqAuthError,
+  );
+  const still = await backend.rfq.list();
+  assert.ok(still.rfqs.find((r) => r.rfqId === "rfq-bind-cancel"), "RFQ not cancelled by wrong caller");
+
+  // Correct caller → cancels.
+  await backend.rfq.cancel({ rfqCid: created.rfqCid, requireTrader: trader });
+  const after = await backend.rfq.list();
+  assert.equal(
+    after.rfqs.find((r) => r.rfqId === "rfq-bind-cancel"),
+    undefined,
+    "RFQ cancelled by its own trader",
+  );
+});
+
+test("accept rejects a caller bound to a different party (B-2)", async () => {
+  const ledger = setupLedger();
+  const registry = new StubRegistry();
+  const operator: Party = "operator::test";
+  const trader: Party = "alice::test";
+  const mallory: Party = "mallory::test";
+  const dealer: Party = "orca-mm::test";
+  const backend = new OperatorBackend({ ledger, registry, operatorParty: operator });
+
+  const now = "2026-05-06T12:00:00Z";
+  const rfqCid = (await ledger.submit<ContractId<"Rfq">>({
+    actAs: [trader],
+    commandId: "seed-rfq-bind-accept",
+    command: {
+      kind: "create",
+      templateId: "CantonDex.Dex.Rfq:Rfq",
+      argument: {
+        contractId: "" as ContractId<"Rfq">,
+        trader,
+        operator,
+        rfqId: "rfq-bind-accept",
+        pair: "BTC/USDC",
+        side: "RFQ_Buy",
+        size: "1.0",
+        expiresAt: "2026-05-06T13:00:00Z",
+        whitelist: [dealer],
+        createdAt: now,
+      } satisfies Rfq,
+    },
+  })) as ContractId<"Rfq">;
+
+  const quote = (await ledger.submit<ContractId<"RfqQuote">>({
+    actAs: [dealer],
+    commandId: "quote-bind-accept",
+    command: {
+      kind: "create",
+      templateId: "CantonDex.Dex.Rfq:RfqQuote",
+      argument: {
+        contractId: "" as ContractId<"RfqQuote">,
+        dealer,
+        trader,
+        operator,
+        rfqId: "rfq-bind-accept",
+        price: "60000.00",
+        expiresAt: "2026-05-06T12:30:00Z",
+        postedAt: now,
+        tier: "TierTrusted",
+      } satisfies RfqQuote,
+    },
+  })) as ContractId<"RfqQuote">;
+
+  // Wrong caller → rejected before any settlement.
+  await assert.rejects(
+    () =>
+      backend.rfq.accept({
+        rfqCid,
+        acceptedQuoteCid: quote,
+        consideredQuoteCids: [quote],
+        admin: "btc-admin::test",
+        now,
+        requireTrader: mallory,
+      }),
+    RfqAuthError,
+  );
+
+  // Correct caller → accepts.
+  const result = await backend.rfq.accept({
+    rfqCid,
+    acceptedQuoteCid: quote,
+    consideredQuoteCids: [quote],
+    admin: "btc-admin::test",
+    now,
+    requireTrader: trader,
+  });
+  assert.equal(result.receipt.acceptedDealer, dealer);
 });

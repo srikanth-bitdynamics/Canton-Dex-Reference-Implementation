@@ -15,6 +15,7 @@ module CantonDex.Tests.RegistryConservationTests where
 --     imbalance (an unbacked receiver leg with no matching sender).
 
 import DA.Assert
+import DA.Time (addRelTime, hours)
 import DA.TextMap qualified as TextMap
 import Daml.Script
 
@@ -22,6 +23,7 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.TransferInstructionV2 qualified as V2
 import Splice.Testing.Utils (emptyExtraArgs)
 
 import CantonDex.Registry.V2 qualified as RegV2
@@ -33,6 +35,7 @@ data Fixture = Fixture with
     bob : Party
     factoryCid : ContractId V2.AllocationFactory
     settleCid : ContractId V2.SettlementFactory
+    transferCid : ContractId V2.TransferFactory
     settlement : V2.SettlementInfo
 
 setup : Script Fixture
@@ -50,6 +53,7 @@ setup = do
     admin; alice; bob
     factoryCid = toInterfaceContractId reg
     settleCid = toInterfaceContractId reg
+    transferCid = toInterfaceContractId reg
     settlement
 
 mintHolding : Fixture -> Party -> Text -> Decimal -> Script (ContractId RegV2.Holding)
@@ -76,6 +80,17 @@ prefunded fx party iid amount = do
   hold <- mintHolding fx party iid amount
   let spec = Utils.mkPrefundedAllocationSpecification
         fx.admin (Utils.basicAccount party) None (TextMap.fromList [(iid, amount)])
+  mkAlloc fx party spec [hold]
+
+expiredPrefunded : Fixture -> Party -> Text -> Decimal -> Script (ContractId V2.Allocation)
+expiredPrefunded fx party iid amount = do
+  now <- getTime
+  hold <- mintHolding fx party iid amount
+  let spec = Utils.mkPrefundedAllocationSpecification
+        fx.admin
+        (Utils.basicAccount party)
+        (Some (addRelTime now (hours (-1))))
+        (TextMap.fromList [(iid, amount)])
   mkAlloc fx party spec [hold]
 
 -- Plain (non-iterated) allocation authorizing `legs` for `party`; receiver
@@ -254,3 +269,39 @@ testBatchRejectsUnbalancedReceiverLeg = do
   bobAlloc <- sidedAlloc fx fx.bob [leg]
   submitMustFail fx.admin $ settleBatchCmd fx [leg]
     [ Utils.finalAllocation bobAlloc ]
+
+-- 7. Allocation_Settle rejects expired allocation deadlines -----------------
+
+testExpiredAllocationSettleRejected : Script ()
+testExpiredAllocationSettleRejected = do
+  fx <- setup
+  aliceAlloc <- expiredPrefunded fx fx.alice "X" 100.0
+  let leg = mkLeg "expired-allocation" fx.alice fx.bob 10.0 "X"
+  bobAlloc <- sidedAlloc fx fx.bob [leg]
+  submitMustFail fx.admin $ settleBatchCmd fx [leg]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [leg]) None
+    , Utils.finalAllocation bobAlloc
+    ]
+
+-- 8. TransferFactory_Transfer rejects expired executeBefore -----------------
+
+testExpiredTransferFactoryRejected : Script ()
+testExpiredTransferFactoryRejected = do
+  fx <- setup
+  now <- getTime
+  holdingCid <- mintHolding fx fx.alice "X" 10.0
+  let transfer = V2.Transfer with
+        sender = Utils.basicAccount fx.alice
+        receiver = Utils.basicAccount fx.bob
+        amount = 10.0
+        instrumentId = V2.InstrumentId with admin = fx.admin; id = "X"
+        requestedAt = now
+        executeBefore = addRelTime now (hours (-1))
+        inputHoldingCids = [toInterfaceContractId holdingCid]
+        meta = emptyMetadata
+  submitMultiMustFail [fx.admin, fx.alice] [] $
+    exerciseCmd fx.transferCid V2.TransferFactory_Transfer with
+      transfer
+      actors = [fx.admin, fx.alice]
+      extraArgs = emptyExtraArgs

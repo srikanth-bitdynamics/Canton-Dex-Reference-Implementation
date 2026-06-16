@@ -216,6 +216,11 @@ template Allocation with
       -- sender legs are the only legitimate unbacked source, a burn's
       -- receiver legs the sink).
       allocation_settleImpl self arg = do
+        case spec.settlementDeadline of
+          None -> pure ()
+          Some deadline -> do
+            now <- getTime
+            assertMsg "Allocation_Settle: settlement deadline has passed" (now <= deadline)
         let expectedActors = settlement.executors ++ [admin]
         unless (all (\p -> p `elem` arg.actors) expectedActors) $
           abort "Allocation_Settle: missing required actor (executors + admin)"
@@ -510,6 +515,8 @@ template Registry with
         let transfer = arg.transfer
         let senderOwner = Utils.accountOwner transfer.sender
         let receiverOwner = Utils.accountOwner transfer.receiver
+        now <- getTime
+        assertMsg "TransferFactory: executeBefore has passed" (now <= transfer.executeBefore)
         assertMsg "TransferFactory: instrument admin must match registry"
           (transfer.instrumentId.admin == admin)
         -- Minimal: lock the first input holding as the instruction's

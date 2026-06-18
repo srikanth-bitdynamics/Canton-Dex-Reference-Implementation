@@ -159,6 +159,12 @@ async function main(): Promise<void> {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    // Per-caller party binding (B-2): when set, trader-subject write routes
+    // require an X-Caller-Token JWT whose `sub` is the caller's party.
+    callerJwtSecret: process.env.DEX_CALLER_JWT_SECRET || undefined,
+    // Optional `aud` claim the caller JWT must carry (defence against a token
+    // minted for another service being replayed here).
+    callerJwtAudience: process.env.DEX_CALLER_JWT_AUDIENCE || undefined,
     ledgerUrl: baseUrl,
     ledgerToken: token,
   });

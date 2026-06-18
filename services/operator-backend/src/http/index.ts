@@ -42,7 +42,9 @@ import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
 import { DealersService } from "../dealers/index.js";
 import { checkAdminAuth, checkOperatorAuth, bearerMatches } from "./auth.js";
+import { checkCallerBinding, callerPartyFromRequest, type CallerAuthConfig } from "./caller-auth.js";
 import { validateWriteBody, ValidationError } from "./validate.js";
+import { RfqAuthError } from "../rfq/index.js";
 import { rootLogger } from "../lib/logger.js";
 
 const httpLog = rootLogger.child({ component: "http" });
@@ -144,6 +146,19 @@ export interface HttpServerConfig {
   walletRelayEnabled?: boolean;
   /** Allowlist of actAs parties the wallet relay may forward for. */
   walletRelayParties?: string[];
+  /**
+   * HS256 secret for per-caller party binding (finding B-2). When set, write
+   * routes that act on behalf of a trader require an X-Caller-Token JWT whose
+   * `sub` is the caller's party, and reject any request whose subject party is
+   * not the caller's own. Unset = binding disabled (single trusted backend).
+   */
+  callerJwtSecret?: string;
+  /**
+   * Required `aud` claim for the per-caller party JWT. When set, a caller token
+   * whose audience does not include this value is rejected — stops a token
+   * minted for another service from being replayed against this backend.
+   */
+  callerJwtAudience?: string;
   /** JSON LAPI base URL — used to poll the real ledger offset for /v1/status. */
   ledgerUrl?: string;
   /** JWT used to read the ledger offset. */
@@ -232,6 +247,12 @@ export function startHttpServer(cfg: HttpServerConfig): {
         respondJson(res, e.status, { error: e.message, code: e.code, details: e.details, requestId });
         return;
       }
+      if (e instanceof RfqAuthError) {
+        // Per-caller binding mismatch on a fetch-bound RFQ route (B-2).
+        reqLog.warn("request rejected", { status: 403, code: "forbidden", error: e.message });
+        respondJson(res, 403, { error: e.message, code: "forbidden", requestId });
+        return;
+      }
       reqLog.error("request failed", { error: e instanceof Error ? e.message : String(e) });
       respondJson(res, 500, {
         error: e instanceof Error ? e.message : String(e),
@@ -265,6 +286,11 @@ async function routeRequest(
   const adminToken = cfg.adminToken;
   const ledgerUrl = cfg.ledgerUrl;
   const ledgerToken = cfg.ledgerToken;
+  // Per-caller party binding config (finding B-2): secret + optional audience.
+  const callerAuth: CallerAuthConfig = {
+    callerJwtSecret: cfg.callerJwtSecret,
+    callerJwtAudience: cfg.callerJwtAudience,
+  };
   const url = new URL(req.url ?? "/", "http://x");
   const path = url.pathname;
   const method = req.method ?? "GET";
@@ -836,7 +862,7 @@ async function routeRequest(
   // === quote ============================================================
 
   if (method === "POST" && path === "/v1/swaps/quote") {
-    const raw = await readValidatedJson<unknown>(req, "POST /v1/swaps/quote");
+    const raw = await readValidatedJson<unknown>(req, "POST /v1/swaps/quote", callerAuth);
     const poolId = expectString(raw, "poolId");
     const inputInstrumentId = expectString(raw, "inputInstrumentId");
     const inputAmount = expectString(raw, "inputAmount");
@@ -866,7 +892,7 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/rfq") {
-    const body = await readValidatedJson<Parameters<typeof backend.rfq.create>[0]>(req, "POST /v1/rfq");
+    const body = await readValidatedJson<Parameters<typeof backend.rfq.create>[0]>(req, "POST /v1/rfq", callerAuth);
     const result = await backend.rfq.create(body);
     respondJson(res, 200, result);
     return;
@@ -876,27 +902,35 @@ async function routeRequest(
   const rfqCancelMatch = path.match(/^\/v1\/rfq\/([^/]+)\/cancel$/);
   if (method === "POST" && rfqCancelMatch) {
     const rfqCid = decodeURIComponent(rfqCancelMatch[1]!);
-    await backend.rfq.cancel({ rfqCid: rfqCid as never });
+    // Per-caller binding (B-2, Low residual #1): cancel acts as the fetched
+    // RFQ's trader, so the body-map binding can't cover it. Resolve the caller
+    // (fail-closed when the secret is set) and let the service compare it to
+    // the RFQ's trader — stops an operator-token holder griefing any RFQ.
+    const requireTrader = requireCallerForFetchBoundRoute(req, callerAuth, "cancelling an RFQ");
+    await backend.rfq.cancel({ rfqCid: rfqCid as never, requireTrader });
     respondJson(res, 204, {});
     return;
   }
 
   if (method === "POST" && path === "/v1/rfq/accept") {
-    const body = await readValidatedJson<Parameters<typeof backend.rfq.accept>[0]>(req, "POST /v1/rfq/accept");
-    const result = await backend.rfq.accept(body);
+    const body = await readValidatedJson<Parameters<typeof backend.rfq.accept>[0]>(req, "POST /v1/rfq/accept", callerAuth);
+    // Same fetch-based binding as cancel: accept acts as the RFQ's trader, so
+    // an operator-token holder must not accept a quote on a trader's behalf.
+    const requireTrader = requireCallerForFetchBoundRoute(req, callerAuth, "accepting an RFQ");
+    const result = await backend.rfq.accept({ ...body, requireTrader });
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/orders/bind") {
-    const body = await readValidatedJson<Parameters<typeof backend.order.bind>[0]>(req, "POST /v1/orders/bind");
+    const body = await readValidatedJson<Parameters<typeof backend.order.bind>[0]>(req, "POST /v1/orders/bind", callerAuth);
     const result = await backend.order.bind(body);
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/orders/fund") {
-    const body = await readValidatedJson<Parameters<typeof backend.order.fund>[0]>(req, "POST /v1/orders/fund");
+    const body = await readValidatedJson<Parameters<typeof backend.order.fund>[0]>(req, "POST /v1/orders/fund", callerAuth);
     const result = await backend.order.fund(body);
     respondJson(res, 200, result);
     return;
@@ -918,7 +952,7 @@ async function routeRequest(
   // JSON object keyed by admin party; we convert to the Map the service wants.
 
   if (method === "POST" && path === "/v1/matched-trades/request-allocations") {
-    const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/request-allocations");
+    const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/request-allocations", callerAuth);
     const tradeCid = expectString(body, "tradeCid");
     const result = await backend.matchedTrade.requestAllocations({
       tradeCid: tradeCid as never,
@@ -928,7 +962,7 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/matched-trades/settle") {
-    const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/settle");
+    const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/settle", callerAuth);
     const tradeCid = expectString(body, "tradeCid");
     const batchesByAdminRaw = expectField<Record<string, { allocationCids: string[] }>>(
       body,
@@ -951,7 +985,7 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/matched-trades/cancel") {
-    const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/cancel");
+    const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/cancel", callerAuth);
     const tradeCid = expectString(body, "tradeCid");
     const allocationsByAdminRaw = expectField<Record<string, string[]>>(
       body,
@@ -975,14 +1009,14 @@ async function routeRequest(
 
   if (method === "POST" && path === "/v1/pools/swap/request") {
     const body =
-      await readValidatedJson<Parameters<typeof backend.pool.requestSwap>[0]>(req, "POST /v1/pools/swap/request");
+      await readValidatedJson<Parameters<typeof backend.pool.requestSwap>[0]>(req, "POST /v1/pools/swap/request", callerAuth);
     const result = await backend.pool.requestSwap(body);
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/pools/swap") {
-    const body = await readValidatedJson<Parameters<typeof backend.pool.swap>[0]>(req, "POST /v1/pools/swap");
+    const body = await readValidatedJson<Parameters<typeof backend.pool.swap>[0]>(req, "POST /v1/pools/swap", callerAuth);
     const result = await backend.pool.swap(body);
     respondJson(res, 200, result);
     return;
@@ -1055,7 +1089,7 @@ async function routeRequest(
   if (method === "POST" && path === "/v1/pools/add-liquidity/request") {
     const body = await readValidatedJson<
       Parameters<typeof backend.pool.requestAddLiquidity>[0]
-    >(req, "POST /v1/pools/add-liquidity/request");
+    >(req, "POST /v1/pools/add-liquidity/request", callerAuth);
     const result = await backend.pool.requestAddLiquidity(body);
     respondJson(res, 200, result);
     return;
@@ -1064,7 +1098,7 @@ async function routeRequest(
   if (method === "POST" && path === "/v1/pools/add-liquidity/settle") {
     const body = await readValidatedJson<
       Parameters<typeof backend.pool.settleAddLiquidity>[0]
-    >(req, "POST /v1/pools/add-liquidity/settle");
+    >(req, "POST /v1/pools/add-liquidity/settle", callerAuth);
     const result = await backend.pool.settleAddLiquidity(body);
     respondJson(res, 200, { result });
     return;
@@ -1087,7 +1121,7 @@ async function routeRequest(
   if (method === "POST" && path === "/v1/pools/remove-liquidity/request") {
     const body = await readValidatedJson<
       Parameters<typeof backend.pool.requestRemoveLiquidity>[0]
-    >(req, "POST /v1/pools/remove-liquidity/request");
+    >(req, "POST /v1/pools/remove-liquidity/request", callerAuth);
     const result = await backend.pool.requestRemoveLiquidity(body);
     respondJson(res, 200, result);
     return;
@@ -1096,7 +1130,7 @@ async function routeRequest(
   if (method === "POST" && path === "/v1/pools/remove-liquidity/settle") {
     const body = await readValidatedJson<
       Parameters<typeof backend.pool.settleRemoveLiquidity>[0]
-    >(req, "POST /v1/pools/remove-liquidity/settle");
+    >(req, "POST /v1/pools/remove-liquidity/settle", callerAuth);
     const result = await backend.pool.settleRemoveLiquidity(body);
     respondJson(res, 200, { result });
     return;
@@ -1106,15 +1140,53 @@ async function routeRequest(
 }
 
 // Read the JSON body and validate it against the write spec for this route.
-// `routeKey` is "${method} ${path}". Throws ValidationError (→ 400)
-// on a malformed amount / party / cid / missing required field.
+// `routeKey` is "${method} ${path}". Throws ValidationError (→ 400) on a
+// malformed amount / party / cid / missing required field, and an HttpError
+// (401/403) when per-caller party binding is enabled and the caller is not the
+// route's subject party (finding B-2).
 async function readValidatedJson<T>(
   req: IncomingMessage,
   routeKey: string,
+  callerAuth?: CallerAuthConfig,
 ): Promise<T> {
   const body = await readJson<T>(req);
   validateWriteBody(routeKey, body);
+  const binding = checkCallerBinding(
+    req,
+    callerAuth ?? { callerJwtSecret: undefined },
+    routeKey,
+    body,
+  );
+  if (!binding.ok) {
+    throw new HttpError(binding.status, binding.code, binding.message);
+  }
   return body;
+}
+
+/**
+ * Resolve the verified caller party for a route whose subject lives on-ledger
+ * (RFQ accept/cancel act as the fetched RFQ's `trader`, which the body-map
+ * binding cannot reach — finding B-2, Low residual #1). Returns undefined when
+ * binding is disabled (no secret), so the service skips the check. When binding
+ * is ON it is fail-closed: a missing/invalid caller token throws 401, and the
+ * returned party is handed to the service, which compares it to the fetched
+ * RFQ's trader and rejects a mismatch (403).
+ */
+function requireCallerForFetchBoundRoute(
+  req: IncomingMessage,
+  callerAuth: CallerAuthConfig,
+  action: string,
+): Party | undefined {
+  if (!callerAuth.callerJwtSecret) return undefined; // binding disabled
+  const caller = callerPartyFromRequest(req, callerAuth);
+  if (!caller) {
+    throw new HttpError(
+      401,
+      "unauthorized",
+      `${action} requires a valid X-Caller-Token (per-caller party JWT)`,
+    );
+  }
+  return caller as Party;
 }
 
 async function readJson<T>(req: IncomingMessage): Promise<T> {

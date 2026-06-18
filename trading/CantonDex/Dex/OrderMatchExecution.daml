@@ -11,6 +11,7 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
+import CantonDex.Dex.Order (Order, Side (..))
 import CantonDex.Trading.Utils qualified as Utils
 
 data MatchedOrderPair = MatchedOrderPair with
@@ -73,6 +74,12 @@ template OrderMatchExecution with
     operator : Party
     matchId : Text
     match : MatchedOrderPair
+    buyOrderCid : ContractId Order
+      -- ^ The resting bid being filled. Fetched at execute time so the fill
+      --   price/qty/instruments are checked against the order's own terms
+      --   rather than trusted from the off-ledger matcher.
+    sellOrderCid : ContractId Order
+      -- ^ The resting ask being filled.
     buyerAllocationCid : ContractId V2.Allocation
     sellerAllocationCid : ContractId V2.Allocation
     buyerCommittedFunding : Utils.Funding
@@ -94,6 +101,50 @@ template OrderMatchExecution with
           --   the self-registry, real for a context-requiring registry.
       controller operator
       do
+        -- Price/quantity/instrument enforcement at match time (finding D-1).
+        -- The off-ledger matcher proposes `match`; this choice fetches both
+        -- orders and refuses any fill the orders' own terms do not permit, so
+        -- a buggy or malicious matcher cannot fill a resting order outside its
+        -- limit price or for instruments/quantities it never agreed to.
+        buyOrder <- fetch buyOrderCid
+        sellOrder <- fetch sellOrderCid
+
+        assertMsg "buy order operator mismatch" (buyOrder.operator == operator)
+        assertMsg "sell order operator mismatch" (sellOrder.operator == operator)
+        assertMsg "buy order must be a Bid" (buyOrder.side == Bid)
+        assertMsg "sell order must be an Ask" (sellOrder.side == Ask)
+
+        -- The match's accounts must be the orders' own traders, so the legs
+        -- move the actual order owners' funds (not third parties').
+        assertMsg "buyer account is not the bid trader"
+          (match.buyerAccount.owner == Some buyOrder.trader)
+        assertMsg "seller account is not the ask trader"
+          (match.sellerAccount.owner == Some sellOrder.trader)
+
+        -- Instruments must agree across both orders and the match.
+        assertMsg "base instrument mismatch"
+          (buyOrder.baseInstrumentId == sellOrder.baseInstrumentId
+            && match.baseInstrumentId == buyOrder.baseInstrumentId)
+        assertMsg "quote instrument mismatch"
+          (buyOrder.quoteInstrumentId == sellOrder.quoteInstrumentId
+            && match.quoteInstrumentId == buyOrder.quoteInstrumentId)
+
+        -- Quantity must be positive and within both orders' remaining size.
+        assertMsg "fill quantity must be positive" (match.fillQty > 0.0)
+        assertMsg "fill exceeds bid remaining quantity"
+          (match.fillQty <= buyOrder.remainingQty)
+        assertMsg "fill exceeds ask remaining quantity"
+          (match.fillQty <= sellOrder.remainingQty)
+
+        -- Price band: a buyer never pays above their limit and a seller never
+        -- receives below theirs. A crossing book guarantees such a price exists
+        -- (bid limit >= ask limit); the cleared fill price must sit in [ask, bid].
+        assertMsg "fill price must be positive" (match.fillPrice > 0.0)
+        assertMsg "fill price above bid limit"
+          (match.fillPrice <= buyOrder.limitPrice)
+        assertMsg "fill price below ask limit"
+          (match.fillPrice >= sellOrder.limitPrice)
+
         let transferLegs = mkMatchTransferLegs match
             settlement = V2.SettlementInfo with
               executors = [operator]

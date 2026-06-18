@@ -22,6 +22,13 @@ import {
   RegistryError,
   TransferPreapproval,
 } from "./types.js";
+import {
+  validateChoiceContextRef,
+  validateCredentials,
+  validateFactoryRefs,
+  validateInstrumentConfiguration,
+  validatePreapprovals,
+} from "./validate.js";
 
 export * from "./types.js";
 
@@ -64,8 +71,9 @@ export class RegistryClient {
   ): Promise<InstrumentConfiguration> {
     const cached = this.configCache.get(instrumentId);
     if (cached) return cached;
-    const cfg = await this.fetchJson<InstrumentConfiguration>(
+    const cfg = await this.fetchJson(
       `/registry/instrument-config/${encodeURIComponent(instrumentId)}`,
+      validateInstrumentConfiguration,
     );
     if (!cfg) {
       throw new RegistryError(
@@ -81,8 +89,9 @@ export class RegistryClient {
   async getFactories(admin: Party): Promise<FactoryRefs> {
     const cached = this.factoryCache.get(admin);
     if (cached) return cached;
-    const refs = await this.fetchJson<FactoryRefs>(
+    const refs = await this.fetchJson(
       `/registry/factories/${encodeURIComponent(admin)}`,
+      validateFactoryRefs,
     );
     if (!refs) {
       throw new RegistryError("factory-stale", `admin=${admin}`, true);
@@ -102,8 +111,9 @@ export class RegistryClient {
     const cached = this.choiceContextCache.get(admin);
     if (cached) return cached;
     const ctx =
-      (await this.fetchJson<ChoiceContextRef>(
+      (await this.fetchJson(
         `/registry/choice-context/${encodeURIComponent(admin)}`,
+        validateChoiceContextRef,
       )) ?? { context: { values: {} }, disclosure: [] };
     this.choiceContextCache.set(admin, ctx, this.config.choiceContextTtlMs);
     return ctx;
@@ -113,8 +123,9 @@ export class RegistryClient {
     const cached = this.credCache.get(holder);
     if (cached) return cached;
     const creds =
-      (await this.fetchJson<Credential[]>(
+      (await this.fetchJson(
         `/registry/credentials?holder=${encodeURIComponent(holder)}`,
+        validateCredentials,
       )) ?? [];
     this.credCache.set(holder, creds);
     return creds;
@@ -139,10 +150,11 @@ export class RegistryClient {
     const cached = this.preapprovalCache.get({ receiver, admin });
     if (cached) return cached;
     const preapprovals =
-      (await this.fetchJson<TransferPreapproval[]>(
+      (await this.fetchJson(
         `/registry/preapprovals?receiver=${encodeURIComponent(
           receiver,
         )}&admin=${encodeURIComponent(admin)}`,
+        validatePreapprovals,
       )) ?? [];
     this.preapprovalCache.set({ receiver, admin }, preapprovals);
     return preapprovals;
@@ -156,7 +168,16 @@ export class RegistryClient {
     this.credCache.invalidateAll();
   }
 
-  private async fetchJson<T>(path: string): Promise<T | null> {
+  /**
+   * Fetch + validate a registry response. `validate` turns the parsed JSON
+   * into a checked `T`, throwing RegistryError("malformed", ...) on a shape
+   * mismatch — registry output is never trusted via a bare `as T` cast (R-1).
+   * Returns null on 404 (callers treat absent as empty/not-found).
+   */
+  private async fetchJson<T>(
+    path: string,
+    validate: (raw: unknown) => T,
+  ): Promise<T | null> {
     const url = new URL(path, this.config.baseUrl);
     const headers: Record<string, string> = { Accept: "application/json" };
     if (this.config.authToken) {
@@ -174,6 +195,16 @@ export class RegistryClient {
         true,
       );
     }
-    return (await res.json()) as T;
+    let raw: unknown;
+    try {
+      raw = await res.json();
+    } catch (e) {
+      throw new RegistryError(
+        "malformed",
+        `${path}: invalid JSON: ${e instanceof Error ? e.message : String(e)}`,
+        false,
+      );
+    }
+    return validate(raw);
   }
 }

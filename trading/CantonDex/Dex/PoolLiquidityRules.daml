@@ -379,6 +379,15 @@ template PoolLiquidityRules with
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordMint with amount = lpAmount
 
         archiveBinding requestCid acceptanceCid
+        -- Per-choice delta conservation. This choice creates exactly
+        -- one slice per side; the reserve deltas it writes must equal those
+        -- created slice amounts.
+        newBaseSlice <- fetch baseSliceCid
+        newQuoteSlice <- fetch quoteSliceCid
+        assertMsg "add: base reserve delta must equal created base slice amount"
+          (newBaseSlice.amount == baseAmount)
+        assertMsg "add: quote reserve delta must equal created quote slice amount"
+          (newQuoteSlice.amount == quoteAmount)
         archive poolStateCid
         newStateCid <- create state with
           status = PS_Active
@@ -529,6 +538,21 @@ template PoolLiquidityRules with
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordBurn with amount = lpTokensToRedeem
 
         archiveBinding requestCid acceptanceCid
+
+        -- Per-choice delta conservation. The reserve delta per side
+        -- must equal the net slice-amount change this choice performed:
+        -- consumed slice amounts (drained + old boundary) minus the re-wrapped
+        -- boundary leftover.
+        let consumedOf : PM.SliceDraw -> Decimal
+            consumedOf d =
+              foldl (\acc (_, s) -> acc + s.amount) 0.0 d.fullyConsumed
+                + (case d.boundary of Some (_, s, _, _) -> s.amount; None -> 0.0)
+            leftoverOf : PM.SliceDraw -> Decimal
+            leftoverOf d = case d.boundary of Some (_, _, _, lo) -> lo; None -> 0.0
+        assertMsg "remove: net base slice delta must equal -baseOut"
+          (consumedOf baseDraw - leftoverOf baseDraw == baseOut)
+        assertMsg "remove: net quote slice delta must equal -quoteOut"
+          (consumedOf quoteDraw - leftoverOf quoteDraw == quoteOut)
 
         let newBase = state.reserves.baseAmount - baseOut
             newQuote = state.reserves.quoteAmount - quoteOut

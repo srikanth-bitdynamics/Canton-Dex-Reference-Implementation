@@ -8,6 +8,12 @@
 -- (admin alone for the owner-None mint/burn accounts); transfers sign
 -- admin+sender. Mint/burn/allocate/transfer enforce the InstrumentConfig
 -- credential requirements (empty list = open access).
+--
+-- Conservation: settle enforces per-allocation draw-down
+-- (sent + next-iteration funding <= locked backing + receiver credits),
+-- backs every rolled-forward allocation with freshly locked holdings worth
+-- its funding, and the SettlementFactory batch asserts per-instrument
+-- sender/receiver balance across all legs of the batch.
 
 module CantonDex.Registry.V2 where
 
@@ -184,33 +190,98 @@ template Allocation with
       allocation_cancelExtraObservers _ = []
       allocation_withdrawExtraObservers _ = []
 
-      -- Per-side settle: this allocation mints the receiver-side holdings
-      -- for its own authorizer (inheriting admin+owner authority from its
-      -- signatories); sender-side legs just archive the locked holdings.
-      -- Honours arg.extraTransferLegSides this iteration and rolls forward
-      -- arg.nextIterationFunding into a fresh allocation.
+      -- Per-side settle with on-ledger conservation. For real
+      -- accounts (owner = Some), per instrument:
+      --
+      --   sent + nextIterationFunding <= locked backing + receiver credits
+      --
+      -- where `sent` are the sender-side legs of spec + executor-supplied
+      -- extras. The authorizer is credited the NET amount
+      -- (locked + received - sent - next) as one unlocked holding per
+      -- instrument, and the rolled-forward allocation is backed by freshly
+      -- created LOCKED holdings worth exactly the next-iteration funding —
+      -- so iteration N's backing equals its funding and the draw-down check
+      -- holds recursively.
+      --
+      -- NOTE (deviation from a pure locked-only rule): receiver-side credits
+      -- count towards coverage because the DEX flows legitimately fund the
+      -- roll-forward from incoming legs (a pool deposit receiver allocation
+      -- locks nothing and rolls the deposit forward; a swap's input slice
+      -- rolls slice + swap-in forward). Receiver legs are themselves matched
+      -- by sender legs elsewhere in the batch — enforced by the batch-level
+      -- balance check in settlementFactory_settleBatchImpl — so nothing is
+      -- created from thin air.
+      --
+      -- Mint/burn special accounts (owner = None) hold no holdings; their
+      -- legs are constrained by the same batch-level balance check (a mint's
+      -- sender legs are the only legitimate unbacked source, a burn's
+      -- receiver legs the sink).
       allocation_settleImpl self arg = do
+        case spec.settlementDeadline of
+          None -> pure ()
+          Some deadline -> do
+            now <- getTime
+            assertMsg "Allocation_Settle: settlement deadline has passed" (now <= deadline)
         let expectedActors = settlement.executors ++ [admin]
         unless (all (\p -> p `elem` arg.actors) expectedActors) $
           abort "Allocation_Settle: missing required actor (executors + admin)"
-        -- Receiver-side crediting only applies to real accounts. Mint and
-        -- burn special accounts do not receive holdings themselves.
+        -- Executor-supplied extras / roll-forward are only legal when the
+        -- authorizer authored the allocation iterated-enabled (V2 standard:
+        -- "MUST NOT be set unless iterated settlement was enabled").
+        when (not (null arg.extraTransferLegSides) || isSome arg.nextIterationFunding) $
+          assertMsg
+            "Allocation_Settle: extra legs / next-iteration funding require an iterated-enabled allocation"
+            (isSome spec.nextIterationFunding)
         let allSides = spec.transferLegSides ++ arg.extraTransferLegSides
-        case spec.authorizer.owner of
-          None -> pure ()
-          Some authorizerOwner ->
-            forA_ allSides $ \side ->
-              when (side.side == V2.ReceiverSide) $ do
+            next = fromOptional TextMap.empty arg.nextIterationFunding
+            sumSides s = TextMap.fromListWithR (+)
+              [ (side.instrumentId, side.amount) | side <- allSides, side.side == s ]
+            sent = sumSides V2.SenderSide
+            received = sumSides V2.ReceiverSide
+            lookup0 : TextMap.TextMap Decimal -> Text -> Decimal
+            lookup0 m iid = fromOptional 0.0 (TextMap.lookup iid m)
+        forA_ (TextMap.toList next) $ \(iid, amt) ->
+          assertMsg
+            ("Allocation_Settle: next-iteration funding must be positive for " <> iid)
+            (amt > 0.0)
+        nextLockedCids <- case spec.authorizer.owner of
+          None ->
+            -- Mint/burn special account: locks nothing, is credited nothing.
+            pure []
+          Some authorizerOwner -> do
+            lockedAmts <- forA lockedHoldings $ \cid -> do
+              h <- fetch cid
+              pure (h.instrumentId, h.amount)
+            let locked = TextMap.fromListWithR (+) lockedAmts
+                available = Utils.textMapUnionWith (+) locked received
+                needed = Utils.textMapUnionWith (+) sent next
+            forA_ (TextMap.toList needed) $ \(iid, n) ->
+              assertMsg
+                ("Allocation_Settle: legs + next-iteration funding exceed locked backing for " <> iid)
+                (n <= lookup0 available iid)
+            -- Net credit to the authorizer (receiver credits + any surplus of
+            -- the locked backing), unlocked, one holding per instrument.
+            forA_ (TextMap.toList available) $ \(iid, avail) -> do
+              let change = avail - lookup0 needed iid
+              when (change > 0.0) $ do
                 _ <- create Holding with
                   admin
                   owner = authorizerOwner
-                  instrumentId = side.instrumentId
-                  amount = side.amount
+                  instrumentId = iid
+                  amount = change
                   locked = False
                 pure ()
+            -- Fresh LOCKED backing for the rolled-forward allocation.
+            forA (TextMap.toList next) $ \(iid, amt) ->
+              create Holding with
+                admin
+                owner = authorizerOwner
+                instrumentId = iid
+                amount = amt
+                locked = True
         archive self
         forA_ lockedHoldings $ \cid -> archive cid
-        next <- case arg.nextIterationFunding of
+        nextCid <- case arg.nextIterationFunding of
           None -> pure None
           Some funding -> do
             let nextSpec = spec with
@@ -218,11 +289,11 @@ template Allocation with
                   nextIterationFunding = Some funding
             cid <- create this with
               spec = nextSpec
-              lockedHoldings = []
+              lockedHoldings = nextLockedCids
               numIterations = numIterations + 1
             pure (Some (toInterfaceContractId cid))
         pure V2.AllocationResult with
-          output = V2.AllocationResult_Settled next
+          output = V2.AllocationResult_Settled nextCid
           authorizerHoldingCids = TextMap.empty
           meta = emptyMetadata
 
@@ -445,6 +516,8 @@ template Registry with
         let transfer = arg.transfer
         let senderOwner = Utils.accountOwner transfer.sender
         let receiverOwner = Utils.accountOwner transfer.receiver
+        now <- getTime
+        assertMsg "TransferFactory: executeBefore has passed" (now <= transfer.executeBefore)
         assertMsg "TransferFactory: instrument admin must match registry"
           (transfer.instrumentId.admin == admin)
         -- Minimal: lock the first input holding as the instruction's
@@ -586,6 +659,37 @@ template Registry with
               if admin `elem` arg.actors
                 then arg.actors
                 else admin :: arg.actors
+        -- Batch-level conservation: per instrument, sender-side and
+        -- receiver-side totals across ALL legs of ALL allocations in the
+        -- batch (spec sides + executor-supplied extras) must balance
+        -- exactly. Each settled leg appears twice — as a sender side in the
+        -- sender's allocation and a receiver side in the receiver's — so a
+        -- well-formed DvP batch balances. Mint/burn special-account
+        -- allocations participate in the sums: a mint allocation's sender
+        -- legs are the only legitimate unbacked source, a burn allocation's
+        -- receiver legs the only sink, and they balance the real-account
+        -- side of those legs. All existing flows (pool swap, LP add with
+        -- LP-token mint leg, LP remove with burn leg, matched trade) author
+        -- both sides of every leg, so strict equality holds; an unmatched
+        -- receiver leg (unbacked credit) or sender leg (silent destruction)
+        -- aborts the whole batch.
+        allSides <- fmap concat $ forA arg.allocations $ \finalized -> do
+          v <- view <$> fetch finalized.allocationCid
+          pure (v.allocation.transferLegSides ++ finalized.extraTransferLegSides)
+        let sumSides s = TextMap.fromListWithR (+)
+              [ (side.instrumentId, side.amount) | side <- allSides, side.side == s ]
+            sentTotals = sumSides V2.SenderSide
+            receivedTotals = sumSides V2.ReceiverSide
+            lookup0 : TextMap.TextMap Decimal -> Text -> Decimal
+            lookup0 m iid = fromOptional 0.0 (TextMap.lookup iid m)
+            instruments =
+              map fst (TextMap.toList (Utils.textMapUnionWith (+) sentTotals receivedTotals))
+        forA_ instruments $ \iid ->
+          assertMsg
+            ("SettleBatch: per-instrument sender/receiver totals do not balance for "
+              <> iid <> " (sent " <> show (lookup0 sentTotals iid)
+              <> ", received " <> show (lookup0 receivedTotals iid) <> ")")
+            (lookup0 sentTotals iid == lookup0 receivedTotals iid)
         -- Each allocation settles under its own authority, with its
         -- FinalizedAllocation's extra sides + next-iteration funding.
         results <- forA arg.allocations $ \finalized ->

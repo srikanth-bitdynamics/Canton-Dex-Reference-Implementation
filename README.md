@@ -109,7 +109,7 @@ factories instead of a custom off-ledger balance model.
 | Order matching | Implemented | Reference price-time-priority matcher in the backend |
 | Constant-product pools | Implemented | Pool state plus committed allocation slices |
 | Add/remove liquidity | Implemented | DvP request, wallet allocation, and operator settle flow |
-| LP token | Implemented | LP token is a Token Standard instrument |
+| LP token | Implemented | LP token is identified by a V2 `InstrumentId` and issued through the registry used by the reference |
 | Single-hop swaps | Implemented | Trader allocation plus `PoolRules_Swap` settlement |
 | Wallet handoff | Implemented | Token Standard, PartyLayer, CIP-0103-style, WalletConnect, Direct Canton, and Mock providers |
 | Operator backend | Implemented | HTTP API, JSON Ledger API driver, idempotency, indexing, and recovery |
@@ -224,7 +224,7 @@ Canton ledger
   |     DexPair, Order, Rfq, MatchedTrade, Pool, PoolState, PoolSlice
   |
   +-- LP-token component
-  |     LPTokenPolicy and LP instrument configuration
+  |     LPTokenPolicy and reference-registry LP config
   |
   +-- Token Standard / registry contracts
         Holding, Allocation, AllocationRequest, SettlementFactory
@@ -234,10 +234,17 @@ The boundary is intentionally strict:
 
 - DEX contracts own market state and workflow validation.
 - Token Standard contracts own asset reservation and settlement.
-- Registries own instrument semantics and choice context.
+- Registries own instrument semantics and choice context. The reference
+  registry uses `InstrumentConfiguration`, but Token Standard V2 does not
+  require that exact template.
 - Wallets own trader-authority submissions.
 - The operator backend orchestrates and settles only commands it is authorized
   to submit.
+
+The Daml package separates LP-token policy, venue workflows, and the reference
+registry by module/template. It implements upstream Token Standard V2
+interfaces, but it does not define custom Daml interfaces that decouple those
+components into independently swappable apps.
 
 Read [`docs/architecture.md`](docs/architecture.md) and
 [`docs/workflows.md`](docs/workflows.md) for the full model.
@@ -251,7 +258,7 @@ Read [`docs/architecture.md`](docs/architecture.md) and
 | Orders | [`docs/workflows.md`](docs/workflows.md) | `OrderFundingRequest`, `Order`, `OrderAllocationRequest`, `OrderMatchExecution` |
 | Pools and swaps | [`docs/lp-liquidity-custody.md`](docs/lp-liquidity-custody.md) | `Pool`, `PoolState`, `PoolSlice`, `PoolRules` |
 | Add/remove liquidity | [`docs/lp-liquidity-custody.md`](docs/lp-liquidity-custody.md) | `PoolLiquidityRules`, `LiquidityAllocationRequest`, `LPTokenPolicy` |
-| LP instruments | [`docs/guide-new-lp-or-instrument.md`](docs/guide-new-lp-or-instrument.md) | `LPTokenPolicy`, `InstrumentConfiguration` |
+| LP instruments | [`docs/guide-new-lp-or-instrument.md`](docs/guide-new-lp-or-instrument.md) | `LPTokenPolicy`, reference-registry instrument config |
 | Choice context | [`docs/choice-context-spec.md`](docs/choice-context-spec.md) | Registry factories and Token Standard choices |
 
 ## Wallet Support

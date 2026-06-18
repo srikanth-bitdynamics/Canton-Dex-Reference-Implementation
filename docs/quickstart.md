@@ -18,12 +18,12 @@ the existing `daml build` flow is the supported path for this repo today.
 
 ## Two stacks, one repo
 
-The repo carries two co-existing Daml projects against two different token-standard
+The repo carries a Daml app plus examples against the vendored Token Standard
 snapshot:
 
 | Path | Daml package | Token-standard surface | What it proves |
 | --- | --- | --- | --- |
-| `trading/` | `canton-dex-trading` | V2 standard (`vendor/splice/token-standard/`) | Matched-trade settlement, RFQ with policy receipts, pools + swaps, LP token, registry flows |
+| `trading/` | `canton-dex-trading` | V2 packages (`vendor/splice/token-standard/`) | Matched-trade settlement, RFQ with policy receipts, pools + swaps, LP token, reference-registry flows |
 
 ## One-command build + test
 
@@ -49,9 +49,10 @@ test modules.
 - `trading/CantonDex/Dex/DexPair.daml` — listing record with base + quote
   instrument id, fee model, trading mode (`OrderBook`, `Pool`, `Both`),
   and an `active` flag.
-- `trading/CantonDex/Instrument/InstrumentConfiguration.daml` — registry-side
-  `InstrumentConfiguration` with holder/issuer credential requirements and
-  optional ISIN / CUSIP.
+- `trading/CantonDex/Instrument/InstrumentConfiguration.daml` — the reference
+  registry's instrument config contract with holder/issuer credential
+  requirements and optional ISIN / CUSIP. This is not a Token Standard V2
+  template; other registries can use different config contracts.
 - Test: `InstrumentTests.daml::testInstrumentConfigCreate`.
 
 ### B. Matched-trade OTC / RFQ settlement (TradingAppV2 pattern)
@@ -125,7 +126,7 @@ The repo is meant to be read AND copied. Common adaptations:
 | Goal                                  | Files to copy or extend                                                                          |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Add a new trading pair                | Create a `DexPair`; optionally a `Pool` if the pair runs pool-mode                                |
-| Use a different instrument family     | Create a new `InstrumentConfiguration` (different `admin`, different credential requirements)     |
+| Use a different instrument family     | Register it with the chosen V2-compatible registry; in the reference registry this means a new `InstrumentConfiguration` |
 | Swap out the mock registry            | Replace `CantonDex.Testing.MockRegistry` with the real registry's `AllocationFactory` + `SettlementFactory` |
 | Add a fee policy                      | Extend `Pool.feeBps` / `DexPair.feeModel` and the `constantProductOut` quote math                 |
 | Change RFQ ranking policy             | Modify `Rfq.applyPolicy` and bump the `PolicyReceipt.policyVersion` / `policyHash`               |
@@ -134,7 +135,9 @@ The boundary that must NOT move:
 
 - DEX contracts own market structure (orders, trades, pools, LP issuance).
 - Token-standard contracts own reservation and settlement.
-- Registry contracts own asset semantics.
+- Registry contracts own asset semantics. The reference registry exposes
+  `InstrumentConfiguration`, but the DEX boundary is the V2
+  holding/allocation/settlement surface plus registry-supplied choice context.
 
 Any change that blurs these is going against the design and will surface as
 duplicated state or authority confusion in the workflows.

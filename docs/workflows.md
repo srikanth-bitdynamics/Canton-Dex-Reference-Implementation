@@ -41,6 +41,12 @@ It does not need on day one:
 Those are worthwhile later features, but they are not required to validate the
 core Canton-native design.
 
+The chosen workflows cover the dominant reference-DEX shapes without claiming
+full market parity: pair listing, single-hop constant-product swaps, LP
+add/remove, prefunded orders, OTC/RFQ, cancellation, and operator recovery. If
+this document makes volume-coverage claims in the future, they should be backed
+by current market data rather than asserted qualitatively.
+
 ## Workflow Design Principles
 
 1. One workflow, one business object
@@ -57,6 +63,7 @@ core Canton-native design.
 
 5. Registry lifecycle stays outside market logic
    - the DEX trades `InstrumentId`; the registry explains what that means
+     through V2 views, metadata, and any registry-specific context/contracts
 
 6. Executor-controlled funds must be usage-constrained on ledger
    - if committed or iterated allocations put funds under executor-driven
@@ -104,6 +111,11 @@ separate.
 Together these contracts separate market state, pool accounting, LP-token
 policy, and token-standard allocation requests.
 
+This is a template/module boundary, not a custom Daml-interface boundary. The
+DAR implements upstream Token Standard V2 interfaces, but it does not define a
+separate app-facing interface that decouples an LP-token registry package from a
+venue package.
+
 ## Dependency Split
 
 There are two distinct workflow families.
@@ -145,6 +157,13 @@ On-ledger flow:
 1. `DexOperator` creates `DexPair`
 2. `DexPair` records the supported instruments and execution policy
 3. off-chain services subscribe to the pair for matching or pool operations
+
+Current governance boundary:
+
+- `DexPair` is directly operator-created in this reference.
+- There is no separate `DexRules` contract for pair admission yet.
+- A production fork can add a rules/governance layer if pair listing needs
+  multi-party approval, package-level decoupling, or decentralized operation.
 
 Why it matters:
 
@@ -280,7 +299,9 @@ Primary contracts:
 On-ledger flow:
 
 1. `DexOperator` creates `Pool` for a `DexPair`
-2. `DexOperator` or `Registrar` creates the LP token instrument configuration
+2. `DexOperator` or `Registrar` creates the LP token instrument definition
+   required by the chosen registry; in the reference registry this is an
+   `InstrumentConfiguration`
 3. `Pool` stores fee policy, invariant type, and active reserve references
 4. the pool starts in `Unfunded` state until first liquidity arrives
 
@@ -395,13 +416,20 @@ Purpose:
 - let lifecycle-rich instruments trade without making the DEX own their
   lifecycle semantics
 
+Token Standard V2 does not standardize lifecycle transitions for bonds,
+options, escrow obligations, or similar assets. This workflow describes how a
+DEX can stay compatible with registries that implement those behaviours
+themselves.
+
 On-ledger flow:
 
-1. registrar or lifecycle service applies a lifecycle transition
+1. registrar or lifecycle service applies a registry-specific lifecycle
+   transition
    - coupon event
    - maturity event
    - exercise event
-2. a new instrument configuration version becomes the tradable reference
+2. a new instrument version or registry metadata record becomes the tradable
+   reference
 3. the DEX updates pair or pool eligibility rules if needed
 4. old orders or pools can be paused, migrated, or settled out according to
    policy
@@ -409,7 +437,8 @@ On-ledger flow:
 Important boundary:
 
 - the DEX should not calculate coupons or option exercise
-- it should only respond to new tradable instrument versions
+- it should only respond to registry-published tradable instrument versions or
+  metadata updates
 
 ## Implemented Reference Scope
 
@@ -438,3 +467,7 @@ Keep the market objects (`DexPair`, `Order`, `MatchedTrade`, `Rfq`) separate
 from the pool accounting objects (`Pool`, `PoolState`, `PoolSlice`) and the
 LP-token policy (`LPTokenPolicy`). The shared boundary is the token-standard
 allocation and settlement surface, not a custom internal escrow system.
+
+The current reference stops at that shared Token Standard boundary. It does not
+yet introduce custom Daml interfaces or a separate `DexRules` contract to
+govern pair creation.

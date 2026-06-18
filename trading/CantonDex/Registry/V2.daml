@@ -1,7 +1,8 @@
--- Full CIP-0056 registry: Holding, Allocation(+Factory), SettlementFactory,
--- TransferFactory(+Instruction), and a TransferEvents EventLog, plus the
--- InstrumentConfig / Credential machinery. One registry serves the
--- in-script tests, the testnet harness, and the live DEX.
+-- Reference registry implementing the Token Standard V2 holding, allocation,
+-- settlement, transfer-instruction, and transfer-event interfaces, plus this
+-- repo's registry-specific InstrumentConfig / Credential machinery. One
+-- reference registry serves the in-script tests, the testnet harness, and the
+-- live DEX.
 --
 -- Authority: holdings sign admin+owner; allocations sign admin+authorizer
 -- (admin alone for the owner-None mint/burn accounts); transfers sign

@@ -129,8 +129,8 @@ async function main() {
   console.log(`alice:  ${cfg.alice}  (sender)`);
   console.log(`bob:    ${cfg.bob}   (receiver)`);
 
-  // Create the V2 Registry (acts as AllocationFactory + SettlementFactory).
-  const registryCid = await step("create Registry (full V2 standard)", async () => {
+  // Create the reference registry (acts as AllocationFactory + SettlementFactory).
+  const registryCid = await step("create reference Registry (implements V2 holding/allocation/settlement)", async () => {
     const tx = await submit([cfg.admin], `${RUN_ID}-registry`, [
       {
         CreateCommand: {

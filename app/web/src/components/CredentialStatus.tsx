@@ -6,7 +6,7 @@
 //
 // Use case: before showing a trader the "Place Order" or "Swap" form,
 // check whether they hold the credentials required by the relevant
-// InstrumentConfiguration. If not, render the banner with guidance.
+// reference-registry instrument config. If not, render the banner with guidance.
 
 import { useQuery } from '@tanstack/react-query';
 

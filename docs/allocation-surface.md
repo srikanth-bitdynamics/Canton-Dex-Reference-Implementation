@@ -2,10 +2,8 @@
 
 This document records the delta between the **released / stable** Token Standard
 V2 allocation surface and the **pre-release** `token-standard-v2-upcoming`
-surface this repo vendors and builds against. It is the successor to the
-previously referenced `docs/pr5333-allocation-surface.md`, which was removed
-during the PR-5333 vendor cleanup; the content here is reconstructed from the
-**actual vendored interface** rather than from that historical PR.
+surface this repo vendors and builds against. It is reconstructed from the
+**actual vendored interface** so readers can audit the dependency directly.
 
 For the architectural rationale (why the DEX leans on these extensions for pool
 inventory, not just trade reservation), see
@@ -146,8 +144,6 @@ This is why the conservation test was renamed: the former
 `testAllocationAdjustConservation` is succeeded by
 `testFinalizedAllocationFundingConservation` in
 [`trading-tests/CantonDex/Tests/EndToEndTests.daml`](../trading-tests/CantonDex/Tests/EndToEndTests.daml).
-(That test is being filled in separately; the name reflects the surface, not its
-current coverage.)
 
 ## Migration commitment
 

@@ -1,20 +1,19 @@
 # Registry Prerequisites
 
-What the DEX assumes from the asset registry, distilled from the
-Registry Utility user guide
-(https://docs.digitalasset.com/utilities/devnet/overview/registry-user-guide/workflows.html)
-and the local mirror of those workflows in
-`trading/CantonDex/Instrument/`.
+What the DEX assumes from an asset registry. Token Standard V2 standardizes the
+holding/allocation/settlement interfaces; it does not standardize a particular
+instrument-configuration or lifecycle template. This document therefore
+separates hard V2 interface requirements from the reference registry's optional
+configuration model in `trading/CantonDex/Instrument/`.
 
 ## What the registry guarantees
 
-For every instrument the DEX trades, the registry MUST publish:
+For every instrument the DEX trades, the registry must provide:
 
-1. **An `InstrumentConfiguration`** with a stable `instrumentId : Text`
-   (used as the join key from every DEX-side template), an `admin :
-   Party` (the registrar), and credential requirements for holding
-   (`holderRequirements`) and issuance (`issuerRequirements`). Optional
-   ISIN / CUSIP for off-chain integration.
+1. **A stable `InstrumentId` and admin.** The DEX keys orders, pools, RFQs, and
+   matched trades by `InstrumentId`. In the reference registry this information
+   lives on `InstrumentConfiguration`; another registry may expose it through
+   metadata, discovery APIs, or disclosed config contracts.
 
 2. **Holdings** as registry-side templates implementing the V2 holding
    interface. The DEX never mints or burns its own holdings (except LP
@@ -36,21 +35,22 @@ For every instrument the DEX trades, the registry MUST publish:
 | Assumption | Where it shows up |
 |---|---|
 | `instrumentId` is stable across the instrument's lifetime | Order, Pool, MatchedTrade, Rfq all key on it |
-| `admin` is sole signatory on `InstrumentConfiguration`; updates are admin-controlled | Operator backend caches configs and listens for archive/recreate cycles |
+| Registry config/metadata changes are admin-controlled | Operator backend caches config/context and listens for archive/recreate cycles where the registry provides disclosed config contracts |
 | Holdings can be locked / unlocked / split / merged by admin | The trader's wallet or registry handles holding selection before allocation accept |
 | Allocation factory accepts arbitrary `AllocationSpecification` shapes (prefunded, with-legs, committed, with `nextIterationFunding`) | Order's prefunded model and Pool's committed model both depend on this |
 | Settlement factory enforces transfer-leg consistency with allocations | OTC / matched-trade settlement and `PoolRules_Swap` rely on the factory to validate, not the DEX |
 
 ## Mint / Burn / Transfer prerequisites
 
-For trader-facing flows (mint, burn, hold, transfer) the registry
-exposes the request/accept templates documented in the user guide. The
-local mirror in `CantonDex/Instrument/` defines the on-ledger shape:
+For trader-facing flows (mint, burn, hold, transfer), the reference registry
+exposes request/accept templates. These are not Token Standard V2 requirements;
+they are one implementation pattern. The local mirror in
+`CantonDex/Instrument/` defines the on-ledger shape:
 
 - `MintRequest` — requestor-signed; admin accepts to create a
-  `Holding`. Required preconditions: `InstrumentConfiguration` exists;
-  if `issuerRequirements` is non-empty, requestor presents matching
-  `Credential` claims at accept time.
+  `Holding`. Required preconditions in the reference registry:
+  `InstrumentConfiguration` exists; if `issuerRequirements` is non-empty,
+  requestor presents matching `Credential` claims at accept time.
 - `BurnRequest` — requestor-signed with a pre-locked holding; admin
   accepts to archive the holding. Cancel/reject release the lock.
 - `TransferOffer` — sender-signed with a pre-locked holding; receiver
@@ -101,23 +101,24 @@ Production registries are expected to do at least the same.
 ## Choice-context retrieval the DEX needs
 
 When the operator or trader builds a transaction that touches a registry
-contract, the registry expects the choice arguments to include the
-`InstrumentConfiguration` CID and (where required) the credential CIDs
-that satisfy holder/issuer requirements. The DEX operator backend's
-**registry-client** module is responsible for fetching these and
-attaching them to the choice context.
+contract, the registry may require extra disclosed contracts or context. In the
+reference registry this includes the `InstrumentConfiguration` CID and, where
+required, credential CIDs that satisfy holder/issuer requirements. The DEX
+operator backend's **registry-client** module is responsible for fetching the
+registry-specific context and attaching it to the choice arguments.
 
 See [choice-context-spec.md](./choice-context-spec.md) for the exact
 inputs each registry choice expects.
 
 ## Force-upgrade for passive holders
 
-Registry issuers may reserve the right to force-upgrade holdings to a new
-instrument version.
+Some registries may reserve the right to force-upgrade holdings to a new
+instrument version. Token Standard V2 does not standardize this lifecycle flow;
+it is registry-specific.
 
 What this means in practice for a DEX integrator:
 
-- **Active holders upgrade themselves.** The recommended pattern is
+- **Active holders upgrade themselves.** One possible pattern is
   *upgrade-on-use* — the registry's transfer/allocation factories
   rewrite the holding to the current version on any operation that
   touches it. A holder who is actively trading or otherwise moving
@@ -126,14 +127,14 @@ What this means in practice for a DEX integrator:
   squarely inside this path, so any DEX-touched holding stays current
   automatically.
 
-- **Passive holders get force-upgraded by the issuer.** A holder who
+- **Passive holders may get force-upgraded by the issuer.** A holder who
   never moves their position cannot upgrade-on-use. The issuer
   exercises a force-upgrade choice on those holdings — typically gated
   by an off-ledger event the issuer needs to crystallize (coupon
   payment, regulatory event, security-fix migration). This is an
   issuer-side action, not a DEX one.
 
-- **Issuers do this sparingly.** Force-upgrades cost the issuer traffic
+- **Issuers should do this sparingly.** Force-upgrades cost the issuer traffic
   and may disrupt active trades that touch a holding mid-upgrade.
   Issuers will batch them and choose moments when on-chain activity is
   low.
@@ -158,9 +159,9 @@ The DEX has three classes of holdings to think about:
    next swap that touches the reserve re-fetches the now-upgraded
    holding.
 
-3. **LP holdings.** Issued by the pool itself. The AMM is the issuer
-   and has no off-ledger events to crystallize. There is no
-   force-upgrade event for LP tokens — see
+3. **LP holdings.** Issued through the LP registrar/policy component. The
+   reference LP token has no off-ledger lifecycle event to crystallize. There
+   is no force-upgrade event for LP tokens in this reference — see
    [docs/lp-token-versioning.md](lp-token-versioning.md).
 
 ### What DEX integrators should do
@@ -187,9 +188,9 @@ backend's command path does not cache cids across requests.
   `splitLegsByAdmin` and `OTCTrade_Settle.batchesByAdmin`).
 - It does not assume holding fungibility across admins. A trade with
   legs spanning two admins requires two batches.
-- It does not assume holding precision is uniform. Each
-  `InstrumentConfiguration` may have its own scale; the DEX treats
-  amounts as `Decimal` and lets the registry enforce its own limits.
+- It does not assume holding precision is uniform. Each registry may expose its
+  own display scale or amount constraints; the DEX treats amounts as `Decimal`
+  and lets the registry enforce its own limits.
 - It does not implement deployment-specific credential verification
   logic. The `Credentials.daml` model provides the reference type
   shape; production registries can replace `verifyCredentials` with

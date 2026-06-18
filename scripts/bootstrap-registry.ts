@@ -1,12 +1,12 @@
 // Registry prerequisites bootstrap.
 //
-// The DEX assumes a set of registry-side contracts exist on the ledger
+// The DEX assumes a set of reference-registry contracts exist on the ledger
 // before any trading can happen (see docs/registry-prerequisites.md):
-//   - InstrumentConfiguration per tradable instrument
+//   - InstrumentConfiguration per tradable instrument in the reference registry
 //   - TransferRule per registrar
 //   - Holder/issuer Credentials for the parties that need them
 //   - AllocationFactory and SettlementFactory
-//   - LP InstrumentConfiguration for each pool
+//   - LP InstrumentConfiguration for each pool in the reference registry
 //
 // This script is idempotent: it checks whether each contract already
 // exists (by template + payload key) and only creates the missing ones.

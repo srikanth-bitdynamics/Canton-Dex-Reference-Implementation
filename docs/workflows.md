@@ -41,6 +41,9 @@ It does not need on day one:
 Those are worthwhile later features, but they are not required to validate the
 core Canton-native design.
 
+REVIEW(SM): also consider making an argument that the included use-case cover X%  for a large X
+of the Uniwswap market volume -- I don't know whether your current pick is the right one, but it surely is if it addresses a large share of the market volume.
+
 ## Workflow Design Principles
 
 1. One workflow, one business object
@@ -130,6 +133,7 @@ state and cancellation rules.
 Purpose:
 - define that the DEX supports trading a given base and quote `InstrumentId`
 
+
 Inputs:
 
 - base instrument id
@@ -143,6 +147,12 @@ Inputs:
 On-ledger flow:
 
 1. `DexOperator` creates `DexPair`
+
+REVIEW(SM): to verify later in the review: what contract governs the creation of the DexPair? Is there a DexRules contract
+that makes it easy to reason about how the DEX's contract state can evolve? Also consider whether there are two or more
+apps in this design that could actually be decoupled with suitable Daml interfaces. That is only worth it if each of them
+can be understood and reasoned about in isolation, and the interface is narrow enough to be useful.
+
 2. `DexPair` records the supported instruments and execution policy
 3. off-chain services subscribe to the pair for matching or pool operations
 

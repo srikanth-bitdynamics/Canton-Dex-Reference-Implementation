@@ -9,6 +9,7 @@ builders how to build a real exchange directly on top of:
 
 - Token Standard V2 allocations and batch settlement
 - registry-backed `InstrumentConfiguration`
+  (REVIEW(SM): I'm a bit unsure about this line, as the DA registry is only one option of how to implement a token.)
 - Canton privacy, routing, and atomic transaction semantics
 
 ## Design Inputs
@@ -53,7 +54,7 @@ Splice's `token-standard-v2-upcoming` branch:
 - `FinalizedAllocation.extraTransferLegSides`
 - settle results that return next-iteration allocation state
 
-Those changes are what make it realistic to use allocations not only for trade
+Those changes are what make it possible to use allocations not only for trade
 reservation but also for long-lived pool inventory.
 
 ## Core Decisions
@@ -72,11 +73,13 @@ reservation but also for long-lived pool inventory.
 4. Arbitrary `InstrumentId` pairs
    - the DEX should support any pair the registry exposes, not just
      "cash vs asset" flows
+     REVIEW(SM): "the registry exposes" --> change to any pair of InstrumentId whose registries implement the V2 holding and allocation APIs
 
 5. Instrument lifecycle stays standard
    - bonds, options, escrow obligations, margin-like positions, and LP tokens
      should all remain token-standard holdings whose semantics come from
      instrument configuration and lifecycle facilities
+     (REVIEW(SM): note that the token standard does not mandate instrument configurations and lifecycle facilities. There seems to be a bit of a misunderstanding here.)
 
 6. LP token is first-class
    - pool shares should be their own instrument and be holdable, transferable,
@@ -147,7 +150,7 @@ The instrument layer defines what is being traded.
 
 Expected concepts:
 
-- `InstrumentConfiguration`
+- `InstrumentConfiguration` (REVIEW(SM): not standard. However the `metadata-v1.yaml` does list some properties that you can query about an instrument.)
 - registry-managed transfer rules and credentials
 - versioned instrument semantics
 - optional external identifiers such as ISIN or CUSIP
@@ -211,6 +214,20 @@ The intended model is:
   part of those app-owned workflows
 - the off-chain operator proposes actions, but the ledger-visible contracts
   validate the quantity, pair, expiry, side, and reserve references being used
+
+REVIEW(SM): good design choices here. Looking forward to reading the Daml code.
+  Consider also referring to the https://github.com/canton-foundation/canton-dev-fund/blob/main/proposals/2026-05-BitSafe-decentralization-manager.md for decentralizing the execution
+  of this validation logic.
+
+  Futhermore, if you want to decentralize the off-ledger automation driven by the backend
+  then consider leveraging the approaches used in Splice for the DSO automation. The gist
+  is described here: https://docs.canton.network/sdks-tools/api-reference/splice-architecture#decentralized-transaction-validation-and-automation
+
+  Efficiently batching committments to on-ledger actions was recently implemented for traffic based app rewards
+  in https://github.com/canton-network/splice/blob/main/daml/splice-amulet/daml/Splice/Amulet/RewardAccountingV2.daml.
+  Happy to give you access to the design doc that has a detailed high-level description:
+  https://docs.google.com/document/d/1Uff-Id4umJBqBo6GLDupuqFfJnp_iVi4BFRkFdcmo_g/edit?tab=t.0#heading=h.j1o9vy5fqmrz
+
 
 This also means we should avoid designs where a routine action touches every
 pool allocation at once. The implementation now follows this for all hot-path
@@ -337,6 +354,10 @@ Lifecycle management then becomes a versioning problem:
 In other words, the registry side should be able to take one instrument version
 in and hand back a new version with the lifecycle side effects applied.
 
+REVIEW(SM): not that this functionality has not (yet) been standardized. It might
+be worth to call this out here. Until it is standardized DEX operators do have the
+option of doing custom integrations with the registries that implement such life-cycling.
+
 The important point is that the traded asset remains a standard holding even
 when its lifecycle is rich.
 
@@ -362,6 +383,7 @@ The reference architecture has a deliberate split:
 
 - OTC and RFQ flows can be implemented against the current `TradingAppV2`
   surface
+  REVIEW(SM): this is confusing -- TradingAppV2 can support V1 allocations, but really shines when V2 allocations are involved. What is this trying to say here?
 - pool-backed liquidity should be implemented only against a branch that
   includes the V2-style allocation changes
 

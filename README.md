@@ -115,6 +115,8 @@ factories instead of a custom off-ledger balance model.
 | Operator backend | Implemented | HTTP API, JSON Ledger API driver, idempotency, indexing, and recovery |
 | Stable-pool extension | Example | Separate Daml project consuming the DEX DAR |
 
+REVIEW(SM): check whether DEX .dar defines Daml interfaces that decouple the two apps
+
 ## Who Should Use It?
 
 | You are | This helps because |

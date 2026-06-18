@@ -8,7 +8,8 @@ It is intentionally not a generic settlement engine. The goal is to show
 builders how to build a real exchange directly on top of:
 
 - Token Standard V2 allocations and batch settlement
-- registry-backed `InstrumentConfiguration`
+- registry-backed holdings whose registries implement the V2 holding,
+  allocation, and settlement APIs
 - Canton privacy, routing, and atomic transaction semantics
 
 ## Design Inputs
@@ -31,13 +32,20 @@ that structure without making mixed-mode support the center of this repo.
 
 ### 2. Registry workflows
 
-The registry docs anchor the instrument model:
+The reference registry in this repository, and the registry workflows used in
+Digital Asset examples, anchor one concrete instrument model:
 
-- a registrar creates an `InstrumentConfiguration` for each supported
-  instrument
+- a registrar may create an `InstrumentConfiguration`-style contract for each
+  supported instrument
 - holder credentials govern transfer eligibility
 - issuer credentials govern mint and burn eligibility
 - the instrument config can carry external identifiers such as ISIN or CUSIP
+
+Token Standard V2 does not mandate `InstrumentConfiguration` or lifecycle
+contracts. A production registry can expose the same V2 holding/allocation
+interfaces with a different internal model. The DEX should therefore treat
+`InstrumentId` and registry-provided choice context as the stable integration
+boundary, not our reference configuration template.
 
 This means the DEX should treat `InstrumentId` as the join key into richer
 instrument semantics instead of hardcoding asset families in the exchange.
@@ -53,7 +61,7 @@ Splice's `token-standard-v2-upcoming` branch:
 - `FinalizedAllocation.extraTransferLegSides`
 - settle results that return next-iteration allocation state
 
-Those changes are what make it realistic to use allocations not only for trade
+Those changes are what make it possible to use allocations not only for trade
 reservation but also for long-lived pool inventory.
 
 ## Core Decisions
@@ -70,13 +78,16 @@ reservation but also for long-lived pool inventory.
    - pool inventory is represented by committed and iterated allocations
 
 4. Arbitrary `InstrumentId` pairs
-   - the DEX should support any pair the registry exposes, not just
-     "cash vs asset" flows
+   - the DEX should support any pair of `InstrumentId`s whose registries
+     implement the V2 holding and allocation APIs, not just "cash vs asset"
+     flows
 
-5. Instrument lifecycle stays standard
+5. Instrument lifecycle stays outside DEX logic
    - bonds, options, escrow obligations, margin-like positions, and LP tokens
-     should all remain token-standard holdings whose semantics come from
-     instrument configuration and lifecycle facilities
+     should remain V2 holdings at the settlement boundary
+   - their lifecycle semantics come from registry-specific contracts, metadata,
+     and choice context, not from DEX templates and not from a Token Standard
+     lifecycle package
 
 6. LP token is first-class
    - pool shares should be their own instrument and be holdable, transferable,
@@ -115,7 +126,7 @@ reservation but also for long-lived pool inventory.
 ┌──────────────────────────────▼───────────────────────────────┐
 │                 Token Standard / Registry Layer              │
 │  HoldingV2 · AllocationV2 · AllocationRequestV2             │
-│  SettlementFactory · InstrumentConfiguration                │
+│  SettlementFactory · registry-specific metadata/context      │
 └──────────────────────────────┬───────────────────────────────┘
                                │
 ┌──────────────────────────────▼───────────────────────────────┐
@@ -143,18 +154,22 @@ should be shaped around those state transitions, not the other way around.
 
 ### Instrument layer
 
-The instrument layer defines what is being traded.
+The instrument layer defines what is being traded. Token Standard V2 gives the
+DEX the cross-registry surface (`InstrumentId`, `Holding`, allocations, and
+settlement). Individual registries define the richer semantics behind that
+surface.
 
-Expected concepts:
+Reference-registry concepts:
 
-- `InstrumentConfiguration`
+- `InstrumentConfiguration` or an equivalent registry-specific config record
 - registry-managed transfer rules and credentials
 - versioned instrument semantics
 - optional external identifiers such as ISIN or CUSIP
 
 The DEX should not understand a bond, option, or margin position by special
 case. It should understand that it trades an `InstrumentId`, and the registry
-should explain what that instrument means.
+should explain what that instrument means through V2 views, metadata,
+disclosure, and registry-specific choice context.
 
 ### Order and trade layer
 
@@ -242,7 +257,8 @@ The DEX should mint its own LP token instrument.
 
 Expected characteristics:
 
-- LP token has its own `InstrumentConfiguration`
+- LP token has its own `V2.InstrumentId`; in the reference registry it also has
+  an `InstrumentConfiguration`
 - deposit and withdraw mint and burn LP supply under DEX rules
 - LP positions can be held like any other token-standard instrument
 - the LP instrument definition should explain redemption policy and pool
@@ -310,14 +326,16 @@ This is an important design constraint, not an implementation detail.
 
 ## Rich Asset Lifecycle Model
 
-The standard holding model remains fungible:
+The standard holding model remains intentionally small:
 
 - amount
 - instrument
 - owner
 
-Richer asset semantics should be attached through the instrument configuration
-referenced by `instrumentId`.
+Richer asset semantics should be attached by the registry that administers the
+`InstrumentId`. In this reference registry that is expressed through
+`InstrumentConfiguration`; other registries may use different contracts and
+metadata while still implementing the same V2 holding/allocation APIs.
 
 Examples:
 
@@ -327,15 +345,18 @@ Examples:
 - a margin-like position can point to the loan or trade configuration
 - an LP token config can point to the pool and redemption semantics
 
-Lifecycle management then becomes a versioning problem:
+Lifecycle management is not standardized by Token Standard V2 today. Until a
+registry-level lifecycle API exists, it is a registry-specific integration and
+usually becomes a versioning problem:
 
 - create a new instrument-config version when stateful semantics change
 - encode or derive the new instrument identity from that version
 - use registry-specific facilities to apply lifecycle side effects such as
   coupon payments, exercise outcomes, or maturity transitions
 
-In other words, the registry side should be able to take one instrument version
-in and hand back a new version with the lifecycle side effects applied.
+In other words, a lifecycle-aware registry may take one instrument version in
+and hand back a new version with the lifecycle side effects applied. The DEX
+does not assume this is available for every registry.
 
 The important point is that the traded asset remains a standard holding even
 when its lifecycle is rich.
@@ -350,7 +371,7 @@ They should focus on:
 - order matching and quote generation
 - pool pricing and fee computation
 - registry discovery and choice-context lookup
-- lifecycle automation for versioned instruments
+- optional registry-specific lifecycle automation for versioned instruments
 - transaction submission, retries, and observability
 
 They should not become the main abstraction for moving value around. The token
@@ -360,13 +381,38 @@ standard remains the settlement substrate.
 
 The reference architecture has a deliberate split:
 
-- OTC and RFQ flows can be implemented against the current `TradingAppV2`
-  surface
-- pool-backed liquidity should be implemented only against a branch that
-  includes the V2-style allocation changes
+- OTC and RFQ flows follow the `TradingAppV2` allocation-request and
+  per-admin `SettlementFactory_SettleBatch` pattern, with V2 allocations as the
+  preferred target surface
+- pool-backed liquidity requires the V2 allocation extensions used by this
+  repo: committed allocations, iterated settlement, extra leg sides, and
+  next-iteration allocation results
 
 If the upstream API shape changes before landing, this repo should preserve the
 same design intent even if field names or result structures move.
+
+## Component Boundary
+
+The current implementation separates concerns by module and template:
+
+- `CantonDex.Lp.*` owns the LP-token policy component.
+- `CantonDex.Dex.*` owns pair, order, RFQ, matched-trade, pool, and rules
+  workflows.
+- `CantonDex.Registry.V2` is a reference registry used for tests and demos.
+
+The DAR implements upstream Token Standard V2 interfaces, but it does **not**
+define custom Daml interfaces that decouple the LP-token component from the
+DEX venue component. The shared boundary today is the Token Standard V2
+holding/allocation/settlement surface plus explicit template references inside
+the reference app. A future package split or custom app-facing Daml interface
+would be a separate architecture step, not something this reference currently
+claims.
+
+Pair listing is similarly direct in the current reference: the operator creates
+`DexPair` contracts. There is no separate `DexRules` governance contract for
+pair admission yet. That keeps the reference small, while leaving room for
+forks to add governance, multi-operator approval, or a decentralized rules
+layer.
 
 ## Repository Shape
 

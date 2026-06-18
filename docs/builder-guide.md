@@ -7,8 +7,8 @@ after `docs/quickstart.md` and `docs/architecture.md`.
 
 A runnable Canton DEX that:
 
-- uses Token Standard V2 (CIP-0056) for every asset: base, quote, and
-  LP all implement `V2.Holding`.
+- uses Token Standard V2 (CIP-0112) for every asset: base, quote, and
+  LP are represented by contracts implementing `V2.Holding`.
 - uses iterated allocations from Splice's `token-standard-v2-upcoming`
   branch, so pool reserves and
   resting orders can be adjusted in place without re-funding round
@@ -38,7 +38,7 @@ TradeAllocationRequest   per-authorizer allocation request for a matched trade
 Rfq                      trader's request for quotes
 RfqQuote                 dealer's quote against an Rfq
 PolicyReceipt            on-chain record of operator ranking policy at accept time
-Registry.V2.*            full CIP-0056 stack
+Registry.V2.*            reference registry implementing Token Standard V2 interfaces
 ```
 
 The Daml package is `canton-dex-trading`. Current vetted version on the
@@ -115,10 +115,15 @@ only orchestrate and settle flows it is authorized to submit.
 | Add a new admin role | Update the party model in `operator-runbook.md`. Add observer entries on the relevant templates (smart-upgrade allows adding observers as Optional fields at the end of the record). |
 | Talk to a different participant | Set `CANTON_LEDGER_URL`, `CANTON_LEDGER_TOKEN`, `CANTON_SYNCHRONIZER`. See `docs/run-testnet.md`. |
 
-## Smart-upgrade discipline
+## Upgrade discipline
 
-Once a contract template ships on-chain, future versions must be
-binary-compatible. Rules enforced by the participant's upload check:
+The reference templates should stay as small as possible while the public API
+is still evolving. Do not keep compatibility choices just in case; they add
+noise for builders reading the example.
+
+If an adopter deploys a package and needs to preserve Daml smart-upgrade
+lineage, future versions must be binary-compatible. Rules enforced by the
+participant's upload check include:
 
 1. New fields must be `Optional` and at the end of the record.
 2. Choices cannot be removed. Keep them as deprecated stubs that
@@ -129,9 +134,9 @@ binary-compatible. Rules enforced by the participant's upload check:
    the new behaviour.
 5. Field reordering is forbidden.
 
-To break these you must rename the package, which abandons upgrade
-lineage on testnet. Existing contracts from the old name remain
-queryable but cannot be upgraded.
+If you intentionally break compatibility, rename the package and treat the new
+deployment as a fresh lineage. Existing contracts from the old name remain
+queryable but cannot be upgraded into the new template family.
 
 ## Testing
 

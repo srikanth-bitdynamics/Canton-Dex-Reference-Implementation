@@ -2,20 +2,21 @@
 
 End-to-end recipe for listing a new pair (say `ETH/USDT`) on a running
 Canton-Dex deployment. Assumes the operator backend is already wired
-to a participant and the base + quote instruments already exist as
-Token Standard V2 instruments.
+to a participant and the base + quote assets already have registries that
+produce Token Standard V2 holdings, allocation factories, and settlement
+factories.
 
-If the base or quote instrument does **not** yet exist as a V2
-instrument, do that first: see
+If the base or quote asset does **not** yet have a V2-compatible registry,
+do that first: see
 [`guide-new-lp-or-instrument.md`](guide-new-lp-or-instrument.md).
 
 ## Inputs you need
 
 | Input | Where it comes from |
 |---|---|
-| `baseInstrumentId : Text` | the V2 `InstrumentConfig.instrumentId` of the base asset |
-| `quoteInstrumentId : Text` | same, for the quote |
-| `admin : Party` | the asset admin (same party that signs `Holding` for the base/quote registry) |
+| `baseInstrumentId : Text` | the `id` component of the base asset's V2 `InstrumentId` in this reference API |
+| `quoteInstrumentId : Text` | same, for the quote asset |
+| `admin : Party` | the registry admin for the pair in this reference implementation |
 | `tradingMode : "TM_OrderBook" \| "TM_Pool" \| "TM_Both"` | which surfaces are enabled |
 | `feeModel : { makerFeeBps, takerFeeBps, poolFeeBps }` | fee schedule |
 | `publicReaders : [Party]` (Optional) | parties that should observe the pair contract |
@@ -136,11 +137,13 @@ curl -s 'http://localhost:8080/v1/swaps?pair=ETH/USDT&limit=10'
 | `/v1/pools/add-liquidity/settle` fails with a quote/supply guard | The pool moved or the request expired before settle; recreate the request and have the wallet re-author fresh allocations. |
 | `DexPair` created but doesn't show in `/v1/pairs` | Operator backend wasn't observing the new contract; check the backend's `operator` party matches the pair's `operator` signatory. |
 | Pool created but `/v1/pools` is empty | Pool is operator + lpRegistrar observed only. The backend observes as `operator`, but if you used a different signing party the read won't see it. |
+| Trades fail even though `DexPair` exists | The pair metadata is only a venue listing. The relevant registries still need to publish V2 holdings, allocation factories, settlement factories, and any choice context required for the instruments. |
 
 ## When to NOT do this
 
 - If you're listing many pairs programmatically: write a one-shot
   script that builds all the commands in one batch, not curl loops.
-- If the base or quote isn't yet a V2 instrument: stop and do the
-  instrument first; the pair creation will succeed but no trades will
-  flow because the holdings won't materialize through `Registry_Mint`.
+- If the base or quote does not yet have a V2-compatible registry: stop and
+  register or integrate it first. Pair creation may succeed, but trades will
+  not flow because wallets and the operator cannot create or settle the
+  required V2 holdings and allocations.

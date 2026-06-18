@@ -1,8 +1,9 @@
-# Choice Context & Disclosure Retrieval Spec
+# Choice Context and Disclosure Retrieval
 
-Defines what the DEX operator backend must attach to each transaction
-it submits, in terms of registry-supplied disclosed contracts and
-choice-context fields. Mirrors the Registry Utility user guide's
+Defines what the DEX operator backend must attach to each transaction it
+submits, in terms of registry-supplied disclosed contracts and choice-context
+fields. This is the reference registry-client integration contract, not a
+Token Standard V2 endpoint specification. It mirrors the Registry Utility guide's
 "Note: Before the command is submitted by the UI, an API call is being
 made (in the background) to an endpoint to retrieve required additional
 choice context (including disclosure)..." pattern.
@@ -11,18 +12,20 @@ choice context (including disclosure)..." pattern.
 
 Per registry, the operator backend fetches:
 
-| Endpoint                                   | Returns                                   | Used by |
+| Example lookup                             | Returns                                   | Used by |
 |--------------------------------------------|-------------------------------------------|---------|
-| `GET /registry/instrument-config/:id`      | `InstrumentConfiguration` + disclosure    | Order, Pool, MatchedTrade, Rfq |
-| `GET /registry/credentials?holder=:p`      | `Credential[]` for that party             | MintRequest_Accept, TransferOffer_Accept |
+| `GET /registry/instrument-config/:id`      | reference-registry `InstrumentConfiguration`, or equivalent registry config, plus disclosure | Order, Pool, MatchedTrade, Rfq |
+| `GET /registry/credentials?holder=:p`      | reference-registry `Credential[]`, or equivalent authorization evidence, for that party | MintRequest_Accept, TransferOffer_Accept |
 | `GET /registry/factories/:admin`           | `(AllocationFactory, SettlementFactory)` CIDs + disclosure | `PoolRules_Swap`, matched-trade settle |
 | `GET /registry/choice-context/:admin`      | `ChoiceContextRef` (`context` + disclosure) | Pool, MatchedTrade, any registry-touching token-standard choice |
-| `GET /registry/transfer-rule/:id`          | `TransferRule` (if any)                   | TransferOffer_Accept |
-| `GET /registry/preapprovals?receiver=:p`   | `TransferPreapproval[]` for that receiver | TransferOffer_AcceptPreapproved |
+| `GET /registry/transfer-rule/:id`          | reference-registry `TransferRule`, or equivalent transfer policy, if any | TransferOffer_Accept |
+| `GET /registry/preapprovals?receiver=:p`   | reference-registry `TransferPreapproval[]`, or equivalent preapproval evidence, for that receiver | TransferOffer_AcceptPreapproved |
 
-These endpoints are spec; the actual registry implementation may use
-different paths. The operator-backend's `registry-client` module is
-the single integration point.
+These endpoints are examples for this reference implementation. A production
+registry may use different paths, payloads, or discovery mechanisms as long as
+the operator backend can produce the disclosed contracts and choice context
+required by the registry's Token Standard V2 choices. The operator-backend's
+`registry-client` module is the single integration point.
 
 ## Choice-context-bearing arguments
 
@@ -94,54 +97,56 @@ Required inputs:
 - `extraArgs.context` — registry-supplied choice context for the
   settlement admin. Self-registries may return empty context.
 
-### Mint accept
+### Reference-registry mint accept
 
 `MintRequest_Accept`
 
 Required inputs:
 - `configCid : ContractId InstrumentConfiguration` — fetched from the
-  registry-client.
+  registry-client for the reference registry. Other registries may require a
+  different disclosed config contract or no config contract at all.
 - `issuerClaims : [Credential]` — fetched from the credentials
   endpoint, keyed by the requestor's party. Empty list iff the config's
   `issuerRequirements` is empty (open issuance).
 
-### Burn accept
+### Reference-registry burn accept
 
 `BurnRequest_Accept`
 
 Same shape as Mint accept.
 
-### Transfer accept
+### Reference-registry transfer accept
 
 `TransferOffer_Accept`
 
 Required inputs:
-- `configCid : ContractId InstrumentConfiguration`
-- `senderClaims : [Credential]` — sender's holder claims.
-- `receiverClaims : [Credential]` — receiver's holder claims.
+- `configCid : ContractId InstrumentConfiguration` — reference-registry config.
+- `senderClaims : [Credential]` — sender's reference-registry holder claims.
+- `receiverClaims : [Credential]` — receiver's reference-registry holder claims.
 
-### Transfer accept (preapproved)
+### Reference-registry transfer accept (preapproved)
 
 `TransferOffer_AcceptPreapproved`
 
 Required inputs:
 - `preapprovalCid : ContractId TransferPreapproval` — fetched via
   preapprovals endpoint.
-- `configCid : ContractId InstrumentConfiguration`
+- `configCid : ContractId InstrumentConfiguration` — reference-registry config.
 - `senderClaims : [Credential]` — sender's holder claims.
 
 ## Disclosure retrieval pattern
 
 The operator backend caches:
 
-1. `InstrumentConfiguration` CIDs and their associated explicit-
-   disclosure payloads, keyed by `instrumentId`. Refreshed on archive
-   events.
+1. Registry config CIDs and their associated explicit-disclosure payloads,
+   keyed by `InstrumentId`, when the registry provides config contracts.
+   Refreshed on archive events.
 2. Allocation/Settlement factory CIDs per admin. Refreshed on admin
    re-publish (the registry archives + recreates).
-3. `TransferPreapproval` CIDs, keyed by `(receiver, admin)`.
-4. Credentials, keyed by `(holder, instrumentId)` — short TTL because
-   credentials can be revoked.
+3. Reference-registry `TransferPreapproval` CIDs, keyed by `(receiver, admin)`,
+   when the registry supports preapproval contracts.
+4. Credentials or equivalent authorization evidence, keyed by
+   `(holder, instrumentId)` — short TTL because credentials can be revoked.
 
 The cache keys are hashed; cache invalidation listens to a
 `registryEventStream` (server-sent events from the registry's
@@ -151,7 +156,7 @@ disclosure endpoint).
 
 | Failure | Recovery |
 |---|---|
-| Stale `InstrumentConfiguration` CID (archived since cache fetch) | Refetch and retry once |
+| Stale registry config/disclosure CID (archived since cache fetch) | Refetch and retry once |
 | Missing credential for required claim | Surface to the wallet UI; operator does not synthesize credentials |
 | Factory CID stale | Refetch from `factories/:admin`; backoff on repeated failures |
 | Preapproval revoked between fetch and submit | Fall back to offer/accept flow |

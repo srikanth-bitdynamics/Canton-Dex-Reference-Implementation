@@ -59,33 +59,30 @@ signature change), the upgrade path is a Canton package upgrade — same
 
 ## Why one LP instrument per pool
 
-- The AMM contract IS the issuer of the LP token. Fee accrual is reserve
-  growth on the underlying assets, not a separate coupon event that needs
-  to be crystallized into a new instrument version.
+- The LP registrar/policy component is the issuer of the LP token for the
+  pool. Fee accrual is reserve growth on the underlying assets, not a separate
+  coupon event that needs to be crystallized into a new instrument version.
 - There is no off-ledger lifecycle event that LP holders need to settle
   out before continuing to trade. A pool's fee revenue accumulates in its
   reserves; redeem-by-burn always pays out the current ratio.
 
 ## Why this is separate from registry primitive versioning
 
-The registry-side primitives (Canton Coin, USDCx, future RWA tokens) DO
-version when their issuer makes a breaking change — e.g., a coupon
-payment at epoch N that needs to be paid into v_N holdings before they
-roll forward to v_{N+1}. That is a fundamentally different shape of
-problem from the LP token:
+Some lifecycle-aware registry-side instruments may version when their issuer
+makes a breaking change — e.g., a coupon payment at epoch N that needs to be
+paid into v_N holdings before they roll forward to v_{N+1}. That is a
+fundamentally different shape of problem from the LP token:
 
 - **Registry primitives** have an external issuer who occasionally needs
-  to crystallize an off-ledger event onto the on-chain instrument.
-  Versioning is how that event lands. Upstream's recommended pattern:
-  upgrade-on-use inside the transfer/allocation factories (so any holder
-  who interacts with their holding implicitly upgrades it) plus a
-  `force-upgrade` choice the issuer reserves for passive holders who
-  never touch their balance.
-- **LP tokens** have the AMM as the issuer. The AMM has no off-ledger
-  events. There is nothing the issuer ever needs to crystallize against
-  a passive holder's balance. So the upgrade-on-use + force-upgrade
-  pattern doesn't apply — the LP token simply stays at one stable
-  `instrumentId` for the life of the pool.
+  to crystallize an off-ledger event onto the on-chain instrument. One
+  registry-specific pattern is upgrade-on-use inside the transfer/allocation
+  factories, plus a force-upgrade choice for passive holders who never touch
+  their balance.
+- **LP tokens** have the pool's LP registrar/policy as the issuer. The
+  reference LP token has no off-ledger event to crystallize against a passive
+  holder's balance. So upgrade-on-use plus force-upgrade does not apply in this
+  reference — the LP token simply stays at one stable `instrumentId` for the
+  life of the pool.
 
 That means a wallet, lending market, or vault that consumes registry
 primitives needs to handle upgrade-on-use behavior; the same wallet
@@ -100,6 +97,6 @@ to exist alongside V2 implementations rather than being bulk-migrated.
 ## See also
 
 - [docs/registry-prerequisites.md](registry-prerequisites.md) — for how the
-  LP `InstrumentConfiguration` is registered at pool creation, and for the
-  force-upgrade pattern registry assets may exercise.
+  LP registry config is registered at pool creation in the reference registry,
+  and for the registry-specific force-upgrade pattern some assets may exercise.
 - [docs/workflows.md](workflows.md) — for the add/remove-liquidity flow.

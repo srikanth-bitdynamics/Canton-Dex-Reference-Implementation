@@ -22,7 +22,9 @@ The operator is a single Daml party. In the reference deployment:
   `LPTokenPolicy` and accepts LP mint/burn. Logically distinct so the
   operator can hand off LP custody to a regulated custodian later.
 - `CANTON_ADMIN` — asset admin / registrar. Owns
-  `InstrumentConfiguration` for the underlying instruments.
+  the registry-side definition for the underlying instruments. In the
+  reference registry this is `InstrumentConfiguration`; Token Standard V2 does
+  not require that exact template.
 
 In production these are typically three different parties for
 separation of concerns. For local dev they can be the same party.
@@ -54,8 +56,9 @@ export CANTON_ADMIN=admin::1220::...
 
 This script is idempotent. It uploads DARs, allocates the parties if
 they don't exist, runs `bootstrap-registry.ts` to create
-`InstrumentConfiguration` for BTC / USDC / ETH and the LP instruments,
-and (if `OPERATOR_ADMIN_TOKEN` is set) seeds an initial BTC/USDC pair.
+reference-registry `InstrumentConfiguration` contracts for BTC / USDC / ETH and
+the LP instruments, and (if `OPERATOR_ADMIN_TOKEN` is set) seeds an initial
+BTC/USDC pair.
 
 Skip flags for re-runs:
 - `DEPLOY_SKIP_BUILD=1`
@@ -158,8 +161,8 @@ curl -X POST http://localhost:8080/v1/orders/match \
 ```
 
 This returns the list of matches. The operator is responsible for
-driving each match through the TradingAppV2 settlement pattern
-(`OTCTrade_RequestAllocations` → `OTCTrade_Settle`).
+driving each match through the TradingAppV2-style allocation-request and
+per-admin settlement pattern.
 
 Production deployments typically run matching on a tick (every 1-5
 seconds) plus on order-placement events.

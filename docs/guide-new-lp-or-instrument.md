@@ -1,13 +1,16 @@
 # Guide: Issuing a new LP token or lifecycle-rich instrument
 
-How to mint a new asset on Canton-Dex that follows Token Standard V2
-(CIP-0056). This covers both the simple case (fungible LP token) and
-the lifecycle-rich case (vested, dividend-paying, restricted).
+How to mint a new asset on Canton-Dex using Token Standard V2 (CIP-0112)
+surfaces. This covers both the simple case (fungible LP token) and examples of
+lifecycle-rich assets (vested, dividend-paying, restricted) implemented through
+registry-specific contracts.
 
 ## What "lifecycle-rich" means here
 
-A V2 instrument is more than a number of holdings. Its
-`InstrumentConfiguration` can encode:
+Token Standard V2 standardizes the holding/allocation/settlement surface. It
+does not standardize an instrument-configuration or lifecycle package. In this
+repo, the reference `Registry.V2` adds an `InstrumentConfiguration` contract
+that can encode:
 
 - supply caps (`maxSupply`; `BumpSupply` enforces them)
 - issuer credential requirements (`issuerRequirements : [CredentialClaim]`):
@@ -17,10 +20,12 @@ A V2 instrument is more than a number of holdings. Its
 - allocation constraints (via the `AllocationFactory`)
 - upgrade hooks for migrating to a future version of the instrument
 
-`Registry.V2` exposes all of this. A lifecycle-rich instrument is the
-composition of: a `RegistryConfig`, a per-instrument `InstrumentConfig`,
-and optionally issuer-signed `Credential` contracts that the recipient
-must present at mint time.
+Those are reference-registry features, not Token Standard requirements. A
+different registry may publish different metadata and choice context while
+still implementing the same V2 `Holding`, `AllocationFactory`, and
+`SettlementFactory` interfaces. A lifecycle-rich instrument in this repo is the
+composition of a per-instrument config plus optional issuer-signed
+`Credential` contracts that the recipient must present at mint time.
 
 ## Case A. Vanilla LP token (the common case)
 
@@ -35,10 +40,10 @@ The LP token:
   usable as input to `V2.TransferInstruction`, lockable into a
   `V2.Allocation` (so LP tokens can themselves back orders or pools)
 
-If you want supply caps on the LP token, create an `InstrumentConfig`
-for the LP instrument with `maxSupply = Some 10_000_000.0`. The
-`LPTokenPolicy_RecordMint` choice will respect it once the config
-check is plumbed through (today it's policy-side bookkeeping only).
+If you want supply caps on the LP token in the reference registry, create an
+instrument config with `maxSupply = Some 10_000_000.0`. The
+`LPTokenPolicy_RecordMint` choice will respect it once the reference config
+check is plumbed through (today it is policy-side bookkeeping only).
 
 ## Case B. Issuing a fresh base or quote instrument
 
@@ -148,8 +153,8 @@ in `Registry.V2` will reject the mint.
 
 ## Case D. Vested LP (custom lifecycle)
 
-V2 doesn't have first-class vesting. The recommended pattern is a
-custom template that owns the V2 holding:
+Token Standard V2 does not have first-class vesting. The recommended pattern is
+a custom template that owns or controls a V2 holding:
 
 ```daml
 template VestedLP with
@@ -196,16 +201,16 @@ The reference doesn't ship either; build them in your fork.
 - Native rebasing tokens: V2 holdings have a fixed `amount`;
   rebases require ACS rewrites which the standard doesn't support
   natively. Use a wrapper that exposes a rebasing view.
-- Token-bound permissions that don't fit credentials: V2's
-  `issuerRequirements` are claim-based. More complex predicates
-  (e.g. "holder must be in jurisdiction X but not Y") require
-  a custom `TransferFactory`.
+- Token-bound permissions that do not fit the reference registry's credential
+  model: more complex predicates (e.g. "holder must be in jurisdiction X but
+  not Y") require a custom registry or custom `TransferFactory`.
 - Multi-asset baskets in a single holding: V2 holdings are
   single-instrument. Baskets are a wrapper template.
 
 ## Where to look in this repo
 
-- `trading/CantonDex/Registry/V2.daml`: full CIP-0056 surface
+- `trading/CantonDex/Registry/V2.daml`: reference registry implementing the
+  Token Standard V2 interfaces used by the DEX
 - `trading/CantonDex/Instrument/Credentials.daml`: credential primitive
 - `trading/CantonDex/Lp/Policy.daml`: LP-token policy component
   driving V2 mints/burns

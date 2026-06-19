@@ -1,7 +1,6 @@
-module CantonDex.Dex.MatchedTrade where
-
--- Matched-trade settlement on the V2 token standard (adapted from the
+-- | Matched-trade settlement on the V2 token standard (adapted from the
 -- upstream TradingAppV2, V2-only).
+module CantonDex.Dex.MatchedTrade where
 
 import DA.Foldable (forA_)
 import DA.Map qualified as Map

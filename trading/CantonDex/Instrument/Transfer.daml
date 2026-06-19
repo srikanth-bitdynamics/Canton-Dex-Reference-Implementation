@@ -1,8 +1,7 @@
-module CantonDex.Instrument.Transfer where
-
--- Transfer offer/accept/reject/withdraw plus TransferPreapproval. Two paths:
+-- | Transfer offer/accept/reject/withdraw plus TransferPreapproval. Two paths:
 -- offer/accept (sender locks, receiver accepts) and direct (a receiver
 -- preapproval lets the sender deliver without an explicit accept).
+module CantonDex.Instrument.Transfer where
 
 import CantonDex.Instrument.Credentials qualified as Cred
 import CantonDex.Instrument.Holding qualified as H

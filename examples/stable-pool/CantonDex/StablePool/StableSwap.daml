@@ -1,6 +1,4 @@
-module CantonDex.StablePool.StableSwap where
-
--- Reuse-proof-point example.
+-- | Reuse-proof-point example.
 --
 -- Demonstrates that canton-dex-trading is genuinely extensible: this
 -- module consumes the published DAR as a data-dependency and builds a
@@ -29,6 +27,7 @@ module CantonDex.StablePool.StableSwap where
 --     orchestration. The point is the curve math; the settlement
 --     wiring is identical to the base reference's `PoolRules_Swap` and
 --     omitted to keep the example focused on the *novel* part.
+module CantonDex.StablePool.StableSwap where
 
 import DA.TextMap qualified as TextMap
 

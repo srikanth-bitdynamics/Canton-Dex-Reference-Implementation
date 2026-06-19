@@ -1,9 +1,8 @@
-module CantonDex.Dex.OrderFundingRequest where
-
--- Trader-initiated order placement. The trader signs intent; the operator's
+-- | Trader-initiated order placement. The trader signs intent; the operator's
 -- _Bind creates the Order (Pending) plus an OrderAllocationRequest the trader
 -- accepts to fund it (funding holdings come from the trader's wallet). After
 -- the allocation is bound via Order_Fund the order is Funded and live.
+module CantonDex.Dex.OrderFundingRequest where
 
 import CantonDex.Dex.Order qualified as Order
 

@@ -1,6 +1,4 @@
-module CantonDex.Tests.RealRegistryDvpTests where
-
--- Prove per-admin choice context against a REAL token-standard V2
+-- | Prove per-admin choice context against a REAL token-standard V2
 -- registry, the way TradingAppV2 is tested. A DvP add settles across TWO
 -- real registries in one transaction:
 --   * base/quote under the upstream `TestTokenV2_RegistryV2` (pool.admin) --
@@ -13,6 +11,7 @@ module CantonDex.Tests.RealRegistryDvpTests where
 -- lpRegistrarExtraArgs is empty (our registry needs none). Dropping the real
 -- context aborts the settle -- so the per-admin split is load-bearing against
 -- a real registry.
+module CantonDex.Tests.RealRegistryDvpTests where
 
 import DA.Assert
 import DA.Foldable (foldMap)

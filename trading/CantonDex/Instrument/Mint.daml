@@ -1,7 +1,6 @@
-module CantonDex.Instrument.Mint where
-
--- Mint request workflow: the requestor signs, the registrar accepts (creating
+-- | Mint request workflow: the requestor signs, the registrar accepts (creating
 -- a Holding) or rejects, and the requestor may cancel before acceptance.
+module CantonDex.Instrument.Mint where
 
 import CantonDex.Instrument.Credentials qualified as Cred
 import CantonDex.Instrument.Holding qualified as H

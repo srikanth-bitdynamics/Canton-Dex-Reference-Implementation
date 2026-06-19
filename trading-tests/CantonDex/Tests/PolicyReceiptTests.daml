@@ -1,6 +1,4 @@
-module CantonDex.Tests.PolicyReceiptTests where
-
--- Daml Script tests for the PolicyReceipt + MatchedTrade wiring, focused on
+-- | Daml Script tests for the PolicyReceipt + MatchedTrade wiring, focused on
 -- the contract-shape invariants we own.
 --
 -- What we verify:
@@ -14,6 +12,7 @@ module CantonDex.Tests.PolicyReceiptTests where
 --   8. mkTradeSettlementInfo on a trade with a receipt produces metadata
 --      containing the expected dex.policy.* keys
 --   9. mkTradeSettlementInfo on a trade with no receipt produces empty meta
+module CantonDex.Tests.PolicyReceiptTests where
 
 import DA.Assert
 import DA.Optional (isSome, isNone)

@@ -1,6 +1,4 @@
-module CantonDex.Testing.MockRegistry where
-
--- Minimal V2 mock for Daml Script tests: implements Allocation,
+-- | Minimal V2 mock for Daml Script tests: implements Allocation,
 -- AllocationFactory, and SettlementFactory only. Holdings are NOT tracked
 -- and authority is simplified (MockAllocation is signatory admin alone), so
 -- this exercises flows that COMPOSE the V2 calls, not the V2 authorization
@@ -8,6 +6,7 @@ module CantonDex.Testing.MockRegistry where
 -- which covers the Pool swap iterated-settlement path.
 --
 -- Testing-only. Production code MUST NOT import this module.
+module CantonDex.Testing.MockRegistry where
 
 import DA.Action (when)
 import DA.Foldable (forA_)

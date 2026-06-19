@@ -1,7 +1,6 @@
-module CantonDex.Trading.Utils where
-
--- Helper layer over the AllocationV2 surface: account shims, the
+-- | Helper layer over the AllocationV2 surface: account shims, the
 -- leg -> leg-side projection, funding arithmetic, and allocation/spec builders.
+module CantonDex.Trading.Utils where
 
 import DA.Map qualified as Map
 import DA.Optional (isNone)

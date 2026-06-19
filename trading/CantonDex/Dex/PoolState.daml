@@ -1,6 +1,4 @@
-module CantonDex.Dex.PoolState where
-
--- The minimal hot contract for a pool.
+-- | The minimal hot contract for a pool.
 --
 -- A constant-product swap needs the *global* reserves to price (`x*y=k`),
 -- so there is an irreducible serialization point: every add / remove /
@@ -27,6 +25,7 @@ module CantonDex.Dex.PoolState where
 --     operator could fabricate a parallel PoolState contract. Listing-trust
 --     in the operator is assumed; production hardening would bind state
 --     updates to an admin-co-signed Pool.
+module CantonDex.Dex.PoolState where
 
 import CantonDex.Dex.Pool (PoolId, PoolReserves, PoolStatus (..))
 
@@ -35,8 +34,12 @@ template PoolState with
     operator : Party
     lpRegistrar : Party
     status : PoolStatus
+      -- ^ Lifecycle gate; swaps require `PS_Active`.
     reserves : PoolReserves
+      -- ^ Aggregate reserves for pricing; equals the sum of active slice
+      --   amounts per side (see module invariant).
     totalLpSupply : Decimal
+      -- ^ Circulating LP supply, mirrored against the LPTokenPolicy.
     publicReaders : [Party]
       -- ^ Extra observers for pool state.
   where

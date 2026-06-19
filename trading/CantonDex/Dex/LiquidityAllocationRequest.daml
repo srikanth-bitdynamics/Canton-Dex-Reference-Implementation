@@ -1,6 +1,5 @@
+-- | Wallet-facing request for the allocations used in liquidity DvP flows.
 module CantonDex.Dex.LiquidityAllocationRequest where
-
--- Wallet-facing request for the allocations used in liquidity DvP flows.
 
 import DA.Map qualified as Map
 

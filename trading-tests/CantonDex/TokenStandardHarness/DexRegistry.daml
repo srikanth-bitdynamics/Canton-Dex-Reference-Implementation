@@ -1,9 +1,8 @@
--- DEX-side adapter exposing our MockRegistry through the Splice
+-- | DEX-side adapter exposing our MockRegistry through the Splice
 -- token-standard test interface (RegistryApiV2), so the matched-trade
 -- workflow can be driven exactly the way upstream's TradingAppV2 tests
 -- expect. Minimal: only the AllocationFactory + SettlementFactory methods
 -- the flow exercises are filled in; the rest are loud `error` placeholders.
-
 module CantonDex.TokenStandardHarness.DexRegistry where
 
 import Daml.Script

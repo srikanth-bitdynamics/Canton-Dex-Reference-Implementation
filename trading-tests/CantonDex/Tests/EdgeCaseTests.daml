@@ -1,8 +1,7 @@
-module CantonDex.Tests.EdgeCaseTests where
-
--- Rejection paths the end-to-end tests don't cover: zero/negative mint and
+-- | Rejection paths the end-to-end tests don't cover: zero/negative mint and
 -- burn amounts (ensure clauses), and mint-accept failing on instrumentId
 -- mismatch or missing issuer credentials.
+module CantonDex.Tests.EdgeCaseTests where
 
 import Daml.Script
 

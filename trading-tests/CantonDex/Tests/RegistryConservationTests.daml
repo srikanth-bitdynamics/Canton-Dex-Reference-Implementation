@@ -1,6 +1,4 @@
-module CantonDex.Tests.RegistryConservationTests where
-
--- Settle-time conservation in Registry.V2.
+-- | Settle-time conservation in Registry.V2.
 --
 -- Proves, against the production reference registry:
 --   * executor-supplied extraTransferLegSides cannot draw more than the
@@ -13,6 +11,7 @@ module CantonDex.Tests.RegistryConservationTests where
 --   * surplus backing returns to the authorizer as an unlocked holding;
 --   * the SettlementFactory batch rejects per-instrument sender/receiver
 --     imbalance (an unbacked receiver leg with no matching sender).
+module CantonDex.Tests.RegistryConservationTests where
 
 import DA.Assert
 import DA.Time (addRelTime, hours)

@@ -1,6 +1,4 @@
-module CantonDex.Dex.Rfq where
-
--- On-ledger RFQ state machine for the bilateral block-trade (MatchedTrade)
+-- | On-ledger RFQ state machine for the bilateral block-trade (MatchedTrade)
 -- flow. Rfq is the trader's request to a whitelisted dealer set; RfqQuote is
 -- a dealer's signed response; Rfq_Accept (trader + operator) consumes the Rfq
 -- and chosen quote and creates a MatchedTrade carrying a PolicyReceipt whose
@@ -10,6 +8,7 @@ module CantonDex.Dex.Rfq where
 -- The ranking policy is currently hard-coded (see applyPolicy); production
 -- should make it a first-class contract the receipt hashes. The MatchedTrade
 -- created here is operator-signed, so accept is submitted as [trader, operator].
+module CantonDex.Dex.Rfq where
 
 import DA.Foldable (forA_)
 import DA.List qualified as List
@@ -25,16 +24,19 @@ import CantonDex.Dex.MatchedTrade qualified as MT
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Trading.Utils qualified as Utils
 
+-- | Direction of an RFQ from the trader's perspective.
 data RfqSide = RFQ_Buy | RFQ_Sell
   deriving (Eq, Show)
 
+-- | Lifecycle state of an RFQ.
 data RfqStatus
-  = RFQ_Open
-  | RFQ_Accepted
-  | RFQ_Cancelled
-  | RFQ_Expired
+  = RFQ_Open      -- ^ Awaiting dealer quotes.
+  | RFQ_Accepted  -- ^ A quote was accepted; a MatchedTrade was created.
+  | RFQ_Cancelled -- ^ Withdrawn by the trader before acceptance.
+  | RFQ_Expired   -- ^ Passed its deadline with no acceptance.
   deriving (Eq, Show)
 
+-- | Dealer trust tier; ordering is used by the ranking policy (trusted first).
 data DealerTier = TierTrusted | TierWhitelist
   deriving (Eq, Show, Ord)
 
@@ -47,12 +49,17 @@ template Rfq with
     trader : Party
     operator : Party
     rfqId : Text
+      -- ^ Operator-scoped unique id for this request.
     pair : Text
       -- ^ "BASE/QUOTE".
     side : RfqSide
+      -- ^ Buy or sell, from the trader's perspective.
     size : Decimal
+      -- ^ Base quantity sought.
     expiresAt : Time
+      -- ^ Deadline after which the RFQ can no longer be accepted.
     whitelist : [Party]
+      -- ^ Dealers permitted to quote (and who observe the request).
     createdAt : Time
   where
     signatory trader
@@ -204,8 +211,11 @@ template RfqQuote with
     trader : Party
     operator : Party
     rfqId : Text
+      -- ^ The Rfq this quote answers.
     price : Decimal
+      -- ^ Quoted price, quote per base.
     expiresAt : Time
+      -- ^ Deadline after which this quote is no longer valid.
     postedAt : Time
     tier : DealerTier
       -- ^ Operator-assigned tier at post time; operator observes the quote.

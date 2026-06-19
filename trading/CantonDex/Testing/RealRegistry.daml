@@ -1,11 +1,10 @@
--- Real V2 token registry for end-to-end testing on a live participant.
+-- | Real V2 token registry for end-to-end testing on a live participant.
 -- Unlike MockRegistry it tracks ownership: a holding changes parties on
 -- settle. Used by the testnet harness to prove the DEX moves real
 -- on-ledger assets through the V2 surface. Lives under Testing/ because it
 -- depends only on the V2 surface + Trading.Utils, so the demo ships one DAR.
 --
 -- Testing-only. Production code MUST NOT import this module.
-
 module CantonDex.Testing.RealRegistry where
 
 import DA.Foldable (forA_)

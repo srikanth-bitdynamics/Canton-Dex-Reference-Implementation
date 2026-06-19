@@ -1,6 +1,4 @@
-module CantonDex.Tests.PoolLiquidityRulesTests where
-
--- DvP liquidity at the boundary, against Registry.V2 (holding-tracking +
+-- | DvP liquidity at the boundary, against Registry.V2 (holding-tracking +
 -- iterated settlement + mint/burn accounts). Proves:
 --   - atomic add: LP funds base+quote and receives LP tokens in one flow;
 --   - remove delivers base+quote to the HOLDER and burns LP via burnAccount;
@@ -9,6 +7,7 @@ module CantonDex.Tests.PoolLiquidityRulesTests where
 --
 -- To keep the harness to one registry we use admin == lpRegistrar (the
 -- two per-admin batches collapse to one); the choice still issues both.
+module CantonDex.Tests.PoolLiquidityRulesTests where
 
 import DA.Assert
 import DA.List (head)

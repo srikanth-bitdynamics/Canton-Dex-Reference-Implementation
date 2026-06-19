@@ -1,6 +1,4 @@
-module CantonDex.Tests.EndToEndTests where
-
--- End-to-end Daml Script tests of the full DEX workflows against the
+-- | End-to-end Daml Script tests of the full DEX workflows against the
 -- MockRegistry:
 --
 --   1. Pool funding keeps reserves backed; LP supply records via DvP add.
@@ -11,6 +9,7 @@ module CantonDex.Tests.EndToEndTests where
 --
 -- The mock doesn't model holdings (tests pass empty inputHoldingCids), and
 -- joint-authority flows (e.g. PoolRules_Swap) use submitMulti.
+module CantonDex.Tests.EndToEndTests where
 
 import DA.Assert
 import DA.List (head, tail)

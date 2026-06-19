@@ -1,11 +1,11 @@
-module CantonDex.Dex.PoolLiquidityRules where
-
--- Liquidity add/remove at the pool boundary.
+-- | Liquidity add/remove at the pool boundary.
 --
 -- The pool stays operator-custodied between operations. Add/remove settle
 -- as DvP: base and quote under `pool.admin`, LP mint/burn under
 -- `pool.lpRegistrar`.
+module CantonDex.Dex.PoolLiquidityRules where
 
+import DA.Assert (assertWithinDeadline)
 import DA.Foldable (forA_)
 import DA.List (find)
 import DA.TextMap qualified as TextMap
@@ -76,9 +76,7 @@ enforceAllocationDeadline cid = do
   v <- view <$> fetch cid
   case v.allocation.settlementDeadline of
     None -> pure ()
-    Some deadline -> do
-      now <- getTime
-      assertMsg "liquidity request quote has expired" (now <= deadline)
+    Some deadline -> assertWithinDeadline "settlementDeadline" deadline
 
 -- Small tolerance for conservative off-ledger quotes.
 lpMintDustTolerance : Decimal
@@ -135,9 +133,7 @@ validateAgainstBinding binding expectedParty settlement allocCids = do
     (binding.lp == expectedParty)
   case binding.settleAt of
     None -> pure ()
-    Some deadline -> do
-      now <- getTime
-      assertMsg "liquidity request has expired" (now <= deadline)
+    Some deadline -> assertWithinDeadline "settleAt" deadline
   -- Every supplied allocation must match one requested spec.
   forA_ allocCids $ \cid -> do
     v <- view <$> fetch cid

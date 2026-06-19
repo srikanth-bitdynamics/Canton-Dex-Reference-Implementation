@@ -1,4 +1,4 @@
--- Reference registry implementing the Token Standard V2 holding, allocation,
+-- | Reference registry implementing the Token Standard V2 holding, allocation,
 -- settlement, transfer-instruction, and transfer-event interfaces, plus this
 -- repo's registry-specific InstrumentConfig / Credential machinery. One
 -- reference registry serves the in-script tests, the testnet harness, and the
@@ -14,7 +14,6 @@
 -- backs every rolled-forward allocation with freshly locked holdings worth
 -- its funding, and the SettlementFactory batch asserts per-instrument
 -- sender/receiver balance across all legs of the batch.
-
 module CantonDex.Registry.V2 where
 
 import DA.Action (when, unless)

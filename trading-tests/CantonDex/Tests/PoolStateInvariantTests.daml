@@ -1,6 +1,4 @@
-module CantonDex.Tests.PoolStateInvariantTests where
-
--- PoolState.reserves integrity.
+-- | PoolState.reserves integrity.
 --
 -- Drives the on-ledger audit anchor `PoolRules_ReconcileState` against the
 -- Registry.V2 fixture from PoolLiquidityRulesTests:
@@ -9,6 +7,7 @@ module CantonDex.Tests.PoolStateInvariantTests where
 --   * reconcile fails when the slice list omits a slice;
 --   * reconcile catches a desynced (operator-fabricated) PoolState;
 --   * reconcile rejects a slice belonging to a different pool.
+module CantonDex.Tests.PoolStateInvariantTests where
 
 import DA.Assert
 import DA.List (head)

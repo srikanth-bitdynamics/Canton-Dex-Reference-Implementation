@@ -1,9 +1,8 @@
-module CantonDex.Instrument.InstrumentConfiguration where
-
--- Registry-side instrument configuration: the registrar (admin), the
+-- | Registry-side instrument configuration: the registrar (admin), the
 -- instrumentId used as the join key across DEX templates, holder/issuer
 -- credential requirements, and optional external ids. DEX contracts treat
 -- instrumentId as opaque; asset semantics live in the registry.
+module CantonDex.Instrument.InstrumentConfiguration where
 
 import CantonDex.Instrument.Credentials qualified as Cred
 

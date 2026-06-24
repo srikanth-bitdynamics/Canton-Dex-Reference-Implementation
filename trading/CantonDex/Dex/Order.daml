@@ -1,9 +1,8 @@
-module CantonDex.Dex.Order where
-
--- Resting order backed by a prefunded V2.Allocation: placement creates an
+-- | Resting order backed by a prefunded V2.Allocation: placement creates an
 -- allocation with no legs and nextIterationFunding covering the locked
 -- amount; matching carries the concrete legs through SettleBatch; partial
 -- fills roll the next-iteration allocation forward; cancel releases it.
+module CantonDex.Dex.Order where
 
 import DA.Map qualified as Map
 import DA.Optional (fromSomeNote)
@@ -18,13 +17,15 @@ import Splice.Api.Token.MetadataV1
 import CantonDex.Trading.Utils qualified as Utils
 import CantonDex.Trading.WorkflowConstructors qualified as WC
 
+-- | Order direction.
 data Side = Bid | Ask
   deriving (Eq, Show)
 
+-- | Order lifecycle state.
 data OrderStatus
-  = OS_Pending
-  | OS_Funded
-  | OS_PartiallyFilled
+  = OS_Pending         -- ^ Placed but not yet funded by an allocation.
+  | OS_Funded          -- ^ Backed by a live prefunded allocation; matchable.
+  | OS_PartiallyFilled -- ^ Partly filled; the remainder rolled forward.
   deriving (Eq, Show)
 
 data Order_FundResult = Order_FundResult with
@@ -68,14 +69,22 @@ template Order with
     operator : Party
     trader : Party
     admin : Party
+      -- ^ Registry admin for the base + quote instruments.
     baseInstrumentId : Text
+      -- ^ `id` component of the base instrument, under `admin`.
     quoteInstrumentId : Text
+      -- ^ `id` component of the quote instrument, under `admin`.
     side : Side
+      -- ^ Bid (buy base) or Ask (sell base).
     limitPrice : Decimal
+      -- ^ Worst acceptable price, quote per base.
     remainingQty : Decimal
+      -- ^ Unfilled base quantity; shrinks as partial fills roll forward.
     expiry : Optional Time
+      -- ^ Optional good-till time; None = good-till-cancelled.
     status : OrderStatus
     allocationCid : Optional (ContractId V2.Allocation)
+      -- ^ The prefunded allocation backing the order once funded.
     settlementRef : SettlementRef
   where
     signatory operator
@@ -112,7 +121,7 @@ template Order with
         -- returns the existing allocation cid unchanged.
         assertMsg "Order must be Funded or PartiallyFilled to match" $
           status == OS_Funded || status == OS_PartiallyFilled
-        let allocCid = fromSomeNote "Order has no allocation to adjust" allocationCid
+        let allocCid = fromSomeNote "Order has no allocation to match" allocationCid
         -- Assert the bound allocation is still live before handing its cid to
         -- the match flow: a fetch of an archived/consumed contract aborts, so
         -- this rejects a stale (cancelled/settled) allocation cid.

@@ -1,6 +1,5 @@
+-- | Operational rules for one pool venue.
 module CantonDex.Dex.PoolRules where
-
--- Operational rules for one pool venue.
 
 import DA.Foldable (forA_)
 import DA.List (dedup)

@@ -1,33 +1,47 @@
+-- | A listed trading pair: the operator's record of a supported base/quote
+-- market with its execution mode, fee model, accrued maker/taker fee
+-- counters, and active flag. Pair lifecycle changes go through the choices
+-- defined here.
 module CantonDex.Dex.DexPair where
 
 import DA.TextMap qualified as TextMap
 
+-- | Which trading surfaces a pair exposes.
 data TradingMode
-  = TM_OrderBook
-  | TM_Pool
-  | TM_Both
+  = TM_OrderBook -- ^ Order book only.
+  | TM_Pool      -- ^ Constant-product pool only.
+  | TM_Both      -- ^ Both order book and pool.
   deriving (Eq, Show)
 
+-- | Fee schedule for a pair, in basis points.
 data FeeModel = FeeModel with
-    makerFeeBps : Int
-    takerFeeBps : Int
-    poolFeeBps : Int
+    makerFeeBps : Int -- ^ Maker (resting-order) fee, bps.
+    takerFeeBps : Int -- ^ Taker (aggressing-order) fee, bps.
+    poolFeeBps : Int  -- ^ Pool swap fee retained for LPs, bps.
   deriving (Eq, Show)
 
 template DexPair with
     operator : Party
     admin : Party
+      -- ^ Registry admin for the base + quote instruments.
     baseInstrumentId : Text
+      -- ^ `id` component of the base instrument, under `admin`; full asset
+      --   identity is `{ admin, id }`.
     quoteInstrumentId : Text
+      -- ^ `id` component of the quote instrument, under `admin`.
     tradingMode : TradingMode
+      -- ^ Which surfaces (order book, pool, or both) the pair exposes.
     feeModel : FeeModel
+      -- ^ Maker/taker/pool fee schedule in bps.
     active : Bool
+      -- ^ When False, the pair is listed but trading is gated off.
     publicReaders : Optional [Party]
       -- ^ Parties allowed to observe the listing; None/[] = operator-private
       --   except for admin.
     accumulatedMakerFees : Optional (TextMap.TextMap Decimal)
       -- ^ Per-instrument maker-side fee accrual, bumped by RecordMatchedTrade.
     accumulatedTakerFees : Optional (TextMap.TextMap Decimal)
+      -- ^ Per-instrument taker-side fee accrual, bumped by RecordMatchedTrade.
   where
     signatory operator
     observer admin :: optional [] identity publicReaders

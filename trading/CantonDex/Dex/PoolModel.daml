@@ -1,9 +1,8 @@
-module CantonDex.Dex.PoolModel where
-
--- Shared pool primitives: the constant-product math, the pool settlement
+-- | Shared pool primitives: the constant-product math, the pool settlement
 -- descriptor, the config/state fetch guard, and the ordered slice draw.
 -- Both venues (PoolRules swap, PoolLiquidityRules add/remove) build on
 -- these, so they live here rather than in either venue module.
+module CantonDex.Dex.PoolModel where
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2

@@ -1,9 +1,8 @@
--- Token-standard-style end-to-end test of the matched-trade flow, mirroring
+-- | Token-standard-style end-to-end test of the matched-trade flow, mirroring
 -- splice-token-standard-test-v2's TradingAppV2 exercise: drive a RegistryApi
 -- registry (our DexRegistry over MockRegistry) through MatchedTrade ->
 -- per-authorizer allocation accept -> MatchedTrade_Settle, and verify the
 -- batch settles and the trade + requests are archived.
-
 module CantonDex.Tests.TokenStandardHarnessTests where
 
 import DA.Assert

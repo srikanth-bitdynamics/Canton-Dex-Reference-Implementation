@@ -1,10 +1,9 @@
-module CantonDex.Dex.PolicyReceipt where
-
--- Operator-signed attestation of which ranking policy was applied to an RFQ
+-- | Operator-signed attestation of which ranking policy was applied to an RFQ
 -- accept and where the chosen quote ranked. Stored on MatchedTrade and folded
 -- into SettlementInfo.meta so it travels on-ledger with the trade. The trade
 -- being signed by the venue IS the attestation; `signature` is an off-chain
 -- replay digest, and MatchedTrade enforces signedBy == venue.
+module CantonDex.Dex.PolicyReceipt where
 
 import DA.TextMap qualified as TextMap
 

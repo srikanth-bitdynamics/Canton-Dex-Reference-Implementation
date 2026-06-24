@@ -1,9 +1,8 @@
-module CantonDex.Instrument.Burn where
-
--- Burn request workflow: the requestor locks a covering holding and signs;
+-- | Burn request workflow: the requestor locks a covering holding and signs;
 -- accept archives it, reject/cancel unlock it. The reference request carries
 -- one selected holding equal to `amount`; backend/wallet code handles
 -- off-chain holding selection before submission.
+module CantonDex.Instrument.Burn where
 
 import CantonDex.Instrument.Credentials qualified as Cred
 import CantonDex.Instrument.Holding qualified as H

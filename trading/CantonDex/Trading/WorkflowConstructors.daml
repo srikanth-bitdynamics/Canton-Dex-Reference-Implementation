@@ -1,8 +1,7 @@
-module CantonDex.Trading.WorkflowConstructors where
-
--- Workflow-step constructors over the AllocationV2 surface. There is no
+-- | Workflow-step constructors over the AllocationV2 surface. There is no
 -- adjust step: extra legs + residual funding ride on FinalizedAllocation
 -- and are consumed by SettlementFactory_SettleBatch.
+module CantonDex.Trading.WorkflowConstructors where
 
 import CantonDex.Trading.Utils qualified as Utils
 

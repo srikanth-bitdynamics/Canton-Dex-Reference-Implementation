@@ -1,11 +1,10 @@
-module CantonDex.Dex.PoolExecution where
-
--- Shared pool settlement-assembly helpers.
+-- | Shared pool settlement-assembly helpers.
 --
 -- Drawing a redemption/swap across an ordered slice prefix and turning it
 -- into the per-side delivery legs + FinalizedAllocations the SettleBatch
 -- consumes. The slice-draw math + SliceDraw type live in PoolModel; the
 -- request/spec construction lives in PoolLiquidityRules.
+module CantonDex.Dex.PoolExecution where
 
 import DA.TextMap qualified as TextMap
 

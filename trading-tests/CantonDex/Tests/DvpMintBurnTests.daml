@@ -1,6 +1,4 @@
-module CantonDex.Tests.DvpMintBurnTests where
-
--- Proves the delivery-versus-mint/burn mechanism on the V2 allocation
+-- | Proves the delivery-versus-mint/burn mechanism on the V2 allocation
 -- surface against the holding-tracking RealRegistry (mirrors upstream
 -- TestDeliveryVersusBurnMint): a mint is a leg mintAccount -> recipient
 -- (registrar-authorized, owner-None authorizer; settle credits the
@@ -20,6 +18,7 @@ module CantonDex.Tests.DvpMintBurnTests where
 -- mint authorization lives in the production registry our DEX consumes,
 -- not in this shipped test registry — upstream proves it with
 -- `TestDeliveryVersusBurnMint`'s `mkAllocMustFail alice adminMintAlloc`.
+module CantonDex.Tests.DvpMintBurnTests where
 
 import DA.Assert
 import DA.List (head)

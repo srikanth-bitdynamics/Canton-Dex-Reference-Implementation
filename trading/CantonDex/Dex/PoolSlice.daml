@@ -1,6 +1,4 @@
-module CantonDex.Dex.PoolSlice where
-
--- One committed allocation backing one side of a pool.
+-- | One committed allocation backing one side of a pool.
 --
 -- Moving slices out of the `Pool` contract is what removes the
 -- unbounded-growth / hot-singleton problem: add creates a new slice
@@ -12,6 +10,7 @@ module CantonDex.Dex.PoolSlice where
 -- can walk slices without a `fetch` per slice for the amount. It is
 -- always reconciled against the underlying allocation's funding by the
 -- choice that writes the slice.
+module CantonDex.Dex.PoolSlice where
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.MetadataV1 (ExtraArgs)
@@ -22,8 +21,12 @@ template PoolSlice with
     poolId : PoolId
     operator : Party
     side : Side
+      -- ^ Which pool leg (base or quote) this slice funds.
     allocationCid : ContractId V2.Allocation
+      -- ^ The committed allocation holding this slice's funds.
     amount : Decimal
+      -- ^ Cached funded amount; reconciled against the allocation by the
+      --   choice that writes the slice.
   where
     signatory operator
 

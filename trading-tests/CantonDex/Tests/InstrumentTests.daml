@@ -1,6 +1,4 @@
-module CantonDex.Tests.InstrumentTests where
-
--- Daml Script tests for the registry workflows:
+-- | Daml Script tests for the registry workflows:
 --   1. InstrumentConfiguration create/update
 --   2. Mint request → registrar accept (with credential check)
 --   3. Mint request → requestor cancel
@@ -8,6 +6,7 @@ module CantonDex.Tests.InstrumentTests where
 --   5. Transfer offer → receiver accept
 --   6. Transfer offer with TransferPreapproval (direct delivery)
 --   7. Open issuance: empty issuerRequirements lets anyone mint
+module CantonDex.Tests.InstrumentTests where
 
 import DA.Assert
 import Daml.Script

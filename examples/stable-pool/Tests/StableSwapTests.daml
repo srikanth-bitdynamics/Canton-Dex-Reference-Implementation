@@ -1,10 +1,9 @@
-module Tests.StableSwapTests where
-
--- Tests proving that this example actually consumes the
+-- | Tests proving that this example actually consumes the
 -- canton-dex-trading DAR and the new template + curve compile + run
 -- through Daml Script. The curve math itself is illustrative; a
 -- production fork would tune the Newton iteration tolerances and add
 -- coverage for the edge cases.
+module Tests.StableSwapTests where
 
 import DA.Assert
 import Daml.Script

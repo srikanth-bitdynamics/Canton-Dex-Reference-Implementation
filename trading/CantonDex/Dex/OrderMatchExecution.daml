@@ -1,9 +1,8 @@
-module CantonDex.Dex.OrderMatchExecution where
-
--- Order matching settlement: both orders are already prefunded (no legs, just
+-- | Order matching settlement: both orders are already prefunded (no legs, just
 -- nextIterationFunding); the matcher builds FinalizedAllocations carrying the
 -- concrete leg sides + residual funding, and one settle batch consumes them.
 -- Next-iteration allocations are stored on partially-filled orders or cancelled.
+module CantonDex.Dex.OrderMatchExecution where
 
 import DA.TextMap qualified as TextMap
 

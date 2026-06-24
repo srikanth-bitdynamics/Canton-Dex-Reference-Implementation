@@ -1,43 +1,50 @@
-module CantonDex.Dex.Pool where
-
--- Immutable pool configuration.
+-- | Immutable pool configuration.
 --
 -- Mutable pool data lives on `PoolState` and `PoolSlice`. Pool operations
 -- live on `PoolRules`. This contract is the stable identifier that ties
 -- those pieces together.
+module CantonDex.Dex.Pool where
 
 import Splice.Api.Token.HoldingV2 qualified as V2
 
 -- | Stable identifier shared by the pool config, state, and slices.
 type PoolId = Text
 
+-- | Pool lifecycle state.
 data PoolStatus
-  = PS_Unfunded
-  | PS_Active
-  | PS_Paused
+  = PS_Unfunded -- ^ Created but no liquidity yet; not tradable.
+  | PS_Active   -- ^ Funded and tradable.
+  | PS_Paused   -- ^ Operator-suspended; no swaps until resumed.
   deriving (Eq, Show)
 
+-- | Aggregate reserves backing a pool, used to price the constant product.
 data PoolReserves = PoolReserves with
-    baseAmount : Decimal
-    quoteAmount : Decimal
+    baseAmount : Decimal  -- ^ Total base held across the pool's slices.
+    quoteAmount : Decimal -- ^ Total quote held across the pool's slices.
   deriving (Eq, Show)
 
+-- | Which leg of a pool a slice or amount refers to.
 data Side
-  = BaseSide
-  | QuoteSide
+  = BaseSide  -- ^ The base instrument side.
+  | QuoteSide -- ^ The quote instrument side.
   deriving (Eq, Show)
 
 -- | Immutable pool configuration.
 template Pool with
     poolId : PoolId
+      -- ^ Stable identifier tying Pool, PoolState, and PoolSlice together.
     operator : Party
     lpRegistrar : Party
       -- ^ Owns the LP instrument and accepts mint/burn; separate from operator.
     admin : Party
       -- ^ Asset admin (registrar) for the base + quote instruments.
     baseInstrumentId : Text
+      -- ^ `id` component of the base instrument, under `admin` (shared-admin
+      --   convention); the full asset identity is `{ admin, id }`.
     quoteInstrumentId : Text
+      -- ^ `id` component of the quote instrument, under `admin`.
     lpInstrumentId : V2.InstrumentId
+      -- ^ Full identity of the LP token instrument (admin = lpRegistrar).
     feeBps : Int
       -- ^ Total swap fee in bps; accrues entirely to LPs via x*y=k. An
       --   operator fee split is intentionally out of scope (reference impl).

@@ -58,7 +58,11 @@ export interface DisclosedContract {
   contractId: string;
   templateId: string;
   contractKeyHash?: string;
-  payloadBlob: string;
+  // Canton's JSON Ledger API disclosed-contract field: the base64 created-event
+  // blob, threaded verbatim into the ledger submission's `disclosedContracts`.
+  // (Was mis-named `payloadBlob`, which Canton ignores.)
+  createdEventBlob: string;
+  synchronizerId?: string;
 }
 
 /**

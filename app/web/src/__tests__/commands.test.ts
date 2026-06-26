@@ -34,7 +34,7 @@ const disclosure = [
   {
     contractId: '#ctx:0',
     templateId: 'Registry:Context',
-    payloadBlob: 'payload',
+    createdEventBlob: 'payload',
   },
 ];
 
@@ -152,7 +152,7 @@ describe('composeCommands', () => {
         "disclosedContracts": [
           {
             "contractId": "#ctx:0",
-            "payloadBlob": "payload",
+            "createdEventBlob": "payload",
             "templateId": "Registry:Context",
           },
         ],

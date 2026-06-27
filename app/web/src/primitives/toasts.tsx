@@ -41,7 +41,7 @@ export const TX_PHASES: Record<TxPhaseKind, PhaseSpec[]> = {
   ],
   placeOrder: [
     { label: 'Submitted to operator', tag: 'Submitted' },
-    { label: 'Bound: TradeAllocationRequest issued', tag: 'Bound' },
+    { label: 'Bound: order + funding request issued', tag: 'Bound' },
     { label: 'Funding allocation locked', tag: 'Locked' },
     { label: 'In book — awaiting match', tag: 'Open' },
   ],

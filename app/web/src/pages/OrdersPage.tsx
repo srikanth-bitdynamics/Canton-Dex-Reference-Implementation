@@ -51,14 +51,24 @@ export function OrdersPage() {
         () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
       );
       placeToastId.current = id;
-      // Advance the toast on real pipeline step completion rather than the
-      // cosmetic timer.
+      // Drive this toast ONLY by real pipeline progress, never the cosmetic
+      // 900ms timer. Order placement blocks on two wallet approvals (create +
+      // fund); without this the timer would race the toast to "In book" while
+      // the funding approval is still pending, falsely showing the order live.
+      // Marking it manual at phase 0 freezes the timer so it can't get ahead.
+      toast.setPhase(id, 0);
       return ledger.placeOrder({
         ...params,
         onProgress: (phase) => toast.setPhase(id, phase),
       });
     },
     onSuccess: () => {
+      // The order is funded + in the book. Manual mode froze the cosmetic
+      // timer, so drive the toast to its terminal phase here (setPhase clamps
+      // to phaseCount) to show complete and let it auto-dismiss.
+      if (placeToastId.current != null) {
+        toast.setPhase(placeToastId.current, Number.MAX_SAFE_INTEGER);
+      }
       placeToastId.current = null;
       queryClient.invalidateQueries({ queryKey: ['orders'] });
       setLimitPrice('');

@@ -94,14 +94,29 @@ template Order with
 
     -- Bind an already-trader-funded allocation onto the order. This does NOT
     -- call the factory: the trader authors the allocation (so their holdings
-    -- fund it) when accepting the OrderAllocationRequest; the operator then
-    -- binds the resulting cid here, Pending -> Funded.
+    -- fund it) directly against the factory, and the operator binds the
+    -- resulting cid here, Pending -> Funded.
     nonconsuming choice Order_Fund : Order_FundResult
       with
         allocationCid : ContractId V2.Allocation
+        -- The OrderAllocationRequest this order was bound with. It is consumed
+        -- here so it cannot linger as a stale funding request once the order is
+        -- funded (the wallet authors the allocation directly and no longer
+        -- accepts the request). Optional for backward compatibility; when
+        -- supplied it MUST target this order.
+        allocationRequestCid : Optional (ContractId OrderAllocationRequest)
       controller operator
       do
         assertMsg "Order must be in Pending status to fund" (status == OS_Pending)
+        case allocationRequestCid of
+          None -> pure ()
+          Some reqCid -> do
+            req <- fetch reqCid
+            assertMsg "OrderAllocationRequest does not target this order"
+              ( req.orderRef == settlementRef
+                  && req.trader == trader
+                  && req.operator == operator )
+            archive reqCid
         archive self
         newOrderCid <- create this with
           status = OS_Funded

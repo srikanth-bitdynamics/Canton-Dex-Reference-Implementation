@@ -101,15 +101,13 @@ function composeAcceptAllocationRequest(
 ): ComposedCommands {
   assertFactoryReady(intent.factoryCid, "accept-allocation-request");
   // Single command: author the funding allocation only. We deliberately do NOT
-  // also exercise AllocationRequest_Accept on the request, for two reasons:
-  //   1. Canton's interactive-submission path (CIP-0103 wallets) rejects a
-  //      prepared transaction carrying more than one command
-  //      ("FAILED_TO_PREPARE_TRANSACTION: Preparing multiple commands is
-  //      currently not supported"), so a 2-command submit fails outright.
-  //   2. The operator's bind step (Order_Fund) only needs the created
-  //      Allocation cid — it does not require the OrderAllocationRequest to be
-  //      formally accepted (Order.daml: Order_Fund takes just allocationCid).
-  // The request is consumed/cleaned up by the operator side, not the wallet.
+  // also exercise AllocationRequest_Accept on the request, because Canton's
+  // interactive-submission path (CIP-0103 wallets) rejects a prepared
+  // transaction carrying more than one command ("FAILED_TO_PREPARE_TRANSACTION:
+  // Preparing multiple commands is currently not supported"), so a 2-command
+  // submit fails outright. The operator's Order_Fund then consumes the
+  // OrderAllocationRequest (it takes the request cid + archives it), so the
+  // request does not linger after the order is funded.
   return {
     commandId: `alloc-accept-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],

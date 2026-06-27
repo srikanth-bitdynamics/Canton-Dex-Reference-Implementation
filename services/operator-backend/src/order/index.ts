@@ -39,6 +39,10 @@ export interface OrderFundInput {
   // Operator-discovery path (updateId-only wallet, e.g. PartyLayer): the order's
   // single funding allocation is recovered from the transaction tree.
   updateId?: string | null;
+  // The OrderAllocationRequest created at bind. Passed to Order_Fund so it is
+  // consumed when the order is funded (the wallet no longer accepts it), instead
+  // of lingering as a stale funding request.
+  allocationRequestCid?: ContractId<"OrderAllocationRequest"> | null;
 }
 
 export interface OrderMatchInput {
@@ -117,7 +121,11 @@ export class OrderService {
           templateId: "CantonDex.Dex.Order:Order",
           contractId: input.orderCid,
           choice: "Order_Fund",
-          argument: { allocationCid },
+          // Optional Daml field: the cid as Some, or null for None.
+          argument: {
+            allocationCid,
+            allocationRequestCid: input.allocationRequestCid ?? null,
+          },
         },
       }),
     );

@@ -828,6 +828,10 @@ export const ledger = {
 
       const fundRes = await operator.fundOrder({
         orderCid,
+        // Consume the bind's OrderAllocationRequest so it doesn't linger after
+        // funding (the wallet authored the allocation directly, not via accept).
+        allocationRequestCid:
+          bindRes.allocationRequestCid as ContractId<'OrderAllocationRequest'>,
         ...(allocationCid
           ? { allocationCid: allocationCid as ContractId<'Allocation'> }
           : { updateId }),

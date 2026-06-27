@@ -9,10 +9,13 @@
 // What each intent maps to on-ledger:
 //
 //   place-order             →  CreateCommand OrderFundingRequest
-//   accept-allocation-request → AllocationFactory_Allocate + AllocationRequest_Accept
+//   accept-allocation-request → AllocationFactory_Allocate (single command; the
+//                               operator's Order_Fund consumes the request)
 //   request-swap            →  AllocationFactory_Allocate (operator settles via PoolRules_Swap)
-//   add-liquidity           →  3× AllocationFactory_Allocate from a LiquidityAllocationRequest
-//   remove-liquidity        →  3× AllocationFactory_Allocate from a LiquidityAllocationRequest
+//   add-liquidity           →  Exercise LiquidityAllocationRequest_AcceptAndAllocate
+//                               (one command authors all 3 allocations + acceptance)
+//   remove-liquidity        →  Exercise LiquidityAllocationRequest_AcceptAndAllocate
+//                               (one command authors all 3 allocations + acceptance)
 //   post-rfq-quote          →  CreateCommand RfqQuote
 //   accept-rfq              →  Exercise Rfq_Accept (joint trader + operator)
 //

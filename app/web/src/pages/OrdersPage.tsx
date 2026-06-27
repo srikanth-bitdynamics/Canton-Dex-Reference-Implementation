@@ -13,6 +13,7 @@ export function OrdersPage() {
   const [limitPrice, setLimitPrice] = useState('');
   const [quantity, setQuantity] = useState('');
   const [placeError, setPlaceError] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const { data: pairs } = useQuery({ queryKey: ['pairs'], queryFn: ledger.getPairs });
   const activePair = pairs?.[0];
@@ -31,12 +32,24 @@ export function OrdersPage() {
 
   const cancelMutation = useMutation({
     mutationFn: async (id: string) => {
-      toast.push(`Cancel order ${id.slice(0, 10)}…`, 'cancelOrder', () =>
+      const toastId = toast.push(`Cancel order ${id.slice(0, 10)}…`, 'cancelOrder', () =>
         queryClient.invalidateQueries({ queryKey: ['orders'] }),
       );
-      return ledger.cancelOrder(id);
+      // Drive the lifecycle off the real result: complete only once the cancel
+      // settles on-ledger, dismiss (and surface) on failure. The toast does not
+      // auto-advance, so a failed cancel can't look like it succeeded.
+      try {
+        const res = await ledger.cancelOrder(id);
+        toast.complete(toastId);
+        return res;
+      } catch (error) {
+        toast.dismiss(toastId);
+        throw error;
+      }
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
+    onError: (error) =>
+      setCancelError(error instanceof Error ? error.message : 'Cancel failed'),
   });
 
   // Track the in-flight place-order toast so onError can dismiss it and show
@@ -51,23 +64,20 @@ export function OrdersPage() {
         () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
       );
       placeToastId.current = id;
-      // Drive this toast ONLY by real pipeline progress, never the cosmetic
-      // 900ms timer. Order placement blocks on two wallet approvals (create +
-      // fund); without this the timer would race the toast to "In book" while
-      // the funding approval is still pending, falsely showing the order live.
-      // Marking it manual at phase 0 freezes the timer so it can't get ahead.
-      toast.setPhase(id, 0);
+      // The toast advances ONLY on real pipeline progress. Order placement
+      // blocks on two wallet approvals (create + fund); `onProgress` moves the
+      // card a step at a time as each on-ledger step actually lands, so it can
+      // never show "In book" while the funding approval is still pending.
       return ledger.placeOrder({
         ...params,
         onProgress: (phase) => toast.setPhase(id, phase),
       });
     },
     onSuccess: () => {
-      // The order is funded + in the book. Manual mode froze the cosmetic
-      // timer, so drive the toast to its terminal phase here (setPhase clamps
-      // to phaseCount) to show complete and let it auto-dismiss.
+      // The order is funded + in the book — only now drive the toast to its
+      // terminal phase (complete) and let it auto-dismiss.
       if (placeToastId.current != null) {
-        toast.setPhase(placeToastId.current, Number.MAX_SAFE_INTEGER);
+        toast.complete(placeToastId.current);
       }
       placeToastId.current = null;
       queryClient.invalidateQueries({ queryKey: ['orders'] });
@@ -75,9 +85,9 @@ export function OrdersPage() {
       setQuantity('');
     },
     onError: (error) => {
-      // The mutationFn pushed an optimistic lifecycle toast; on failure that
-      // toast would otherwise advance to "success" on its timer. Dismiss it and
-      // surface the real error.
+      // The mutationFn pushed a lifecycle toast that only completes on real
+      // success; on failure dismiss it and surface the real error instead of
+      // leaving a half-finished card on screen.
       if (placeToastId.current != null) {
         toast.dismiss(placeToastId.current);
         placeToastId.current = null;
@@ -116,11 +126,26 @@ export function OrdersPage() {
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Order Book */}
       <div>
+        {cancelError && (
+          <div
+            className="mb-3 rounded px-3 py-2 text-sm"
+            style={{
+              background: 'rgba(248, 81, 73, 0.08)',
+              border: '1px solid var(--red)',
+              color: 'var(--red)',
+            }}
+          >
+            {cancelError}
+          </div>
+        )}
         {activePair ? (
           <OrderBook
             pair={{ base: activePair.baseInstrumentId, quote: activePair.quoteInstrumentId }}
             orders={pairOrders}
-            onCancelOrder={id => cancelMutation.mutate(id)}
+            onCancelOrder={id => {
+              setCancelError(null);
+              cancelMutation.mutate(id);
+            }}
           />
         ) : (
           <div className="bg-surface-card rounded-lg border border-surface-border p-8 text-text-muted text-center font-sans">

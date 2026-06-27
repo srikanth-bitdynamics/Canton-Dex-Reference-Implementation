@@ -161,6 +161,9 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
         baseHoldingCids: coveringHoldingCids(pool.baseInstrumentId, parseFloat(baseAmt)),
         quoteHoldingCids: coveringHoldingCids(pool.quoteInstrumentId, parseFloat(quoteAmt)),
       });
+      // Settle returned — only now mark the lifecycle complete (the card sat on
+      // its first step through the wallet approval rather than racing to done).
+      toast.complete(toastId);
       setBaseAmt('');
       setQuoteAmt('');
     } catch (error) {
@@ -189,6 +192,8 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
         minBaseOut: minBaseOutWithSlippage,
         minQuoteOut: minQuoteOutWithSlippage,
       });
+      // Settle returned — only now mark the lifecycle complete.
+      toast.complete(toastId);
     } catch (error) {
       toast.dismiss(toastId);
       setLiquidityError(error instanceof Error ? error.message : String(error));

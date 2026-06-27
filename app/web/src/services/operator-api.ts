@@ -176,7 +176,10 @@ export class OperatorApi {
   }
 
   async bindOrder(req: {
-    fundingRequestCid: ContractId<"OrderFundingRequest">;
+    // Either the explicit created cid (full-tree wallet), or an updateId for
+    // operator-discovery (updateId-only wallet, e.g. CIP-0103 SDK / PartyLayer).
+    fundingRequestCid?: ContractId<"OrderFundingRequest">;
+    updateId?: string;
     settlementRef: string;
   }): Promise<{
     orderCid: ContractId<"Order">;

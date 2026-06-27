@@ -312,6 +312,57 @@ export function pickExactHoldingCids(
 }
 
 /**
+ * Pick a minimal set of unlocked holdings whose summed units COVER the target
+ * (sum >= target), or null if the total is insufficient.
+ *
+ * Unlike `pickExactHoldingCids` this does not require an exact subset. The
+ * registry's `AllocationFactory_Allocate` locks each input holding WHOLE and
+ * only checks `have >= needed` (it accepts over-collateralised locks), and
+ * `Allocation_Settle` returns the surplus of the locked backing to the owner
+ * as a fresh UNLOCKED change holding (Registry.V2). The trade's leg amount is
+ * the trade input (authored by the operator's request, independent of the
+ * locked size), so a covering set funds ANY fraction without first splitting a
+ * holding to the exact size — which a real external wallet (e.g. CIP-0103)
+ * cannot do, since `Holding_Split` is `controller admin, owner`.
+ *
+ * Prefers the single smallest holding that already covers the target (one
+ * piece, least surplus); otherwise accumulates largest-first for the fewest
+ * pieces.
+ */
+export function pickCoveringHoldingCids(
+  holdings: Holding[],
+  instrumentId: string,
+  targetAmount: number | string,
+  admin?: string,
+): string[] | null {
+  const target =
+    typeof targetAmount === 'string'
+      ? decimal10StringUnits(targetAmount)
+      : decimal10Units(targetAmount);
+  if (target <= 0n) return [];
+  const candidates = unlockedInstrumentHoldings(holdings, instrumentId, admin);
+
+  // A single holding that covers the target on its own — pick the smallest
+  // such, to minimise the surplus locked (and returned) and keep it to one
+  // piece.
+  const singleCover = candidates
+    .filter((h) => h.units >= target)
+    .sort((a, b) => Number(a.units - b.units))[0];
+  if (singleCover) return [singleCover.contractId];
+
+  // No single holding covers — accumulate largest-first until covered.
+  const descending = [...candidates].sort((a, b) => Number(b.units - a.units));
+  const chosen: string[] = [];
+  let accumulated = 0n;
+  for (const holding of descending) {
+    chosen.push(holding.contractId);
+    accumulated += holding.units;
+    if (accumulated >= target) return chosen;
+  }
+  return null; // total across all unlocked holdings is below the target
+}
+
+/**
  * Whether the active wallet can co-sign as the instrument admin. The registry's
  * Holding_Split/Holding_Merge are `controller admin, owner`, so split/merge
  * normalization is only authorized through providers that route an admin
@@ -378,11 +429,22 @@ export async function normalizeSwapFunding(params: {
   );
   if (exactCids) return exactCids;
 
-  // No exact subset. Split/merge normalization needs an admin co-sign. If the
-  // active wallet can't provide it (real external wallet), do NOT compose
-  // split/merge (it would fail on the live path); return null so the caller
-  // surfaces a clear "split holdings first" error.
-  if (!activeWalletCoSignsAdmin()) return null;
+  // No exact subset. Split/merge normalization needs an admin co-sign
+  // (`Holding_Split`/`Holding_Merge` are `controller admin, owner`). A real
+  // external wallet (e.g. CIP-0103) can't provide it. Rather than failing,
+  // lock a COVERING set of whole holdings (sum >= amount): the
+  // AllocationFactory accepts over-collateralised locks (`have >= needed`) and
+  // the settle step returns the surplus to the owner as unlocked change, so any
+  // fraction funds without a split. The trade leg amount is the trade input,
+  // independent of the locked size — see `pickCoveringHoldingCids`.
+  if (!activeWalletCoSignsAdmin()) {
+    return pickCoveringHoldingCids(
+      holdings,
+      params.instrumentId,
+      params.amount,
+      params.admin,
+    );
+  }
 
   let plan = planSwapFunding(
     holdings,
@@ -613,7 +675,7 @@ export const ledger = {
     }
     if (!inputHoldingCids || inputHoldingCids.length === 0) {
       throw new Error(
-        `swap: unable to prepare an exact ${params.inputInstrumentId} funding holding for ${formatDecimal10(params.inputAmount)}`,
+        `swap: insufficient unlocked ${params.inputInstrumentId} balance to fund ${formatDecimal10(params.inputAmount)}`,
       );
     }
 
@@ -688,9 +750,20 @@ export const ledger = {
     });
     progress(0); // Submitted to operator.
     const settlementRef = `web-${Date.now()}`;
+    // updateId-only wallets (CIP-0103 SDK / PartyLayer) return the updateId as
+    // primaryCid — NOT a contract id — so the operator recovers the created
+    // OrderFundingRequest from the tree by updateId. Full-tree wallets (token-
+    // standard) return the real cid and no updateId. Mirror the fundOrder
+    // discriminator below.
+    const orderUpdateId = result.auxiliaryCids?.updateId;
     const bindRes = await operator.bindOrder({
-      fundingRequestCid: result.primaryCid as ContractId<'OrderFundingRequest'>,
       settlementRef,
+      ...(orderUpdateId
+        ? { updateId: orderUpdateId }
+        : {
+            fundingRequestCid:
+              result.primaryCid as ContractId<'OrderFundingRequest'>,
+          }),
     });
     progress(1); // Bound: order + allocation request now exist on-ledger.
 
@@ -713,7 +786,7 @@ export const ledger = {
       });
       if (!inputHoldingCids || inputHoldingCids.length === 0) {
         throw new Error(
-          `order funding: no exact unlocked ${lockInstrumentId} holdings cover ${lockAmount}; split holdings first`,
+          `order funding: insufficient unlocked ${lockInstrumentId} balance to cover ${lockAmount}`,
         );
       }
 
@@ -901,7 +974,7 @@ export const ledger = {
     });
     if (!holderLpHoldingCids || holderLpHoldingCids.length === 0) {
       throw new Error(
-        `remove-liquidity: no exact unlocked ${params.lpInstrumentId} holdings cover ${lpTokensToRedeem}`,
+        `remove-liquidity: insufficient unlocked ${params.lpInstrumentId} balance to cover ${lpTokensToRedeem}`,
       );
     }
     const requestedAt = new Date().toISOString();

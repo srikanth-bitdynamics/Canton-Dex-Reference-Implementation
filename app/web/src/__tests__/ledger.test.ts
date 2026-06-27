@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatDecimal,
   formatDecimal10,
+  pickCoveringHoldingCids,
   pickExactHoldingCids,
   planSwapFunding,
 } from '@/services/ledger';
@@ -54,12 +55,35 @@ describe('ledger helpers', () => {
     });
   });
 
-  it('refuses non-exact swap funding rather than over-locking holdings', () => {
+  it('exact picker returns null when no subset sums to the target', () => {
     const holdings = [
       holding('h1', 'USDC', 1000),
       holding('h2', 'USDC', 12000),
     ];
     expect(pickExactHoldingCids(holdings, 'USDC', 100)).toBeNull();
+  });
+
+  it('covering picker locks a single smallest covering holding', () => {
+    const holdings = [
+      holding('h1', 'USDC', 1000),
+      holding('h2', 'USDC', 12000),
+      holding('h3', 'USDC', 250),
+      holding('h4', 'USDC', 750, true), // locked, ineligible
+    ];
+    // 100 fits inside h3 (250) — the smallest single holding that covers it.
+    expect(pickCoveringHoldingCids(holdings, 'USDC', 100)).toEqual(['h3']);
+  });
+
+  it('covering picker accumulates largest-first when no single holding covers', () => {
+    const holdings = [holding('h1', 'BTC', 0.07), holding('h2', 'BTC', 0.08)];
+    // No single holding covers 0.10; lock both (largest-first), surplus returns
+    // as change at settle.
+    expect(pickCoveringHoldingCids(holdings, 'BTC', 0.1)).toEqual(['h2', 'h1']);
+  });
+
+  it('covering picker returns null when the total balance is insufficient', () => {
+    const holdings = [holding('h1', 'BTC', 0.03), holding('h2', 'BTC', 0.04)];
+    expect(pickCoveringHoldingCids(holdings, 'BTC', 0.1)).toBeNull();
   });
 
   it('plans a split when one unlocked holding covers the target with change', () => {

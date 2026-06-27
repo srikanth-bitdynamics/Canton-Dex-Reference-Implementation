@@ -634,7 +634,7 @@ export const ledger = {
     const out = await operator.computeSwapQuote({
       poolId,
       inputInstrumentId,
-      inputAmount: formatDecimal(inputAmount),
+      inputAmount: formatDecimal10(inputAmount),
     });
     return { outputAmount: parseFloat(out.outputAmount) };
   },
@@ -742,8 +742,8 @@ export const ledger = {
       kind: 'place-order',
       pair: { base: params.pairBase, quote: params.pairQuote },
       side: params.side,
-      limitPrice: formatDecimal(params.limitPrice),
-      quantity: formatDecimal(params.quantity),
+      limitPrice: formatDecimal10(params.limitPrice),
+      quantity: formatDecimal10(params.quantity),
       expiry: params.expiry,
       operator: params.context.operator,
       admin: params.context.admin,
@@ -885,8 +885,8 @@ export const ledger = {
       body: JSON.stringify({
         poolCid: params.poolId,
         recipient,
-        baseAmount: formatDecimal(params.baseAmount),
-        quoteAmount: formatDecimal(params.quoteAmount),
+        baseAmount: formatDecimal10(params.baseAmount),
+        quoteAmount: formatDecimal10(params.quoteAmount),
         requestedAt,
       }),
     });
@@ -932,7 +932,7 @@ export const ledger = {
             lpReceiptCid: cids[2],
             baseAmount: req.baseAmount,
             quoteAmount: req.quoteAmount,
-            minLpTokens: formatDecimal(params.minLpTokens),
+            minLpTokens: formatDecimal10(params.minLpTokens),
             knownTotalLpSupply: req.knownTotalLpSupply,
             requestedAt,
           }
@@ -943,7 +943,7 @@ export const ledger = {
             recipient,
             baseAmount: req.baseAmount,
             quoteAmount: req.quoteAmount,
-            minLpTokens: formatDecimal(params.minLpTokens),
+            minLpTokens: formatDecimal10(params.minLpTokens),
             knownTotalLpSupply: req.knownTotalLpSupply,
             requestedAt,
           };

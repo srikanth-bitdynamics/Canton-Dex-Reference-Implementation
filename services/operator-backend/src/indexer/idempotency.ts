@@ -27,7 +27,9 @@ import type {
   SubmitRequest,
   SubscriptionFilter,
   LedgerEvent,
+  CreatedEventRef,
 } from "../ledger/index.js";
+import type { Party } from "@canton-dex/registry-client";
 
 const PENDING_STALE_MS = 60_000;
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -138,6 +140,16 @@ export class IdempotentLedger implements LedgerSubmitter {
 
   query<T>(filter: SubscriptionFilter): Promise<T[]> {
     return this.inner.query<T>(filter);
+  }
+
+  // Forward operator-discovery recovery to the inner ledger. Without this the
+  // wrapper silently drops the optional method, breaking updateId-only wallet
+  // settle (CIP-0103 SDK + PartyLayer) which recover created cids from the tree.
+  treeCreatedEvents(updateId: string, party: Party): Promise<CreatedEventRef[]> {
+    if (!this.inner.treeCreatedEvents) {
+      throw new Error("inner ledger does not support treeCreatedEvents");
+    }
+    return this.inner.treeCreatedEvents(updateId, party);
   }
 
   /** Delete rows older than TTL. Call periodically. */

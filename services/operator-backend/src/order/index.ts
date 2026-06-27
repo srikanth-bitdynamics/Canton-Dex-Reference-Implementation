@@ -5,7 +5,10 @@ import { RegistryClient } from "@canton-dex/registry-client";
 
 import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
 import { LedgerSubmitter } from "../ledger/index.js";
-import { recoverCreatedAllocations } from "../ledger/recover.js";
+import {
+  recoverCreatedAllocations,
+  recoverCreatedFundingRequest,
+} from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import * as dec from "../pool/decimal.js";
 import type { Order, Party, V2TransferLeg } from "../types.js";
@@ -14,7 +17,13 @@ import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from ".
 export type { Match, BookLevel };
 
 export interface OrderBindInput {
-  fundingRequestCid: ContractId<"OrderFundingRequest">;
+  // Explicit created cid (full-tree wallet path, e.g. token-standard); omitted
+  // when `updateId` is given.
+  fundingRequestCid?: ContractId<"OrderFundingRequest">;
+  // Operator-discovery path (updateId-only wallet, e.g. CIP-0103 SDK /
+  // PartyLayer): the funding request the wallet created is recovered from the
+  // transaction tree.
+  updateId?: string | null;
   settlementRef: string;
 }
 
@@ -50,6 +59,24 @@ export class OrderService {
   }
 
   async bind(input: OrderBindInput): Promise<OrderBindResult> {
+    // Operator-discovery: recover the OrderFundingRequest the wallet created
+    // when it returned only an updateId (CIP-0103 SDK / PartyLayer). Mirrors
+    // fund()'s allocation recovery — without this, an updateId-only wallet's
+    // place-order fails downstream because the updateId is passed where a
+    // contract id is expected ("cannot parse ContractId 1220...").
+    let fundingRequestCid = input.fundingRequestCid;
+    if (input.updateId) {
+      fundingRequestCid = (await recoverCreatedFundingRequest(
+        this.ledger,
+        this.operatorParty,
+        input.updateId,
+      )) as ContractId<"OrderFundingRequest">;
+    }
+    if (!fundingRequestCid) {
+      throw new Error(
+        "order bind: supply fundingRequestCid or an updateId to recover it",
+      );
+    }
     return retryOnContention(() =>
       this.ledger.submit<OrderBindResult>({
         actAs: [this.operatorParty],
@@ -58,7 +85,7 @@ export class OrderService {
           kind: "exercise",
           templateId:
             "CantonDex.Dex.OrderFundingRequest:OrderFundingRequest",
-          contractId: input.fundingRequestCid,
+          contractId: fundingRequestCid,
           choice: "OrderFundingRequest_Bind",
           argument: { settlementRef: input.settlementRef },
         },

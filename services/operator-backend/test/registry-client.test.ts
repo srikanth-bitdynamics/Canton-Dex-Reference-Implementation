@@ -16,7 +16,7 @@ describe("RegistryClient.getChoiceContext", () => {
         {
           contractId: "#cfg:0" as ContractId<"InstrumentConfiguration">,
           templateId: "CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration",
-          payloadBlob: "payload",
+          createdEventBlob: "payload",
         },
       ],
     };

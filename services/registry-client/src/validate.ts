@@ -71,13 +71,19 @@ function disclosedContract(v: unknown, what: string): DisclosedContract {
   const dc: DisclosedContract = {
     contractId: str(o, "contractId", what),
     templateId: str(o, "templateId", what),
-    payloadBlob: str(o, "payloadBlob", what),
+    createdEventBlob: str(o, "createdEventBlob", what),
   };
   if (o.contractKeyHash !== undefined) {
     if (typeof o.contractKeyHash !== "string") {
       fail(`${what}.contractKeyHash: expected string, got ${typeof o.contractKeyHash}`);
     }
     dc.contractKeyHash = o.contractKeyHash;
+  }
+  if (o.synchronizerId !== undefined) {
+    if (typeof o.synchronizerId !== "string") {
+      fail(`${what}.synchronizerId: expected string, got ${typeof o.synchronizerId}`);
+    }
+    dc.synchronizerId = o.synchronizerId;
   }
   return dc;
 }

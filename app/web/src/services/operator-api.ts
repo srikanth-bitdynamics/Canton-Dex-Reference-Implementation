@@ -15,7 +15,9 @@ export interface DisclosedContract {
   contractId: string;
   templateId: string;
   contractKeyHash?: string;
-  payloadBlob: string;
+  // Canton's JSON Ledger API disclosed-contract field (was mis-named `payloadBlob`).
+  createdEventBlob: string;
+  synchronizerId?: string;
 }
 
 export interface PoolSlice {

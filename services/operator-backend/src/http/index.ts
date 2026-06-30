@@ -668,7 +668,8 @@ async function routeRequest(
       return;
     }
     const body = await readJson<Record<string, unknown>>(req);
-    // Restrict the relayed authority to the allowlisted parties.
+    // Authorization first: restrict the relayed authority to the allowlisted
+    // parties before validating the rest of the payload.
     const allowParties = cfg.walletRelayParties ?? [];
     const requestedActAs = ((body.actAs as string[] | undefined) ?? []).filter(Boolean);
     const disallowed = requestedActAs.filter((p) => !allowParties.includes(p));
@@ -677,6 +678,30 @@ async function routeRequest(
         error: "wallet relay actAs party not allowlisted",
         code: "forbidden",
         details: { requestedActAs, disallowed, allowParties },
+      });
+      return;
+    }
+    // Then validate the forwarded shape rather than passing the raw body to
+    // Canton (which would echo a bare 400). commands must be a non-empty array
+    // and commandId a non-empty string; userId, if present, must be a string.
+    if (!Array.isArray(body.commands) || body.commands.length === 0) {
+      respondJson(res, 400, {
+        error: "commands must be a non-empty array",
+        code: "bad_request",
+      });
+      return;
+    }
+    if (typeof body.commandId !== "string" || body.commandId.length === 0) {
+      respondJson(res, 400, {
+        error: "commandId must be a non-empty string",
+        code: "bad_request",
+      });
+      return;
+    }
+    if (body.userId !== undefined && typeof body.userId !== "string") {
+      respondJson(res, 400, {
+        error: "userId must be a string when present",
+        code: "bad_request",
       });
       return;
     }
@@ -713,32 +738,58 @@ async function routeRequest(
           `${base}/v2/updates/transaction-tree-by-id/${encodeURIComponent(submitBody.updateId)}`,
         );
         for (const p of new Set(actAs)) treeUrl.searchParams.append("parties", p);
-        const treeRes = await fetch(treeUrl.toString(), {
-          headers: { Authorization: `Bearer ${ledgerToken}` },
-        });
-        if (treeRes.ok) {
-          const tree = (await treeRes.json()) as {
-            transaction?: {
-              eventsById?: Record<
-                string,
-                {
-                  CreatedTreeEvent?: {
-                    value?: { contractId?: string; templateId?: string };
-                  };
-                }
-              >;
-            };
-          };
-          createdEvents = Object.values(
-            tree.transaction?.eventsById ?? {},
-          )
-            .map((e) => e.CreatedTreeEvent?.value)
-            .filter(
-              (v): v is { contractId: string; templateId: string } =>
-                !!v?.contractId,
-            )
-            .map((v) => ({ contractId: v.contractId, templateId: v.templateId ?? "" }));
+        // The transaction tree can lag the submit-and-wait completion
+        // (read-after-write visibility), so retry briefly before giving up.
+        let treeRes: Response | undefined;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          treeRes = await fetch(treeUrl.toString(), {
+            headers: { Authorization: `Bearer ${ledgerToken}` },
+          });
+          if (treeRes.ok) break;
+          await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
         }
+        if (!treeRes || !treeRes.ok) {
+          // The transaction committed (submit-and-wait returned ok) but its tree
+          // could not be fetched. Do NOT fall through to a 200 with empty
+          // createdEvents — to the caller that reads as "0 created allocations"
+          // on a settled tx and throws a misleading count error. Surface the
+          // updateId distinctly so the caller can recover via operator-discovery.
+          const treeStatus = treeRes?.status ?? null;
+          httpLog.warn(
+            "wallet relay: transaction committed but its created-event tree could not be fetched",
+            { updateId: submitBody.updateId, treeStatus },
+          );
+          respondJson(res, 502, {
+            error:
+              "transaction committed but its created events could not be fetched; " +
+              "recover via operator-discovery using updateId",
+            code: "tree_fetch_failed",
+            updateId: submitBody.updateId,
+            treeStatus,
+          });
+          return;
+        }
+        const tree = (await treeRes.json()) as {
+          transaction?: {
+            eventsById?: Record<
+              string,
+              {
+                CreatedTreeEvent?: {
+                  value?: { contractId?: string; templateId?: string };
+                };
+              }
+            >;
+          };
+        };
+        createdEvents = Object.values(
+          tree.transaction?.eventsById ?? {},
+        )
+          .map((e) => e.CreatedTreeEvent?.value)
+          .filter(
+            (v): v is { contractId: string; templateId: string } =>
+              !!v?.contractId,
+          )
+          .map((v) => ({ contractId: v.contractId, templateId: v.templateId ?? "" }));
       }
       respondJson(res, 200, { ...submitBody, createdEvents });
     } catch (e) {

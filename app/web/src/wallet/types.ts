@@ -70,7 +70,11 @@ export interface DisclosedContract {
   contractId: string;
   templateId: string;
   contractKeyHash?: string;
-  payloadBlob: string;
+  // Canton's JSON Ledger API disclosed-contract field: the base64 created-event
+  // blob. (Previously mis-named `payloadBlob`, a key Canton ignores, so disclosed
+  // factory/request contracts never resolved on a real exercise.)
+  createdEventBlob: string;
+  synchronizerId?: string;
 }
 
 // === intent shapes ========================================================

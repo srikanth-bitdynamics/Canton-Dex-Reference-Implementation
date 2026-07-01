@@ -15,6 +15,7 @@ export default defineConfig({
       title: 'Canton DEX',
       description:
         'A full-stack Token Standard V2 (CIP-0112) reference DEX for the Canton Network.',
+      customCss: ['./src/styles/custom.css'],
       social: [{ icon: 'github', label: 'GitHub', href: REPO }],
       // Client-side Mermaid rendering for the <pre class="mermaid"> blocks that
       // sync-docs.mjs emits from ```mermaid fences.

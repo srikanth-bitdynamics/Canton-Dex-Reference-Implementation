@@ -1,4 +1,4 @@
-# Canton-Dex Workflow Design
+# Canton DEX Workflow Design
 
 ## Why Workflow First
 
@@ -136,6 +136,70 @@ There are two distinct workflow families.
 This split matters because the bilateral path and the pool path share the same
 token-standard settlement primitives while preserving different application
 state and cancellation rules.
+
+## Sequence diagrams
+
+These three flows show how the authorities — the trader's wallet, the dApp, the
+operator, and the ledger's Token Standard contracts — choreograph a settlement.
+Every trader-authority step goes through the wallet over CIP-0103; the operator
+submits only what it is authorized to.
+
+### Pool swap (Workflow 9)
+
+```mermaid
+sequenceDiagram
+    actor T as Trader (wallet)
+    participant D as dApp
+    participant O as Operator backend
+    participant L as Ledger (Token Standard + Pool)
+    D->>O: POST /v1/pools/swap/request
+    O-->>D: allocation spec + choice context
+    T->>L: AllocationFactory_Allocate (lock input holding)
+    Note over T,L: trader-signed via wallet (CIP-0103)
+    D->>O: POST /v1/pools/swap (allocation cid)
+    O->>L: PoolRules_Swap -> SettlementFactory_SettleBatch
+    Note over O,L: pool + trader allocations settle atomically (DvP)
+    L-->>O: settled; pool state rolled forward
+    O-->>D: swap result
+```
+
+### Add liquidity — delivery-versus-payment (Workflow 7)
+
+```mermaid
+sequenceDiagram
+    actor LP as LP (wallet)
+    participant D as dApp
+    participant O as Operator + lpRegistrar
+    participant L as Ledger
+    D->>O: POST /v1/pools/add-liquidity/request
+    O->>L: create LiquidityAllocationRequest
+    O-->>D: request + specs (base, quote, LP receipt) + factories
+    LP->>L: 3x AllocationFactory_Allocate (base, quote, LP receipt)
+    Note over LP,L: LP-signed via wallet
+    D->>O: POST /v1/pools/add-liquidity/settle (allocation cids)
+    O->>L: PoolLiquidityRules_SettleAddLiquidity
+    Note over O,L: two per-admin SettleBatches — base/quote under pool admin,<br/>LP mint under lpRegistrar
+    L-->>O: funds in pool; LP tokens minted to LP; PoolState rewritten
+    O-->>D: settled
+```
+
+### RFQ accept (Workflow 2)
+
+```mermaid
+sequenceDiagram
+    actor T as Trader (wallet)
+    actor Dl as Dealer (wallet)
+    participant O as Operator
+    participant L as Ledger
+    T->>O: POST /v1/rfq (create RFQ)
+    Dl->>O: post RfqQuote
+    T->>O: POST /v1/rfq/accept
+    O->>L: Rfq_Accept (operator + trader) -> MatchedTrade + PolicyReceipt
+    T->>L: author allocation
+    Dl->>L: author allocation
+    O->>L: MatchedTrade_Settle -> SettlementFactory_SettleBatch (per admin)
+    L-->>O: settled; trade recorded (private to counterparties)
+```
 
 ## Workflow 1: Pair Listing
 
@@ -471,3 +535,7 @@ allocation and settlement surface, not a custom internal escrow system.
 The current reference stops at that shared Token Standard boundary. It does not
 yet introduce custom Daml interfaces or a separate `DexRules` contract to
 govern pair creation.
+
+---
+
+**Where to read next:** [Architecture](architecture.md) · [Builder Guide](../guides/builder-guide.md) · [Allocation Surface](../reference/allocation-surface.md) · [All docs](../README.md)

@@ -31,12 +31,12 @@ substitutes a price.
   policy or reference-price guard on the operator side beyond the
   fee-model the pair config encodes.
 - RFQ prices are whatever dealers quote. The
-  [PolicyReceipt](../trading/CantonDex/Dex/PolicyReceipt.daml) records
+  [PolicyReceipt](../../trading/CantonDex/Dex/PolicyReceipt.daml) records
   *which* quote ranked where under which policy version, but does not
   certify that the chosen price is "good" — only that the policy was
   applied honestly.
 - The fiat estimates the dApp shows next to instrument balances
-  ([assets.ts](../app/web/src/primitives/assets.ts) `referencePrice`)
+  ([assets.ts](../../app/web/src/primitives/assets.ts) `referencePrice`)
   are **hard-coded display values**, not live data. They are
   deliberately not used for any executable decision.
 
@@ -51,7 +51,7 @@ points are:
    attested price. The signer would be a separate `oracleAuthority`
    party in the choice context (production registries already follow
    this pattern for credential checks — see
-   [registry-prerequisites.md](./registry-prerequisites.md)).
+   [registry-prerequisites.md](../guides/registry-integration.md)).
 2. **TWAP for compliance reporting.** A separate `PoolPriceObservation`
    template the operator creates after each `PoolRules_Swap`, sampled by an
    off-chain ingestor. Pure observability, no consensus role.
@@ -63,3 +63,7 @@ None of the above are implemented. The current design intentionally
 keeps pricing endogenous so that a malicious external feed cannot move
 on-ledger funds, at the cost of the protections an oracle would
 provide.
+
+---
+
+**Where to read next:** [Architecture](architecture.md) · [Registry Integration](../guides/registry-integration.md) · [All docs](../README.md)

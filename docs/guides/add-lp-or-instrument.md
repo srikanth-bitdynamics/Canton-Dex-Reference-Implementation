@@ -1,6 +1,6 @@
 # Guide: Issuing a new LP token or lifecycle-rich instrument
 
-How to mint a new asset on Canton-Dex using Token Standard V2 (CIP-0112)
+How to mint a new asset on Canton DEX using Token Standard V2 (CIP-0112)
 surfaces. This covers both the simple case (fungible LP token) and examples of
 lifecycle-rich assets (vested, dividend-paying, restricted) implemented through
 registry-specific contracts.
@@ -216,3 +216,7 @@ The reference doesn't ship either; build them in your fork.
   driving V2 mints/burns
 - `trading-tests/CantonDex/Tests/InstrumentTests.daml`: registration,
   mint, transfer, burn flows in Daml Script
+
+---
+
+**Where to read next:** [LP Tokens](../concepts/lp-tokens.md) · [Add a Trading Pair](add-a-trading-pair.md) · [All docs](../README.md)

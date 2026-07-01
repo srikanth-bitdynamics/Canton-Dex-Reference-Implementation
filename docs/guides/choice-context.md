@@ -164,3 +164,7 @@ disclosure endpoint).
 
 The operator backend's `registry-client` module provides typed
 errors for each so the calling code path can recover correctly.
+
+---
+
+**Where to read next:** [Registry Integration](registry-integration.md) · [Allocation Surface](../reference/allocation-surface.md) · [All docs](../README.md)

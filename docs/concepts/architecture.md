@@ -1,8 +1,8 @@
-# Canton-Dex Architecture
+# Canton DEX Architecture
 
 ## Purpose
 
-Canton-Dex is a token-standard-native reference DEX for Canton.
+Canton DEX is a token-standard-native reference DEX for Canton.
 
 It is intentionally not a generic settlement engine. The goal is to show
 builders how to build a real exchange directly on top of:
@@ -52,8 +52,8 @@ instrument semantics instead of hardcoding asset families in the exchange.
 
 ### 3. Token Standard V2 allocation surface
 
-The pool design depends on the V2 allocation extensions released in
-Splice's `token-standard-v2-upcoming` branch:
+The pool design depends on the Token Standard V2 (CIP-0112) allocation
+extensions, now merged into `canton-network/splice` `main`:
 
 - iterated settlement
 - `nextIterationFunding`
@@ -460,3 +460,7 @@ canton-dex/
     stable-pool/  # separate Daml project consuming the DEX DAR
   vendor/splice/  # vendored token-standard packages
 ```
+
+---
+
+**Where to read next:** [Workflows](workflows.md) · [Liquidity & Custody](liquidity-and-custody.md) · [Glossary](glossary.md) · [All docs](../README.md)

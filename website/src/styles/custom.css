@@ -18,3 +18,11 @@
     --sl-text-h5: 1rem;
   }
 }
+
+/* Prev/Next pagination: Starlight hardcodes the page-title link at ~24px/400,
+ * which is oversized. Bring it in line with the tighter heading scale. */
+.pagination-links a .link-title {
+  font-size: 1.0625rem; /* ~17px */
+  font-weight: 600;
+}
+

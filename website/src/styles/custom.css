@@ -26,3 +26,16 @@
   font-weight: 600;
 }
 
+/* Long code tokens (env vars, package names, contract ids) must wrap inside
+ * table cells — otherwise they force the table wider than the content column
+ * and it bleeds out (Starlight's table wrapper is overflow-x: visible). */
+.sl-markdown-content :is(td, th) code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Nudge inline code up from Starlight's small default (~13px) for readability. */
+.sl-markdown-content :not(pre) > code {
+  font-size: 0.875em;
+}
+

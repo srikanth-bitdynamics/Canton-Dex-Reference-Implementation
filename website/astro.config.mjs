@@ -25,10 +25,16 @@ export default defineConfig({
           attrs: { type: 'module' },
           content:
             "import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';" +
-            "mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });" +
-            "const run = () => mermaid.run({ querySelector: 'pre.mermaid' });" +
-            "document.addEventListener('astro:page-load', run);" +
-            "if (document.readyState !== 'loading') run(); else addEventListener('DOMContentLoaded', run);",
+            "const theme = () => document.documentElement.dataset.theme === 'light' ? 'default' : 'dark';" +
+            "const render = () => {" +
+            "  const els = [...document.querySelectorAll('pre.mermaid')];" +
+            "  els.forEach(el => { if (el.dataset.src == null) el.dataset.src = el.textContent; el.removeAttribute('data-processed'); el.innerHTML = el.dataset.src; });" +
+            "  mermaid.initialize({ startOnLoad: false, theme: theme(), securityLevel: 'loose' });" +
+            "  if (els.length) mermaid.run({ nodes: els });" +
+            "};" +
+            "document.addEventListener('astro:page-load', render);" +
+            "if (document.readyState !== 'loading') render(); else addEventListener('DOMContentLoaded', render);" +
+            "new MutationObserver(m => { if (m.some(x => x.attributeName === 'data-theme')) render(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });",
         },
       ],
       sidebar: [

@@ -159,7 +159,7 @@ sequenceDiagram
     D->>O: POST /v1/pools/swap (allocation cid)
     O->>L: PoolRules_Swap -> SettlementFactory_SettleBatch
     Note over O,L: pool + trader allocations settle atomically (DvP)
-    L-->>O: settled; pool state rolled forward
+    L-->>O: settled, pool state rolled forward
     O-->>D: swap result
 ```
 
@@ -179,7 +179,7 @@ sequenceDiagram
     D->>O: POST /v1/pools/add-liquidity/settle (allocation cids)
     O->>L: PoolLiquidityRules_SettleAddLiquidity
     Note over O,L: two per-admin SettleBatches — base/quote under pool admin,<br/>LP mint under lpRegistrar
-    L-->>O: funds in pool; LP tokens minted to LP; PoolState rewritten
+    L-->>O: funds in pool, LP tokens minted to LP, PoolState rewritten
     O-->>D: settled
 ```
 
@@ -198,7 +198,7 @@ sequenceDiagram
     T->>L: author allocation
     Dl->>L: author allocation
     O->>L: MatchedTrade_Settle -> SettlementFactory_SettleBatch (per admin)
-    L-->>O: settled; trade recorded (private to counterparties)
+    L-->>O: settled, trade recorded (private to counterparties)
 ```
 
 ## Workflow 1: Pair Listing

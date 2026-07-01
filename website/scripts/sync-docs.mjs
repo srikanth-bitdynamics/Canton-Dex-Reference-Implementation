@@ -67,6 +67,11 @@ for (const abs of walk(DOCS)) {
     return `${pre}${GH}/${relative(REPO, dest)}${anchor}${post}`; // escapes docs/
   });
 
+  // Render ```mermaid fences as <pre class="mermaid"> so client-side mermaid.js
+  // draws them (Starlight/Expressive Code would otherwise show the raw source).
+  src = src.replace(/```mermaid\s*\n([\s\S]*?)```/g, (_m, code) =>
+    `<pre class="mermaid">\n${code.replace(/<br\s*\/?>/g, ' ').trimEnd()}\n</pre>`);
+
   writeFileSync(outAbs, `---\ntitle: ${JSON.stringify(title)}\n---\n\n${src}`);
   count++;
 }

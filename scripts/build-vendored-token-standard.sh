@@ -11,7 +11,7 @@ PIN_FILE="$ROOT_DIR/vendor/splice/VENDOR_PIN.md"
 if [[ -f "$PIN_FILE" ]]; then
   echo "==> Vendored Token Standard pin ($PIN_FILE):"
   grep -E '^\| (Upstream repo|Branch|Commit|In-tree|Commit date)' "$PIN_FILE" || true
-  echo "    (full delta: docs/allocation-surface.md)"
+  echo "    (details: docs/reference/allocation-surface.md)"
 else
   echo "WARNING: vendor pin file not found at $PIN_FILE" >&2
 fi

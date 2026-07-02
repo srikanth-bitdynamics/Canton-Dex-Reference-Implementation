@@ -17,7 +17,8 @@ previously this information lived only in a git commit message.
 
 - Token Standard **V2** has landed on `canton-network/splice` `main`. The former
   `token-standard-v2-upcoming` branch (the previous pin) is now fully merged:
-  it compares **0 commits ahead / 65 behind** `main`, and `token-standard/`
+  it compared **0 commits ahead / 65 behind** `main` as of the sync on
+  2026-06-30 (the load-bearing fact is the 0-ahead), and `token-standard/`
   exists on `main`. V2 becomes the default token standard from mid-July 2026.
   The vendored sources therefore now track stable `main` rather than the stale
   pre-release branch.
@@ -30,7 +31,7 @@ previously this information lived only in a git commit message.
   `examples/` packages carry an internal refactor (function renames, added
   deadline/lock validation), but they build clean and all `trading-tests`
   scenarios still pass. See
-  [`../../docs/allocation-surface.md`](../../docs/allocation-surface.md) for the
+  [`../../docs/reference/allocation-surface.md`](../../docs/reference/allocation-surface.md) for the
   field-by-field allocation delta.
 - **SDK version:** upstream `main` builds these packages with
   `sdk-version: 3.5.2`. The vendored `daml.yaml` files here are pinned to the
@@ -39,9 +40,14 @@ previously this information lived only in a git commit message.
   Token Standard V2 sources without forcing a toolchain change. Migrating the
   whole repo to SDK 3.5.2 (which uses DPM rather than the legacy Daml Assistant)
   is a separate, later step.
-- Only the Daml package sources + `daml.yaml` were synced. The `cli/` tooling
-  and the docs under `token-standard/` are reference-only and were left
-  untouched.
+- Sync scope: the API packages, `splice-token-standard-utils`, and the
+  `examples/splice-test-token-v2` + `examples/splice-token-test-trading-app-v2`
+  sources + `daml.yaml` were synced. The `cli/` tooling and the docs under
+  `token-standard/` are reference-only and were left untouched. Three unused
+  test-harness source sets remain at the previous pin (`9340178a`):
+  `splice-token-standard-v1-test/`, `splice-token-standard-v2-test/`, and
+  `examples/splice-test-token-v1/.../TestTokenV1.daml`. None of them is
+  consumed by the DEX build, `trading/`, or `trading-tests/`.
 
 ## Migration commitment
 

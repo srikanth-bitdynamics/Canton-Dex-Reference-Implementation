@@ -208,3 +208,7 @@ Requires `OPERATOR_ADMIN_TOKEN`.
 
 Mark this plan ✅ once every checkbox above is verified against a
 real Canton testnet validator.
+
+---
+
+**Where to read next:** [Run on a Testnet](run-on-testnet.md) · [Operator Runbook](operator-runbook.md) · [All docs](../README.md)

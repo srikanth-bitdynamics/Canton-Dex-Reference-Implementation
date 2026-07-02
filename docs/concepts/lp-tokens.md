@@ -2,7 +2,7 @@
 
 ## Decision
 
-**Canton-Dex LP tokens are unversioned.** The LP token `instrumentId` for a
+**Canton DEX LP tokens are unversioned.** The LP token `instrumentId` for a
 given pool is derived from the pool's pair (e.g., `BTC-USDC-LP`) and does
 **not** include a version suffix or per-iteration discriminator.
 
@@ -90,13 +90,17 @@ consuming LP tokens does not. The two surfaces look fungible-equivalent
 externally but have different upgrade semantics under the hood, and
 that's by design.
 
-See [CIP-0112 §5](https://github.com/bame-da/cips/blob/20a32aa7b219fa6d4ea5aa568d530eaed360fbb1/cip-0112/cip-0112.md#5-backwards-compatibility)
+See [CIP-0112](https://github.com/global-synchronizer-foundation/cips/blob/main/cip-0112/cip-0112.md)
 for the canonical V1→V2 compatibility framing — V1 instruments continue
 to exist alongside V2 implementations rather than being bulk-migrated.
 
 ## See also
 
-- [docs/registry-prerequisites.md](registry-prerequisites.md) — for how the
+- [Registry Integration](../guides/registry-integration.md) — for how the
   LP registry config is registered at pool creation in the reference registry,
   and for the registry-specific force-upgrade pattern some assets may exercise.
-- [docs/workflows.md](workflows.md) — for the add/remove-liquidity flow.
+- [Workflows](workflows.md) — for the add/remove-liquidity flow.
+
+---
+
+**Where to read next:** [Liquidity & Custody](liquidity-and-custody.md) · [Add an LP or Instrument](../guides/add-lp-or-instrument.md) · [All docs](../README.md)

@@ -152,3 +152,7 @@ Common failure modes:
 | `404: template not found` | DAR not uploaded, or operator party can't see it |
 | `409: contention` | Submission stale; the driver retries automatically |
 | `400: requires authorizer X` | `actAs` doesn't include all parties the choice needs |
+
+---
+
+**Where to read next:** [Getting Started](../getting-started.md) · [Validator Test Plan](../guides/validator-test-plan.md) · [All docs](../README.md)

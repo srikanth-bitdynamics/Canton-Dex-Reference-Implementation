@@ -32,7 +32,7 @@ and runbooks for RFQs, prefunded orders, pools, swaps, and LP tokens.
 <table align="center"><tr><td>
 
 ```sh
-git clone https://github.com/bitdynamics-ab/canton-dex-reference-implementation.git
+git clone https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation.git
 cd Canton-Dex-Reference-Implementation
 
 (cd services/operator-backend && npm install && npm run dev)
@@ -139,7 +139,7 @@ an in-memory ledger and seeded demo data.
 ### 1. Install
 
 ```bash
-git clone https://github.com/bitdynamics-ab/canton-dex-reference-implementation.git
+git clone https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation.git
 cd Canton-Dex-Reference-Implementation
 
 (cd services/operator-backend && npm install)
@@ -181,12 +181,12 @@ Open <http://localhost:5173>.
 
 For a real Canton participant or testnet validator, start with:
 
-- [`docs/run-testnet.md`](docs/run-testnet.md) for the testnet setup flow.
-- [`docs/deployment.md`](docs/deployment.md) for Docker Compose and production
+- [`docs/guides/run-on-testnet.md`](docs/guides/run-on-testnet.md) for the testnet setup flow.
+- [`docs/guides/deployment.md`](docs/guides/deployment.md) for Docker Compose and production
   environment variables.
-- [`docs/operator-runbook.md`](docs/operator-runbook.md) for recovery,
+- [`docs/guides/operator-runbook.md`](docs/guides/operator-runbook.md) for recovery,
   observability, cleanup, and incident response.
-- [`docs/testnet-validator-test-plan.md`](docs/testnet-validator-test-plan.md)
+- [`docs/guides/validator-test-plan.md`](docs/guides/validator-test-plan.md)
   for a full live-validation checklist.
 
 The operator backend signs operator-authority commands only. Trader-authority
@@ -246,20 +246,20 @@ registry by module/template. It implements upstream Token Standard V2
 interfaces, but it does not define custom Daml interfaces that decouple those
 components into independently swappable apps.
 
-Read [`docs/architecture.md`](docs/architecture.md) and
-[`docs/workflows.md`](docs/workflows.md) for the full model.
+Read [`docs/concepts/architecture.md`](docs/concepts/architecture.md) and
+[`docs/concepts/workflows.md`](docs/concepts/workflows.md) for the full model.
 
 ## Workflow Coverage
 
 | Workflow | Where To Read | Key Contracts |
 |---|---|---|
-| Pair listing | [`docs/guide-add-trading-pair.md`](docs/guide-add-trading-pair.md) | `DexPair` |
-| RFQ and matched trade | [`docs/workflows.md`](docs/workflows.md) | `Rfq`, `RfqQuote`, `MatchedTrade`, `TradeAllocationRequest` |
-| Orders | [`docs/workflows.md`](docs/workflows.md) | `OrderFundingRequest`, `Order`, `OrderAllocationRequest`, `OrderMatchExecution` |
-| Pools and swaps | [`docs/lp-liquidity-custody.md`](docs/lp-liquidity-custody.md) | `Pool`, `PoolState`, `PoolSlice`, `PoolRules` |
-| Add/remove liquidity | [`docs/lp-liquidity-custody.md`](docs/lp-liquidity-custody.md) | `PoolLiquidityRules`, `LiquidityAllocationRequest`, `LPTokenPolicy` |
-| LP instruments | [`docs/guide-new-lp-or-instrument.md`](docs/guide-new-lp-or-instrument.md) | `LPTokenPolicy`, reference-registry instrument config |
-| Choice context | [`docs/choice-context-spec.md`](docs/choice-context-spec.md) | Registry factories and Token Standard choices |
+| Pair listing | [`docs/guides/add-a-trading-pair.md`](docs/guides/add-a-trading-pair.md) | `DexPair` |
+| RFQ and matched trade | [`docs/concepts/workflows.md`](docs/concepts/workflows.md) | `Rfq`, `RfqQuote`, `MatchedTrade`, `TradeAllocationRequest` |
+| Orders | [`docs/concepts/workflows.md`](docs/concepts/workflows.md) | `OrderFundingRequest`, `Order`, `OrderAllocationRequest`, `OrderMatchExecution` |
+| Pools and swaps | [`docs/concepts/liquidity-and-custody.md`](docs/concepts/liquidity-and-custody.md) | `Pool`, `PoolState`, `PoolSlice`, `PoolRules` |
+| Add/remove liquidity | [`docs/concepts/liquidity-and-custody.md`](docs/concepts/liquidity-and-custody.md) | `PoolLiquidityRules`, `LiquidityAllocationRequest`, `LPTokenPolicy` |
+| LP instruments | [`docs/guides/add-lp-or-instrument.md`](docs/guides/add-lp-or-instrument.md) | `LPTokenPolicy`, reference-registry instrument config |
+| Choice context | [`docs/guides/choice-context.md`](docs/guides/choice-context.md) | Registry factories and Token Standard choices |
 
 ## Wallet Support
 
@@ -273,7 +273,7 @@ The frontend has a wallet-provider abstraction. Current providers include:
 - Mock provider for local development.
 
 PartyLayer live-validation steps are documented in
-[`docs/run-testnet.md`](docs/run-testnet.md).
+[`docs/guides/run-on-testnet.md`](docs/guides/run-on-testnet.md).
 
 ## Development Commands
 
@@ -300,18 +300,21 @@ bash scripts/build-trading-surface.sh
 ./scripts/e2e-smoke.sh
 ```
 
-## Token Standard Dependency
+## Token Standard V2
 
-This reference builds against a **pre-release** Token Standard V2 branch, not
-released TSV2. The vendored sources under [`vendor/splice/`](vendor/splice/) are
-pinned to upstream `token-standard-v2-upcoming` at a specific commit, recorded
-in [`vendor/splice/VENDOR_PIN.md`](vendor/splice/VENDOR_PIN.md). The pool design
-depends on iterated-settlement and committed-allocation semantics that live on
-that branch but are not yet part of a released TSV2; the field-by-field delta is
-documented in [`docs/allocation-surface.md`](docs/allocation-surface.md).
+This reference is built on the Canton Network **Token Standard V2 (CIP-0112)** —
+the privacy, performance, and traditional-accounting revision of the base token
+standard (**CIP-0056**) — and uses the **CIP-0103** dApp standard for
+trader-authorized wallet submissions.
 
-This is not a long-term fork: when those semantics land in a released Token
-Standard V2, the repo will re-pin `vendor/splice/` to that release.
+Token Standard V2 has **merged into `canton-network/splice` `main`** and becomes
+the network default from **mid-July 2026**. The vendored V2 sources under
+[`vendor/splice/`](vendor/splice/) are pinned to a specific upstream commit,
+recorded in [`vendor/splice/VENDOR_PIN.md`](vendor/splice/VENDOR_PIN.md); the
+repo re-pins as the surface stabilizes on `main`. The pool relies on
+iterated-settlement and committed-allocation semantics — the exact surface it
+depends on is documented in
+[Allocation Surface](docs/reference/allocation-surface.md).
 
 ## Project Maturity
 
@@ -325,17 +328,14 @@ intend to run.
 
 ## Documentation
 
-Start here:
+The full documentation set is in **[`docs/README.md`](docs/README.md)** — organized as
+Getting Started, Concepts, Guides, and Reference. Good entry points:
 
-- [`docs/quickstart.md`](docs/quickstart.md) for clone-to-tests onboarding.
-- [`docs/user-guide.md`](docs/user-guide.md) for trader, LP, dealer, and
-  operator UI flows.
-- [`docs/builder-guide.md`](docs/builder-guide.md) for extending the reference.
-- [`docs/api-reference.md`](docs/api-reference.md) for backend endpoints.
-- [`docs/registry-prerequisites.md`](docs/registry-prerequisites.md) for
-  registry assumptions.
-- [`docs/pricing-sources.md`](docs/pricing-sources.md) for configured and
-  pool-derived prices.
+- **[Getting Started](docs/getting-started.md)** — run the whole stack locally.
+- **[Overview](docs/concepts/overview.md)** — what it is and the trust model.
+- **[Builder Guide](docs/guides/builder-guide.md)** — extend the reference.
+- **[HTTP API](docs/reference/http-api.md)** — backend endpoints.
+- **[Using the dApp](docs/guides/using-the-dapp.md)** — trader, LP, and dealer flows.
 
 ## Contributing
 

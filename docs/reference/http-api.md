@@ -191,3 +191,36 @@ authority writes. Instead it hands intents to the active
 | `not_found` | 404 | route or resource not found |
 | `payload_too_large` | 413 | body > 1 MiB |
 | `internal_error` | 500 | unexpected server error |
+
+
+## Examples
+
+All examples assume the local backend on `http://localhost:8080`. Reads need no
+auth; `/v1/admin/*` writes need `Authorization: Bearer $OPERATOR_ADMIN_TOKEN`.
+
+```bash
+# Read: trading pairs, pools, and a trader's holdings
+curl -s http://localhost:8080/v1/pairs   | python3 -m json.tool
+curl -s http://localhost:8080/v1/pools   | python3 -m json.tool
+curl -s "http://localhost:8080/v1/holdings?owner=$TRADER" | python3 -m json.tool
+
+# Advisory swap quote (re-validated on-ledger by PoolRules_Swap)
+curl -s -X POST http://localhost:8080/v1/swaps/quote \
+  -H 'Content-Type: application/json' \
+  -d '{"poolId":"<Pool cid>","inputInstrumentId":"BTC","inputAmount":"0.5"}'
+# -> {"outputAmount":"9852.14..."}
+
+# Create an RFQ on a trader's behalf
+curl -s -X POST http://localhost:8080/v1/rfq \
+  -H 'Content-Type: application/json' \
+  -d '{"trader":"'"$TRADER"'","rfqId":"rfq-1","pair":"BTC/USDC","side":"Buy",
+       "size":"0.5","expiresAt":"2026-12-31T00:00:00Z","whitelist":[],"createdAt":"2026-07-01T00:00:00Z"}'
+```
+
+The `POST` bodies for the order lifecycle (`/v1/orders/bind`, `/v1/orders/fund`),
+the pool DvP settle endpoints, and `/v1/admin/*` are the pass-through inputs
+defined in `services/operator-backend/src/{order,pool,matched-trade,admin}/index.ts`.
+
+---
+
+**Where to read next:** [Builder Guide](../guides/builder-guide.md) · [Choice Context](../guides/choice-context.md) · [All docs](../README.md)

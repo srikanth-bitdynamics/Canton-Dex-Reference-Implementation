@@ -1,14 +1,14 @@
 # Guide: Adding a new trading pair
 
 End-to-end recipe for listing a new pair (say `ETH/USDT`) on a running
-Canton-Dex deployment. Assumes the operator backend is already wired
+Canton DEX deployment. Assumes the operator backend is already wired
 to a participant and the base + quote assets already have registries that
 produce Token Standard V2 holdings, allocation factories, and settlement
 factories.
 
 If the base or quote asset does **not** yet have a V2-compatible registry,
 do that first: see
-[`guide-new-lp-or-instrument.md`](guide-new-lp-or-instrument.md).
+[`add-lp-or-instrument.md`](add-lp-or-instrument.md).
 
 ## Inputs you need
 
@@ -147,3 +147,7 @@ curl -s 'http://localhost:8080/v1/swaps?pair=ETH/USDT&limit=10'
   register or integrate it first. Pair creation may succeed, but trades will
   not flow because wallets and the operator cannot create or settle the
   required V2 holdings and allocations.
+
+---
+
+**Where to read next:** [Add an LP or Instrument](add-lp-or-instrument.md) · [Builder Guide](builder-guide.md) · [All docs](../README.md)

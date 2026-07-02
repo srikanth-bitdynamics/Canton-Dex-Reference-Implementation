@@ -107,3 +107,7 @@ The LP-token mint/burn legs use the special `mintAccount`/`burnAccount`
 currently assume a real owner: the `Allocation` signatory, settlement
 crediting, and the allocate factory. `RealRegistry` already supports
 these semantics.
+
+---
+
+**Where to read next:** [LP Tokens](lp-tokens.md) · [Pricing](pricing.md) · [Registry Integration](../guides/registry-integration.md) · [All docs](../README.md)

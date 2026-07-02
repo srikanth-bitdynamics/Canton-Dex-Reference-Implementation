@@ -1,7 +1,7 @@
 // Registry client. Single integration point between the operator
 // backend and an asset registrar's HTTP endpoints.
 //
-// Endpoints (matching docs/choice-context-spec.md):
+// Endpoints (matching docs/guides/choice-context.md):
 //   GET  /registry/instrument-config/:id
 //   GET  /registry/credentials?holder=:p
 //   GET  /registry/factories/:admin

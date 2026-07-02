@@ -92,10 +92,10 @@ spend funds the authorizer never granted has to submit an **invalid
 Daml transaction**, which the engine rejects regardless of operator
 intent.
 
-The mock at [MockRegistry.daml](../trading/CantonDex/Testing/MockRegistry.daml)
+The mock at [MockRegistry.daml](../../trading/CantonDex/Testing/MockRegistry.daml)
 implements these conservation rules and is covered by the iterated
 settlement tests in
-[EndToEndTests.daml](../trading-tests/CantonDex/Tests/EndToEndTests.daml).
+[EndToEndTests.daml](../../trading-tests/CantonDex/Tests/EndToEndTests.daml).
 Production registries are expected to do at least the same.
 
 ## Choice-context retrieval the DEX needs
@@ -107,7 +107,7 @@ required, credential CIDs that satisfy holder/issuer requirements. The DEX
 operator backend's **registry-client** module is responsible for fetching the
 registry-specific context and attaching it to the choice arguments.
 
-See [choice-context-spec.md](./choice-context-spec.md) for the exact
+See [Choice Context](choice-context.md) for the exact
 inputs each registry choice expects.
 
 ## Force-upgrade for passive holders
@@ -162,7 +162,7 @@ The DEX has three classes of holdings to think about:
 3. **LP holdings.** Issued through the LP registrar/policy component. The
    reference LP token has no off-ledger lifecycle event to crystallize. There
    is no force-upgrade event for LP tokens in this reference — see
-   [docs/lp-token-versioning.md](lp-token-versioning.md).
+   [LP Tokens](../concepts/lp-tokens.md).
 
 ### What DEX integrators should do
 
@@ -195,3 +195,7 @@ backend's command path does not cache cids across requests.
   logic. The `Credentials.daml` model provides the reference type
   shape; production registries can replace `verifyCredentials` with
   their own verifier, typically backed by a credential registry.
+
+---
+
+**Where to read next:** [Choice Context](choice-context.md) · [Allocation Surface](../reference/allocation-surface.md) · [All docs](../README.md)

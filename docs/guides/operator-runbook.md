@@ -134,7 +134,7 @@ Off-chain telemetry the operator should also collect:
   `LiquidityAllocationRequest`, and `MintRequest` records have been open
   without a downstream accept.
 
-### Indexer-backed endpoints (v0.0.7+)
+### Indexer-backed endpoints (v0.1.0+)
 
 The operator backend ships with a polling indexer that projects ledger
 state into a local SQLite database (`data/operator.db` by default).
@@ -200,7 +200,7 @@ Either:
   existing contracts from the old name remain queryable but cannot be
   upgraded.
 
-The smart-upgrade test cases live in `docs/run-testnet.md` "Smart
+The smart-upgrade test cases live in `docs/guides/run-on-testnet.md` "Smart
 upgrade" section.
 
 ### LP supply drift
@@ -257,3 +257,7 @@ responsibilities stay decoupled.
 
 These are operational concerns inherited from the underlying Canton
 deployment and are not constrained by the DEX contract surface.
+
+---
+
+**Where to read next:** [Operator Guide](operator-guide.md) · [Deployment](deployment.md) · [All docs](../README.md)

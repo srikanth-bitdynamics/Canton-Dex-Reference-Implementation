@@ -7,8 +7,8 @@ and pools, observes settlement events, runs the matching engine,
 collects fees, and recovers from incidents.
 
 This guide is the operational counterpart to the user-facing
-[`user-guide.md`](user-guide.md). For the design rationale behind these
-flows, see [`workflows.md`](workflows.md).
+[`using-the-dapp.md`](using-the-dapp.md). For the design rationale behind these
+flows, see [`../concepts/workflows.md`](../concepts/workflows.md).
 
 ---
 
@@ -95,7 +95,7 @@ curl -fsS http://localhost:8080/v1/context
 curl -fsS http://localhost:8080/v1/pools
 ```
 
-See [`docs/testnet-validator-test-plan.md`](testnet-validator-test-plan.md)
+See [`validator-test-plan.md`](validator-test-plan.md)
 for the full live-validation checklist (10 phases, all the way through
 wallet flows and resilience tests).
 
@@ -271,8 +271,12 @@ operator-tooled.
 
 ## See also
 
-- [`docs/architecture.md`](architecture.md) — design rationale
-- [`docs/registry-prerequisites.md`](registry-prerequisites.md)
-- [`docs/operator-runbook.md`](operator-runbook.md) — incident playbook
-- [`docs/api-reference.md`](api-reference.md) — every HTTP endpoint
-- [`docs/testnet-validator-test-plan.md`](testnet-validator-test-plan.md)
+- [`../concepts/architecture.md`](../concepts/architecture.md) — design rationale
+- [`registry-integration.md`](registry-integration.md)
+- [`operator-runbook.md`](operator-runbook.md) — incident playbook
+- [`../reference/http-api.md`](../reference/http-api.md) — every HTTP endpoint
+- [`validator-test-plan.md`](validator-test-plan.md)
+
+---
+
+**Where to read next:** [Operator Runbook](operator-runbook.md) · [Deployment](deployment.md) · [Run on a Testnet](run-on-testnet.md) · [All docs](../README.md)

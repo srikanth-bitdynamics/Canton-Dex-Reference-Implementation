@@ -154,3 +154,7 @@ Operator-authority calls go through the backend. Trader-authority calls, such as
 authoring allocations for add/remove liquidity, swaps, and order funding, must
 go through a wallet or another user-authorized submitter. The backend should not
 sign as traders.
+
+---
+
+**Where to read next:** [Deployment](deployment.md) · [Validator Test Plan](validator-test-plan.md) · [All docs](../README.md)

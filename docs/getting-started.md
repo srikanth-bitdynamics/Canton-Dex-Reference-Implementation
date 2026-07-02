@@ -7,7 +7,7 @@ in-memory ledger, so you can have the full stack up in a few minutes.
 
 > TL;DR
 > ```bash
-> git clone https://github.com/bitdynamics-ab/canton-dex-reference-implementation.git && cd canton-dex-reference-implementation
+> git clone https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation.git && cd Canton-Dex-Reference-Implementation
 > bash scripts/run-local-daml-tests.sh                                 # Daml build + tests
 > (cd services/operator-backend && npm ci && npm run dev)              # backend → :8080
 > (cd app/web && cp .env.example .env.local && npm ci && npm run dev)  # dApp   → :5173
@@ -156,9 +156,9 @@ The dev backend is in-memory. To run on real Canton:
 - **LocalNet** — a self-contained Canton + Splice network on one host; build the
   DAR, upload it + the V2 DARs, seed a pair/pool, point the backend at the
   participant (`CANTON_LEDGER_URL`), and run `npm run start`. See
-  `docs/deployment.md`.
+  `docs/guides/deployment.md`.
 - **Testnet** — `scripts/deploy-testnet.sh` uploads the DAR + seeds; record the
-  vetted package id + seed CIDs in `docs/run-testnet.md`.
+  vetted package id + seed CIDs in `docs/guides/run-on-testnet.md`.
 
 ---
 
@@ -169,7 +169,10 @@ The dev backend is in-memory. To run on real Canton:
 | dApp can’t reach backend (CORS) | start backend with `ALLOWED_ORIGINS=http://localhost:5173` |
 | dev relay wallet needs a party | set `VITE_CANTON_DEFAULT_PARTY=trader-demo` (dev only) |
 | `daml: command not found` | `daml install 3.4.11` and re-open the shell |
+| Daml CLI prints a "DPM" deprecation warning on every build | informational only; `daml build` remains the supported path for this repo |
 | stale `node_modules` after branch switch | `rm -rf node_modules && npm ci` |
 
-See also: `docs/quickstart.md` (workflow tour), `docs/architecture.md`,
-`docs/workflows.md`, `docs/operator-runbook.md`, `docs/deployment.md`.
+See also: [Overview](concepts/overview.md), [Architecture](concepts/architecture.md),
+[Workflows](concepts/workflows.md), the [Builder Guide](guides/builder-guide.md)
+workflow tour, [Operator Runbook](guides/operator-runbook.md), and the full
+[documentation index](README.md).

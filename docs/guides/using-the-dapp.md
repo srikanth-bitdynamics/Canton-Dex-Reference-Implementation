@@ -93,7 +93,7 @@ Use this to provide both sides of a pool and earn LP tokens.
 
 LP tokens are **unversioned**: any holder of `BTC-USDC-LP` holds the
 same instrument regardless of when they minted. See
-[`docs/lp-token-versioning.md`](lp-token-versioning.md) for why.
+[`../concepts/lp-tokens.md`](../concepts/lp-tokens.md) for why.
 
 ---
 
@@ -212,3 +212,7 @@ The wallet provider knows the disclosed factory CIDs, the package hash,
 and the holding CIDs to lock; the dApp passes only the intent verb.
 Trader-authority writes go through the connected wallet; operator-authority
 settlement steps go through the operator backend.
+
+---
+
+**Where to read next:** [Getting Started](../getting-started.md) · [Overview](../concepts/overview.md) · [All docs](../README.md)

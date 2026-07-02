@@ -24,12 +24,12 @@ export default defineConfig({
           tag: 'script',
           attrs: { type: 'module' },
           content:
-            "import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';" +
+            "import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.esm.min.mjs';" +
             "const theme = () => document.documentElement.dataset.theme === 'light' ? 'default' : 'dark';" +
             "const render = () => {" +
             "  const els = [...document.querySelectorAll('pre.mermaid')];" +
-            "  els.forEach(el => { if (el.dataset.src == null) el.dataset.src = el.textContent; el.removeAttribute('data-processed'); el.innerHTML = el.dataset.src; });" +
-            "  mermaid.initialize({ startOnLoad: false, theme: theme(), securityLevel: 'loose' });" +
+            "  els.forEach(el => { if (el.dataset.src == null) el.dataset.src = el.textContent; el.removeAttribute('data-processed'); el.textContent = el.dataset.src; });" +
+            "  mermaid.initialize({ startOnLoad: false, theme: theme() });" +
             "  if (els.length) mermaid.run({ nodes: els });" +
             "};" +
             "document.addEventListener('astro:page-load', render);" +

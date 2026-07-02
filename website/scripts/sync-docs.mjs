@@ -8,7 +8,7 @@
 import {
   readFileSync, writeFileSync, mkdirSync, rmSync, cpSync, readdirSync, statSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -62,8 +62,16 @@ for (const abs of walk(DOCS)) {
     const anchor = t.slice(path.length);
     if (!path) return full;
     const dest = resolve(dirname(abs), path);
-    if (dest === join(DOCS, 'README.md')) return `${pre}${toHome(outRel)}${anchor}${post}`;
-    if (dest.startsWith(DOCS)) return full; // intra-docs link — Astro resolves it
+    const inDocs = dest === DOCS || dest.startsWith(DOCS + sep);
+    if (inDocs && dest.endsWith('.md')) {
+      // Rewrite to the target page's site URL — Astro/Starlight do NOT rewrite
+      // relative .md links, so passing them through would 404 on the site.
+      const destSlug = outRelOf(dest).replace(/\.md$/, '');
+      const up = toHome(outRel); // './' from the homepage, '../'×depth elsewhere
+      const url = destSlug === 'index' ? up : `${up}${destSlug}/`;
+      return `${pre}${url}${anchor}${post}`;
+    }
+    if (inDocs) return full; // non-md intra-docs assets (images) — Astro handles
     return `${pre}${GH}/${relative(REPO, dest)}${anchor}${post}`; // escapes docs/
   });
 

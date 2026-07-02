@@ -11,6 +11,11 @@ module Splice.Testing.Tokens.TestTokenV2 (
   TokenRules(..),
   TokenRules_OfferMint(..),
   TokenRules_OfferMintResult(..),
+
+  module Splice.Testing.Tokens.TestTokenV2.AccountConfig,
+  module Splice.Testing.Tokens.TestTokenV2.Holding,
+  module Splice.Testing.Tokens.TestTokenV2.Allocation,
+  module Splice.Testing.Tokens.TestTokenV2.Transfer,
 ) where
 
 import DA.Assert
@@ -46,7 +51,7 @@ template TokenRules with
         meta = emptyMetadata
 
       transferFactory_publicFetchImpl = publicFetchDefaultImpl this
-      transferFactory_transferImpl = transferFactory_v1_transferDefaultImplUsingV2 (toInterface this)
+      transferFactory_transferImpl = transferFactoryV1_transferDefaultImplUsingV2 (toInterface this)
 
     interface instance V2.TransferFactory for TokenRules where
       view = V2.TransferFactoryView with
@@ -71,7 +76,15 @@ template TokenRules with
         admin
         meta = emptyMetadata
 
-      settlementFactory_settleBatchImpl = settlementFactoryV2_settleBatchDefaultImpl this.admin
+      settlementFactory_settleBatchImpl self arg = do
+        accountMap <- extractAccountConfigMap admin arg.extraArgs []
+        let getFilteredExtraArgs allocView settleArg = do
+              -- overwrite the account map so that only the account information
+              -- for the allocation's authorizer is included
+              let authorizer = allocView.allocation.authorizer
+              pure settleArg.extraArgs with
+                context = storeAccountConfigFor authorizer accountMap settleArg.extraArgs.context
+        settlementFactoryV2_settleBatchDefaultImpl getFilteredExtraArgs admin self arg
 
       -- no extra observers to avoid leaking the settlement of different allocations to the other authorizers
       settlementFactory_settleBatchExtraObservers _arg = []
@@ -85,7 +98,7 @@ template TokenRules with
 
       allocationFactory_publicFetchImpl = publicFetchDefaultImpl this
       allocationFactory_allocateImpl =
-        allocationFactory_v1_allocateDefaultImplUsingV2 admin
+        allocationFactoryV1_allocateDefaultImplUsingV2 admin
         (token_allocationFactoryV2_allocateImpl CalledFromV1 CreateV1Allocation this)
 
     interface instance V2.AllocationFactory for TokenRules where
@@ -111,13 +124,13 @@ template TokenRules with
         assertDeadlineExceeded "offeredAt" offeredAt
         let mintConfig = AccountConfig with
               admin
-              account = mintAccount admin
+              account = mintAccount
               ownerConfig = PartyConfig True True
               providerConfig = PartyConfig False False
         let adminApproved = Map.singleton V2.TIA_Accept [admin]
         let accountMap = Map.fromList [(receiverConfig.account, (receiverConfig, None)), (mintConfig.account, (mintConfig, None))]
         let transfer = V2.Transfer with
-              sender = mintAccount admin
+              sender = mintAccount
               receiver
               amount
               instrumentId
@@ -132,7 +145,7 @@ template TokenRules with
           availableActions = mkAvailableActions admin spec adminApproved accountMap
           mintAmount = amount
           transfer = V2.Transfer with
-            sender = mintAccount admin
+            sender = mintAccount
             receiver
             amount
             instrumentId
@@ -160,6 +173,7 @@ token_transferFactory_transferImpl
   -> Update V2.TransferInstructionResult
 token_transferFactory_transferImpl admin actors transfer extraArgs = do
   require' ("transfer.instrumentId.admin", transfer.instrumentId.admin) isEqualR ("transferFactory.admin", admin)
+  assertDeadlineExceeded "transfer.requestedAt" transfer.requestedAt
 
   let offer = TokenTransferOffer with
         mintAmount = 0.0
@@ -183,6 +197,8 @@ token_allocationFactoryV2_allocateImpl
 token_allocationFactoryV2_allocateImpl callSource allocationKind tokenRules allocateBefore _self arg = do
   let admin = tokenRules.admin
   requireMatchExpected ("allocation.admin", arg.allocation.admin) admin
+  assertDeadlineExceeded "requestedAt" arg.requestedAt
+
   -- check that the holdings are owned by the right account and have the right admin
   inputHoldingMap <- fmap (TextMap.fromListWithR (++)) $ forA arg.inputHoldingCids $ \cid -> do
     let tokenCid = coerceContractId cid : ContractId Token

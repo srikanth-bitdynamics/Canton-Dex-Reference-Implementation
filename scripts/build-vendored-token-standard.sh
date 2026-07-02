@@ -6,12 +6,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOKEN_STANDARD_DIR="$ROOT_DIR/vendor/splice/token-standard"
 PIN_FILE="$ROOT_DIR/vendor/splice/VENDOR_PIN.md"
 
-# Surface the vendored pin at build start: this build targets a pre-release
-# token-standard-v2-upcoming branch, not released Token Standard V2.
+# Surface the vendored pin at build start: this build targets Token Standard V2
+# as merged into canton-network/splice `main`.
 if [[ -f "$PIN_FILE" ]]; then
   echo "==> Vendored Token Standard pin ($PIN_FILE):"
-  grep -E '^\| (Upstream repo|Branch|Commit|In-tree)' "$PIN_FILE" || true
-  echo "    (full delta: docs/allocation-surface.md)"
+  grep -E '^\| (Upstream repo|Branch|Commit|In-tree|Commit date)' "$PIN_FILE" || true
+  echo "    (details: docs/reference/allocation-surface.md)"
 else
   echo "WARNING: vendor pin file not found at $PIN_FILE" >&2
 fi

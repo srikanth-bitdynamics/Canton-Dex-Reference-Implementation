@@ -96,10 +96,10 @@ to exist alongside V2 implementations rather than being bulk-migrated.
 
 ## See also
 
-- [docs/registry-prerequisites.md](../guides/registry-integration.md) — for how the
+- [Registry Integration](../guides/registry-integration.md) — for how the
   LP registry config is registered at pool creation in the reference registry,
   and for the registry-specific force-upgrade pattern some assets may exercise.
-- [docs/workflows.md](workflows.md) — for the add/remove-liquidity flow.
+- [Workflows](workflows.md) — for the add/remove-liquidity flow.
 
 ---
 

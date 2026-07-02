@@ -49,7 +49,10 @@ this order to understand the venue end-to-end.
   `MatchedTrade` that carries an operator-signed `PolicyReceipt` folded into
   `SettlementInfo.meta`.
 - Tests: `EndToEndTests.daml::testMatchedTradeFullSettle`,
-  `testRfqAcceptProducesMatchedTradeWithReceipt`.
+  `testRfqAcceptProducesMatchedTradeWithReceipt`,
+  `testTradeAllocationRequestAccept`.
+- Upstream reference: the vendored
+  `vendor/splice/token-standard/examples/splice-token-test-trading-app-v2/`.
 
 ### C. Resting orders backed by a V2 allocation
 - `trading/CantonDex/Dex/OrderFundingRequest.daml` — trader-signed intent.
@@ -147,9 +150,11 @@ fork can rewrite the matcher without touching any Daml template.
 
 The dApp does not sign as the trader. Trader-authority writes (place order,
 add/remove-liquidity allocations via `AllocationFactory_Allocate`, swap allocation
-creation, RFQ accept) go through the connected wallet over the **CIP-0103** dApp
-standard (prepare → sign → execute). The operator backend produces unsigned
-command trees; the wallet signs and submits.
+creation) go through the connected wallet over the **CIP-0103** dApp standard
+(prepare → sign → execute). The operator backend produces unsigned command
+trees; the wallet signs and submits. RFQ accepts are the one exception in this
+reference: trader + operator co-sign via `POST /v1/rfq/accept` (a production
+deployment would route the trader's authority through the wallet as well).
 
 Read endpoints (`/v1/pools`, `/v1/trades`, etc.) are operator-observed and served
 from the backend's indexer cache. Keep trader-authority writes in the wallet path;
@@ -164,6 +169,7 @@ submit.
 | Issue a new LP token or lifecycle-rich instrument (vested, dividend-bearing) | See [Add an LP or Instrument](add-lp-or-instrument.md). |
 | Use a different registry | Replace `CantonDex.Testing.MockRegistry` with the real registry's `AllocationFactory` + `SettlementFactory`. See [Registry Integration](registry-integration.md). |
 | Add a different pricing curve (StableSwap, weighted) | Fork the `Pool` template; the slice model is curve-agnostic. See `examples/stable-pool/`. |
+| Add a fee policy | Extend `Pool.feeBps` / `DexPair.feeModel` and the `constantProductOut` quote math. |
 | Add a different RFQ policy (oracle-weighted, multi-tier) | `Rfq.applyPolicy` holds the sort chain; bump `policyVersion`/`policyHash` and mirror in `app/web/src/services/rfq-policy.ts`. |
 | Talk to a different participant | Set `CANTON_LEDGER_URL`, `CANTON_LEDGER_TOKEN`, `CANTON_SYNCHRONIZER`. See [Run on a Testnet](run-on-testnet.md). |
 

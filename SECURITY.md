@@ -45,7 +45,7 @@ Out of scope:
 - General Canton synchronizer or participant bugs; those are
   outside this reference implementation.
 - Reports that boil down to "the operator is trusted" (the
-  reference assumes this; see `docs/architecture.md`).
+  reference assumes this; see `docs/concepts/architecture.md`).
 
 ## What we won't do
 

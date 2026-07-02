@@ -200,7 +200,7 @@ Either:
   existing contracts from the old name remain queryable but cannot be
   upgraded.
 
-The smart-upgrade test cases live in `docs/run-testnet.md` "Smart
+The smart-upgrade test cases live in `docs/guides/run-on-testnet.md` "Smart
 upgrade" section.
 
 ### LP supply drift

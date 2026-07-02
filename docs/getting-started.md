@@ -156,9 +156,9 @@ The dev backend is in-memory. To run on real Canton:
 - **LocalNet** — a self-contained Canton + Splice network on one host; build the
   DAR, upload it + the V2 DARs, seed a pair/pool, point the backend at the
   participant (`CANTON_LEDGER_URL`), and run `npm run start`. See
-  `docs/deployment.md`.
+  `docs/guides/deployment.md`.
 - **Testnet** — `scripts/deploy-testnet.sh` uploads the DAR + seeds; record the
-  vetted package id + seed CIDs in `docs/run-testnet.md`.
+  vetted package id + seed CIDs in `docs/guides/run-on-testnet.md`.
 
 ---
 
@@ -169,6 +169,7 @@ The dev backend is in-memory. To run on real Canton:
 | dApp can’t reach backend (CORS) | start backend with `ALLOWED_ORIGINS=http://localhost:5173` |
 | dev relay wallet needs a party | set `VITE_CANTON_DEFAULT_PARTY=trader-demo` (dev only) |
 | `daml: command not found` | `daml install 3.4.11` and re-open the shell |
+| Daml CLI prints a "DPM" deprecation warning on every build | informational only; `daml build` remains the supported path for this repo |
 | stale `node_modules` after branch switch | `rm -rf node_modules && npm ci` |
 
 See also: [Overview](concepts/overview.md), [Architecture](concepts/architecture.md),

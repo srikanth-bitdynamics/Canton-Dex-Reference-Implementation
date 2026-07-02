@@ -107,7 +107,7 @@ required, credential CIDs that satisfy holder/issuer requirements. The DEX
 operator backend's **registry-client** module is responsible for fetching the
 registry-specific context and attaching it to the choice arguments.
 
-See [choice-context-spec.md](choice-context.md) for the exact
+See [Choice Context](choice-context.md) for the exact
 inputs each registry choice expects.
 
 ## Force-upgrade for passive holders
@@ -162,7 +162,7 @@ The DEX has three classes of holdings to think about:
 3. **LP holdings.** Issued through the LP registrar/policy component. The
    reference LP token has no off-ledger lifecycle event to crystallize. There
    is no force-upgrade event for LP tokens in this reference — see
-   [docs/lp-token-versioning.md](../concepts/lp-tokens.md).
+   [LP Tokens](../concepts/lp-tokens.md).
 
 ### What DEX integrators should do
 

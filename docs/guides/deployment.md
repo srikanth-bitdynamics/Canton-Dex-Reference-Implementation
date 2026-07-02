@@ -75,7 +75,7 @@ node --import tsx scripts/bootstrap-registry.ts
 ```
 
 The script is idempotent — running it twice is a no-op. See
-[docs/registry-prerequisites.md](registry-integration.md) for what
+[Registry Integration](registry-integration.md) for what
 contracts are created and why.
 
 ## Environment Variables

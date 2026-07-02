@@ -79,7 +79,7 @@ contract. The policy knows nothing about pools or orders. See
 [LP Tokens](lp-tokens.md).
 
 ### MatchedTrade
-The settled result of a bilateral trade (e.g. an accepted [RFQ](#rfq)), carrying
+The settled result of a bilateral trade (e.g. an accepted [RFQ](#rfq-request-for-quote)), carrying
 an operator-signed [`PolicyReceipt`](#policyreceipt) and settled via a
 per-admin `SettleBatch`.
 
@@ -99,7 +99,7 @@ batch settles.
 
 ### PolicyReceipt
 An operator-signed record of the ranking/whitelist policy applied to an
-[RFQ](#rfq), folded into `SettlementInfo.meta` so the decision is auditable.
+[RFQ](#rfq-request-for-quote), folded into `SettlementInfo.meta` so the decision is auditable.
 
 ### Pool / PoolState / PoolSlice
 The constant-product pool is split three ways: **Pool** (immutable config),

@@ -42,7 +42,8 @@ Digital Asset examples, anchor one concrete instrument model:
 - the instrument config can carry external identifiers such as ISIN or CUSIP
 
 Token Standard V2 does not mandate `InstrumentConfiguration` or lifecycle
-contracts. A production registry can expose the same V2 holding/allocation
+contracts (though the token-standard `metadata-v1` API does expose queryable
+instrument properties). A production registry can expose the same V2 holding/allocation
 interfaces with a different internal model. The DEX should therefore treat
 `InstrumentId` and registry-provided choice context as the stable integration
 boundary, not our reference configuration template.
@@ -226,6 +227,15 @@ The intended model is:
   part of those app-owned workflows
 - the off-chain operator proposes actions, but the ledger-visible contracts
   validate the quantity, pair, expiry, side, and reserve references being used
+
+> **Further reading — decentralizing the operator.** This validation logic can
+> itself be decentralized. See the
+> [BitSafe decentralization manager proposal](https://github.com/canton-foundation/canton-dev-fund/blob/main/proposals/2026-05-BitSafe-decentralization-manager.md)
+> for decentralizing the execution of validation logic, the
+> [Splice DSO automation architecture](https://docs.canton.network/sdks-tools/api-reference/splice-architecture#decentralized-transaction-validation-and-automation)
+> for decentralizing the off-ledger automation a backend like this drives, and
+> [`RewardAccountingV2.daml`](https://github.com/canton-network/splice/blob/main/daml/splice-amulet/daml/Splice/Amulet/RewardAccountingV2.daml)
+> in Splice for efficiently batching commitments to on-ledger actions.
 
 This also means we should avoid designs where a routine action touches every
 pool allocation at once. The implementation now follows this for all hot-path

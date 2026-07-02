@@ -1,7 +1,7 @@
 // Registry prerequisites bootstrap.
 //
 // The DEX assumes a set of reference-registry contracts exist on the ledger
-// before any trading can happen (see docs/registry-prerequisites.md):
+// before any trading can happen (see docs/guides/registry-integration.md):
 //   - InstrumentConfiguration per tradable instrument in the reference registry
 //   - TransferRule per registrar
 //   - Holder/issuer Credentials for the parties that need them

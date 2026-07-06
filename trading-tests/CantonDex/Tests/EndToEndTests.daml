@@ -281,17 +281,10 @@ testOrderFundingFlow = do
   order.status === Order.OS_Pending
   Some _allocReq <- queryContractId operator bindRes.allocationRequestCid
 
-  -- Alice accepts the OrderAllocationRequest via the V2 interface (this
-  -- used to abort). Doing so signals intent + archives the request.
-  let reqIfaceCid : ContractId V2.AllocationRequest =
-        toInterfaceContractId bindRes.allocationRequestCid
-  acceptRes <- submit alice $ exerciseCmd reqIfaceCid V2.AllocationRequest_Accept with
-    actors = [alice]
-    extraArgs = emptyExtraArgs
-
-  -- Now Alice creates the corresponding allocation under HER authority
-  -- via the factory. (In a real deployment this is composed in the
-  -- same submission as Accept; for the script we do them sequentially.)
+  -- New single-command flow: Alice does NOT accept the OrderAllocationRequest
+  -- (CIP-0103 prepareExecute allows only one command, so the wallet authors the
+  -- funding allocation directly under HER authority via the factory). The
+  -- request is left live and is consumed by the operator's Order_Fund below.
   let aliceAccount = Utils.basicAccount alice
       orderRef = order.settlementRef
       lockedFunding = TextMap.fromList [("USDC", 0.5 * 60000.0)]
@@ -306,12 +299,16 @@ testOrderFundingFlow = do
   instrResult <- submit alice $ exerciseCmd factoryCid allocateArg
   case instrResult.output of
     V2.AllocationInstructionResult_Completed allocCid -> do
-      -- Operator binds the trader-funded allocation onto the order.
+      -- Operator binds the trader-funded allocation onto the order and consumes
+      -- the OrderAllocationRequest so it cannot linger after funding.
       fundRes <- submit operator $ exerciseCmd bindRes.orderCid Order.Order_Fund with
         allocationCid = allocCid
+        allocationRequestCid = Some bindRes.allocationRequestCid
       Some funded <- queryContractId operator fundRes.orderCid
       funded.status === Order.OS_Funded
       assertMsg "allocationCid populated" (isSome funded.allocationCid)
+      reqGone <- queryContractId operator bindRes.allocationRequestCid
+      assertMsg "OrderAllocationRequest consumed by Order_Fund" (isNone reqGone)
     _ -> abort "Mock factory should complete immediately"
 
   pure ()

@@ -75,13 +75,29 @@ export function Portfolio({
     ...heldSymbols,
     ...poolSymbols,
   ]);
-  const priceOr0 = (sym: string) => priceUsd[sym] ?? 0;
+  // LP tokens have no market pair, so the backend can't price them. Derive each
+  // pool's LP-token USD price from its share of the pool reserves; without this
+  // a single LP holding makes `someUnknownPrice` true and blanks every value
+  // card even though the underlying BTC/USDC are priced.
+  const lpPriceUsd: Record<string, number> = {};
+  for (const p of pools) {
+    const basePx = priceUsd[p.baseInstrumentId];
+    const quotePx = priceUsd[p.quoteInstrumentId];
+    if (p.totalLpSupply > 0 && basePx != null && quotePx != null) {
+      lpPriceUsd[p.lpInstrumentId.id] =
+        (p.reserves.baseAmount * basePx + p.reserves.quoteAmount * quotePx) /
+        p.totalLpSupply;
+    }
+  }
+  const priceFor = (sym: string): number | null =>
+    priceUsd[sym] ?? lpPriceUsd[sym] ?? null;
+  const priceOr0 = (sym: string) => priceFor(sym) ?? 0;
   const someUnknownPrice =
-    heldSymbols.some((s) => priceUsd[s] == null) ||
+    heldSymbols.some((s) => priceFor(s) == null) ||
     pools.some(
       (p) =>
-        priceUsd[p.baseInstrumentId] == null ||
-        priceUsd[p.quoteInstrumentId] == null,
+        priceFor(p.baseInstrumentId) == null ||
+        priceFor(p.quoteInstrumentId) == null,
     );
 
   // Synthesize LP rows from holdings whose instrument matches a pool's
@@ -275,8 +291,8 @@ export function Portfolio({
                       {fmt(total, a?.decimals ?? 4)}
                     </td>
                     <td className="text-right py-2 px-3 mono">
-                      {priceUsd[sym] != null
-                        ? fmtUsd(total * (priceUsd[sym] as number))
+                      {priceFor(sym) != null
+                        ? fmtUsd(total * (priceFor(sym) as number))
                         : '—'}
                     </td>
                   </tr>

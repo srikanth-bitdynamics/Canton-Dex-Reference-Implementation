@@ -158,8 +158,11 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
     cids: ["poolCid"],
   },
   "POST /v1/orders/bind": {
-    required: ["fundingRequestCid", "settlementRef"],
-    cids: ["fundingRequestCid"],
+    // `fundingRequestCid` (full-tree wallet) OR `updateId` (operator-discovery
+    // from an updateId-only wallet) — exactly one is supplied, so neither is
+    // unconditionally required or cid-validated here; the order service rejects
+    // a body carrying neither. Mirrors the orders/fund spec below.
+    required: ["settlementRef"],
   },
   "POST /v1/orders/fund": {
     required: ["orderCid"],

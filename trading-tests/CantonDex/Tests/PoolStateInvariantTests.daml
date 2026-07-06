@@ -181,3 +181,36 @@ testReconcileRejectsForeignSlice = do
   submitMustFail fx.operator $
     reconcileCmd fx rulesCid addRes.poolStateCid
       [addRes.baseSliceCid, addRes.quoteSliceCid, foreignSliceCid]
+
+-- A swapper that is the operator/pool account is rejected: the swap-in leg
+-- (sender = swapper, receiver = pool) and every output leg (sender = pool,
+-- receiver = swapper) would be self-transfers, leaving the settle batch unable
+-- to balance. The guard fails it loudly instead of producing an opaque
+-- conservation error. Every other parameter is a well-formed swap, so the
+-- failure is attributable to the swapper == pool account.
+testSwapRejectsOperatorAsSwapper : Script ()
+testSwapRejectsOperatorAsSwapper = do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  fx <- PLT.setup [alice, bob]
+  rulesCid <- mkRules fx
+  now <- getTime
+  addRes <- PLT.dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  -- A valid swap allocation authored by bob — only swapperAccount is wrong.
+  reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+    poolCid = fx.poolCid; swapper = bob
+    inputInstrumentId = "USDC"; inputAmount = 100.0
+  usdcHold <- PLT.mintHolding fx.registry bob "USDC" 100.0
+  swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
+    [toInterfaceContractId usdcHold] now
+  submitMultiMustFail [fx.operator] [fx.registry] $
+    exerciseCmd rulesCid PRules.PoolRules_Swap with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid
+      swapperAccount = Utils.basicAccount fx.operator  -- == pool/operator account
+      inputInstrumentId = "USDC"; inputAmount = 100.0; minOutputAmount = 0.0
+      swapperAllocationCid = swapAlloc
+      inputSliceCid = addRes.quoteSliceCid
+      outputSliceCids = [addRes.baseSliceCid]
+      factoryCid = fx.settleCid
+      extraArgs = emptyExtraArgs

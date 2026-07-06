@@ -74,28 +74,6 @@ describe('composeCommands', () => {
         "commands": [
           {
             "ExerciseCommand": {
-              "choice": "AllocationRequest_Accept",
-              "choiceArgument": {
-                "actors": [
-                  "alice::1220a",
-                ],
-                "extraArgs": {
-                  "context": {
-                    "values": {
-                      "ctx.allocationRequest": true,
-                    },
-                  },
-                  "meta": {
-                    "values": {},
-                  },
-                },
-              },
-              "contractId": "aaaaaaaaaaaarequest1",
-              "templateId": "#splice-api-token-allocation-request-v2:Splice.Api.Token.AllocationRequestV2:AllocationRequest",
-            },
-          },
-          {
-            "ExerciseCommand": {
               "choice": "AllocationFactory_Allocate",
               "choiceArgument": {
                 "actors": [
@@ -254,8 +232,6 @@ describe('composeCommands', () => {
 
   // DvP add/remove: the wallet authors one AllocationFactory_Allocate
   // per spec, in canonical order, mapping the right factory + holdings.
-  const ALLOC_FACTORY_IID =
-    '#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory';
   const settlement = { executors: ['op::1'], id: 's1', cid: null, meta: { values: {} } };
   const mkSpec = (
     legId: string,
@@ -294,30 +270,25 @@ describe('composeCommands', () => {
     };
     const out = composeCommands(intent, ctx);
     expect(out.actAs).toEqual(['alice::1220a']);
-    // Canonical Token Standard V2 shape: accept first, then 3 allocates.
-    expect(out.commands).toHaveLength(4);
-    const all = out.commands.map((c) => (c as { ExerciseCommand: { templateId: string; contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand);
-    // [0] AllocationRequest_Accept on the request, actors + context threaded.
-    expect(all[0].choice).toBe('AllocationRequest_Accept');
-    expect(all[0].contractId).toBe('reqABCDEFGH12');
-    expect(all[0].choiceArgument.actors).toEqual(['alice::1220a']);
-    expect(all[0].choiceArgument.extraArgs).toEqual(allocationRequestExtraArgs);
-    // [1..3] the three AllocationFactory_Allocate exercises.
-    const cmds = all.slice(1);
-    expect(cmds.every((c) => c.choice === 'AllocationFactory_Allocate')).toBe(true);
-    expect(cmds[0].contractId).toBe('depF');
-    expect(cmds[0].choiceArgument.inputHoldingCids).toEqual(['b1']);
-    expect(cmds[0].choiceArgument.allocation).toEqual(baseSpec);
-    expect(cmds[1].contractId).toBe('depF');
-    expect(cmds[1].choiceArgument.inputHoldingCids).toEqual(['q1', 'q2']);
-    expect(cmds[2].contractId).toBe('lpF');
-    expect(cmds[2].choiceArgument.inputHoldingCids).toEqual([]);
-    expect(cmds[2].choiceArgument.allocation).toEqual(receiptSpec);
-    expect(cmds[0].templateId).toBe(ALLOC_FACTORY_IID);
-    expect(cmds[0].choiceArgument.actors).toEqual(['alice::1220a']);
+    // CIP-0103 allows ONE top-level command: a single AcceptAndAllocate on the
+    // request authors all 3 allocations + the acceptance inside one Daml tx.
+    expect(out.commands).toHaveLength(1);
+    const cmd = (out.commands[0] as { ExerciseCommand: { templateId: string; contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand;
+    expect(cmd.choice).toBe('LiquidityAllocationRequest_AcceptAndAllocate');
+    expect(cmd.contractId).toBe('reqABCDEFGH12');
+    expect(cmd.templateId).toContain('CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationRequest');
+    // factoryCids / inputHoldingCids / allocExtraArgs are PARALLEL to the
+    // request's [base, quote, LP] allocations (read on-ledger by the choice).
+    expect(cmd.choiceArgument.factoryCids).toEqual(['depF', 'depF', 'lpF']);
+    expect(cmd.choiceArgument.inputHoldingCids).toEqual([['b1'], ['q1', 'q2'], []]);
+    expect(cmd.choiceArgument.allocExtraArgs).toEqual([
+      allocationFactoryExtraArgs,
+      allocationFactoryExtraArgs,
+      lpFactoryExtraArgs,
+    ]);
   });
 
-  it('remove-liquidity = accept + 3 allocations (base+quote receipts, LP burn-sender)', () => {
+  it('remove-liquidity = single AcceptAndAllocate command (base+quote receipts, LP burn-sender)', () => {
     const baseRcpt = mkSpec('lp-base-out-0', 'BTC', 'ReceiverSide', false);
     const quoteRcpt = mkSpec('lp-quote-out-0', 'USDC', 'ReceiverSide', false);
     const burnSpec = mkSpec('lp-burn', 'BTC-USDC-LP', 'SenderSide', true);
@@ -335,20 +306,15 @@ describe('composeCommands', () => {
       lpHoldingCids: ['lp1', 'lp2'],
     };
     const out = composeCommands(intent, ctx);
-    expect(out.commands).toHaveLength(4);
-    const all = out.commands.map((c) => (c as { ExerciseCommand: { contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand);
-    expect(all[0].choice).toBe('AllocationRequest_Accept');
-    expect(all[0].contractId).toBe('reqREMOVE1234');
-    const cmds = all.slice(1);
-    expect(cmds[0].contractId).toBe('depF');
-    expect(cmds[0].choiceArgument.inputHoldingCids).toEqual([]);
-    expect(cmds[1].contractId).toBe('depF');
-    expect(cmds[1].choiceArgument.inputHoldingCids).toEqual([]);
-    // burn-sender locks ALL the LP holdings under the LP factory (fragmented
-    // LP positions must be redeemable).
-    expect(cmds[2].contractId).toBe('lpF');
-    expect(cmds[2].choiceArgument.inputHoldingCids).toEqual(['lp1', 'lp2']);
-    expect(cmds[2].choiceArgument.allocation).toEqual(burnSpec);
+    // One top-level command, mirroring add.
+    expect(out.commands).toHaveLength(1);
+    const cmd = (out.commands[0] as { ExerciseCommand: { contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand;
+    expect(cmd.choice).toBe('LiquidityAllocationRequest_AcceptAndAllocate');
+    expect(cmd.contractId).toBe('reqREMOVE1234');
+    expect(cmd.choiceArgument.factoryCids).toEqual(['depF', 'depF', 'lpF']);
+    // Only the burn-sender (LP) funds from holdings; the two receipts lock
+    // nothing. ALL fragmented LP holdings are locked so any position redeems.
+    expect(cmd.choiceArgument.inputHoldingCids).toEqual([[], [], ['lp1', 'lp2']]);
   });
 
   it('extractCreatedAllocationCids ignores the acceptance-evidence create', () => {

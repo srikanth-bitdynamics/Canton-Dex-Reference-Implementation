@@ -106,14 +106,14 @@ function OrderRow({
       <span className="relative text-right text-text-primary">
         {order.remainingQty.toFixed(4)}
       </span>
-      <span className="relative text-right flex items-center justify-end gap-1">
+      <span className="relative text-right flex items-center justify-end gap-2">
         <span className={`w-1.5 h-1.5 rounded-full ${statusDot}`} title={order.status} />
         <button
           onClick={() => onCancel(order.contractId)}
-          className="text-text-muted hover:text-accent-red opacity-0 group-hover:opacity-100 transition-opacity text-xs"
-          title="Cancel order"
+          className="rounded border border-surface-border px-1.5 py-0.5 text-[11px] leading-none text-text-muted hover:text-accent-red hover:border-accent-red transition-colors"
+          title="Cancel this order"
         >
-          ✕
+          Cancel
         </button>
       </span>
     </div>

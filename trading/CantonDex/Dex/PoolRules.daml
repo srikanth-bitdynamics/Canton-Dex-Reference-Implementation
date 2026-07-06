@@ -132,6 +132,15 @@ template PoolRules with
             poolAccount = Utils.basicAccount operator
             settlement = poolSettlement poolCid operator
 
+        -- The swapper must not be the pool/operator account. If it were, the
+        -- swap-in leg (sender = swapper, receiver = pool) and every output leg
+        -- (sender = pool, receiver = swapper) would be self-transfers, and the
+        -- batch's per-instrument sender/receiver totals could not balance
+        -- (legsToSides drops a side whose sender == receiver), aborting settle
+        -- with an opaque conservation error. Reject it here with a clear one.
+        assertMsg "Swapper account must differ from the pool/operator account"
+          (swapperAccount /= poolAccount)
+
         let swapInLeg = V2.TransferLeg with
               transferLegId = "swap-in"
               sender = swapperAccount; receiver = poolAccount

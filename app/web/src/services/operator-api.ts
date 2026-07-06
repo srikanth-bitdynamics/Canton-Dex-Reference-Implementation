@@ -176,7 +176,10 @@ export class OperatorApi {
   }
 
   async bindOrder(req: {
-    fundingRequestCid: ContractId<"OrderFundingRequest">;
+    // Either the explicit created cid (full-tree wallet), or an updateId for
+    // operator-discovery (updateId-only wallet, e.g. CIP-0103 SDK / PartyLayer).
+    fundingRequestCid?: ContractId<"OrderFundingRequest">;
+    updateId?: string;
     settlementRef: string;
   }): Promise<{
     orderCid: ContractId<"Order">;
@@ -234,6 +237,9 @@ export class OperatorApi {
     // Either the explicit created cid, or an updateId for operator-discovery.
     allocationCid?: ContractId<"Allocation">;
     updateId?: string;
+    // The OrderAllocationRequest from bind, consumed by Order_Fund so it does
+    // not linger after funding.
+    allocationRequestCid?: ContractId<"OrderAllocationRequest">;
   }): Promise<{ orderCid: ContractId<"Order"> }> {
     return this.post("/v1/orders/fund", req);
   }

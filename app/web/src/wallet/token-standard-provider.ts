@@ -12,10 +12,10 @@
 //   accept-allocation-request → AllocationFactory_Allocate (single command; the
 //                               operator's Order_Fund consumes the request)
 //   request-swap            →  AllocationFactory_Allocate (operator settles via PoolRules_Swap)
-//   add-liquidity           →  Exercise LiquidityAllocationRequest_AcceptAndAllocate
-//                               (one command authors all 3 allocations + acceptance)
-//   remove-liquidity        →  Exercise LiquidityAllocationRequest_AcceptAndAllocate
-//                               (one command authors all 3 allocations + acceptance)
+//   add-liquidity           →  CreateAndExercise BatchingUtilityV2.ExecuteBatch
+//                               (accept + all 3 allocations in one command)
+//   remove-liquidity        →  CreateAndExercise BatchingUtilityV2.ExecuteBatch
+//                               (accept + all 3 allocations in one command)
 //   post-rfq-quote          →  CreateCommand RfqQuote
 //   accept-rfq              →  Exercise Rfq_Accept (joint trader + operator)
 //

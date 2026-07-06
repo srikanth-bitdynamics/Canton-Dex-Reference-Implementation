@@ -270,25 +270,50 @@ describe('composeCommands', () => {
     };
     const out = composeCommands(intent, ctx);
     expect(out.actAs).toEqual(['alice::1220a']);
-    // CIP-0103 allows ONE top-level command: a single AcceptAndAllocate on the
-    // request authors all 3 allocations + the acceptance inside one Daml tx.
+    // CIP-0103 allows ONE top-level command: a CreateAndExercise of the
+    // standard BatchingUtilityV2 accepts the request and authors all three
+    // allocations inside one Daml tx.
     expect(out.commands).toHaveLength(1);
-    const cmd = (out.commands[0] as { ExerciseCommand: { templateId: string; contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand;
-    expect(cmd.choice).toBe('LiquidityAllocationRequest_AcceptAndAllocate');
-    expect(cmd.contractId).toBe('reqABCDEFGH12');
-    expect(cmd.templateId).toContain('CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationRequest');
-    // factoryCids / inputHoldingCids / allocExtraArgs are PARALLEL to the
-    // request's [base, quote, LP] allocations (read on-ledger by the choice).
-    expect(cmd.choiceArgument.factoryCids).toEqual(['depF', 'depF', 'lpF']);
-    expect(cmd.choiceArgument.inputHoldingCids).toEqual([['b1'], ['q1', 'q2'], []]);
-    expect(cmd.choiceArgument.allocExtraArgs).toEqual([
+    const cmd = (out.commands[0] as { CreateAndExerciseCommand: { templateId: string; createArguments: Record<string, unknown>; choice: string; choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand;
+    expect(cmd.templateId).toContain('Splice.Util.Token.Wallet.BatchingUtilityV2:BatchingUtility');
+    expect(cmd.createArguments).toEqual({ user: 'alice::1220a' });
+    expect(cmd.choice).toBe('BatchingUtility_ExecuteBatch');
+    const arg = cmd.choiceArgument as {
+      inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
+      actions: { tag: string; value: { cid: string; arg: Record<string, unknown> } }[];
+      archiveAfterExecution: boolean;
+    };
+    expect(arg.archiveAfterExecution).toBe(true);
+    // Action 0 accepts the request; actions 1..3 allocate [base, quote, LP]
+    // against the right factory, funded via the holding map (not per-call).
+    expect(arg.actions.map((a) => a.tag)).toEqual([
+      'TSA_AllocationRequest_AcceptV2',
+      'TSA_AllocationFactory_AllocateV2',
+      'TSA_AllocationFactory_AllocateV2',
+      'TSA_AllocationFactory_AllocateV2',
+    ]);
+    expect(arg.actions[0].value.cid).toBe('reqABCDEFGH12');
+    expect(arg.actions[0].value.arg.actors).toEqual(['alice::1220a']);
+    expect(arg.actions.slice(1).map((a) => a.value.cid)).toEqual(['depF', 'depF', 'lpF']);
+    for (const a of arg.actions.slice(1)) {
+      expect(a.value.arg.inputHoldingCids).toEqual([]);
+    }
+    expect(arg.actions.slice(1).map((a) => a.value.arg.extraArgs)).toEqual([
       allocationFactoryExtraArgs,
       allocationFactoryExtraArgs,
       lpFactoryExtraArgs,
     ]);
+    // Both deposits share one (admin, account) bucket, keyed per instrument.
+    expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
+    const [scoped, byInstrument] = arg.inputHoldingMap.byAdminAndAccount[0];
+    expect(scoped).toEqual({
+      admin: 'reg::1',
+      account: { owner: 'alice::1220a', provider: null, id: '' },
+    });
+    expect(byInstrument).toEqual({ BTC: ['b1'], USDC: ['q1', 'q2'] });
   });
 
-  it('remove-liquidity = single AcceptAndAllocate command (base+quote receipts, LP burn-sender)', () => {
+  it('remove-liquidity = single batched ExecuteBatch command (base+quote receipts, LP burn-sender)', () => {
     const baseRcpt = mkSpec('lp-base-out-0', 'BTC', 'ReceiverSide', false);
     const quoteRcpt = mkSpec('lp-quote-out-0', 'USDC', 'ReceiverSide', false);
     const burnSpec = mkSpec('lp-burn', 'BTC-USDC-LP', 'SenderSide', true);
@@ -308,13 +333,21 @@ describe('composeCommands', () => {
     const out = composeCommands(intent, ctx);
     // One top-level command, mirroring add.
     expect(out.commands).toHaveLength(1);
-    const cmd = (out.commands[0] as { ExerciseCommand: { contractId: string; choice: string; choiceArgument: Record<string, unknown> } }).ExerciseCommand;
-    expect(cmd.choice).toBe('LiquidityAllocationRequest_AcceptAndAllocate');
-    expect(cmd.contractId).toBe('reqREMOVE1234');
-    expect(cmd.choiceArgument.factoryCids).toEqual(['depF', 'depF', 'lpF']);
+    const cmd = (out.commands[0] as { CreateAndExerciseCommand: { choice: string; choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand;
+    expect(cmd.choice).toBe('BatchingUtility_ExecuteBatch');
+    const arg = cmd.choiceArgument as {
+      inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
+      actions: { tag: string; value: { cid: string } }[];
+    };
+    expect(arg.actions[0].tag).toBe('TSA_AllocationRequest_AcceptV2');
+    expect(arg.actions[0].value.cid).toBe('reqREMOVE1234');
+    expect(arg.actions.slice(1).map((a) => a.value.cid)).toEqual(['depF', 'depF', 'lpF']);
     // Only the burn-sender (LP) funds from holdings; the two receipts lock
-    // nothing. ALL fragmented LP holdings are locked so any position redeems.
-    expect(cmd.choiceArgument.inputHoldingCids).toEqual([[], [], ['lp1', 'lp2']]);
+    // nothing. ALL fragmented LP holdings are threaded so any position redeems.
+    expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
+    expect(arg.inputHoldingMap.byAdminAndAccount[0][1]).toEqual({
+      'BTC-USDC-LP': ['lp1', 'lp2'],
+    });
   });
 
   it('extractCreatedAllocationCids ignores the acceptance-evidence create', () => {

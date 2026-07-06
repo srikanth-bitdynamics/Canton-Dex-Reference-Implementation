@@ -66,6 +66,7 @@ upload_dar() {
 if [[ "${DEPLOY_SKIP_UPLOAD:-0}" != "1" ]]; then
   echo "==> Uploading DARs to $CANTON_LEDGER_URL"
   for dar in \
+    "$ROOT_DIR"/vendor/splice/daml/splice-util-token-standard-wallet/.daml/dist/splice-util-token-standard-wallet-current.dar \
     "$ROOT_DIR"/trading/.daml/dist/*.dar \
     "$ROOT_DIR"/trading-tests/.daml/dist/*.dar \
     "$ROOT_DIR"/examples/stable-pool/.daml/dist/*.dar; do

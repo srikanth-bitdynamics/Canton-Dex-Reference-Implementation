@@ -48,7 +48,15 @@ function allocateCmd(
 
 export type DamlCommand =
   | { CreateCommand: CreateCommand }
-  | { ExerciseCommand: ExerciseCommand };
+  | { ExerciseCommand: ExerciseCommand }
+  | { CreateAndExerciseCommand: CreateAndExerciseCommand };
+
+export interface CreateAndExerciseCommand {
+  templateId: string;
+  createArguments: Record<string, unknown>;
+  choice: string;
+  choiceArgument: Record<string, unknown>;
+}
 
 export interface CreateCommand {
   templateId: string;
@@ -242,61 +250,113 @@ function composeAddLiquidity(
     throw new Error(`add-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
   }
   // Single top-level command (CIP-0103 prepareExecute allows only one): the
-  // holder exercises LiquidityAllocationRequest_AcceptAndAllocate, which authors
-  // all three allocations (base deposit, quote deposit, LP receipt) + the
-  // acceptance receipt inside one Daml transaction. The choice reads the specs
-  // from the request itself; we pass only the per-allocation factory, input
-  // holdings, and context, PARALLEL to the request's `allocations`
-  // [base, quote, LP].
-  return acceptAndAllocateCommand(intent, ctx, [
+  // standard BatchingUtilityV2 accepts the request and authors all three
+  // allocations (base deposit, quote deposit, LP receipt) — leaving the same
+  // acceptance receipt the stock accept flow does — inside one Daml
+  // transaction. Holdings PARALLEL to the request's [base, quote, LP].
+  return batchingUtilityCommand(intent, ctx, [
     intent.baseHoldingCids,
     intent.quoteHoldingCids,
     [],
   ]);
 }
 
-// Build the single LiquidityAllocationRequest_AcceptAndAllocate command shared
-// by add (deposits) and remove (receipts + burn). `inputHoldingCids` is the
-// per-allocation funding list, PARALLEL to the request's [base, quote, LP]
-// allocations; the factory + context layout is the same for both directions
-// (base/quote under the deposit factory, LP under the lpRegistrar factory).
-function acceptAndAllocateCommand(
+// The token standard's wallet-side batching utility (Splice 0.6.11). Vendored
+// under vendor/splice/daml/splice-util-token-standard-wallet and deployed
+// alongside the DEX package.
+const BATCHING_UTILITY_TID =
+  "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.BatchingUtilityV2:BatchingUtility";
+
+// Build the single CreateAndExercise of the standard BatchingUtilityV2 shared
+// by add (deposits) and remove (receipts + burn): ONE top-level command
+// (CIP-0103 allows exactly one) creates the utility, accepts the request, and
+// authors every allocation the request names. Holdings are threaded through
+// the utility's holding map — keyed by (admin, authorizer account), then
+// instrument id — and the registry locks only what each allocation needs,
+// returning the rest as change for the next call in the batch.
+// `holdingsBySpec` is PARALLEL to the request's [base, quote, LP] allocations.
+function batchingUtilityCommand(
   intent: {
     requestCid: ContractId<"LiquidityAllocationRequest">;
+    settlement: V2SettlementInfo;
+    allocations: V2AllocationSpecification[];
     depositFactoryCid: ContractId<"AllocationFactory">;
     lpFactoryCid: ContractId<"AllocationFactory">;
     depositFactoryExtraArgs: V2ExtraArgs;
     lpFactoryExtraArgs: V2ExtraArgs;
+    allocationRequestExtraArgs: V2ExtraArgs;
     disclosure: DisclosedContract[];
   },
   ctx: ComposeContext,
-  inputHoldingCids: string[][],
+  holdingsBySpec: string[][],
 ): ComposedCommands {
+  const requestedAt = ctx.now().toISOString();
+  const factoryCids = [intent.depositFactoryCid, intent.depositFactoryCid, intent.lpFactoryCid];
+  const allocExtraArgs = [
+    intent.depositFactoryExtraArgs,
+    intent.depositFactoryExtraArgs,
+    intent.lpFactoryExtraArgs,
+  ];
+  // HoldingMap: GenMap ScopedAccount -> TextMap instrumentId -> [holding cids].
+  // A GenMap encodes as [key, value] pairs on the JSON Ledger API.
+  const buckets = new Map<
+    string,
+    { key: Record<string, unknown>; byInstrument: Record<string, string[]> }
+  >();
+  intent.allocations.forEach((spec, i) => {
+    const cids = holdingsBySpec[i] ?? [];
+    if (cids.length === 0) return;
+    const senderSide = spec.transferLegSides.find((s) => s.side === "SenderSide");
+    if (!senderSide) {
+      throw new Error("batching: holdings supplied for a receiver-only allocation");
+    }
+    const mapKey = JSON.stringify([spec.admin, spec.authorizer]);
+    const bucket =
+      buckets.get(mapKey) ??
+      { key: { admin: spec.admin, account: spec.authorizer }, byInstrument: {} };
+    bucket.byInstrument[senderSide.instrumentId] = [
+      ...(bucket.byInstrument[senderSide.instrumentId] ?? []),
+      ...cids,
+    ];
+    buckets.set(mapKey, bucket);
+  });
+  const inputHoldingMap = {
+    byAdminAndAccount: [...buckets.values()].map((b) => [b.key, b.byInstrument]),
+  };
+  const actions = [
+    {
+      tag: "TSA_AllocationRequest_AcceptV2",
+      value: {
+        cid: intent.requestCid,
+        arg: { actors: [ctx.party], extraArgs: intent.allocationRequestExtraArgs },
+      },
+    },
+    ...intent.allocations.map((spec, i) => ({
+      tag: "TSA_AllocationFactory_AllocateV2",
+      value: {
+        cid: factoryCids[i],
+        arg: {
+          settlement: intent.settlement,
+          allocation: spec,
+          requestedAt,
+          // Funded from the utility's holding map, not per-call cids.
+          inputHoldingCids: [],
+          extraArgs: allocExtraArgs[i],
+          actors: [ctx.party],
+        },
+      },
+    })),
+  ];
   return {
-    commandId: `lp-accept-allocate-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
+    commandId: `lp-batch-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [
       {
-        ExerciseCommand: {
-          templateId: tid(
-            ctx.packagePrefix,
-            "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationRequest",
-          ),
-          contractId: intent.requestCid,
-          choice: "LiquidityAllocationRequest_AcceptAndAllocate",
-          choiceArgument: {
-            factoryCids: [
-              intent.depositFactoryCid,
-              intent.depositFactoryCid,
-              intent.lpFactoryCid,
-            ],
-            inputHoldingCids,
-            allocExtraArgs: [
-              intent.depositFactoryExtraArgs,
-              intent.depositFactoryExtraArgs,
-              intent.lpFactoryExtraArgs,
-            ],
-          },
+        CreateAndExerciseCommand: {
+          templateId: BATCHING_UTILITY_TID,
+          createArguments: { user: ctx.party },
+          choice: "BatchingUtility_ExecuteBatch",
+          choiceArgument: { inputHoldingMap, actions, archiveAfterExecution: true },
         },
       },
     ],
@@ -318,12 +378,12 @@ function composeRemoveLiquidity(
   if (intent.allocations.length !== 3) {
     throw new Error(`remove-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
   }
-  // Single top-level command, mirroring add: the holder exercises
-  // LiquidityAllocationRequest_AcceptAndAllocate to author the base receipt,
-  // quote receipt, and LP burn-sender in one Daml transaction. Only the
-  // burn-sender funds from holdings (the LP holding); the two receipts are
-  // receiver-side and lock nothing. Parallel to the request's [base, quote, LP].
-  return acceptAndAllocateCommand(intent, ctx, [
+  // Single top-level command, mirroring add: the standard BatchingUtilityV2
+  // accepts the request and authors the base receipt, quote receipt, and LP
+  // burn-sender in one Daml transaction. Only the burn-sender funds from
+  // holdings (the LP holding); the two receipts are receiver-side and lock
+  // nothing. Parallel to the request's [base, quote, LP].
+  return batchingUtilityCommand(intent, ctx, [
     [],
     [],
     intent.lpHoldingCids,

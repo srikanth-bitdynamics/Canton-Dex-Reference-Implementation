@@ -108,6 +108,13 @@ currently assume a real owner: the `Allocation` signatory, settlement
 crediting, and the allocate factory. `RealRegistry` already supports
 these semantics.
 
+One more registry-dependent bound: pool slices are **long-lived committed
+allocations**, and some registries cap allocation lifetime — Amulet enforces
+`tokenStandardMaxTTL` (default **90 days**) from Splice 0.6.11. Against such a
+registry the operator must roll slices into fresh allocations before the cap
+expires; see
+[Registry Integration](../guides/registry-integration.md#allocation-lifetime-caps).
+
 ---
 
 **Where to read next:** [LP Tokens](lp-tokens.md) · [Pricing](pricing.md) · [Registry Integration](../guides/registry-integration.md) · [All docs](../README.md)

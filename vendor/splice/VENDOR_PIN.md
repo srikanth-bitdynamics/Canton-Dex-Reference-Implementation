@@ -40,6 +40,12 @@ previously this information lived only in a git commit message.
   Token Standard V2 sources without forcing a toolchain change. Migrating the
   whole repo to SDK 3.5.2 (which uses DPM rather than the legacy Daml Assistant)
   is a separate, later step.
+- `vendor/splice/daml/splice-util-token-standard-wallet/` (the wallet-side
+  batching utility, incl. `BatchingUtilityV2`) is synced from the same pin
+  (`93b3519c`), with its `daml.yaml` pinned to SDK `3.4.11` like the rest of
+  the vendored tree. It is vendored as **reference source only** — the binary
+  `../dars/*.dar` dependencies it declares are not vendored, nothing in this
+  repo builds or consumes it.
 - Sync scope: the API packages, `splice-token-standard-utils`, and the
   `examples/splice-test-token-v2` + `examples/splice-token-test-trading-app-v2`
   sources + `daml.yaml` were synced. The `cli/` tooling and the docs under

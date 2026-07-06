@@ -148,6 +148,22 @@ all local DARs were built against the same upstream Token Standard package
 hashes already accepted by the target network. Rebuild the dependent packages
 against the vetted upstream DARs, then rebuild `trading` and `trading-tests`.
 
+## Running against Amulet assets
+
+If a pair uses Amulet (CC) as an asset, note the Splice 0.6.11+ requirements:
+
+- The validator node (yours or your wallet provider's) must run a version that
+  supports the Token Standard V2 APIs, and the Amulet DARs must be at the
+  V2-capable versions (`amulet` 0.1.21+, `wallet` 0.1.22+ — see the
+  [Splice release notes](https://docs.canton.network/global-synchronizer/release-notes/splice)).
+- Amulet enforces `tokenStandardMaxTTL` (default 90 days) on allocations and
+  instructions — see
+  [Registry Integration](registry-integration.md#allocation-lifetime-caps).
+- Known upstream limitation: the **Splice Amulet Wallet UI** can only create
+  multiple requested allocations in a single transaction for *Amulet*
+  allocations. The DEX sidesteps this for its own flows by having one Daml
+  choice author all allocations of a request in a single command.
+
 ## Wallet Boundary
 
 Operator-authority calls go through the backend. Trader-authority calls, such as

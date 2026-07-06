@@ -40,6 +40,30 @@ For every instrument the DEX trades, the registry must provide:
 | Allocation factory accepts arbitrary `AllocationSpecification` shapes (prefunded, with-legs, committed, with `nextIterationFunding`) | Order's prefunded model and Pool's committed model both depend on this |
 | Settlement factory enforces transfer-leg consistency with allocations | OTC / matched-trade settlement and `PoolRules_Swap` rely on the factory to validate, not the DEX |
 
+## Allocation lifetime caps
+
+Registries may bound how long an allocation or instruction can live. Amulet
+(Splice 0.6.11+) enforces `AmuletConfig.tokenStandardMaxTTL` — **90 days by
+default** — on token-standard allocations and instructions. This matters for
+the DEX because pool reserves are held as **long-lived committed allocations**
+(one per slice): against a TTL-capping registry, pool inventory must be rolled
+into fresh allocations before the cap expires, and settlement deadlines on
+order/LP allocations must stay inside the registry's cap. The reference
+registry does not enforce a cap; integrators against Amulet (or any registry
+with a similar bound) should treat slice re-allocation as a scheduled
+operational task.
+
+## Registry API surface (Daml + OpenAPI)
+
+Token Standard V2 registries are expected to expose **both** the Daml
+interfaces and the standard **OpenAPI** endpoints (the specs ship alongside
+each API package in `canton-network/splice` under `token-standard/`). The
+reference registry implements the Daml interface side in full; its off-ledger
+surface is the choice-context endpoint the backend's registry-client consumes
+(see [Choice Context](choice-context.md)). A production registry should
+implement the standard OpenAPI so V2-compliant wallets and apps can discover
+factories and context without bespoke integration.
+
 ## Mint / Burn / Transfer prerequisites
 
 For trader-facing flows (mint, burn, hold, transfer), the reference registry

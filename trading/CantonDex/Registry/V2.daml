@@ -566,7 +566,7 @@ template Registry with
         -- A mint/burn allocation names a special account (`owner = None`)
         -- authorized by the admin. It locks no holdings and does not go
         -- through normal funding coverage.
-        lockedCids <- case spec.authorizer.owner of
+        (lockedCids, authorizerChange) <- case spec.authorizer.owner of
           None -> do
             -- Special accounts must be exactly the standard mint or burn
             -- accounts, authored by the admin, with only the legal leg
@@ -584,7 +584,7 @@ template Registry with
                             else side.side == V2.ReceiverSide
             assertMsg "mint may carry only sender-side legs; burn only receiver-side"
               (all sideOk spec.transferLegSides)
-            pure []
+            pure ([], TextMap.empty)
           Some authorizerOwner -> do
             -- The authorizer must fund its sender-side outflow + reserved
             -- next-iteration funding from the input holdings it locks.
@@ -599,15 +599,32 @@ template Registry with
                     sentByAuth
                 funding = optional TextMap.empty identity spec.nextIterationFunding
                 required = Utils.textMapUnionWith (+) sideRequired funding
-            locked <- forA arg.inputHoldingCids $ \ifaceCid -> do
+            -- Lock only holdings of instruments this allocation actually
+            -- needs; leave the rest untouched and report them via
+            -- `authorizerChangeCids`. Batching wallets (e.g. the standard
+            -- `BatchingUtilityV2`) pass ALL of an account's holdings to each
+            -- call and rely on implementations to ignore irrelevant ones.
+            classified <- forA arg.inputHoldingCids $ \ifaceCid -> do
               let cid : ContractId Holding = coerceContractId ifaceCid
               h <- fetch cid
               assertMsg "input holding owner must match authorizer"
                 (h.owner == authorizerOwner)
               assertMsg "input holding admin must match registry"
                 (h.admin == admin)
-              archive cid
-              create h with locked = True
+              if isSome (TextMap.lookup h.instrumentId required)
+                then do
+                  archive cid
+                  lockedCid <- create h with locked = True
+                  pure (Left lockedCid)
+                else pure (Right (h.instrumentId, ifaceCid))
+            let locked = [c | Left c <- classified]
+                change =
+                  foldl
+                    (\m (iid, cidI) ->
+                      let cur = optional [] identity (TextMap.lookup iid m)
+                      in TextMap.insert iid (cur ++ [cidI]) m)
+                    TextMap.empty
+                    [p | Right p <- classified]
             supplied <- do
               pairs <- forA locked $ \cid -> do
                 h <- fetch cid
@@ -624,7 +641,7 @@ template Registry with
                 ("AllocationFactory: insufficient holdings for " <> iid <>
                  " (need " <> show needed <> ", have " <> show have <> ")")
                 (have >= needed)
-            pure locked
+            pure (locked, change)
         now <- getTime
         allocationCid <- create Allocation with
           admin
@@ -636,7 +653,7 @@ template Registry with
         pure V2.AllocationInstructionResult with
           output = V2.AllocationInstructionResult_Completed with
             allocationCid = toInterfaceContractId allocationCid
-          authorizerChangeCids = TextMap.empty
+          authorizerChangeCids = authorizerChange
           meta = emptyMetadata
 
     interface instance V2.SettlementFactory for Registry where

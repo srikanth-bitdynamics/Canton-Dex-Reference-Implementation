@@ -39,3 +39,113 @@
   font-size: 0.875em;
 }
 
+/* ============================================================
+ * Bitdynamics design system for the docs site.
+ * Archivo (UI/prose) + JetBrains Mono (code and data values),
+ * ink neutrals with one cobalt accent. Light-first; the dark
+ * theme uses the navy-black console ramp.
+ * ============================================================ */
+
+@font-face {
+  font-family: "Archivo";
+  src: url("/Canton-Dex-Reference-Implementation/fonts/archivo.woff2") format("woff2");
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Archivo";
+  src: url("/Canton-Dex-Reference-Implementation/fonts/archivo-italic.woff2") format("woff2");
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/Canton-Dex-Reference-Implementation/fonts/jetbrains-mono.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/Canton-Dex-Reference-Implementation/fonts/jetbrains-mono-italic.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root {
+  --sl-font: "Archivo", -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --sl-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* Dark mode — navy-black console ramp, accent lightened per the system. */
+:root {
+  --sl-color-accent-low: #141C36;
+  --sl-color-accent: #6480E6;
+  --sl-color-accent-high: #93A7F0;
+  --sl-color-white: #E9ECF4;
+  --sl-color-gray-1: #D8DDE9;
+  --sl-color-gray-2: #A9B2C6;
+  --sl-color-gray-3: #7C8598;
+  --sl-color-gray-4: #5A6375;
+  --sl-color-gray-5: #313B52;
+  --sl-color-gray-6: #161C29;
+  --sl-color-black: #0B0F1A;
+}
+
+/* Light mode — white pages, cool ink neutrals, cobalt 600. */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #DCE3FB;
+  --sl-color-accent: #2946CE;
+  --sl-color-accent-high: #1D2F85;
+  --sl-color-white: #141A28;
+  --sl-color-gray-1: #232A39;
+  --sl-color-gray-2: #384050;
+  --sl-color-gray-3: #6C7488;
+  --sl-color-gray-4: #9BA3B5;
+  --sl-color-gray-5: #CDD2DD;
+  --sl-color-gray-6: #EFF1F5;
+  --sl-color-gray-7: #F7F8FA;
+  --sl-color-black: #FFFFFF;
+}
+
+/* Headings: semibold, quietly extended, tight tracking. */
+.sl-markdown-content :is(h1, h2, h3, h4),
+h1[data-page-title] {
+  font-stretch: 104%;
+  letter-spacing: -0.01em;
+  font-weight: 600;
+}
+
+/* Site title as the plain-type wordmark. */
+.site-title span,
+a.site-title {
+  font-weight: 600;
+  font-stretch: 118%;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: var(--sl-text-sm);
+}
+
+/* Structural micro-labels: sidebar group labels + the TOC heading. */
+#starlight__sidebar .group-label span,
+#starlight__on-this-page--mobile,
+starlight-toc h2,
+.right-sidebar-panel h2 {
+  font-weight: 600;
+  font-stretch: 118%;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--sl-color-gray-3);
+}
+
+/* Data values render in mono with tabular numerals; ligatures off. */
+.sl-markdown-content code {
+  font-variant-numeric: tabular-nums;
+  font-variant-ligatures: none;
+}

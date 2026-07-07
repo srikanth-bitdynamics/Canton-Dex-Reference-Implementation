@@ -68,7 +68,7 @@ lookup (reference).
 | [Run on a Testnet](guides/run-on-testnet.md) | Operator | Point the operator backend and dApp at a Canton testnet. |
 | [Registry Integration](guides/registry-integration.md) | Integrator | What the DEX assumes from an asset registry, and how to swap in your own. |
 | [Choice Context](guides/choice-context.md) | Integrator | What the backend attaches to each transaction it submits (context + disclosure). |
-| [Validator Test Plan](guides/validator-test-plan.md) | QA, validator | The 10-phase live end-to-end validation checklist. |
+| [Validator Test Plan](guides/validator-test-plan.md) | QA, validator | The 11-phase live end-to-end validation checklist. |
 
 ### Reference — look something up
 | Page | Topic |

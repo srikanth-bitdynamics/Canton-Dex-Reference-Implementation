@@ -117,7 +117,7 @@ operators do not need a parallel database to explain a trade.
 | Why did this RFQ accept go to this dealer?            | `MatchedTrade.policyReceipt`, also folded into `SettlementInfo.meta` via `dex.policy.*` keys           |
 | What pair / fee policy applied at trade time?         | `DexPair.feeModel`, `DexPair.tradingMode`, `DexPair.active` at the trade's `createdAt`                 |
 | Where did this pool's reserves come from?             | Each `PoolSlice` is an `Allocation` CID, each carrying its admin, authorizer, and committed funding    |
-| What's the current head slice / boundary candidate?   | `Pool.baseSlices` and `Pool.quoteSlices`, list head and tail                                            |
+| What's the current head slice / boundary candidate?   | each active `PoolSlice` for the pool (query the ACS by `poolId`); the aggregate is `PoolState.reserves.baseAmount`/`quoteAmount`                                            |
 | Did this trader's funding accept?                     | The `OrderAllocationRequest` archive event plus the corresponding `Allocation` create event           |
 | Why is this `PoolRules_Swap` failing slippage?        | Call the quote endpoint before swap; the on-ledger choice re-validates against current reserves and `minOutputAmount` |
 | Did this LP mint actually run?                        | `PoolLiquidityRules_SettleAddLiquidity` mints against the LP receipt allocation and records the resulting supply on `LPTokenPolicy` |
@@ -200,8 +200,7 @@ Either:
   existing contracts from the old name remain queryable but cannot be
   upgraded.
 
-The smart-upgrade test cases live in `docs/guides/run-on-testnet.md` "Smart
-upgrade" section.
+See the "Upgrade discipline" section of `docs/guides/builder-guide.md` for smart-upgrade lineage guidance.
 
 ### LP supply drift
 
@@ -216,8 +215,8 @@ supply-sync guard aborts. Recovery: query the policy supply and re-run
 
 V2 holdings are admin+owner signed. If a trader claims a missing
 holding, check the registry's `Registry_RegisterInstrument` /
-`Registry_Mint` events for that party. The `transferEvents-v2`
-package exposes a `LedgerEntry` interface for replayable audit.
+`Registry_Mint` events for that party. The `splice-api-token-transfer-events-v2`
+package exposes an `EventLog` interface for replayable audit.
 
 ## Backup
 

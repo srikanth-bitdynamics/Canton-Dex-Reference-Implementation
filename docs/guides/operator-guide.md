@@ -121,7 +121,7 @@ curl -X POST http://localhost:8080/v1/admin/pairs \
   }'
 ```
 
-Trading mode is one of `TM_Book`, `TM_Pool`, `TM_Both`. The fee model
+Trading mode is one of `TM_OrderBook`, `TM_Pool`, `TM_Both`. The fee model
 ships maker / taker / pool fees in basis points.
 
 Once created, the pair appears in `GET /v1/pairs`. Pause / resume / update
@@ -176,9 +176,10 @@ environment.
 
 ### Fee accrual + revenue
 
-Admin → **Fee accrual** shows per-pool 24h volume, fees, LP share, and
-operator share. The operator's cut is configurable via `operatorFeeBps`
-on each pool (defaults to 0 — pool fees go to LPs).
+Admin → **Fee accrual** shows per-pool 24h volume and fees. The entire
+swap fee (`feeBps` on each pool) accrues to LPs via the constant-product
+(`x*y=k`) invariant; there is no operator fee split in this reference
+implementation.
 
 ### Pause / resume
 
@@ -230,7 +231,7 @@ re-submitted `commandId` returns the cached result instead of
 double-spending. Crashes during a multi-step operator flow are safe to
 retry.
 
-### Pool stuck in `Settling`
+### Pool DvP recovery: slice CIDs rolled forward without an observed event
 
 The pool's slice CIDs may have rolled forward on-ledger without the
 operator backend observing the event. Check the participant's ACS for

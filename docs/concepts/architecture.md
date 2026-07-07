@@ -255,7 +255,8 @@ flows:
   explicit and exceptional
 
 The data carrier is the standalone `PoolSlice` contract:
-`{ poolId, side, allocationCid, amount }`. The operator indexer supplies
+`{ poolId, operator, side, allocationCid, amount }` (with `operator` the
+signatory). The operator indexer supplies
 ordered slice contract IDs to the rules choices; the immutable `Pool` no
 longer stores an unbounded slice list.
 The slice's `amount` is reconciled with the underlying allocation's funding on

@@ -18,8 +18,7 @@ Per registry, the operator backend fetches:
 | `GET /registry/credentials?holder=:p`      | reference-registry `Credential[]`, or equivalent authorization evidence, for that party | MintRequest_Accept, TransferOffer_Accept |
 | `GET /registry/factories/:admin`           | `(AllocationFactory, SettlementFactory)` CIDs + disclosure | `PoolRules_Swap`, matched-trade settle |
 | `GET /registry/choice-context/:admin`      | `ChoiceContextRef` (`context` + disclosure) | Pool, MatchedTrade, any registry-touching token-standard choice |
-| `GET /registry/transfer-rule/:id`          | reference-registry `TransferRule`, or equivalent transfer policy, if any | TransferOffer_Accept |
-| `GET /registry/preapprovals?receiver=:p`   | reference-registry `TransferPreapproval[]`, or equivalent preapproval evidence, for that receiver | TransferOffer_AcceptPreapproved |
+| `GET /registry/preapprovals?receiver=:p&admin=:a` | reference-registry `TransferPreapproval[]`, or equivalent preapproval evidence, for that receiver | TransferOffer_AcceptPreapproved |
 
 These endpoints are examples for this reference implementation. A production
 registry may use different paths, payloads, or discovery mechanisms as long as
@@ -71,7 +70,7 @@ same submission to avoid creating duplicate allocations.
 
 Required inputs:
 - `settlement : V2.SettlementInfo` — exactly the
-  `mkOtcTradeSettlementInfo` output (or `poolSettlementInfo`).
+  `mkTradeSettlementInfo` output (or `poolSettlement`).
 - `transferLegs : [V2.TransferLeg]` — the legs being settled, in the
   order the allocations expect.
 - `allocations : [V2.FinalizedAllocation]` — every allocation whose
@@ -146,11 +145,14 @@ The operator backend caches:
 3. Reference-registry `TransferPreapproval` CIDs, keyed by `(receiver, admin)`,
    when the registry supports preapproval contracts.
 4. Credentials or equivalent authorization evidence, keyed by
-   `(holder, instrumentId)` — short TTL because credentials can be revoked.
+   `holder` — short TTL because credentials can be revoked.
 
-The cache keys are hashed; cache invalidation listens to a
-`registryEventStream` (server-sent events from the registry's
-disclosure endpoint).
+The cache keys are hashed. Entries expire by TTL (`credentialsTtlMs`
+for credentials, `choiceContextTtlMs` for choice contexts, with
+per-cache defaults); the client also exposes `invalidate()` /
+`invalidateAll()` for manual eviction after a known archive or
+re-publish. There is no registry-side event stream driving
+invalidation.
 
 ## Failure modes the backend must handle
 

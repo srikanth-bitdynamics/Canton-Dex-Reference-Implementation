@@ -16,7 +16,7 @@ A runnable Canton DEX that:
   adjusted in place without re-funding round trips.
 - ships an on-chain operator policy receipt (`PolicyReceipt`) for RFQ accepts,
   so dealer ranking is replayable after the fact.
-- has a public testnet deployment with a working dApp pointed at it.
+- can be deployed to a Canton testnet participant with the included tooling (`scripts/deploy-testnet.sh`); see [Run on a Testnet](run-on-testnet.md) to point the operator backend and dApp at your own participant.
 
 ## Out of scope
 

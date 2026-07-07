@@ -10,13 +10,17 @@ order, or trade an RFQ block.
 
 ## Connecting a wallet
 
-The Connect Wallet button in the top bar opens a provider menu. The
-default is **Token Standard V2** (Canton-native signing); other
-providers are available if their env vars are set.
+The Connect Wallet button in the top bar opens a provider menu. There is
+no built-in default in production or testnet builds: if you have
+configured PartyLayer (`VITE_ENABLE_PARTYLAYER=1`), WalletConnect
+(`VITE_WC_PROJECT_ID`), or the SDK wallet (`VITE_ENABLE_SDK=1`), the
+first configured one (in that order) is preselected; otherwise you pick a
+provider explicitly. The Token Standard V2 relay is preselected only in
+local dev builds, never in production or testnet.
 
 | Provider | When to use | Required env |
 |---|---|---|
-| **Token Standard V2** | Production / testnet, full Canton-native signing | `VITE_CANTON_LEDGER_URL`, `VITE_CANTON_AUTH_TOKEN` |
+| **Token Standard V2** | Local dev / testnet only (routes writes through the operator signing relay; dev builds only) | `VITE_API_BASE`, `VITE_CANTON_DEFAULT_PARTY` |
 | **WalletConnect** | External CIP-0103 wallets (mobile / hardware) | `VITE_WC_PROJECT_ID` |
 | **Direct Canton** | Advanced testnet sessions with a bearer token | `VITE_CANTON_LEDGER_URL`, `VITE_CANTON_AUTH_TOKEN` |
 | **Mock Wallet** | Local dev only — DEV builds only | none |
@@ -126,7 +130,7 @@ Limit orders for traders who want execution at a price, not a pool
 mid. Uses prefunded `Order` allocations.
 
 1. Open **Orders** → pick BUY or SELL.
-2. Set the limit price, size, and expiry (10m / 1h / 4h / GTC).
+2. Set the limit price and amount. (The order is placed with no expiry.)
 3. Click **Place Order**. Your wallet signs an `OrderFundingRequest`;
    the operator binds + funds it on-ledger.
 4. Toast walks: submitted → bound → funded → in book.

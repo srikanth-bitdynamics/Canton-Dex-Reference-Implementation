@@ -75,15 +75,19 @@ CANTON_E2E=1 \
   npm test --prefix services/operator-backend
 ```
 
-Expected output:
+Expected output — the three Canton E2E cases (enabled by `CANTON_E2E=1`)
+within the full backend suite:
 
 ```
 ✔ Canton E2E: RFQ accept produces MatchedTrade with PolicyReceipt
-✔ RFQ accept end-to-end through operator backend
-✔ policy version is exported
-ℹ tests 3
-ℹ pass 3
+✔ Canton E2E: rfq.list returns visible RFQs and quotes
+✔ Canton E2E: rfq.cancel archives an open Rfq
 ```
+
+`npm test --prefix services/operator-backend` runs the entire backend
+suite (~100 tests); the three lines above are the Canton-participant
+cases. To run only the E2E file, replace the `npm test` line with
+`node --import tsx --test services/operator-backend/test/canton-e2e.test.ts`.
 
 When `CANTON_E2E` is unset (or anything other than `1`), the Canton
 test is automatically skipped:

@@ -86,9 +86,13 @@ pool account.
   PoolState.totalLpSupply`; apply the mint/burn delta; rewrite `PoolState`
   once with the new supply + reserves. Both trackers move in lockstep and
   any pre-existing divergence surfaces loudly.
-- **Stale-quote rejection**: `Request*` records the quote
-  (`knownTotalLpSupply`, deposit ratio / slippage bounds) + a short
-  deadline; `Settle*` re-checks against current `PoolState` and aborts a
+- **Stale-quote rejection**: `Request*` records only a short deadline
+  (`settleAt`) alongside the expected allocations; the operator
+  re-supplies its off-ledger quote (`knownTotalLpSupply` and slippage
+  bounds such as `minLpTokens` / `minBaseOut` / `minQuoteOut`) as
+  `Settle*` arguments. `Settle*` asserts `knownTotalLpSupply ==
+  PoolState.totalLpSupply` (plus the min bounds) against current
+  `PoolState` and aborts a
   stale request.
 
 ## What does NOT change

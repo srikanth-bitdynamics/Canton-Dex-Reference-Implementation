@@ -209,7 +209,7 @@ backend's command path does not cache cids across requests.
 
 - It does not assume the registry is a single party. Multiple registrars
   can coexist; the DEX groups settlement by admin (see
-  `splitLegsByAdmin` and `OTCTrade_Settle.batchesByAdmin`).
+  `splitLegsByAuthorizer` and `MatchedTrade_Settle.batchesByAdmin`).
 - It does not assume holding fungibility across admins. A trade with
   legs spanning two admins requires two batches.
 - It does not assume holding precision is uniform. Each registry may expose its

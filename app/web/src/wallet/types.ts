@@ -165,9 +165,9 @@ export interface MergeHoldingsIntent {
  * LiquidityAllocationRequest; the wallet authors the three allocations it
  * names — base deposit + quote deposit (under `depositFactoryCid` =
  * pool.admin) and the LP-token receipt (under `lpFactoryCid` =
- * pool.lpRegistrar) — by exercising the request's
- * `LiquidityAllocationRequest_AcceptAndAllocate` choice, which authors all
- * three (plus the acceptance receipt) inside ONE Daml transaction / one
+ * pool.lpRegistrar) — via a CreateAndExercise of the token standard's
+ * `BatchingUtilityV2.ExecuteBatch`, which accepts the request (leaving the
+ * acceptance receipt) and authors all three inside ONE Daml transaction / one
  * top-level command (CIP-0103 prepareExecute allows only one). `allocations`
  * is the canonical order [base deposit, quote deposit, LP receipt]; the
  * created cids are recovered operator-side from the single updateId for /settle.

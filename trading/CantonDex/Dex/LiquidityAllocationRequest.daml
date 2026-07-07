@@ -5,20 +5,7 @@ import DA.Map qualified as Map
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
-import Splice.Api.Token.AllocationInstructionV2 qualified as V2
-import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
-
--- | Result of `LiquidityAllocationRequest_AcceptAndAllocate`: the created
--- allocation cids (in `allocations` order) and the acceptance receipt. The
--- operator's settle can read these directly (full-tree wallet) or recover them
--- from the single transaction's `updateId` (updateId-only wallet) — the same
--- recovery the stock multi-command accept path used.
-data LiquidityAllocationRequest_AcceptAndAllocateResult =
-  LiquidityAllocationRequest_AcceptAndAllocateResult with
-    allocationCids : [ContractId V2.Allocation]
-    acceptanceCid : ContractId LiquidityAllocationAcceptance
-  deriving (Eq, Show)
 
 template LiquidityAllocationRequest with
     operator : Party
@@ -78,60 +65,6 @@ template LiquidityAllocationRequest with
         assertMsg "withdraw actors must be exactly the operator" (arg.actors == [operator])
         archive self
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
-
-    -- Single-command authoring for CIP-0103 wallets. Canton's interactive-
-    -- submission path (`prepareExecute`) accepts only ONE top-level command per
-    -- transaction, so a wallet cannot send the request-accept and the N
-    -- `AllocationFactory_Allocate` exercises as separate commands. This choice
-    -- fans them all out INSIDE one Daml transaction under the holder's single
-    -- authorization: it authors every allocation the request named (locking the
-    -- supplied holdings) and leaves the same acceptance receipt the stock accept
-    -- path does, then consumes the request. The operator's settle recovers the
-    -- created Allocations + this receipt from the one `updateId`, unchanged.
-    --
-    -- `factoryCids`, `inputHoldingCids`, and `allocExtraArgs` are parallel to
-    -- `allocations`: the i-th allocation is authored against `factoryCids!!i`,
-    -- funded by `inputHoldingCids!!i`, with context `allocExtraArgs!!i`.
-    choice LiquidityAllocationRequest_AcceptAndAllocate
-      : LiquidityAllocationRequest_AcceptAndAllocateResult
-      with
-        factoryCids : [ContractId V2.AllocationFactory]
-        inputHoldingCids : [[ContractId V2.Holding]]
-        allocExtraArgs : [ExtraArgs]
-      controller lp
-      do
-        let n = length allocations
-        assertMsg "factoryCids must be parallel to allocations"
-          (length factoryCids == n)
-        assertMsg "inputHoldingCids must be parallel to allocations"
-          (length inputHoldingCids == n)
-        assertMsg "allocExtraArgs must be parallel to allocations"
-          (length allocExtraArgs == n)
-        now <- getTime
-        allocationCids <- forA
-          (zip (zip allocations factoryCids) (zip inputHoldingCids allocExtraArgs))
-          $ \((spec, fcid), (inputs, ea)) -> do
-              res <- exercise fcid V2.AllocationFactory_Allocate with
-                settlement
-                allocation = spec
-                requestedAt = now
-                inputHoldingCids = inputs
-                extraArgs = ea
-                actors = [lp]
-              case res.output of
-                V2.AllocationInstructionResult_Completed cid -> pure cid
-                _ -> abort "AcceptAndAllocate: registry did not complete the allocation directly"
-        acceptedAt <- getTime
-        -- This choice is consuming, so exercising it already archives the
-        -- request; we leave the acceptance receipt the settle binds to. (No
-        -- explicit `archive self`: the request is consumed at the exercise node,
-        -- so re-archiving it would fail with CONTRACT_NOT_ACTIVE.)
-        acceptanceCid <- create LiquidityAllocationAcceptance with
-          operator; lp; settlement; allocations; settleAt; acceptedAt
-          originalRequestCid = self
-        pure LiquidityAllocationRequest_AcceptAndAllocateResult with
-          allocationCids
-          acceptanceCid
 
 -- Operator-visible evidence that the LP/holder accepted the request and
 -- authored the allocations. Created by `AllocationRequest_Accept` immediately

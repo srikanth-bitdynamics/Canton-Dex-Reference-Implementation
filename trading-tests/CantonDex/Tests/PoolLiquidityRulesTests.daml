@@ -11,6 +11,7 @@ module CantonDex.Tests.PoolLiquidityRulesTests where
 
 import DA.Assert
 import DA.List (head)
+import DA.TextMap qualified as TextMap
 import DA.Time (addRelTime, hours)
 import Daml.Script
 
@@ -20,6 +21,7 @@ import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 import Splice.Testing.Utils (emptyExtraArgs)
+import Splice.Util.Token.Wallet.BatchingUtilityV2 qualified as BU
 
 import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState qualified as PS
@@ -812,6 +814,101 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   res.lpTokensMinted === lpAmount
   -- The evidence is consumed by settle (cleanup); none left behind.
+  remaining <- query @LAR.LiquidityAllocationAcceptance fx.operator
+  remaining === []
+  pure ()
+
+-- One-command wallet flow via the standard batching utility (Splice 0.6.11):
+-- the LP `createAndExercise`s `BatchingUtility_ExecuteBatch` carrying the
+-- request accept plus all three `AllocationFactory_Allocate` calls. Input
+-- holdings are threaded through the utility's holding map: the registry locks
+-- only the instruments each allocation needs and returns the rest via
+-- `authorizerChangeCids` (the V2 batching contract), so the base allocate's
+-- untouched USDC funds the quote allocate inside the same transaction. The
+-- operator settle then binds to the acceptance receipt exactly as in the
+-- stock accept flow.
+testBatchedUtilityAddLiquidity : Script ()
+testBatchedUtilityAddLiquidity = do
+  alice <- allocateParty "alice"
+  fx <- setup [alice]
+  now <- getTime
+  let lpAmount = PM.sqrtDecimal 2000000.0
+      lpAcct = Utils.basicAccount alice
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PM.poolSettlement fx.poolCid fx.operator
+      baseDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = lpAcct; receiver = opAcct
+        amount = 10.0; instrumentId = "BTC"; meta = emptyMetadata
+      quoteDepositLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
+        amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
+      lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
+      baseSpec = mkSpec fx.registry lpAcct [baseDepositLeg] True
+      quoteSpec = mkSpec fx.registry lpAcct [quoteDepositLeg] True
+      receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
+  baseHold <- mintHolding fx.registry alice "BTC" 10.0
+  quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
+  reqCid <- requestAdd fx alice 10.0 200000.0 lpAmount None now
+
+  let allocAction spec = BU.TSA_AllocationFactory_AllocateV2 BU.ChoiceCall with
+        cid = coerceContractId fx.factoryCid
+        arg = V2.AllocationFactory_Allocate with
+          settlement; allocation = spec; requestedAt = now
+          -- Funded from the utility's holding map, not per-call cids.
+          inputHoldingCids = []
+          extraArgs = emptyExtraArgs; actors = [alice]
+      acceptAction = BU.TSA_AllocationRequest_AcceptV2 BU.ChoiceCall with
+        cid = coerceContractId reqCid
+        arg = V2.AllocationRequest_Accept with
+          actors = [alice]; extraArgs = emptyExtraArgs
+      inputHoldingMap = BU.holdingMapFromList
+        [ ( BU.ScopedAccount with admin = fx.registry; account = lpAcct
+          , TextMap.fromList
+              [ ("BTC", [toInterfaceContractId baseHold])
+              , ("USDC", [toInterfaceContractId quoteHold])
+              ] ) ]
+
+  -- ONE top-level command: create the utility and execute the whole batch.
+  res <- submit alice $ createAndExerciseCmd
+    (BU.BatchingUtility with user = alice)
+    BU.BatchingUtility_ExecuteBatch with
+      inputHoldingMap
+      actions =
+        [ acceptAction
+        , allocAction baseSpec
+        , allocAction quoteSpec
+        , allocAction receiptSpec
+        ]
+      archiveAfterExecution = True
+
+  let allocCids =
+        [ cid
+        | BU.TSAR_AllocationInstructionResultV2 r <- res.actionResults
+        , V2.AllocationInstructionResult_Completed cid <- [r.output]
+        ]
+  (lpBaseDeposit, lpQuoteDeposit, lpReceipt) <- case allocCids of
+    [b, q, r] -> pure (b, q, r)
+    _ -> abort "batch must complete exactly three allocations"
+
+  accs <- query @LAR.LiquidityAllocationAcceptance fx.operator
+  accCid <- case accs of
+    ((cid, _) :: _) -> pure cid
+    [] -> abort "batched accept must leave acceptance evidence"
+
+  res2 <- submitMulti [fx.operator, fx.registry] [] $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+      lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = Some accCid
+      recipient = alice
+      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+      lpReceiptCid = lpReceipt
+      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
+      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+      knownTotalLpSupply = 0.0
+      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  res2.lpTokensMinted === lpAmount
   remaining <- query @LAR.LiquidityAllocationAcceptance fx.operator
   remaining === []
   pure ()

@@ -19,6 +19,9 @@ data-dependencies:
   - ../vendor/splice/token-standard/splice-api-token-holding-v1/.daml/dist/splice-api-token-holding-v1-current.dar
   - ../vendor/splice/token-standard/splice-api-token-allocation-v1/.daml/dist/splice-api-token-allocation-v1-current.dar
   - ../vendor/splice/token-standard/splice-api-token-allocation-request-v1/.daml/dist/splice-api-token-allocation-request-v1-current.dar
+  # Wallet-side batching utility (Splice 0.6.11) + its featured-app dependency.
+  - ../vendor/splice/daml/splice-api-featured-app-v1/.daml/dist/splice-api-featured-app-v1-current.dar
+  - ../vendor/splice/daml/splice-util-token-standard-wallet/.daml/dist/splice-util-token-standard-wallet-current.dar
   - ../vendor/splice/token-standard/splice-api-token-allocation-instruction-v1/.daml/dist/splice-api-token-allocation-instruction-v1-current.dar
   - ../vendor/splice/token-standard/splice-api-token-transfer-instruction-v1/.daml/dist/splice-api-token-transfer-instruction-v1-current.dar
   - ../vendor/splice/token-standard/splice-token-standard-utils/.daml/dist/splice-token-standard-utils-current.dar

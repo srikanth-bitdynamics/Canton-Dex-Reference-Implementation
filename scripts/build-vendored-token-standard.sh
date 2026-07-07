@@ -58,4 +58,37 @@ for rel in "${packages[@]}"; do
   cp "$versioned_dar" "$dist_dir/${pkg_name}-current.dar"
 done
 
+# Wallet-side utility packages live under vendor/splice/daml (not token-standard/).
+# splice-util-token-standard-wallet (BatchingUtilityV2) depends on the API dars
+# built above plus splice-api-featured-app-v1.
+DAML_DIR="$(cd "$(dirname "$0")/.." && pwd)/vendor/splice/daml"
+daml_packages=(
+  "splice-api-featured-app-v1"
+  "splice-util-token-standard-wallet"
+)
+
+for rel in "${daml_packages[@]}"; do
+  pkg_dir="$DAML_DIR/$rel"
+  pkg_name="$(basename "$rel")"
+
+  echo "==> Building $rel"
+  (
+    cd "$pkg_dir"
+    daml build
+  )
+
+  dist_dir="$pkg_dir/.daml/dist"
+  versioned_dar="$(
+    find "$dist_dir" -maxdepth 1 -type f -name "${pkg_name}-*.dar" \
+      ! -name "${pkg_name}-current.dar" | sort | tail -n 1
+  )"
+
+  if [[ -z "$versioned_dar" ]]; then
+    echo "Failed to locate built DAR for $pkg_name" >&2
+    exit 1
+  fi
+
+  cp "$versioned_dar" "$dist_dir/${pkg_name}-current.dar"
+done
+
 echo "Vendored token-standard packages built successfully."

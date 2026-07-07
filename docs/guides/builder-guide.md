@@ -164,13 +164,13 @@ submit.
 **Why single-command flows.** CIP-0103 interactive submission prepares **one
 top-level command** per transaction, and the Splice Amulet Wallet UI only
 batches multiple requested allocations for Amulet allocations. The DEX
-therefore exposes Daml choices that author *all* allocations of a request in
-one command (e.g. `LiquidityAllocationRequest_AcceptAndAllocate`). The standard
-now also ships a generic batching utility —
-`Splice.Util.Token.Wallet.BatchingUtilityV2` (vendored under
-`vendor/splice/daml/splice-util-token-standard-wallet/`) — which is the
-canonical way to batch V1/V2 token-standard actions in a single transaction;
-a fork may prefer it over bespoke per-request choices.
+therefore uses the token standard's batching utility —
+`Splice.Util.Token.Wallet.BatchingUtilityV2` (Splice 0.6.11, vendored under
+`vendor/splice/daml/splice-util-token-standard-wallet/` and built by the
+vendored-DAR script): the wallet `createAndExercise`s `ExecuteBatch`, which
+accepts the request and authors every allocation it names in a single Daml
+transaction, threading each account's holdings between the calls. Deploy the
+`splice-util-token-standard-wallet` DAR alongside the DEX DAR.
 
 ## Extending the reference
 

@@ -267,7 +267,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
         className={`w-full py-3 rounded-lg font-sans font-semibold text-base transition-colors ${
           isSubmitting || !party || !context || parsedInput <= 0 || parsedInput > inputBalance
             ? 'bg-surface-border text-text-muted cursor-not-allowed'
-            : 'bg-accent-blue hover:bg-accent-blue/90 text-white cursor-pointer'
+            : 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--on-accent)] cursor-pointer'
         }`}
       >
         {!party

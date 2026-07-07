@@ -88,7 +88,7 @@ export function PoolsPage() {
     <div className="page">
       <div className="page-header">
         <div>
-          <h1 className="page-title">Liquidity Pools</h1>
+          <h1 className="page-title">Liquidity pools</h1>
           <p className="page-sub">
             Provide liquidity to earn a share of swap fees. LP positions are
             minted as on-ledger LP tokens.
@@ -98,7 +98,7 @@ export function PoolsPage() {
 
       <div className="grid-3" style={{ marginBottom: 20 }}>
         <div className="stat">
-          <div className="stat-l">Total Value Locked</div>
+          <div className="stat-l">Total value locked</div>
           <div className="stat-v">{allPriced ? fmtUsdK(tvl) : '—'}</div>
           <div className="stat-d">
             {allPriced

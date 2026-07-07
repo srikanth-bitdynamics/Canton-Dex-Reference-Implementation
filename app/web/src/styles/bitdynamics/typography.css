@@ -1,0 +1,45 @@
+/* ============================================================
+   Bitdynamics typography
+   One sans (Archivo, variable width+weight) + one mono
+   (JetBrains Mono). The width axis is the brand's display
+   voice: wide caps for structural labels, normal width for
+   everything readable.
+   ============================================================ */
+
+:root {
+  --font-sans: "Archivo", -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+
+  /* Width (font-stretch) roles */
+  --stretch-body: 100%;
+  --stretch-display: 104%;   /* headings — quietly extended */
+  --stretch-wide: 118%;      /* eyebrows, wordmark, structural caps */
+
+  /* Size / line-height pairs */
+  --text-2xs: 11px;  --leading-2xs: 16px;
+  --text-xs:  12px;  --leading-xs:  16px;
+  --text-sm:  13px;  --leading-sm:  20px;
+  --text-md:  14px;  --leading-md:  20px;   /* UI default */
+  --text-lg:  16px;  --leading-lg:  26px;   /* docs/marketing body */
+  --text-xl:  18px;  --leading-xl:  28px;
+  --text-2xl: 22px;  --leading-2xl: 28px;
+  --text-3xl: 28px;  --leading-3xl: 34px;
+  --text-4xl: 36px;  --leading-4xl: 42px;
+  --text-5xl: 48px;  --leading-5xl: 54px;
+  --text-6xl: 64px;  --leading-6xl: 66px;
+
+  /* Weights — 400/500/600; 700 is reserved for small emphasis, never headlines */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Tracking */
+  --tracking-tight: -0.02em;   /* ≥28px headings */
+  --tracking-snug: -0.01em;    /* 18–22px headings */
+  --tracking-normal: 0;
+  --tracking-caps: 0.08em;     /* uppercase micro-labels */
+  --tracking-caps-wide: 0.14em; /* wordmark, section eyebrows */
+
+  /* Mono data text */
+  --text-data: 13px; --leading-data: 20px;
+}

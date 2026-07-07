@@ -21,9 +21,9 @@ export function PoolCard({ pool, userLpBalance, onAddLiquidity, onRemoveLiquidit
           </h3>
           <span className={`text-xs font-sans px-2 py-0.5 rounded ${
             pool.status === 'Active'
-              ? 'bg-accent-green/20 text-accent-green'
+              ? 'bg-[var(--ok-bg)] text-[var(--ok-text)]'
               : pool.status === 'Paused'
-                ? 'bg-accent-yellow/20 text-accent-yellow'
+                ? 'bg-[var(--warn-bg)] text-[var(--warn-text)]'
                 : 'bg-surface-border text-text-muted'
           }`}>
             {pool.status}
@@ -63,14 +63,14 @@ export function PoolCard({ pool, userLpBalance, onAddLiquidity, onRemoveLiquidit
         <button
           onClick={() => onAddLiquidity(pool)}
           disabled={pool.status !== 'Active' && pool.status !== 'Unfunded'}
-          className="flex-1 py-2 rounded-lg text-sm font-sans font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex-1 py-2 rounded-lg text-sm font-sans font-medium bg-[var(--ok-bg)] text-[var(--ok-text)] border border-[var(--ok-border)] hover:border-[var(--ok-text)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           + Add
         </button>
         <button
           onClick={() => onRemoveLiquidity(pool)}
           disabled={userLpBalance <= 0}
-          className="flex-1 py-2 rounded-lg text-sm font-sans font-medium bg-accent-red/20 text-accent-red hover:bg-accent-red/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex-1 py-2 rounded-lg text-sm font-sans font-medium bg-[var(--danger-bg)] text-[var(--danger-text)] border border-[var(--danger-border)] hover:border-[var(--danger-text)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           - Remove
         </button>

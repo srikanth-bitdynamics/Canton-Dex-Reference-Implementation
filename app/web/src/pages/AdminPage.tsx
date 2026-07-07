@@ -77,7 +77,7 @@ export function AdminPage() {
             Trading Pairs
           </h3>
           <button
-            className="px-3 py-1.5 rounded-lg text-sm font-sans bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors"
+            className="px-3 py-1.5 rounded-lg text-sm font-sans bg-[var(--accent-subtle)] text-[var(--accent-text)] border border-[var(--accent-muted)] hover:border-[var(--accent-text)] transition-colors"
             onClick={() => setPairOpen(true)}
           >
             + Add Pair
@@ -88,9 +88,9 @@ export function AdminPage() {
             <tr className="text-text-muted font-sans text-xs border-b border-surface-border">
               <th className="text-left pb-2">Pair</th>
               <th className="text-left pb-2">Mode</th>
-              <th className="text-right pb-2">Maker Fee</th>
-              <th className="text-right pb-2">Taker Fee</th>
-              <th className="text-right pb-2">Pool Fee</th>
+              <th className="text-right pb-2">Maker fee</th>
+              <th className="text-right pb-2">Taker fee</th>
+              <th className="text-right pb-2">Pool fee</th>
               <th className="text-center pb-2">Status</th>
               <th className="text-right pb-2"></th>
             </tr>
@@ -99,7 +99,7 @@ export function AdminPage() {
             {pairs?.map((pair) => (
               <tr
                 key={pair.contractId}
-                className="border-b border-surface-border/50 hover:bg-surface-hover"
+                className="border-b border-[var(--border-subtle)] hover:bg-surface-hover"
               >
                 <td className="py-2 font-mono text-text-primary">
                   {pair.baseInstrumentId}/{pair.quoteInstrumentId}
@@ -166,8 +166,8 @@ export function AdminPage() {
                   <span
                     className={`text-xs px-2 py-0.5 rounded ${
                       pair.active
-                        ? 'bg-accent-green/20 text-accent-green'
-                        : 'bg-accent-red/20 text-accent-red'
+                        ? 'bg-[var(--ok-bg)] text-[var(--ok-text)]'
+                        : 'bg-[var(--danger-bg)] text-[var(--danger-text)]'
                     }`}
                   >
                     {pair.active ? 'Active' : 'Inactive'}
@@ -252,7 +252,7 @@ export function AdminPage() {
             Pool Operations
           </h3>
           <button
-            className="px-3 py-1.5 rounded-lg text-sm font-sans bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors"
+            className="px-3 py-1.5 rounded-lg text-sm font-sans bg-[var(--accent-subtle)] text-[var(--accent-text)] border border-[var(--accent-muted)] hover:border-[var(--accent-text)] transition-colors"
             onClick={() => setPoolOpen(true)}
           >
             + Create Pool
@@ -263,8 +263,8 @@ export function AdminPage() {
             <tr className="text-text-muted font-sans text-xs border-b border-surface-border">
               <th className="text-left pb-2">Pool</th>
               <th className="text-center pb-2">Status</th>
-              <th className="text-right pb-2">Base Reserve</th>
-              <th className="text-right pb-2">Quote Reserve</th>
+              <th className="text-right pb-2">Base reserve</th>
+              <th className="text-right pb-2">Quote reserve</th>
               <th className="text-right pb-2">LP Supply</th>
             </tr>
           </thead>
@@ -272,7 +272,7 @@ export function AdminPage() {
             {pools?.map((pool) => (
               <tr
                 key={pool.contractId}
-                className="border-b border-surface-border/50 hover:bg-surface-hover"
+                className="border-b border-[var(--border-subtle)] hover:bg-surface-hover"
               >
                 <td className="py-2 font-mono text-text-primary">
                   {pool.baseInstrumentId}/{pool.quoteInstrumentId}
@@ -281,9 +281,9 @@ export function AdminPage() {
                   <span
                     className={`text-xs px-2 py-0.5 rounded ${
                       pool.status === 'Active'
-                        ? 'bg-accent-green/20 text-accent-green'
+                        ? 'bg-[var(--ok-bg)] text-[var(--ok-text)]'
                         : pool.status === 'Paused'
-                          ? 'bg-accent-yellow/20 text-accent-yellow'
+                          ? 'bg-[var(--warn-bg)] text-[var(--warn-text)]'
                           : 'bg-surface-border text-text-muted'
                     }`}
                   >

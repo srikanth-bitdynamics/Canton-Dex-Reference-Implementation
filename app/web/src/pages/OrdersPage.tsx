@@ -156,14 +156,14 @@ export function OrdersPage() {
 
       {/* Place Order */}
       <div className="bg-surface-card rounded-lg border border-surface-border p-5">
-        <h3 className="text-text-primary font-sans font-semibold mb-4">Place Order</h3>
+        <h3 className="text-text-primary font-sans font-semibold mb-4">Place order</h3>
 
         <div className="flex gap-2 mb-4">
           <button
             onClick={() => setSide('Bid')}
             className={`flex-1 py-2 rounded-lg text-sm font-sans font-medium transition-colors ${
               side === 'Bid'
-                ? 'bg-accent-green text-white'
+                ? 'bg-[var(--ok-bg)] text-[var(--ok-text)] border border-[var(--ok-border)]'
                 : 'bg-surface-hover text-text-secondary hover:text-text-primary'
             }`}
           >
@@ -173,7 +173,7 @@ export function OrdersPage() {
             onClick={() => setSide('Ask')}
             className={`flex-1 py-2 rounded-lg text-sm font-sans font-medium transition-colors ${
               side === 'Ask'
-                ? 'bg-accent-red text-white'
+                ? 'bg-[var(--danger-bg)] text-[var(--danger-text)] border border-[var(--danger-border)]'
                 : 'bg-surface-hover text-text-secondary hover:text-text-primary'
             }`}
           >
@@ -239,11 +239,11 @@ export function OrdersPage() {
           title={!party ? 'Connect a wallet to place orders' : undefined}
           className={`w-full py-2.5 rounded-lg font-sans font-semibold text-sm transition-colors ${
             side === 'Bid'
-              ? 'bg-accent-green hover:bg-accent-green/90 text-white'
-              : 'bg-accent-red hover:bg-accent-red/90 text-white'
+              ? 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--on-accent)]'
+              : 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--on-accent)]'
           } disabled:opacity-40 disabled:cursor-not-allowed`}
         >
-          {placeMutation.isPending ? 'Placing...' : `Place ${side === 'Bid' ? 'Buy' : 'Sell'} Order`}
+          {placeMutation.isPending ? 'Placing…' : `Place ${side === 'Bid' ? 'buy' : 'sell'} order`}
         </button>
       </div>
     </div>

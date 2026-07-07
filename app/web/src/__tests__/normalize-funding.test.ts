@@ -137,10 +137,13 @@ describe('normalizeSwapFunding admin co-sign gating', () => {
     expect(handToWalletMock).not.toHaveBeenCalled();
   });
 
-  it('refuses split/merge for a wallet that cannot co-sign as admin (no exact subset)', async () => {
+  it('over-locks a covering subset for a wallet that cannot co-sign as admin (no exact subset)', async () => {
     activeProviderId = 'partylayer';
-    // Fragments cover 0.10 but no exact subset; an admin co-sign would be
-    // needed to split/merge — the external wallet cannot, so we bail.
+    // Fragments cover 0.10 but no exact subset, and a split/merge would need an
+    // admin co-sign the external wallet cannot give. Instead of bailing we lock
+    // a COVERING subset of whole holdings (largest-first) — the AllocationFactory
+    // accepts over-collateralised locks and settle returns the surplus as
+    // unlocked change. No split/merge intent is handed to the wallet.
     mockHoldings([[h('h1', '0.0700000000'), h('h2', '0.0800000000')]]);
 
     const cids = await normalizeSwapFunding({
@@ -150,8 +153,42 @@ describe('normalizeSwapFunding admin co-sign gating', () => {
       amount: '0.1000000000',
     });
 
-    expect(cids).toBeNull();
+    expect(cids).toEqual(['h2', 'h1']);
     // No split/merge attempted on the unauthorized path.
+    expect(handToWalletMock).not.toHaveBeenCalled();
+  });
+
+  it('prefers a single smallest covering holding for an external wallet', async () => {
+    activeProviderId = 'partylayer';
+    // h2 (0.5) and h3 (0.3) each cover 0.10 on their own; pick the smaller (h3)
+    // to minimise the surplus locked and returned. h1 (0.04) cannot cover alone.
+    mockHoldings([
+      [h('h1', '0.0400000000'), h('h2', '0.5000000000'), h('h3', '0.3000000000')],
+    ]);
+
+    const cids = await normalizeSwapFunding({
+      admin: 'dex-admin',
+      party: 'alice',
+      instrumentId: 'BTC',
+      amount: '0.1000000000',
+    });
+
+    expect(cids).toEqual(['h3']);
+    expect(handToWalletMock).not.toHaveBeenCalled();
+  });
+
+  it('returns null for an external wallet when the total balance is insufficient', async () => {
+    activeProviderId = 'partylayer';
+    mockHoldings([[h('h1', '0.0300000000'), h('h2', '0.0400000000')]]);
+
+    const cids = await normalizeSwapFunding({
+      admin: 'dex-admin',
+      party: 'alice',
+      instrumentId: 'BTC',
+      amount: '0.1000000000',
+    });
+
+    expect(cids).toBeNull();
     expect(handToWalletMock).not.toHaveBeenCalled();
   });
 

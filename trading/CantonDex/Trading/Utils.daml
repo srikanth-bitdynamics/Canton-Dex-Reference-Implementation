@@ -103,8 +103,16 @@ adjustedNextIterationFunding authorizer currentFunding additionalTransferLegs =
       (netFundingDelta authorizer additionalTransferLegs)
 
 -- | Project a leg into the authorizer's side, or None if it is neither end.
+--
+-- A leg whose sender == receiver is malformed: it transfers nothing yet would
+-- project to a single SenderSide (the sender guard is tested first), so the
+-- batch conservation sum sees a sender with no matching receiver and aborts
+-- with an opaque "totals do not balance" error. Reject such a self-transfer
+-- leg loudly instead — no legitimate DvP leg has the same account on both ends.
 legToSide : HoldingV2.Account -> V2.TransferLeg -> Optional V2.TransferLegSide
 legToSide authorizer leg
+  | leg.sender == leg.receiver =
+      error "legToSide: transfer leg sender and receiver must differ (self-transfer)"
   | leg.sender == authorizer = Some V2.TransferLegSide with
       transferLegId = leg.transferLegId
       side = V2.SenderSide

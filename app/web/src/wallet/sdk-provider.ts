@@ -25,6 +25,36 @@ import type {
   WalletResult,
 } from "./types";
 
+// The CIP-0103 SDK / wallet gateway rejects with a structured JSON-RPC error
+// object (e.g. `{ error: { message, code, cause } }`), not an Error. The dApp's
+// `String(err)` then rendered "[object Object]" and hid the real failure (e.g.
+// "FAILED_TO_PREPARE_TRANSACTION: Preparing multiple commands is currently not
+// supported"). Extract a human-readable message from whatever shape arrives.
+export function describeWalletError(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object") {
+    const o = e as Record<string, unknown>;
+    const inner = (o.error && typeof o.error === "object" ? o.error : o) as Record<
+      string,
+      unknown
+    >;
+    const msg = inner.message ?? inner.cause ?? o.message ?? o.reason;
+    const code = inner.code ?? o.code;
+    if (typeof msg === "string") {
+      return typeof code === "string" || typeof code === "number"
+        ? `${code}: ${msg}`
+        : msg;
+    }
+    try {
+      return JSON.stringify(e);
+    } catch {
+      /* circular — fall through */
+    }
+  }
+  return String(e);
+}
+
 export class SdkProvider implements WalletProvider {
   readonly id = "sdk" as const;
   readonly label = "Canton wallet (CIP-0103)";
@@ -89,17 +119,23 @@ export class SdkProvider implements WalletProvider {
       packagePrefix: this.packagePrefix,
       now: () => new Date(),
     });
-    const result = await prepareExecuteAndWait({
-      commandId: composed.commandId,
-      commands: composed.commands as unknown as Record<string, unknown>,
-      actAs: composed.actAs,
-      // Off-participant factory/request contracts (AllocationFactory, the
-      // AllocationRequest) the trader's participant does not host must be
-      // disclosed, or the exercise fails with CONTRACT_NOT_FOUND.
-      ...(composed.disclosedContracts && composed.disclosedContracts.length > 0
-        ? { disclosedContracts: composed.disclosedContracts }
-        : {}),
-    });
+    let result: Awaited<ReturnType<typeof prepareExecuteAndWait>>;
+    try {
+      result = await prepareExecuteAndWait({
+        commandId: composed.commandId,
+        commands: composed.commands as unknown as Record<string, unknown>,
+        actAs: composed.actAs,
+        // Off-participant factory/request contracts (AllocationFactory, the
+        // AllocationRequest) the trader's participant does not host must be
+        // disclosed, or the exercise fails with CONTRACT_NOT_FOUND.
+        ...(composed.disclosedContracts && composed.disclosedContracts.length > 0
+          ? { disclosedContracts: composed.disclosedContracts }
+          : {}),
+      });
+    } catch (e) {
+      // Surface the wallet/gateway's real error instead of "[object Object]".
+      throw new Error(`wallet submission failed: ${describeWalletError(e)}`);
+    }
     // prepareExecuteAndWait resolves to { tx: { status, commandId, payload:
     // { updateId, completionOffset } } } — it carries NO created events. So this
     // is an updateId-only provider: the operator recovers the created Allocation

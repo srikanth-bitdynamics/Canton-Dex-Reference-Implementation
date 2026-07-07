@@ -152,7 +152,7 @@ async function main(): Promise<void> {
     // Operator token gates all non-admin writes; fail-closed on testnet
     // (no DEX_DEV_OPEN bypass here).
     operatorToken: process.env.DEX_OPERATOR_API_TOKEN,
-    devOpen: false,
+    devOpen: process.env.DEX_DEV_OPEN === "1",
     // Wallet relay OFF unless explicitly enabled, with a party allowlist.
     walletRelayEnabled: process.env.DEX_DEV_WALLET_RELAY === "1",
     walletRelayParties: (process.env.DEX_DEV_RELAY_PARTIES ?? "")

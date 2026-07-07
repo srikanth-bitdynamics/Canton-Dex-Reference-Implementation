@@ -844,7 +844,33 @@ async function routeRequest(
     const sql = pair
       ? `SELECT * FROM swaps WHERE pair = ? ORDER BY ts DESC LIMIT ${limit}`
       : `SELECT * FROM swaps ORDER BY ts DESC LIMIT ${limit}`;
-    respondJson(res, 200, pair ? db.prepare(sql).all(pair) : db.prepare(sql).all());
+    const rows = (pair ? db.prepare(sql).all(pair) : db.prepare(sql).all()) as Array<{
+      ts: number;
+      pair: string;
+      baseDelta: string;
+      quoteDelta: string;
+      priceAfter: string;
+    }>;
+    // The indexer stores signed pool-reserve deltas (baseDelta/quoteDelta).
+    // Project them into the swapper-oriented shape the dApp renders: a positive
+    // baseDelta means the pool GAINED base, i.e. the swapper SENT base and
+    // received quote (and vice-versa).
+    const mapped = rows.map((r) => {
+      const [base, quote] = r.pair.split("/");
+      const bd = parseFloat(r.baseDelta);
+      const qd = parseFloat(r.quoteDelta);
+      const sentBase = bd > 0;
+      return {
+        ...r,
+        inputInstrumentId: sentBase ? base : quote,
+        outputInstrumentId: sentBase ? quote : base,
+        inputAmount: Math.abs(sentBase ? bd : qd),
+        outputAmount: Math.abs(sentBase ? qd : bd),
+        // The indexer does not currently capture the swapper party.
+        trader: null,
+      };
+    });
+    respondJson(res, 200, mapped);
     return;
   }
 

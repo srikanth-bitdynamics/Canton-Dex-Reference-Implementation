@@ -83,10 +83,11 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
     const label = `Swap ${parsedInput} ${inputInstrumentId} → ${outputInstrumentId}`;
     let toastId = 0;
     try {
-      // Push the toast first so the user sees the lifecycle even while
-      // the wallet round-trip is happening. The advance timer in
-      // useToasts ticks independently; the actual ledger settle path
-      // resolves the React Query caches when it completes.
+      // Push the toast so the user sees the lifecycle while the wallet
+      // round-trip is happening. Toasts no longer auto-advance: the card sits
+      // on its first step until the real settle below resolves, at which point
+      // `complete` drives it to done. This stops it from falsely showing the
+      // swap settled while the wallet approval is still pending.
       toastId = toast.push(label, 'swap', () => {
         void queryClient.invalidateQueries({ queryKey: ['pools'] });
         void queryClient.invalidateQueries({ queryKey: ['holdings'] });
@@ -103,6 +104,8 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
         minOutputAmount: minReceived,
         swapperParty: party,
       });
+      // Settle returned on-ledger — only now mark the lifecycle complete.
+      if (toastId) toast.complete(toastId);
       setInputAmount('');
       onSwapComplete?.();
     } catch (error) {

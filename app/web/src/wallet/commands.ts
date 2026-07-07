@@ -16,8 +16,6 @@ import type {
 // AllocationFactory_Allocate exercise targets the interface id directly.
 const ALLOCATION_FACTORY_IID =
   "#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory";
-const ALLOCATION_REQUEST_IID =
-  "#splice-api-token-allocation-request-v2:Splice.Api.Token.AllocationRequestV2:AllocationRequest";
 
 // One AllocationFactory_Allocate exercise: the wallet authors the given
 // spec under `factoryCid`, locking `inputHoldingCids`. Created Allocation
@@ -44,24 +42,6 @@ function allocateCmd(
         actors: [party],
         extraArgs,
       },
-    },
-  };
-}
-
-// AllocationRequest_Accept on a LiquidityAllocationRequest. Token Standard V2
-// requires accept to consume the request; our impl leaves an operator-visible
-// LiquidityAllocationAcceptance receipt first, which the DvP settle binds to.
-function acceptRequestCmd(
-  requestCid: ContractId<"LiquidityAllocationRequest">,
-  party: Party,
-  extraArgs: V2ExtraArgs,
-): DamlCommand {
-  return {
-    ExerciseCommand: {
-      templateId: ALLOCATION_REQUEST_IID,
-      contractId: requestCid,
-      choice: "AllocationRequest_Accept",
-      choiceArgument: { actors: [party], extraArgs },
     },
   };
 }
@@ -120,21 +100,18 @@ function composeAcceptAllocationRequest(
   ctx: ComposeContext,
 ): ComposedCommands {
   assertFactoryReady(intent.factoryCid, "accept-allocation-request");
+  // Single command: author the funding allocation only. We deliberately do NOT
+  // also exercise AllocationRequest_Accept on the request, because Canton's
+  // interactive-submission path (CIP-0103 wallets) rejects a prepared
+  // transaction carrying more than one command ("FAILED_TO_PREPARE_TRANSACTION:
+  // Preparing multiple commands is currently not supported"), so a 2-command
+  // submit fails outright. The operator's Order_Fund then consumes the
+  // OrderAllocationRequest (it takes the request cid + archives it), so the
+  // request does not linger after the order is funded.
   return {
     commandId: `alloc-accept-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [
-      {
-        ExerciseCommand: {
-          templateId: ALLOCATION_REQUEST_IID,
-          contractId: intent.requestCid,
-          choice: "AllocationRequest_Accept",
-          choiceArgument: {
-            actors: [ctx.party],
-            extraArgs: intent.allocationRequestExtraArgs,
-          },
-        },
-      },
       allocateCmd(
         intent.factoryCid,
         intent.settlement,
@@ -264,43 +241,64 @@ function composeAddLiquidity(
   if (intent.allocations.length !== 3) {
     throw new Error(`add-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
   }
-  const requestedAt = ctx.now().toISOString();
-  const [baseSpec, quoteSpec, receiptSpec] = intent.allocations;
+  // Single top-level command (CIP-0103 prepareExecute allows only one): the
+  // holder exercises LiquidityAllocationRequest_AcceptAndAllocate, which authors
+  // all three allocations (base deposit, quote deposit, LP receipt) + the
+  // acceptance receipt inside one Daml transaction. The choice reads the specs
+  // from the request itself; we pass only the per-allocation factory, input
+  // holdings, and context, PARALLEL to the request's `allocations`
+  // [base, quote, LP].
+  return acceptAndAllocateCommand(intent, ctx, [
+    intent.baseHoldingCids,
+    intent.quoteHoldingCids,
+    [],
+  ]);
+}
+
+// Build the single LiquidityAllocationRequest_AcceptAndAllocate command shared
+// by add (deposits) and remove (receipts + burn). `inputHoldingCids` is the
+// per-allocation funding list, PARALLEL to the request's [base, quote, LP]
+// allocations; the factory + context layout is the same for both directions
+// (base/quote under the deposit factory, LP under the lpRegistrar factory).
+function acceptAndAllocateCommand(
+  intent: {
+    requestCid: ContractId<"LiquidityAllocationRequest">;
+    depositFactoryCid: ContractId<"AllocationFactory">;
+    lpFactoryCid: ContractId<"AllocationFactory">;
+    depositFactoryExtraArgs: V2ExtraArgs;
+    lpFactoryExtraArgs: V2ExtraArgs;
+    disclosure: DisclosedContract[];
+  },
+  ctx: ComposeContext,
+  inputHoldingCids: string[][],
+): ComposedCommands {
   return {
-    commandId: `add-lp-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
+    commandId: `lp-accept-allocate-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [
-      // Canonical Token Standard V2 shape: AllocationRequest_Accept first
-      // (consumes the request, leaves the acceptance evidence), then the three
-      // AllocationFactory_Allocate exercises in canonical order.
-      acceptRequestCmd(intent.requestCid, ctx.party, intent.allocationRequestExtraArgs),
-      allocateCmd(
-        intent.depositFactoryCid,
-        intent.settlement,
-        baseSpec,
-        intent.baseHoldingCids,
-        ctx.party,
-        requestedAt,
-        intent.depositFactoryExtraArgs,
-      ),
-      allocateCmd(
-        intent.depositFactoryCid,
-        intent.settlement,
-        quoteSpec,
-        intent.quoteHoldingCids,
-        ctx.party,
-        requestedAt,
-        intent.depositFactoryExtraArgs,
-      ),
-      allocateCmd(
-        intent.lpFactoryCid,
-        intent.settlement,
-        receiptSpec,
-        [],
-        ctx.party,
-        requestedAt,
-        intent.lpFactoryExtraArgs,
-      ),
+      {
+        ExerciseCommand: {
+          templateId: tid(
+            ctx.packagePrefix,
+            "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationRequest",
+          ),
+          contractId: intent.requestCid,
+          choice: "LiquidityAllocationRequest_AcceptAndAllocate",
+          choiceArgument: {
+            factoryCids: [
+              intent.depositFactoryCid,
+              intent.depositFactoryCid,
+              intent.lpFactoryCid,
+            ],
+            inputHoldingCids,
+            allocExtraArgs: [
+              intent.depositFactoryExtraArgs,
+              intent.depositFactoryExtraArgs,
+              intent.lpFactoryExtraArgs,
+            ],
+          },
+        },
+      },
     ],
     disclosedContracts: dedupeDisclosure(intent.disclosure),
   };
@@ -320,45 +318,16 @@ function composeRemoveLiquidity(
   if (intent.allocations.length !== 3) {
     throw new Error(`remove-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
   }
-  const requestedAt = ctx.now().toISOString();
-  const [baseReceiptSpec, quoteReceiptSpec, burnSenderSpec] = intent.allocations;
-  return {
-    commandId: `remove-lp-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
-    actAs: [ctx.party],
-    commands: [
-      // Canonical Token Standard V2 shape: accept (consumes request, leaves
-      // acceptance evidence) then the three receipts/burn allocations.
-      acceptRequestCmd(intent.requestCid, ctx.party, intent.allocationRequestExtraArgs),
-      allocateCmd(
-        intent.depositFactoryCid,
-        intent.settlement,
-        baseReceiptSpec,
-        [],
-        ctx.party,
-        requestedAt,
-        intent.depositFactoryExtraArgs,
-      ),
-      allocateCmd(
-        intent.depositFactoryCid,
-        intent.settlement,
-        quoteReceiptSpec,
-        [],
-        ctx.party,
-        requestedAt,
-        intent.depositFactoryExtraArgs,
-      ),
-      allocateCmd(
-        intent.lpFactoryCid,
-        intent.settlement,
-        burnSenderSpec,
-        intent.lpHoldingCids,
-        ctx.party,
-        requestedAt,
-        intent.lpFactoryExtraArgs,
-      ),
-    ],
-    disclosedContracts: dedupeDisclosure(intent.disclosure),
-  };
+  // Single top-level command, mirroring add: the holder exercises
+  // LiquidityAllocationRequest_AcceptAndAllocate to author the base receipt,
+  // quote receipt, and LP burn-sender in one Daml transaction. Only the
+  // burn-sender funds from holdings (the LP holding); the two receipts are
+  // receiver-side and lock nothing. Parallel to the request's [base, quote, LP].
+  return acceptAndAllocateCommand(intent, ctx, [
+    [],
+    [],
+    intent.lpHoldingCids,
+  ]);
 }
 
 function composePostRfqQuote(

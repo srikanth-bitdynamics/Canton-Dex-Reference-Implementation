@@ -113,9 +113,10 @@
   --sl-color-black: #FFFFFF;
 }
 
-/* Headings: semibold, quietly extended, tight tracking. */
+/* Headings: semibold, quietly extended, tight tracking.
+ * Starlight renders the page title as h1#_top (outside .sl-markdown-content). */
 .sl-markdown-content :is(h1, h2, h3, h4),
-h1[data-page-title] {
+h1#_top {
   font-stretch: 104%;
   letter-spacing: -0.01em;
   font-weight: 600;

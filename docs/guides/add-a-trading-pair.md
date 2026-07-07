@@ -26,7 +26,7 @@ do that first: see
 Operator-signed. Submitted by the operator backend:
 
 ```bash
-curl -X POST http://localhost:8080/v1/pairs \
+curl -X POST http://localhost:8080/v1/admin/pairs \
   -H 'Content-Type: application/json' \
   -d '{
     "baseInstrumentId": "ETH",
@@ -76,7 +76,7 @@ pool, base instrument, quote instrument, or order venue.
 ## Step 3. Create the `Pool`
 
 ```bash
-curl -X POST http://localhost:8080/v1/pools \
+curl -X POST http://localhost:8080/v1/admin/pools \
   -H 'Content-Type: application/json' \
   -d '{
     "baseInstrumentId": "ETH",

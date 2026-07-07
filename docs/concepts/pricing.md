@@ -35,10 +35,14 @@ substitutes a price.
   *which* quote ranked where under which policy version, but does not
   certify that the chosen price is "good" — only that the policy was
   applied honestly.
-- The fiat estimates the dApp shows next to instrument balances
-  ([assets.ts](../../app/web/src/primitives/assets.ts) `referencePrice`)
-  are **hard-coded display values**, not live data. They are
-  deliberately not used for any executable decision.
+- The fiat estimates the dApp shows next to instrument balances are
+  **live, pool-derived values**, sourced from the operator backend's
+  `/v1/prices` endpoint via the `useAssetPricesUsd` hook
+  ([usePrices.ts](../../app/web/src/hooks/usePrices.ts)). Each quote
+  resolves from pool mid-price (constant-product), then a configured
+  static `PRICES` feed, and falls back to "—" when no source has a
+  price. They are advisory display estimates, deliberately not used for
+  any executable decision.
 
 ## What an oracle would change (and where it would attach)
 
@@ -51,7 +55,7 @@ points are:
    attested price. The signer would be a separate `oracleAuthority`
    party in the choice context (production registries already follow
    this pattern for credential checks — see
-   [registry-prerequisites.md](../guides/registry-integration.md)).
+   [registry-integration.md](../guides/registry-integration.md)).
 2. **TWAP for compliance reporting.** A separate `PoolPriceObservation`
    template the operator creates after each `PoolRules_Swap`, sampled by an
    off-chain ingestor. Pure observability, no consensus role.

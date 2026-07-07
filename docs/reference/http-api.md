@@ -104,7 +104,7 @@ fields, **413** if the body exceeds 1 MiB.
 Create an RFQ on a trader's behalf.
 
 ```json
-{ "trader": "...", "rfqId": "...", "pair": "BTC/USDC", "side": "Buy",
+{ "trader": "...", "rfqId": "...", "pair": "BTC/USDC", "side": "RFQ_Buy",
   "size": "0.5", "expiresAt": "2026-...", "whitelist": [...], "createdAt": "..." }
 ```
 
@@ -213,7 +213,7 @@ curl -s -X POST http://localhost:8080/v1/swaps/quote \
 # Create an RFQ on a trader's behalf
 curl -s -X POST http://localhost:8080/v1/rfq \
   -H 'Content-Type: application/json' \
-  -d '{"trader":"'"$TRADER"'","rfqId":"rfq-1","pair":"BTC/USDC","side":"Buy",
+  -d '{"trader":"'"$TRADER"'","rfqId":"rfq-1","pair":"BTC/USDC","side":"RFQ_Buy",
        "size":"0.5","expiresAt":"2026-12-31T00:00:00Z","whitelist":[],"createdAt":"2026-07-01T00:00:00Z"}'
 ```
 

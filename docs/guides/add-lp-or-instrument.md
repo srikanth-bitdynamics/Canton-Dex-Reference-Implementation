@@ -9,11 +9,11 @@ registry-specific contracts.
 
 Token Standard V2 standardizes the holding/allocation/settlement surface. It
 does not standardize an instrument-configuration or lifecycle package. In this
-repo, the reference `Registry.V2` adds an `InstrumentConfiguration` contract
+repo, the reference `Registry.V2` adds an `InstrumentConfig` contract
 that can encode:
 
-- supply caps (`maxSupply`; `BumpSupply` enforces them)
-- issuer credential requirements (`issuerRequirements : [CredentialClaim]`):
+- supply caps (`supplyCap`; `InstrumentConfig_BumpSupply` enforces them)
+- issuer credential requirements (`issuerRequirements : [CredentialRequirement]`):
   only holders who present the right credentials can be minted to
 - decimals for display
 - transfer constraints (via the chosen `TransferFactory` implementation)
@@ -41,7 +41,7 @@ The LP token:
   `V2.Allocation` (so LP tokens can themselves back orders or pools)
 
 If you want supply caps on the LP token in the reference registry, create an
-instrument config with `maxSupply = Some 10_000_000.0`. The
+instrument config with `supplyCap = Some 10_000_000.0`. The
 `LPTokenPolicy_RecordMint` choice will respect it once the reference config
 check is plumbed through (today it is policy-side bookkeeping only).
 
@@ -60,8 +60,11 @@ const configCid = await ledger.submit({
     argument: {
       instrumentId: 'USDC',
       decimals: 6,
-      maxSupply: null, // unbounded
+      supplyCap: null, // unbounded
+      holderRequirements: [],
       issuerRequirements: [], // open issuance
+      isin: null,
+      cusip: null,
     },
   },
 });
@@ -105,10 +108,9 @@ const credCid = await ledger.submit({
     templateId: 'CantonDex.Registry.V2:Credential',
     argument: {
       issuer: credentialIssuer,
-      subject: alice,
-      claim: 'accredited-investor',
-      issuedAt: nowIso(),
-      expiresAt: null,
+      holder: alice,
+      property: 'accredited-investor',
+      value: 'true',
     },
   },
 });
@@ -124,8 +126,11 @@ const configCid = await ledger.submit({
     argument: {
       instrumentId: 'PRIVATE-EQUITY',
       decimals: 0,
-      maxSupply: '1000000.0',
-      issuerRequirements: [{ issuer: credentialIssuer, claim: 'accredited-investor' }],
+      supplyCap: '1000000.0',
+      holderRequirements: [],
+      issuerRequirements: [{ issuer: credentialIssuer, property: 'accredited-investor', value: 'true' }],
+      isin: null,
+      cusip: null,
     },
   },
 });

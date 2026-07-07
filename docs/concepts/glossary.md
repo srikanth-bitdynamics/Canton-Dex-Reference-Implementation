@@ -47,7 +47,7 @@ allocations, one per [slice](#pool--poolstate--poolslice).
 
 ### DexPair
 The listing record for a market: base + quote [instrument ids](#instrumentid),
-fee model, trading mode (`OrderBook`, `Pool`, or `Both`), and an `active` flag.
+fee model, trading mode (`TM_OrderBook`, `TM_Pool`, or `TM_Both`), and an `active` flag.
 
 ### DvP (delivery-versus-payment)
 An atomic exchange where both legs settle together or not at all. Swaps, LP

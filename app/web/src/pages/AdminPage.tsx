@@ -238,7 +238,7 @@ export function AdminPage() {
                   colSpan={7}
                   className="py-4 text-center text-text-muted font-sans"
                 >
-                  No pairs configured
+                  No pairs configured. Create a pair below to begin.
                 </td>
               </tr>
             )}

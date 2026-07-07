@@ -13,7 +13,7 @@ export function PoolCard({ pool, userLpBalance, onAddLiquidity, onRemoveLiquidit
   const userQuoteValue = pool.reserves.quoteAmount * (userShare / 100);
 
   return (
-    <div className="bg-surface-card rounded-lg border border-surface-border p-5">
+    <div className="card p-5">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="text-text-primary font-sans font-semibold text-base">
@@ -47,7 +47,7 @@ export function PoolCard({ pool, userLpBalance, onAddLiquidity, onRemoveLiquidit
       </div>
 
       {userLpBalance > 0 && (
-        <div className="mb-4 p-3 bg-surface rounded-lg border border-surface-border">
+        <div className="mb-4 p-3 bg-surface-muted rounded-sm border border-surface-border">
           <div className="text-text-secondary text-xs font-sans mb-1">Your position</div>
           <div className="flex justify-between text-sm">
             <span className="text-text-primary font-mono">{userLpBalance.toFixed(4)} LP</span>
@@ -63,14 +63,14 @@ export function PoolCard({ pool, userLpBalance, onAddLiquidity, onRemoveLiquidit
         <button
           onClick={() => onAddLiquidity(pool)}
           disabled={pool.status !== 'Active' && pool.status !== 'Unfunded'}
-          className="flex-1 py-2 rounded-lg text-sm font-sans font-medium bg-[var(--ok-bg)] text-[var(--ok-text)] border border-[var(--ok-border)] hover:border-[var(--ok-text)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex-1 py-2 rounded-sm text-sm font-sans font-medium bg-[var(--ok-bg)] text-[var(--ok-text)] border border-[var(--ok-border)] hover:border-[var(--ok-text)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           + Add
         </button>
         <button
           onClick={() => onRemoveLiquidity(pool)}
           disabled={userLpBalance <= 0}
-          className="flex-1 py-2 rounded-lg text-sm font-sans font-medium bg-[var(--danger-bg)] text-[var(--danger-text)] border border-[var(--danger-border)] hover:border-[var(--danger-text)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex-1 py-2 rounded-sm text-sm font-sans font-medium bg-[var(--danger-bg)] text-[var(--danger-text)] border border-[var(--danger-border)] hover:border-[var(--danger-text)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           - Remove
         </button>

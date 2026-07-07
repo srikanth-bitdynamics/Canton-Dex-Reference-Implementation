@@ -29,8 +29,8 @@ export function OrderBook({ pair, orders, onCancelOrder }: OrderBookProps) {
   ) || 1;
 
   return (
-    <div className="bg-surface-card rounded-lg border border-surface-border p-4">
-      <h3 className="text-text-primary font-sans font-semibold mb-3">
+    <div className="card p-4">
+      <h3 className="card-title mb-3 block">
         {pair.base} / {pair.quote} order book
       </h3>
 

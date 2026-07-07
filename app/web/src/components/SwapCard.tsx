@@ -117,9 +117,9 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
   }, [party, parsedInput, outputAmount, pool, context, inputInstrumentId, outputInstrumentId, minReceived, onSwapComplete, toast, queryClient]);
 
   return (
-    <div className="bg-surface-card rounded-lg border border-surface-border p-6 max-w-md mx-auto">
+    <div className="card p-6 max-w-md mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-text-primary text-lg font-sans font-semibold">Swap</h2>
+        <h2 className="card-title">Swap</h2>
         <button
           onClick={() => setShowSettings(!showSettings)}
           className="text-text-secondary hover:text-text-primary transition-colors"
@@ -130,7 +130,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
       </div>
 
       {showSettings && (
-        <div className="mb-4 p-3 bg-surface rounded-lg border border-surface-border">
+        <div className="mb-4 p-3 bg-surface-muted rounded-sm border border-surface-border">
           <label className="text-text-secondary text-sm font-sans block mb-2">
             Slippage tolerance
           </label>
@@ -164,9 +164,9 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
               setSwapError(null);
             }}
             placeholder="0.00"
-            className="flex-1 bg-surface border border-surface-border rounded-lg px-4 py-3 text-text-primary font-mono text-lg focus:outline-none focus:border-accent-blue"
+            className="flex-1 bg-surface-muted border border-surface-border rounded-sm px-4 py-3 text-text-primary font-mono text-lg focus:outline-none focus:border-[var(--border-strong)]"
           />
-          <div className="bg-surface border border-surface-border rounded-lg px-4 py-3 text-text-primary font-mono font-semibold min-w-[100px] text-center">
+          <div className="bg-surface-muted border border-surface-border rounded-sm px-4 py-3 text-text-primary font-mono font-semibold min-w-[100px] text-center">
             {inputInstrumentId}
           </div>
         </div>
@@ -179,7 +179,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
       <div className="flex justify-center my-3">
         <button
           onClick={flipDirection}
-          className="bg-surface-hover hover:bg-surface-border rounded-full w-8 h-8 flex items-center justify-center text-text-secondary hover:text-text-primary transition-colors"
+          className="swap-flip"
         >
           ↕
         </button>
@@ -189,10 +189,10 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
       <div className="mb-4">
         <label className="text-text-secondary text-sm font-sans block mb-1">You receive</label>
         <div className="flex gap-2">
-          <div className="flex-1 bg-surface border border-surface-border rounded-lg px-4 py-3 text-text-primary font-mono text-lg">
+          <div className="flex-1 bg-surface-muted border border-surface-border rounded-sm px-4 py-3 text-text-primary font-mono text-lg">
             {quoteLoading ? '...' : outputAmount > 0 ? `~${outputAmount.toFixed(6)}` : '0.00'}
           </div>
-          <div className="bg-surface border border-surface-border rounded-lg px-4 py-3 text-text-primary font-mono font-semibold min-w-[100px] text-center">
+          <div className="bg-surface-muted border border-surface-border rounded-sm px-4 py-3 text-text-primary font-mono font-semibold min-w-[100px] text-center">
             {outputInstrumentId}
           </div>
         </div>
@@ -264,7 +264,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
           parsedInput > inputBalance ||
           outputAmount <= 0
         }
-        className={`w-full py-3 rounded-lg font-sans font-semibold text-base transition-colors ${
+        className={`w-full py-3 rounded-sm font-sans font-semibold text-base transition-colors ${
           isSubmitting || !party || !context || parsedInput <= 0 || parsedInput > inputBalance
             ? 'bg-surface-border text-text-muted cursor-not-allowed'
             : 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--on-accent)] cursor-pointer'

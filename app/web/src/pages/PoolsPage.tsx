@@ -11,6 +11,7 @@ import { fmtUsdK } from '@/primitives/format';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import { useAssetPricesUsd } from '@/hooks/usePrices';
+import { EmptyState } from '@/primitives/EmptyState';
 
 export function PoolsPage() {
   const party = useCurrentParty();
@@ -33,15 +34,13 @@ export function PoolsPage() {
   const { prices: priceUsd } = useAssetPricesUsd(symbols);
 
   if (isLoading) {
-    return (
-      <div className="text-text-muted text-center py-12">Loading pools...</div>
-    );
+    return <EmptyState title="Loading pools">Reading pool state from the operator backend.</EmptyState>;
   }
   if (!pools || pools.length === 0) {
     return (
-      <div className="text-text-muted text-center py-12">
-        No pools available. Create one in the Admin panel.
-      </div>
+      <EmptyState title="No pools yet">
+        Create a pool from the Admin page to start providing liquidity.
+      </EmptyState>
     );
   }
 

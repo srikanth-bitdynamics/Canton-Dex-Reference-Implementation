@@ -422,6 +422,26 @@
   }
   .asset:hover { border-color: var(--border-strong); }
 
+  /* Empty / loading states — one sentence + one action on the dot grid. */
+  .empty-state {
+    @apply flex flex-col items-center justify-center text-center gap-2;
+    padding: 48px 24px;
+    background-image: var(--dot-grid-dark);
+    background-size: var(--dot-grid-size);
+    color: var(--text-secondary);
+  }
+  .empty-state.compact { padding: 28px 20px; }
+  .empty-state-title {
+    @apply text-sm font-medium;
+    color: var(--text-primary);
+  }
+  .empty-state-body {
+    @apply text-xs;
+    color: var(--text-secondary);
+    max-width: 360px;
+  }
+  .empty-state-action { margin-top: 6px; }
+
   /* Sparkline */
   .spark { display: inline-block; vertical-align: middle; }
 

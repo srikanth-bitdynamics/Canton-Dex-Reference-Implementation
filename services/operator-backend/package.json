@@ -1,6 +1,6 @@
 {
   "name": "@canton-dex/operator-backend",
-  "version": "0.0.1",
+  "version": "0.6.0",
   "description": "Operator backend for the Canton-Dex reference DEX. Wraps Canton JSON LAPI with idempotency, an indexer, and HTTP endpoints for the dApp.",
   "license": "Apache-2.0",
   "repository": {

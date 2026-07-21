@@ -14,7 +14,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ConnectWalletButton } from '@/components/ConnectWalletButton';
 import { ledger } from '@/services/ledger';
 
-const APP_VERSION = (import.meta.env.VITE_APP_VERSION as string | undefined) ?? 'v0.6';
+const APP_VERSION = (import.meta.env.VITE_APP_VERSION as string | undefined) ?? 'v0.6.0';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Trade' },

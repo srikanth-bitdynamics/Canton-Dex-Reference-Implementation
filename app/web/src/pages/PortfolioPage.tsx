@@ -3,6 +3,7 @@ import { Portfolio } from '@/components/Portfolio';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import type { TransactionEvent } from '@/types/contracts';
+import { EmptyState } from '@/primitives/EmptyState';
 
 export function PortfolioPage() {
   const party = useCurrentParty();
@@ -62,14 +63,14 @@ export function PortfolioPage() {
 
   if (!party) {
     return (
-      <div className="text-text-muted text-center py-12">
-        Connect a wallet to view your portfolio.
-      </div>
+      <EmptyState title="No wallet connected">
+        Connect a wallet to view holdings, LP positions, and on-ledger activity.
+      </EmptyState>
     );
   }
   if (isLoading) {
     return (
-      <div className="text-text-muted text-center py-12">Loading portfolio...</div>
+      <EmptyState title="Loading portfolio">Reading holdings and activity for your party.</EmptyState>
     );
   }
 

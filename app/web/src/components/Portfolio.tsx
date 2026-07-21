@@ -17,6 +17,7 @@ import { StatusBadge } from '@/primitives/StatusBadge';
 import { fmt, fmtUsd } from '@/primitives/format';
 import { PolicyReceiptModal } from '@/primitives/PolicyReceiptModal';
 import { useAssetPricesUsd } from '@/hooks/usePrices';
+import { EmptyState } from '@/primitives/EmptyState';
 import type {
   Holding,
   Order,
@@ -379,15 +380,10 @@ export function Portfolio({
             </div>
             <div className="card-body">
               {allocations.length === 0 && (
-                <div
-                  style={{
-                    padding: '10px 0',
-                    color: 'var(--text-2)',
-                    fontSize: 12,
-                  }}
-                >
-                  No active allocations.
-                </div>
+                <EmptyState compact>
+                  No active allocations. Funds lock here while orders and swaps
+                  settle.
+                </EmptyState>
               )}
               {allocations.map((row, i, arr) => (
                 <div
@@ -467,16 +463,10 @@ export function Portfolio({
             <span style={{ textAlign: 'right' }}>Status</span>
           </div>
           {recentActivity.length === 0 && (
-            <div
-              style={{
-                padding: 24,
-                textAlign: 'center',
-                color: 'var(--text-2)',
-                fontSize: 12,
-              }}
-            >
-              No recent activity
-            </div>
+            <EmptyState compact>
+              No activity yet. Swaps, orders, and LP changes appear here as
+              they settle.
+            </EmptyState>
           )}
           {recentActivity.map((a) => {
             const txPill =

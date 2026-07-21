@@ -1,7 +1,7 @@
 // Connect Wallet UI affordance for the top bar.
 //
 // Behaviour:
-//   - Disconnected: button reads "Connect Wallet". Clicking opens a tiny
+//   - Disconnected: button reads "Connect wallet". Clicking opens a tiny
 //     provider picker (WalletConnect / Mock) and starts a connection.
 //   - Connecting: spinner state.
 //   - Connected: shows truncated party id + provider label, click to
@@ -150,7 +150,7 @@ export function ConnectWalletButton() {
           fontSize: "0.85rem",
         }}
       >
-        Connect Wallet
+        Connect wallet
       </button>
       {status.kind === "error" && (
         <div

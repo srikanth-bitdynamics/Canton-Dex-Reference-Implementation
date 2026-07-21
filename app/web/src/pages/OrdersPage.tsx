@@ -4,6 +4,7 @@ import { OrderBook } from '@/components/OrderBook';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import { useToast } from '@/primitives/ToastProvider';
+import { EmptyState } from '@/primitives/EmptyState';
 
 export function OrdersPage() {
   const queryClient = useQueryClient();
@@ -148,22 +149,24 @@ export function OrdersPage() {
             }}
           />
         ) : (
-          <div className="bg-surface-card rounded-lg border border-surface-border p-8 text-text-muted text-center font-sans">
-            No trading pairs available
+          <div className="card">
+            <EmptyState title="No trading pairs">
+              List a pair from the Admin page to open an order book.
+            </EmptyState>
           </div>
         )}
       </div>
 
       {/* Place Order */}
-      <div className="bg-surface-card rounded-lg border border-surface-border p-5">
-        <h3 className="text-text-primary font-sans font-semibold mb-4">Place Order</h3>
+      <div className="card p-5">
+        <h3 className="card-title mb-4">Place order</h3>
 
         <div className="flex gap-2 mb-4">
           <button
             onClick={() => setSide('Bid')}
-            className={`flex-1 py-2 rounded-lg text-sm font-sans font-medium transition-colors ${
+            className={`flex-1 py-2 rounded-sm text-sm font-sans font-medium transition-colors ${
               side === 'Bid'
-                ? 'bg-accent-green text-white'
+                ? 'bg-[var(--ok-bg)] text-[var(--ok-text)] border border-[var(--ok-border)]'
                 : 'bg-surface-hover text-text-secondary hover:text-text-primary'
             }`}
           >
@@ -171,9 +174,9 @@ export function OrdersPage() {
           </button>
           <button
             onClick={() => setSide('Ask')}
-            className={`flex-1 py-2 rounded-lg text-sm font-sans font-medium transition-colors ${
+            className={`flex-1 py-2 rounded-sm text-sm font-sans font-medium transition-colors ${
               side === 'Ask'
-                ? 'bg-accent-red text-white'
+                ? 'bg-[var(--danger-bg)] text-[var(--danger-text)] border border-[var(--danger-border)]'
                 : 'bg-surface-hover text-text-secondary hover:text-text-primary'
             }`}
           >
@@ -189,7 +192,7 @@ export function OrdersPage() {
               value={limitPrice}
               onChange={e => setLimitPrice(e.target.value)}
               placeholder="0.00"
-              className="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-text-primary font-mono focus:outline-none focus:border-accent-blue"
+              className="w-full bg-surface-muted border border-surface-border rounded-sm px-4 py-2.5 text-text-primary font-mono focus:outline-none focus:border-[var(--border-strong)]"
             />
           </div>
           <div>
@@ -201,7 +204,7 @@ export function OrdersPage() {
               value={quantity}
               onChange={e => setQuantity(e.target.value)}
               placeholder="0.00"
-              className="w-full bg-surface border border-surface-border rounded-lg px-4 py-2.5 text-text-primary font-mono focus:outline-none focus:border-accent-blue"
+              className="w-full bg-surface-muted border border-surface-border rounded-sm px-4 py-2.5 text-text-primary font-mono focus:outline-none focus:border-[var(--border-strong)]"
             />
           </div>
           {limitPrice && quantity && (
@@ -237,13 +240,13 @@ export function OrdersPage() {
             !context
           }
           title={!party ? 'Connect a wallet to place orders' : undefined}
-          className={`w-full py-2.5 rounded-lg font-sans font-semibold text-sm transition-colors ${
+          className={`w-full py-2.5 rounded-sm font-sans font-semibold text-sm transition-colors ${
             side === 'Bid'
-              ? 'bg-accent-green hover:bg-accent-green/90 text-white'
-              : 'bg-accent-red hover:bg-accent-red/90 text-white'
+              ? 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--on-accent)]'
+              : 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--on-accent)]'
           } disabled:opacity-40 disabled:cursor-not-allowed`}
         >
-          {placeMutation.isPending ? 'Placing...' : `Place ${side === 'Bid' ? 'Buy' : 'Sell'} Order`}
+          {placeMutation.isPending ? 'Placing…' : `Place ${side === 'Bid' ? 'buy' : 'sell'} order`}
         </button>
       </div>
     </div>

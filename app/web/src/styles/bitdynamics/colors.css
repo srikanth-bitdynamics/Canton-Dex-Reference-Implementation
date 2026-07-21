@@ -1,0 +1,205 @@
+/* ============================================================
+   Bitdynamics color system
+   Cool "ink" neutrals + one decisive cobalt. Accents are muted,
+   institutional, and used sparingly. Light-first; dark theme is
+   scoped under [data-theme="dark"].
+   ============================================================ */
+
+:root {
+  /* ---- Ink / neutral ramp (cool, navy-cast) ---- */
+  --gray-25:  #FCFCFD;
+  --gray-50:  #F7F8FA;
+  --gray-100: #EFF1F5;
+  --gray-200: #E2E5EC;
+  --gray-300: #CDD2DD;
+  --gray-400: #9BA3B5;
+  --gray-500: #6C7488;
+  --gray-600: #4D5567;
+  --gray-700: #384050;
+  --gray-800: #232A39;
+  --gray-900: #141A28;
+  --gray-950: #0B0F1A;
+
+  /* ---- Cobalt ramp (primary) ---- */
+  --blue-50:  #EEF1FD;
+  --blue-100: #DCE3FB;
+  --blue-200: #BCC9F6;
+  --blue-300: #93A7F0;
+  --blue-400: #6480E6;
+  --blue-500: #3D5BDC;
+  --blue-600: #2946CE;
+  --blue-700: #2138A8;
+  --blue-800: #1D2F85;
+  --blue-900: #1A2861;
+  --blue-950: #101836;
+
+  /* ---- Teal (data accent — sync, throughput, secondary series) ---- */
+  --teal-100: #D5F0EC;
+  --teal-300: #7BD2C6;
+  --teal-500: #189E8C;
+  --teal-600: #108072;
+  --teal-700: #0C685D;
+  --teal-900: #073E38;
+
+  /* ---- Semantic hues (desaturated, financial-grade) ---- */
+  --green-50:  #EDF7F0;
+  --green-100: #D8EEDF;
+  --green-500: #2E9E5B;
+  --green-600: #1F7E48;
+  --green-700: #18653B;
+
+  --amber-50:  #FCF5E8;
+  --amber-100: #F7E8C8;
+  --amber-500: #D89117;
+  --amber-600: #A96E0C;
+  --amber-700: #85560E;
+
+  --red-50:  #FBEFED;
+  --red-100: #F6DBD7;
+  --red-500: #D24A38;
+  --red-600: #BA3A29;
+  --red-700: #962E20;
+
+  /* ---- Semantic aliases (light) ---- */
+  --bg-page:        #FFFFFF;
+  --bg-sunken:      var(--gray-50);
+  --bg-surface:     #FFFFFF;
+  --bg-raised:      #FFFFFF;
+  --bg-inset:       var(--gray-100);
+  --bg-inverse:     var(--gray-950);
+
+  --text-primary:   var(--gray-900);
+  --text-secondary: var(--gray-600);
+  --text-muted:     var(--gray-500);
+  --text-faint:     var(--gray-400);
+  --text-inverse:   #F2F4F9;
+  --text-inverse-secondary: #A9B2C6;
+
+  --border-subtle:  var(--gray-100);
+  --border-default: var(--gray-200);
+  --border-strong:  var(--gray-300);
+  --border-inverse: #2A3349;
+
+  --hover-tint:  var(--gray-50);
+  --active-tint: var(--gray-100);
+
+  --accent:         var(--blue-600);
+  --accent-hover:   var(--blue-700);
+  --accent-active:  var(--blue-800);
+  --accent-subtle:  var(--blue-50);
+  --accent-muted:   var(--blue-100);
+  --accent-text:    var(--blue-700);
+  --on-accent:      #FFFFFF;
+
+  --link:           var(--blue-600);
+  --link-hover:     var(--blue-800);
+
+  --ok-text:      var(--green-700);
+  --ok-icon:      var(--green-600);
+  --ok-bg:        var(--green-50);
+  --ok-border:    #BCE0C9;
+
+  --warn-text:    var(--amber-700);
+  --warn-icon:    var(--amber-600);
+  --warn-bg:      var(--amber-50);
+  --warn-border:  #EBD9A9;
+
+  --danger-text:   var(--red-700);
+  --danger-icon:   var(--red-600);
+  --danger-bg:     var(--red-50);
+  --danger-border: #EFC5BD;
+  --danger:        var(--red-600);
+  --danger-hover:  var(--red-700);
+
+  --info-text:    var(--blue-800);
+  --info-icon:    var(--blue-600);
+  --info-bg:      var(--blue-50);
+  --info-border:  var(--blue-200);
+
+  /* ---- Code & terminal ---- */
+  --code-inline-bg:     var(--gray-100);
+  --code-inline-text:   var(--gray-800);
+  --code-block-bg:      var(--gray-950);
+  --code-block-text:    #DFE4EF;
+  --code-comment:       #6C7891;
+  --code-keyword:       #93A7F0;
+  --code-string:        #7BD2C6;
+  --code-number:        #E4C580;
+  --code-fn:            #C4CFF5;
+  --code-prompt:        #4D5A78;
+
+  /* ---- Dataviz series (in order) ---- */
+  --chart-1: var(--blue-600);
+  --chart-2: var(--teal-500);
+  --chart-3: var(--blue-300);
+  --chart-4: var(--amber-500);
+  --chart-5: var(--gray-400);
+
+  color-scheme: light;
+}
+
+/* ============================================================
+   Dark theme — consoles and terminal contexts default to this.
+   Apply data-theme="dark" on any subtree.
+   ============================================================ */
+[data-theme="dark"] {
+  --bg-page:        #0B0F1A;
+  --bg-sunken:      #080C15;
+  --bg-surface:     #10151F;
+  --bg-raised:      #161C29;
+  --bg-inset:       #0D1220;
+  --bg-inverse:     #F2F4F9;
+
+  --text-primary:   #E9ECF4;
+  --text-secondary: #A9B2C6;
+  --text-muted:     #7C8598;
+  --text-faint:     #5A6375;
+  --text-inverse:   var(--gray-900);
+  --text-inverse-secondary: var(--gray-600);
+
+  --border-subtle:  #171E2C;
+  --border-default: #232B3D;
+  --border-strong:  #313B52;
+  --border-inverse: var(--gray-200);
+
+  --hover-tint:  #171E2C;
+  --active-tint: #1E2637;
+
+  --accent:         var(--blue-400);
+  --accent-hover:   #7B93EC;
+  --accent-active:  #93A7F0;
+  --accent-subtle:  #141C36;
+  --accent-muted:   #1C2747;
+  --accent-text:    #93A7F0;
+  --on-accent:      #0B0F1A;
+
+  --link:           #8FA3EE;
+  --link-hover:     #B3C1F4;
+
+  --ok-text:      #7CC89A;
+  --ok-icon:      #4FAE76;
+  --ok-bg:        #0E1F16;
+  --ok-border:    #1E3A2A;
+
+  --warn-text:    #DDB25E;
+  --warn-icon:    #C8971F;
+  --warn-bg:      #211A0B;
+  --warn-border:  #3E3115;
+
+  --danger-text:   #E08D7D;
+  --danger-icon:   #D2604B;
+  --danger-bg:     #24120E;
+  --danger-border: #45201A;
+  --danger:        #D2604B;
+  --danger-hover:  #E08D7D;
+
+  --info-text:    #A9BAF2;
+  --info-icon:    #8FA3EE;
+  --info-bg:      #121A33;
+  --info-border:  #223059;
+
+  --code-inline-bg:   #1A2133;
+  --code-inline-text: #D5DAE6;
+
+  color-scheme: dark;
+}

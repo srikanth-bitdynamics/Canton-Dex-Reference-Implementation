@@ -1,0 +1,32 @@
+/* ============================================================
+   Bitdynamics effects — borders, radii, shadows, focus, motion.
+   Structure comes from 1px hairlines, not shadows. Shadows are
+   reserved for true overlays.
+   ============================================================ */
+:root {
+  --radius-xs: 2px;    /* buttons, inputs, tags, checkboxes */
+  --radius-sm: 4px;    /* cards, callouts, code blocks */
+  --radius-md: 8px;    /* dialogs, terminal windows */
+  --radius-full: 999px; /* status dots, avatar fallbacks only */
+
+  --border-w: 1px;
+
+  /* Elevation — use sparingly */
+  --shadow-raised: 0 1px 2px rgba(11, 15, 26, 0.06);
+  --shadow-overlay: 0 2px 6px rgba(11, 15, 26, 0.08), 0 16px 40px -12px rgba(11, 15, 26, 0.22);
+
+  /* Focus — 2px cobalt outline, offset. Identical in both themes. */
+  --focus-outline: 2px solid var(--blue-500);
+  --focus-offset: 2px;
+
+  /* Motion — quick, damped, no bounce */
+  --ease-out: cubic-bezier(0.2, 0.6, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 260ms;
+
+  /* Brand texture: dot grid (use as background-image on hero/section bands) */
+  --dot-grid: radial-gradient(circle at 1px 1px, var(--gray-200) 1px, transparent 1px);
+  --dot-grid-size: 24px 24px;
+  --dot-grid-dark: radial-gradient(circle at 1px 1px, #232B3D 1px, transparent 1px);
+}

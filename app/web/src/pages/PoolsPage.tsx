@@ -11,6 +11,7 @@ import { fmtUsdK } from '@/primitives/format';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import { useAssetPricesUsd } from '@/hooks/usePrices';
+import { EmptyState } from '@/primitives/EmptyState';
 
 export function PoolsPage() {
   const party = useCurrentParty();
@@ -33,15 +34,13 @@ export function PoolsPage() {
   const { prices: priceUsd } = useAssetPricesUsd(symbols);
 
   if (isLoading) {
-    return (
-      <div className="text-text-muted text-center py-12">Loading pools...</div>
-    );
+    return <EmptyState title="Loading pools">Reading pool state from the operator backend.</EmptyState>;
   }
   if (!pools || pools.length === 0) {
     return (
-      <div className="text-text-muted text-center py-12">
-        No pools available. Create one in the Admin panel.
-      </div>
+      <EmptyState title="No pools yet">
+        Create a pool from the Admin page to start providing liquidity.
+      </EmptyState>
     );
   }
 
@@ -88,7 +87,7 @@ export function PoolsPage() {
     <div className="page">
       <div className="page-header">
         <div>
-          <h1 className="page-title">Liquidity Pools</h1>
+          <h1 className="page-title">Liquidity pools</h1>
           <p className="page-sub">
             Provide liquidity to earn a share of swap fees. LP positions are
             minted as on-ledger LP tokens.
@@ -98,7 +97,7 @@ export function PoolsPage() {
 
       <div className="grid-3" style={{ marginBottom: 20 }}>
         <div className="stat">
-          <div className="stat-l">Total Value Locked</div>
+          <div className="stat-l">Total value locked</div>
           <div className="stat-v">{allPriced ? fmtUsdK(tvl) : '—'}</div>
           <div className="stat-d">
             {allPriced

@@ -1,51 +1,64 @@
 /** @type {import('tailwindcss').Config} */
 //
-// Visual tokens for the DEX frontend:
-//   - IBM Plex Sans + IBM Plex Mono typography stack
-//   - black-on-graphite surface palette
-//   - accent palette + status-pill colors aligned with StatusBadge
-//   - `bg-2` / `bg-3` row tints for expand-in-place patterns
+// Visual tokens for the DEX frontend, wired to the Bitdynamics design
+// system (src/styles/bitdynamics/*). The console runs the dark theme
+// (data-theme="dark" on <html>), so every color here resolves through
+// the design system's semantic CSS variables:
+//   - Archivo (UI) + JetBrains Mono (code and ALL data values)
+//   - ink neutrals + one cobalt accent; desaturated status triads
+//   - radius 2 (controls) / 4 (cards) / 8 (dialogs); borders, not shadows
 //
-// CSS variables flow through `index.css` so the existing component code
-// can use either Tailwind classes (`bg-surface-card`) or raw CSS vars
-// (`var(--bg-2)`). Both resolve to the same colors.
+// Component code uses either Tailwind classes (`bg-surface-card`) or raw
+// CSS vars (`var(--danger-text)`); both resolve to the same tokens.
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
+    // Radius follows the design system scale: 2px controls, 4px cards,
+    // 8px dialogs/terminal windows. `rounded-full` stays for status dots
+    // and avatar/glyph fallbacks only.
+    borderRadius: {
+      none: '0',
+      sm: '2px',
+      DEFAULT: '2px',
+      md: '2px',
+      lg: '4px',
+      xl: '8px',
+      '2xl': '8px',
+      full: '999px',
+    },
     extend: {
       colors: {
         surface: {
-          DEFAULT: '#0D1117',
-          card: '#161B22',
-          border: '#30363D',
-          hover: '#1C2128',
-          muted: '#1C2128',
+          DEFAULT: 'var(--bg-page)',
+          card: 'var(--bg-surface)',
+          border: 'var(--border-default)',
+          hover: 'var(--hover-tint)',
+          muted: 'var(--bg-inset)',
         },
-        // Status-pill palette. Names match StatusBadge classes.
+        // Status palette. Names match StatusBadge classes; values are the
+        // design system's desaturated text-grade status hues.
         accent: {
-          green: '#3FB950',
-          red: '#F85149',
-          blue: '#58A6FF',
-          yellow: '#D29922',
-          amber: '#D29922',
-          orange: '#F97316',
+          green: 'var(--ok-text)',
+          red: 'var(--danger-text)',
+          blue: 'var(--accent)',
+          yellow: 'var(--warn-text)',
+          amber: 'var(--warn-text)',
+          orange: 'var(--warn-icon)',
         },
         text: {
-          primary: '#E6EDF3',
-          secondary: '#8B949E',
-          muted: '#484F58',
+          primary: 'var(--text-primary)',
+          secondary: 'var(--text-secondary)',
+          muted: 'var(--text-muted)',
         },
-        // Raw bg layers used by expand-in-place rows. bg-2 is one shade
-        // lighter than the card; bg-3 is the expanded-row highlight.
+        // Raw bg layers used by expand-in-place rows.
         bg: {
-          2: '#161B22',
-          3: '#1C2128',
+          2: 'var(--bg-surface)',
+          3: 'var(--bg-raised)',
         },
       },
       fontFamily: {
-        // IBM Plex stack, matching Canton DEX.html.
-        mono: ['"IBM Plex Mono"', 'JetBrains Mono', 'Fira Code', 'monospace'],
-        sans: ['"IBM Plex Sans"', 'Inter', 'system-ui', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'SF Mono', 'Menlo', 'monospace'],
+        sans: ['Archivo', '-apple-system', '"Segoe UI"', '"Helvetica Neue"', 'Arial', 'sans-serif'],
       },
       fontVariantNumeric: {
         tabular: 'tabular-nums',

@@ -42,26 +42,30 @@ export function Layout() {
     <div className="min-h-screen bg-surface text-text-primary">
       <header
         className="border-b border-surface-border"
-        style={{ background: 'var(--bg-2)' }}
+        style={{ background: 'var(--bg-sunken)' }}
       >
         <div className="max-w-7xl mx-auto flex items-center gap-6 px-6 py-3">
-          {/* Brand */}
-          <div className="flex items-center gap-3">
-            <span
-              className="inline-block w-6 h-6 rounded-md"
-              style={{
-                background:
-                  'linear-gradient(135deg, var(--blue), var(--green))',
-              }}
-            ></span>
-            <div className="leading-tight">
-              <div className="font-semibold text-sm">Canton DEX</div>
-              <div
-                className="mono text-[10px]"
-                style={{ color: 'var(--text-2)' }}
+          {/* Brand — plain-type wordmark (no logo mark exists; none invented). */}
+          <div className="leading-tight">
+            <div className="flex items-baseline gap-1">
+              <span
+                style={{
+                  fontWeight: 600,
+                  fontStretch: '118%',
+                  letterSpacing: '0.14em',
+                  textTransform: 'uppercase',
+                  fontSize: 12,
+                  color: 'var(--text-primary)',
+                }}
               >
-                {APP_VERSION} · {networkLabel}
-              </div>
+                Canton DEX
+              </span>
+            </div>
+            <div
+              className="mono text-[10px]"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              {APP_VERSION} · {networkLabel}
             </div>
           </div>
 
@@ -73,13 +77,12 @@ export function Layout() {
                 to={to}
                 end={to === '/'}
                 data-screen-label={label}
-                className={({ isActive }) =>
-                  `px-3 py-1.5 rounded-md text-sm transition-colors ${
-                    isActive
-                      ? 'bg-surface-hover text-text-primary font-medium'
-                      : 'text-text-secondary hover:text-text-primary hover:bg-surface-hover'
-                  }`
-                }
+                className="px-3 py-1.5 rounded-sm text-sm transition-colors"
+                style={({ isActive }) => ({
+                  color: isActive ? 'var(--accent-text)' : 'var(--text-secondary)',
+                  background: isActive ? 'var(--accent-subtle)' : 'transparent',
+                  fontWeight: isActive ? 500 : 400,
+                })}
               >
                 {label}
               </NavLink>

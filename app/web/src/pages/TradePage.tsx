@@ -14,6 +14,7 @@ import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import { useAssetPricesUsd } from '@/hooks/usePrices';
 import { usePriceHistory } from '@/hooks/useStats';
+import { EmptyState } from '@/primitives/EmptyState';
 
 export function TradePage() {
   const party = useCurrentParty();
@@ -89,7 +90,7 @@ export function TradePage() {
   const { data: priceHistory } = usePriceHistory(pairKey, 24);
 
   if (!pools) {
-    return <div className="text-text-secondary text-center py-12">Loading pools…</div>;
+    return <EmptyState title="Loading pools">Reading pool state from the operator backend.</EmptyState>;
   }
 
   if (!activePool) {
@@ -186,10 +187,7 @@ export function TradePage() {
                   {pool.baseInstrumentId} / {pool.quoteInstrumentId}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                  Pool · Fee {(pool.feeBps / 100).toFixed(2)}% ·{' '}
-                  <span className="alloc-pill">
-                    Pool#{pool.contractId.slice(0, 8)}
-                  </span>
+                  Pool · Fee {(pool.feeBps / 100).toFixed(2)}%
                 </div>
               </div>
             </div>
@@ -212,16 +210,13 @@ export function TradePage() {
               {priceHistory && priceHistory.length >= 2 ? (
                 <Spark
                   data={priceHistory.map((p) => p.price)}
-                  color="#3FB950"
+                  color="#189E8C"
                   width={120}
                   height={28}
                 />
               ) : (
-                <span
-                  className="mono"
-                  style={{ fontSize: 11, color: 'var(--text-3)' }}
-                >
-                  no history
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  no history yet
                 </span>
               )}
             </div>
@@ -276,17 +271,10 @@ export function TradePage() {
                 <span style={{ textAlign: 'right' }}>Counterparty</span>
               </div>
               {recentSwapsForPair.length === 0 && (
-                <div
-                  style={{
-                    padding: 24,
-                    textAlign: 'center',
-                    color: 'var(--text-2)',
-                    fontSize: 12,
-                  }}
-                >
+                <EmptyState compact>
                   No swaps yet for this pair. Submit one above to see it
                   appear here.
-                </div>
+                </EmptyState>
               )}
               {recentSwapsForPair.map((s, i) => {
                 const inIsBase = s.inputInstrumentId === pool.baseInstrumentId;

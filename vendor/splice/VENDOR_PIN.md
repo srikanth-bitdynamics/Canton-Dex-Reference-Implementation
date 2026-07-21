@@ -13,6 +13,22 @@ previously this information lived only in a git commit message.
 | In-tree `VERSION` (upstream) | `0.6.11` |
 | `LATEST_RELEASE` (upstream) | `0.6.10` |
 
+## Currency check (2026-07-21)
+
+Token Standard V2 is now live on **Testnet**, which runs Splice **`0.6.11`** —
+identical to this pin. Upstream has since tagged `0.6.12` and `0.6.13`. A
+subtree comparison of `token-standard/` between this pin (`93b3519c`) and tag
+`0.6.13` (`52ccdd68`) found **10 changed files, none of them an on-ledger
+API/interface package this DEX builds against**: the Amulet **test** registries
+(`splice-token-standard-v{1,2}-test/.../Testing/Registries/*.daml`), several
+test/example `daml.yaml`, `package-lock.json`, the token-standard `cli` tx
+parser, and the `token-metadata-v1` **OpenAPI** spec (not its `.daml`). Every
+interface we vendor and compile against — `allocation-v2`,
+`allocation-request-v2`, `holding-v2`, `MetadataV1.daml`, `transfer-events-v2`,
+`splice-util-token-standard-wallet` (`BatchingUtilityV2`),
+`splice-api-featured-app-v1` — is byte-identical `0.6.11`→`0.6.13`. **No
+re-vendor is required** to stay aligned with Testnet or with `0.6.13`.
+
 ## Notes
 
 - Token Standard **V2** has landed on `canton-network/splice` `main`. The former

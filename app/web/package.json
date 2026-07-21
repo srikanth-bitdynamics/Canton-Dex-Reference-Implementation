@@ -1,6 +1,6 @@
 {
   "name": "canton-dex-ui",
-  "version": "0.0.1",
+  "version": "0.6.0",
   "description": "Reference DEX UI on Canton Token Standard V2.",
   "license": "Apache-2.0",
   "repository": {

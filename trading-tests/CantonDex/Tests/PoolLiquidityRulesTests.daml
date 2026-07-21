@@ -111,7 +111,7 @@ mkSpecDeadline admin authorizer legs committed deadline =
   (mkSpec admin authorizer legs committed) with settlementDeadline = Some deadline
 
 -- Operator creates the directional LiquidityAllocationRequest the LP/holder
--- accepts; `Settle*` is bound to it (3b.0). The choice builds the canonical
+-- accepts; `Settle*` is bound to it. The choice builds the canonical
 -- specs on-ledger from these scalars; the tests author matching allocations
 -- via their local `mkSpec` (byte-identical, since admin == lpRegistrar ==
 -- registry here).
@@ -562,7 +562,7 @@ testExpiredRemoveRejected = do
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
--- 3b.0 (request-bound settle): a supplied allocation whose spec is NOT one
+-- Request-bound settle: a supplied allocation whose spec is NOT one
 -- the accepted request named must be rejected — the operator cannot
 -- substitute a different allocation shape than the LP authored.
 testSettleRejectsForeignAllocation : Script ()
@@ -605,7 +605,7 @@ testSettleRejectsForeignAllocation = do
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
--- 3b.0 (request-bound settle): the request's `settleAt` is the single
+-- Request-bound settle: the request's `settleAt` is the single
 -- authoritative deadline. A request whose settleAt is already past must be
 -- rejected even when every supplied allocation is itself fresh.
 testSettleRejectsExpiredRequest : Script ()
@@ -647,7 +647,7 @@ testSettleRejectsExpiredRequest = do
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
--- 3b.0/option-1 guard: the minted amount is read from the LP receipt, but
+-- Minted-amount guard: the minted amount is read from the LP receipt, but
 -- bounded — a receipt claiming MORE than the on-ledger fair share is
 -- rejected (anti over-mint / dilution).
 testAddRejectsOverMint : Script ()

@@ -91,7 +91,7 @@ testDvpMintThenBurn = do
     settlement; allocation = receiptSpec; requestedAt = now
     inputHoldingCids = []; actors = [alice]; extraArgs = emptyExtraArgs
 
-  _ <- submitMulti [registrar, alice] [] $
+  _ <- submit (actAs [registrar, alice]) $
     exerciseCmd settleCid V2.SettlementFactory_SettleBatch with
       settlement
       transferLegs = [mintLeg]
@@ -136,7 +136,7 @@ testDvpMintThenBurn = do
     settlement; allocation = burnReceiverSpec; requestedAt = now
     inputHoldingCids = []; actors = [registrar]; extraArgs = emptyExtraArgs
 
-  _ <- submitMulti [registrar, alice] [] $
+  _ <- submit (actAs [registrar, alice]) $
     exerciseCmd settleCid V2.SettlementFactory_SettleBatch with
       settlement
       transferLegs = [burnLeg]

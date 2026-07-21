@@ -9,7 +9,7 @@ bash "$ROOT_DIR/scripts/build-vendored-token-standard.sh"
 echo "==> Building local canton-dex-trading surface package"
 (
   cd "$ROOT_DIR/trading"
-  daml build
+  dpm build
 )
 
 echo "canton-dex-trading surface package built successfully."

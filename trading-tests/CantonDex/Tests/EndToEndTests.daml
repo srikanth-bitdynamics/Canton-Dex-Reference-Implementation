@@ -8,7 +8,8 @@
 --   5. PoolRules_Swap end-to-end through the mock registry.
 --
 -- The mock doesn't model holdings (tests pass empty inputHoldingCids), and
--- joint-authority flows (e.g. PoolRules_Swap) use submitMulti.
+-- joint-authority flows (e.g. PoolRules_Swap) use a multi-party
+-- submit (actAs [..]).
 module CantonDex.Tests.EndToEndTests where
 
 import DA.Assert
@@ -79,7 +80,7 @@ setupPool operator lpRegistrar admin = do
     totalLpSupply = 0.0
     publicReaders = []
   rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
-  dvpCid <- submitMulti [operator, lpRegistrar] [] $
+  dvpCid <- submit (actAs [operator, lpRegistrar]) $
     createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar
@@ -135,7 +136,7 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
   baseAllocCid <- mkOne baseSpec
   quoteAllocCid <- mkOne quoteSpec
   receiptAllocCid <- mkOne receiptSpec
-  submitMulti [operator, lpRegistrar] [] $
+  submit (actAs [operator, lpRegistrar]) $
     exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = poolId
       poolCid
@@ -376,7 +377,7 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
   -- Accept Jump's quote: it's the cheapest TRUSTED, so under the
   -- documented policy (trusted-first, then price, then earliest) Jump
   -- ranks #1 even though Galaxy has a marginally lower price.
-  acceptRes <- submitMulti [alice, operator] [] $
+  acceptRes <- submit (actAs [alice, operator]) $
     exerciseCmd rfqCid Rfq.Rfq_Accept with
       acceptedQuoteCid = quoteJump
       consideredQuoteCids = [quoteOrca, quoteJump, quoteGalaxy]
@@ -865,7 +866,7 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
     status = Pool.PS_Unfunded
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
     totalLpSupply = 0.0; publicReaders = []
-  dvpCid <- submitMulti [operator, lpRegistrar] [] $
+  dvpCid <- submit (actAs [operator, lpRegistrar]) $
     createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = lpId
@@ -967,7 +968,7 @@ testDvpSettleThreadsBothAdminContexts = do
           baseQuoteSettleCid = settleCid; lpSettleCid = settleCid
           baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0; knownTotalLpSupply = 0.0
           requestedAt = now; poolAdminExtraArgs = poolAdminCtx; lpRegistrarExtraArgs = lpRegistrarCtx
-  res <- submitMulti [operator, lpRegistrar] [] $ settleAdd markerContext markerContext
+  res <- submit (actAs [operator, lpRegistrar]) $ settleAdd markerContext markerContext
   Some state <- queryContractId operator res.poolStateCid
   state.status === Pool.PS_Active
 
@@ -982,7 +983,7 @@ testDvpSettleRequiresPoolAdminContext = do
   (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
   (reqCid, baseCid, quoteCid, receiptCid) <-
     authorAddAllocations operator factoryCid poolCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
-  submitMultiMustFail [operator, lpRegistrar] [] $
+  submitMustFail (actAs [operator, lpRegistrar]) $
     exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = poolId; poolCid; poolStateCid = stateCid; lpPolicyCid = policyCid
       requestCid = Some reqCid; acceptanceCid = None; recipient = lpRegistrar
@@ -1003,7 +1004,7 @@ testDvpSettleRequiresLpRegistrarContext = do
   (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
   (reqCid, baseCid, quoteCid, receiptCid) <-
     authorAddAllocations operator factoryCid poolCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
-  submitMultiMustFail [operator, lpRegistrar] [] $
+  submitMustFail (actAs [operator, lpRegistrar]) $
     exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = poolId; poolCid; poolStateCid = stateCid; lpPolicyCid = policyCid
       requestCid = Some reqCid; acceptanceCid = None; recipient = lpRegistrar

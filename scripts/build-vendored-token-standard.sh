@@ -41,7 +41,7 @@ for rel in "${packages[@]}"; do
   echo "==> Building $rel"
   (
     cd "$pkg_dir"
-    daml build
+    dpm build
   )
 
   dist_dir="$pkg_dir/.daml/dist"
@@ -74,7 +74,7 @@ for rel in "${daml_packages[@]}"; do
   echo "==> Building $rel"
   (
     cd "$pkg_dir"
-    daml build
+    dpm build
   )
 
   dist_dir="$pkg_dir/.daml/dist"

@@ -201,7 +201,7 @@ testTransferOfferAccept = do
     amount = 2.0
     reference = "tx-test"
     lockedHoldingCid = lockedCid
-  acceptRes <- submitMulti [bob, registrar] [] $
+  acceptRes <- submit (actAs [bob, registrar]) $
     exerciseCmd offerCid Tx.TransferOffer_Accept with
       configCid = cfgCid
       senderClaims = []
@@ -254,7 +254,7 @@ testTransferPreapproved = do
     reference = "preapproved-tx"
     lockedHoldingCid = lockedCid
 
-  acceptRes <- submitMulti [alice, registrar] [] $
+  acceptRes <- submit (actAs [alice, registrar]) $
     exerciseCmd offerCid Tx.TransferOffer_AcceptPreapproved with
       preapprovalCid
       configCid = cfgCid

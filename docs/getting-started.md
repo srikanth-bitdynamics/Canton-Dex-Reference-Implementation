@@ -29,7 +29,7 @@ in-memory ledger, so you can have the full stack up in a few minutes.
 ## Prerequisites
 | Tool | Version | For |
 |---|---|---|
-| Daml SDK | **3.4.11** (`daml install 3.4.11`) | building + testing the Daml core |
+| DPM (Daml Package Manager) | latest — see [DPM install](https://docs.digitalasset.com/build/3.4/dpm/dpm.html); it resolves the repo-pinned **SDK 3.4.11** automatically | building + testing the Daml core |
 | Node.js | **24+** | backend + dApp |
 | npm | 10+ | install/test |
 | (optional) Docker | recent | only for the real-Canton paths below |
@@ -51,9 +51,9 @@ DAR, and runs the suites. Or by hand:
 
 ```bash
 bash scripts/build-vendored-token-standard.sh
-(cd trading              && daml build)      # produces canton-dex-trading-0.1.0.dar
-(cd trading-tests        && daml test)       # expect: ~70 scripts "ok"
-(cd examples/stable-pool && daml test)       # expect: 3 "ok"  (reuse proof)
+(cd trading              && dpm build)      # produces canton-dex-trading-0.1.0.dar
+(cd trading-tests        && dpm test)       # expect: ~70 scripts "ok"
+(cd examples/stable-pool && dpm test)       # expect: 3 "ok"  (reuse proof)
 ```
 This exercises the V2-native templates (pool/swap/LP, orders, RFQ,
 matched-trade), the reference registry (`Registry/V2.daml`) implementing V2
@@ -135,8 +135,8 @@ Backend API base is `VITE_API_BASE` (default `http://localhost:8080`).
 ## Running the full test suite
 | Component | Command | Expected |
 |---|---|---|
-| Daml core | `cd trading-tests && daml test` | ~70 ok |
-| Daml reuse example | `cd examples/stable-pool && daml test` | 3 ok |
+| Daml core | `cd trading-tests && dpm test` | ~70 ok |
+| Daml reuse example | `cd examples/stable-pool && dpm test` | 3 ok |
 | Backend | `cd services/operator-backend && npm run typecheck && npm test` | clean; ~77 pass |
 | dApp | `cd app/web && npm test` | ~58 pass |
 | End-to-end (in-memory) | `bash scripts/e2e-smoke.sh` | green |
@@ -146,7 +146,7 @@ For the Dev Fund milestone reviewers, the same commands map to the deliverables:
 
 | Milestone | What it covers | Verify with |
 |---|---|---|
-| **M1** — Daml core on Token Standard V2 | templates, reference V2 registry, DvP + conservation | `daml test` in `trading-tests` (~70 ok) + `examples/stable-pool` (3 ok) |
+| **M1** — Daml core on Token Standard V2 | templates, reference V2 registry, DvP + conservation | `dpm test` in `trading-tests` (~70 ok) + `examples/stable-pool` (3 ok) |
 | **M2** — operator backend + dApp + wallet | HTTP API + logic; UI; wallet handoff | backend `npm test` (~77), dApp `npm test` (~58) + open :5173; `npm run localnet:dvp-e2e` for the LP→swap→remove round-trip |
 
 ---
@@ -168,8 +168,8 @@ The dev backend is in-memory. To run on real Canton:
 | backend `/v1/*` → "method not allowed" | Docker owns `:8080`; use `PORT=8091 npm run dev` + `VITE_API_BASE=http://127.0.0.1:8091` |
 | dApp can’t reach backend (CORS) | start backend with `ALLOWED_ORIGINS=http://localhost:5173` |
 | dev relay wallet needs a party | set `VITE_CANTON_DEFAULT_PARTY=trader-demo` (dev only) |
-| `daml: command not found` | `daml install 3.4.11` and re-open the shell |
-| Daml CLI prints a "DPM" deprecation warning on every build | informational only; `daml build` remains the supported path for this repo |
+| `dpm: command not found` | install DPM (see the prerequisites link) and re-open the shell |
+| Daml CLI prints a "DPM" deprecation warning on every build | informational only; `dpm build` remains the supported path for this repo |
 | stale `node_modules` after branch switch | `rm -rf node_modules && npm ci` |
 
 See also: [Overview](concepts/overview.md), [Architecture](concepts/architecture.md),

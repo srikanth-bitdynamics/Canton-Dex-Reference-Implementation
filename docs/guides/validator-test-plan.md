@@ -39,7 +39,7 @@ export CANTON_ADMIN=...
 ```
 
 Expected:
-- `daml build` succeeds; `.daml/dist/canton-dex-*.dar` exists.
+- `dpm build` succeeds; `.daml/dist/canton-dex-*.dar` exists.
 - DARs upload to participant (HTTP 200 from `/v2/packages`).
 - Parties allocated (or pre-existing).
 - `scripts/bootstrap-registry.ts` reports each instrument and LP

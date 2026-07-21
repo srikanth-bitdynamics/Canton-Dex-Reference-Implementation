@@ -28,7 +28,7 @@ boot.
 ## Prerequisites
 
 - `daml` CLI ≥ 3.4 on `$PATH`.
-- The `canton-dex-trading` DAR built (`cd trading && daml build`).
+- The `canton-dex-trading` DAR built (`cd trading && dpm build`).
 
 ## Run
 

@@ -1,26 +1,22 @@
 // Connect Wallet UI affordance for the top bar.
 //
 // Behaviour:
-//   - Disconnected: button reads "Connect wallet". Clicking opens a tiny
-//     provider picker (WalletConnect / Mock) and starts a connection.
+//   - Disconnected: button reads "Connect wallet". Clicking opens the wallet
+//     picker, which auto-detects the wallets available in this deployment
+//     (dapp-sdk gateway + injected/announced browser wallets, PartyLayer's
+//     catalog) and the remaining providers, then routes the chosen wallet to
+//     its owning provider.
 //   - Connecting: spinner state.
 //   - Connected: shows truncated party id + provider label, click to
 //     disconnect.
-//   - Error: surfaces the message inline so config issues (missing
-//     project id) are visible.
+//   - Error: surfaces the message inline so config issues (missing project id,
+//     unreachable gateway) are visible.
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
-import { DEFAULT_PROVIDER_ID } from "@/wallet/registry";
 import { useWalletStore } from "@/wallet/store";
-import { capabilityFor, dvpBadge } from "@/wallet/capabilities";
-import type { WalletProviderId } from "@/wallet/registry";
-
-const BADGE_TONE: Record<"ok" | "warn" | "muted", string> = {
-  ok: "var(--green, #22c55e)",
-  warn: "var(--amber, #f59e0b)",
-  muted: "var(--text-2)",
-};
+import { discoverWallets, type PickerRow } from "@/wallet/detection";
+import { WalletPickerModal } from "./WalletPickerModal";
 
 function truncate(s: string | null | undefined, head = 6, tail = 4): string {
   if (!s) return "—";
@@ -40,34 +36,48 @@ export function ConnectWalletButton() {
   const activeProviderId = useWalletStore((s) => s.activeProviderId);
   const connect = useWalletStore((s) => s.connect);
   const disconnect = useWalletStore((s) => s.disconnect);
-  const listProviders = useWalletStore((s) => s.listProviders);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
 
-  // Click-outside to close the menu.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClick = (e: MouseEvent) => {
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(e.target as Node)
-      ) {
-        setMenuOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", onClick);
-    return () => window.removeEventListener("mousedown", onClick);
-  }, [menuOpen]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [rows, setRows] = useState<PickerRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
 
-  const handleConnect = async (id: WalletProviderId) => {
-    setMenuOpen(false);
+  const openPicker = async () => {
+    setConnectError(null);
+    setConnectingId(null);
+    setPickerOpen(true);
+    setLoading(true);
     try {
-      await connect(id);
+      setRows(await discoverWallets());
     } catch (e) {
-      // The store keeps the error in `status`; no extra UI needed here.
       // eslint-disable-next-line no-console
-      console.error("[wallet connect]", e);
+      console.error("[wallet discovery]", e);
+      setRows([]);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const handleChoose = async (row: PickerRow) => {
+    // Keep the picker open through the connect attempt so its error surfaces in
+    // the modal; only close on success. Otherwise the modal unmounts before the
+    // connect rejection arrives and the error is never shown.
+    setConnectError(null);
+    setConnectingId(row.id);
+    try {
+      await connect(row.providerId, row.walletId);
+      setPickerOpen(false);
+    } catch (e) {
+      setConnectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConnectingId(null);
+    }
+  };
+
+  const closePicker = () => {
+    setPickerOpen(false);
+    setConnectError(null);
   };
 
   if (status.kind === "connected") {
@@ -130,14 +140,16 @@ export function ConnectWalletButton() {
   }
 
   return (
-    <div ref={menuRef} style={{ position: "relative" }}>
+    <div style={{ position: "relative" }}>
       <button
         type="button"
         onClick={() => {
+          // A still-active provider (rare in the disconnected state) reconnects
+          // directly; otherwise open the auto-detect picker.
           if (activeProviderId) {
-            handleConnect(activeProviderId);
+            void connect(activeProviderId);
           } else {
-            setMenuOpen((v) => !v);
+            void openPicker();
           }
         }}
         title="Connect a wallet to authorise trader actions"
@@ -152,7 +164,7 @@ export function ConnectWalletButton() {
       >
         Connect wallet
       </button>
-      {status.kind === "error" && (
+      {status.kind === "error" && !pickerOpen && (
         <div
           style={{
             position: "absolute",
@@ -173,107 +185,15 @@ export function ConnectWalletButton() {
           {status.message}
         </div>
       )}
-      {menuOpen && (
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            right: 0,
-            zIndex: 40,
-            minWidth: 200,
-            padding: 4,
-            borderRadius: 8,
-            background: "var(--bg-2)",
-            border: "1px solid var(--border)",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
-          }}
-        >
-          <div
-            style={{
-              padding: "6px 10px 8px",
-              fontSize: 11,
-              lineHeight: 1.4,
-              color: "var(--text-2)",
-              borderBottom: "1px solid var(--border)",
-              marginBottom: 4,
-            }}
-          >
-            You approve the prepared DEX action in your wallet — you never build
-            allocations by hand.
-          </div>
-          {listProviders().map((p) => {
-            const cap = capabilityFor(p.id);
-            const badge = dvpBadge(cap.dvp);
-            const isDefault = p.id === DEFAULT_PROVIDER_ID;
-            const isDevOnly = cap.dvp === "dev-only";
-            // Only a real-wallet default earns the "recommended" tag. A dev-only
-            // relay is never recommended even if it happens to be the dev
-            // default.
-            const showRecommended = isDefault && !isDevOnly;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => handleConnect(p.id)}
-                title={cap.note}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  textAlign: "left",
-                  padding: "8px 10px",
-                  borderRadius: 6,
-                  background: showRecommended
-                    ? "var(--bg-3)"
-                    : "transparent",
-                  border: "none",
-                  color: "inherit",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                  <span>{p.label}</span>
-                  <span
-                    className="mono text-[10px]"
-                    style={{
-                      marginLeft: "auto",
-                      color: BADGE_TONE[badge.tone],
-                      border: `1px solid ${BADGE_TONE[badge.tone]}`,
-                      borderRadius: 4,
-                      padding: "0 4px",
-                    }}
-                    title={cap.note}
-                  >
-                    {badge.label}
-                  </span>
-                  {showRecommended && (
-                    <span
-                      className="mono text-[10px]"
-                      style={{ color: "var(--text-2)" }}
-                    >
-                      recommended
-                    </span>
-                  )}
-                  {isDevOnly && (
-                    <span
-                      className="mono text-[10px]"
-                      style={{ color: BADGE_TONE.warn }}
-                    >
-                      dev only
-                    </span>
-                  )}
-                </div>
-                <div
-                  className="text-[10px]"
-                  style={{ color: "var(--text-2)", marginTop: 2 }}
-                >
-                  {cap.note}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      <WalletPickerModal
+        open={pickerOpen}
+        loading={loading}
+        rows={rows}
+        onChoose={handleChoose}
+        onCancel={closePicker}
+        error={connectError}
+        connectingId={connectingId}
+      />
     </div>
   );
 }

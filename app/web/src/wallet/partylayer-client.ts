@@ -98,6 +98,15 @@ export function createDexPartyLayerClient(
 
   return {
     async connect(connectOptions) {
+      // The combined picker passes the chosen wallet id — connect straight to it
+      // rather than probing the configured list in order.
+      if (connectOptions?.walletId) {
+        const session = await client.connect({
+          ...connectOptions,
+          walletId: connectOptions.walletId as WalletId,
+        });
+        return mapSession(session);
+      }
       const missingWalletAttempts: Array<{ walletId: string; error: unknown }> = [];
       for (const walletId of walletIds) {
         try {
@@ -112,6 +121,37 @@ export function createDexPartyLayerClient(
         }
       }
       throw new Error(missingWalletMessage(missingWalletAttempts));
+    },
+    async listWallets() {
+      // `client.listWallets()` returns the FULL remote registry catalog (every
+      // wallet the registry knows), but this dApp can only connect wallets it
+      // configured an adapter for — `client.connect({ walletId })` rejects for
+      // any other. So keep only adapter-backed wallets; advertising the rest
+      // would list rows that fail on click. For each kept wallet, probe
+      // install state via the adapter so the picker can grey out / link
+      // not-installed ones.
+      const infos = await client.listWallets();
+      const out = await Promise.all(
+        infos.map(async (info) => {
+          const adapter = client.getAdapter(info.walletId);
+          if (!adapter) return null; // no adapter here — not connectable
+          let installed: boolean | undefined;
+          try {
+            installed = (await adapter.detectInstalled?.())?.installed;
+          } catch {
+            /* detection failed — leave `installed` undefined (no opinion) */
+          }
+          const icons = (info as { icons?: { sm?: string; md?: string; lg?: string } }).icons;
+          return {
+            walletId: String(info.walletId),
+            name: info.name ?? String(info.walletId),
+            installUrl: (info as { website?: string }).website,
+            icon: icons?.md ?? icons?.sm ?? icons?.lg,
+            installed,
+          };
+        }),
+      );
+      return out.filter((w): w is NonNullable<typeof w> => w !== null);
     },
     async disconnect() {
       await client.disconnect();

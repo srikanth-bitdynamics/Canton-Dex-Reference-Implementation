@@ -132,9 +132,14 @@ export class InMemoryLedger implements LedgerSubmitter {
     }
     const handler = this.choiceHandlers.get(`${templateId}::${choice}`);
     if (!handler) {
+      // The in-memory dev ledger implements only the single-command demo
+      // choices (e.g. PoolRules_Swap). Multi-step flows that need a real
+      // Canton participant (e.g. PoolRules_RequestSwap in the
+      // request -> allocate -> swap path) land here.
       throw new LedgerError(
-        "validation",
-        `no handler: ${templateId}::${choice}`,
+        "unsupported",
+        `choice ${templateId}:${choice} is not implemented by the in-memory dev ledger. ` +
+          `This flow requires a real Canton participant; for a demo swap use POST /v1/pools/swap.`,
         false,
       );
     }

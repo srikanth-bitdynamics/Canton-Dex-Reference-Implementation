@@ -1,6 +1,7 @@
 // Pool orchestration and read models.
 
 import { createHash } from "node:crypto";
+import { LedgerError } from "../ledger/index.js";
 
 import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
@@ -342,6 +343,70 @@ export class PoolService {
     return dec.formatDecimal(out);
   }
 
+  /**
+   * Enriched quote for trading clients: the output amount plus the fields a
+   * client would otherwise recompute from `reserves` + `feeBps` — the fee
+   * actually applied, the execution price, the pre-trade spot (mid) price, and
+   * the resulting price impact. All exact (BigInt decimal math, no floats).
+   */
+  computeQuoteDetailed(
+    pool: Pool,
+    inputInstrumentId: string,
+    inputAmount: Decimal,
+  ): {
+    outputAmount: Decimal;
+    inputAmount: Decimal;
+    inputInstrumentId: string;
+    outputInstrumentId: string;
+    feeBps: number;
+    feeAmount: Decimal;
+    executionPrice: Decimal;
+    spotPrice: Decimal;
+    priceImpact: Decimal;
+    poolCid: string;
+    poolId: string;
+  } {
+    const isBaseIn = inputInstrumentId === pool.baseInstrumentId;
+    const outputInstrumentId = isBaseIn
+      ? pool.quoteInstrumentId
+      : pool.baseInstrumentId;
+    const [reserveIn, reserveOut] = isBaseIn
+      ? [pool.reserves.baseAmount, pool.reserves.quoteAmount]
+      : [pool.reserves.quoteAmount, pool.reserves.baseAmount];
+
+    const outputAmount = this.computeQuote(pool, inputInstrumentId, inputAmount);
+    const inDec = dec.parseDecimal(inputAmount);
+    const outDec = dec.parseDecimal(outputAmount);
+    const rIn = dec.parseDecimal(reserveIn);
+    const rOut = dec.parseDecimal(reserveOut);
+
+    // fee actually applied = inputAmount * feeBps / 10000
+    const feeAmount = dec.div(
+      dec.mul(inDec, dec.parseDecimal(String(pool.feeBps))),
+      dec.parseDecimal("10000"),
+    );
+    // execution price = output per unit input; spot = reserve mid (pre-trade).
+    const executionPrice = inDec > 0n ? dec.div(outDec, inDec) : 0n;
+    const spotPrice = rIn > 0n ? dec.div(rOut, rIn) : 0n;
+    // price impact = (spot - execution) / spot, as a fraction (>=0 worse).
+    const priceImpact =
+      spotPrice > 0n ? dec.div(spotPrice - executionPrice, spotPrice) : 0n;
+
+    return {
+      outputAmount,
+      inputAmount,
+      inputInstrumentId,
+      outputInstrumentId,
+      feeBps: pool.feeBps,
+      feeAmount: dec.formatDecimal(feeAmount),
+      executionPrice: dec.formatDecimal(executionPrice),
+      spotPrice: dec.formatDecimal(spotPrice),
+      priceImpact: dec.formatDecimal(priceImpact),
+      poolCid: pool.contractId,
+      poolId: pool.poolId,
+    };
+  }
+
   async swap(input: PoolSwapInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
     // Operator-discovery: recover the single swap input allocation from the tree
@@ -354,7 +419,11 @@ export class PoolService {
       swapperAllocationCid = allocationCids[0] as ContractId<"Allocation">;
     }
     if (!swapperAllocationCid) {
-      throw new Error("swap: supply swapperAllocationCid or an updateId to recover it");
+      throw new LedgerError(
+        "validation",
+        "swap: supply swapperAllocationCid or an updateId to recover it",
+        false,
+      );
     }
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);

@@ -376,6 +376,17 @@ async function main(): Promise<void> {
     operatorParty: operator,
   });
 
+  // The dev server seeds bare-hint parties (e.g. "trader-demo"). When the
+  // dev-open write bypass is active, allow those bare parties by default so the
+  // demo's own seeded data passes write validation without a second flag.
+  // Set DEX_ALLOW_BARE_PARTIES=0 to opt out.
+  const devOpen = process.env.DEX_OPERATOR_API_TOKEN
+    ? false
+    : process.env.DEX_DEV_OPEN === "1";
+  if (devOpen && process.env.DEX_ALLOW_BARE_PARTIES === undefined) {
+    process.env.DEX_ALLOW_BARE_PARTIES = "1";
+  }
+
   const port = Number(process.env.PORT ?? 8080);
   const { url } = startHttpServer({
     backend,
@@ -394,9 +405,7 @@ async function main(): Promise<void> {
     // Operator-write auth: the dev server has no token, so default to the
     // explicit dev-open bypass unless an operator token is supplied.
     operatorToken: process.env.DEX_OPERATOR_API_TOKEN,
-    devOpen: process.env.DEX_OPERATOR_API_TOKEN
-      ? false
-      : process.env.DEX_DEV_OPEN === "1",
+    devOpen,
     // Wallet relay is OFF unless explicitly enabled.
     walletRelayEnabled: process.env.DEX_DEV_WALLET_RELAY === "1",
     walletRelayParties: (process.env.DEX_DEV_RELAY_PARTIES ?? "")

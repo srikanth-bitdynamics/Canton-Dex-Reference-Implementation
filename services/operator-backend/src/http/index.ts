@@ -12,7 +12,9 @@
 //     GET  /v1/pools                    -> Pool[]
 //     GET  /v1/pairs                    -> DexPair[]
 //     GET  /v1/orders?trader=:p         -> Order[]
-//     GET  /v1/holdings?owner=:p        -> Holding[]
+//     GET  /v1/holdings?owner=:p        -> Holding[] (per-contract, UTXO-style)
+//     GET  /v1/balances?owner=:p        -> Balance[] (aggregated by instrument)
+//     GET  /v1/instruments              -> Instrument[] (id, symbol, decimals)
 //
 //   Quote (off-chain; advisory, on-chain PoolRules_Swap re-validates):
 //     POST /v1/swaps/quote              -> { outputAmount }
@@ -40,6 +42,8 @@ import type { Party, Pool } from "../types.js";
 import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
+import { LedgerError } from "../ledger/index.js";
+import * as dec from "../pool/decimal.js";
 import { DealersService } from "../dealers/index.js";
 import { checkAdminAuth, checkOperatorAuth, bearerMatches } from "./auth.js";
 import { checkCallerBinding, callerPartyFromRequest, type CallerAuthConfig } from "./caller-auth.js";
@@ -253,6 +257,20 @@ export function startHttpServer(cfg: HttpServerConfig): {
         respondJson(res, 403, { error: e.message, code: "forbidden", requestId });
         return;
       }
+      if (e instanceof LedgerError && e.kind === "validation") {
+        // A precondition/input failure surfaced by a service or the ledger —
+        // a client error, not a server fault.
+        reqLog.warn("request rejected", { status: 400, code: "bad_request", error: e.detail });
+        respondJson(res, 400, { error: e.detail, code: "bad_request", requestId });
+        return;
+      }
+      if (e instanceof LedgerError && e.kind === "unsupported") {
+        // A demo-mode limitation, not a server fault: surface it as a clean
+        // 501 with an actionable message rather than a 500 internal_error.
+        reqLog.warn("request unsupported", { status: 501, code: "not_supported", error: e.detail });
+        respondJson(res, 501, { error: e.detail, code: "not_supported", requestId });
+        return;
+      }
       reqLog.error("request failed", { error: e instanceof Error ? e.message : String(e) });
       respondJson(res, 500, {
         error: e instanceof Error ? e.message : String(e),
@@ -409,13 +427,71 @@ async function routeRequest(
   }
 
   if (method === "GET" && path === "/v1/instruments") {
+    // Instrument metadata. The reference registry carries decimals on
+    // Registry.V2 `InstrumentConfig` and isin/cusip/description on
+    // `InstrumentConfiguration`; query both and merge by instrumentId, then
+    // fall back to the instruments referenced by active pools so the endpoint
+    // is populated even before any config is registered (e.g. the demo).
+    // `symbol` is the instrument id. Optional `?ids=BTC,USDC` filters.
     const idsParam = url.searchParams.get("ids");
-    const ids = idsParam ? idsParam.split(",").map((s) => s.trim()).filter(Boolean) : null;
-    const all = await backend.ledger.query<{ instrumentId: string }>({
-      templateId: "CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration",
-      observingParty: backend.operatorParty,
-    });
-    respondJson(res, 200, ids ? all.filter((c) => ids.includes(c.instrumentId)) : all);
+    const ids = idsParam
+      ? idsParam.split(",").map((s) => s.trim()).filter(Boolean)
+      : null;
+    const q = async <T>(templateId: string): Promise<T[]> => {
+      try {
+        return await backend.ledger.query<T>({
+          templateId,
+          observingParty: backend.operatorParty,
+        });
+      } catch {
+        return [];
+      }
+    };
+    const cfgs = await q<{ instrumentId: string; decimals?: number }>(
+      "CantonDex.Registry.V2:InstrumentConfig",
+    );
+    const confs = await q<{
+      instrumentId: string;
+      isin?: string | null;
+      cusip?: string | null;
+      description?: string;
+    }>("CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration");
+    type Instrument = {
+      instrumentId: string;
+      symbol: string;
+      decimals: number | null;
+      isin: string | null;
+      cusip: string | null;
+      description: string | null;
+    };
+    const byId = new Map<string, Instrument>();
+    const put = (id: string): Instrument => {
+      let e = byId.get(id);
+      if (!e) {
+        e = { instrumentId: id, symbol: id, decimals: null, isin: null, cusip: null, description: null };
+        byId.set(id, e);
+      }
+      return e;
+    };
+    for (const c of cfgs) {
+      const e = put(c.instrumentId);
+      if (typeof c.decimals === "number") e.decimals = c.decimals;
+    }
+    for (const c of confs) {
+      const e = put(c.instrumentId);
+      e.isin = c.isin ?? e.isin;
+      e.cusip = c.cusip ?? e.cusip;
+      e.description = c.description ?? e.description;
+    }
+    for (const p of await backend.pool.listActive()) {
+      put(p.baseInstrumentId);
+      put(p.quoteInstrumentId);
+    }
+    let out = [...byId.values()].sort((a, b) =>
+      a.instrumentId.localeCompare(b.instrumentId),
+    );
+    if (ids) out = out.filter((c) => ids.includes(c.instrumentId));
+    respondJson(res, 200, out);
     return;
   }
 
@@ -468,31 +544,44 @@ async function routeRequest(
     if (!owner) {
       throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
-    // Read holdings as the owner. V2 testnet/localnet flows use the
-    // registry-backed Holding template; older in-memory/demo paths can
-    // still surface the legacy instrument holding. Query both and merge
-    // so the browser sees trader funds on either backend.
-    const load = async (templateId: string) => {
-      try {
-        return await backend.ledger.query<{ owner: string }>({
-          templateId,
-          observingParty: owner as never,
-        });
-      } catch {
-        return [] as Array<{ owner: string }>;
-      }
-    };
-    const holdings = [
-      ...(await load("CantonDex.Registry.V2:Holding")),
-      ...(await load("CantonDex.Instrument.Holding:Holding")),
-    ];
-    respondJson(
-      res,
-      200,
-      holdings.filter((h) => h.owner === owner),
-    );
+    // Per-contract (UTXO-style) rows. For a summed balance, use /v1/balances.
+    respondJson(res, 200, await loadHoldings(backend, owner));
     return;
   }
+
+  // Aggregated balances: per-instrument total / available / locked, summed
+  // across the owner's holding contracts. Saves every client re-deriving a
+  // balance from the UTXO-style /v1/holdings rows. Exact decimal math.
+  if (method === "GET" && path === "/v1/balances") {
+    const owner = url.searchParams.get("owner");
+    if (!owner) {
+      throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
+    }
+    const holdings = await loadHoldings(backend, owner);
+    const byInstrument = new Map<string, { total: bigint; locked: bigint }>();
+    for (const h of holdings) {
+      const amt = dec.parseDecimal(String(h.amount));
+      const cur = byInstrument.get(h.instrumentId) ?? { total: 0n, locked: 0n };
+      cur.total += amt;
+      if (h.locked) cur.locked += amt;
+      byInstrument.set(h.instrumentId, cur);
+    }
+    const balances = [...byInstrument.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([instrumentId, { total, locked }]) => ({
+        instrumentId,
+        total: dec.formatDecimal(total),
+        available: dec.formatDecimal(total - locked),
+        locked: dec.formatDecimal(locked),
+      }));
+    respondJson(res, 200, balances);
+    return;
+  }
+
+  // Instrument metadata: the registry's InstrumentConfig (authoritative
+  // decimals / isin / cusip) unioned with the instruments referenced by active
+  // pools. `symbol` is the instrument id (the canonical symbol in this system);
+  // `decimals` is null for instruments with no on-ledger config row.
 
   // Execute path: discover crossing orders and create MatchedTrade
   // contracts. Operator-auth gated (state-changing). The read-only preview
@@ -940,23 +1029,31 @@ async function routeRequest(
 
   if (method === "POST" && path === "/v1/swaps/quote") {
     const raw = await readValidatedJson<unknown>(req, "POST /v1/swaps/quote", callerAuth);
-    const poolId = expectString(raw, "poolId");
+    // Pool reference: `poolCid` is canonical (the pool ContractId). `poolId` is
+    // accepted for compatibility and resolves EITHER the ContractId OR the
+    // logical pool id (e.g. "BTC-USDC"), removing the old field-name trap.
+    const body = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+    const poolRef =
+      typeof body.poolCid === "string" && body.poolCid
+        ? body.poolCid
+        : expectString(raw, "poolId");
     const inputInstrumentId = expectString(raw, "inputInstrumentId");
     const inputAmount = expectString(raw, "inputAmount");
     if (Number.isNaN(parseFloat(inputAmount)) || parseFloat(inputAmount) <= 0) {
       badRequest("inputAmount must be a positive decimal string", { field: "inputAmount" });
     }
     const pools = await backend.pool.listActive();
-    const pool = pools.find((p) => p.contractId === (poolId as never));
-    if (!pool) {
-      throw new HttpError(404, "not_found", "pool not found", { poolId });
-    }
-    const out = backend.pool.computeQuote(
-      pool,
-      inputInstrumentId,
-      inputAmount,
+    const pool = pools.find(
+      (p) => p.contractId === poolRef || p.poolId === poolRef,
     );
-    respondJson(res, 200, { outputAmount: out });
+    if (!pool) {
+      throw new HttpError(404, "not_found", "pool not found", { pool: poolRef });
+    }
+    respondJson(
+      res,
+      200,
+      backend.pool.computeQuoteDetailed(pool, inputInstrumentId, inputAmount),
+    );
     return;
   }
 
@@ -1221,6 +1318,33 @@ async function routeRequest(
 // malformed amount / party / cid / missing required field, and an HttpError
 // (401/403) when per-caller party binding is enabled and the caller is not the
 // route's subject party (finding B-2).
+// Load an owner's holdings across the V2 registry Holding and the legacy
+// instrument Holding templates, merged and filtered to that owner. Shared by
+// GET /v1/holdings and GET /v1/balances.
+async function loadHoldings(
+  backend: OperatorBackend,
+  owner: string,
+): Promise<
+  Array<{ owner: string; instrumentId: string; amount: string; locked: boolean }>
+> {
+  type H = { owner: string; instrumentId: string; amount: string; locked: boolean };
+  const load = async (templateId: string): Promise<H[]> => {
+    try {
+      return await backend.ledger.query<H>({
+        templateId,
+        observingParty: owner as never,
+      });
+    } catch {
+      return [];
+    }
+  };
+  const holdings = [
+    ...(await load("CantonDex.Registry.V2:Holding")),
+    ...(await load("CantonDex.Instrument.Holding:Holding")),
+  ];
+  return holdings.filter((h) => h.owner === owner);
+}
+
 async function readValidatedJson<T>(
   req: IncomingMessage,
   routeKey: string,

@@ -116,6 +116,8 @@ export function isCidString(v: unknown): v is string {
 // here fall back to required-field presence only.
 export interface RouteSpec {
   required: string[];
+  /** At least one of these fields must be present (e.g. poolCid OR poolId). */
+  anyOf?: string[];
   decimals?: string[];
   parties?: string[];
   cids?: string[];
@@ -191,9 +193,9 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
     cids: ["tradeCid"],
   },
   "POST /v1/swaps/quote": {
-    required: ["poolId", "inputInstrumentId", "inputAmount"],
+    required: ["inputInstrumentId", "inputAmount"],
+    anyOf: ["poolCid", "poolId"],
     decimals: ["inputAmount"],
-    cids: ["poolId"],
   },
 };
 
@@ -205,6 +207,12 @@ export function validateWriteBody(routeKey: string, body: unknown): void {
   const spec = WRITE_SPECS[routeKey];
   if (!spec) return;
   const obj = requireFields(body, spec.required);
+  if (spec.anyOf && !spec.anyOf.some((f) => obj[f] !== undefined && obj[f] !== null)) {
+    throw new ValidationError(
+      `at least one of these fields is required: ${spec.anyOf.join(", ")}`,
+      { fields: spec.anyOf },
+    );
+  }
   for (const f of spec.decimals ?? []) validateDecimal(obj, f);
   for (const f of spec.parties ?? []) validateParty(obj, f);
   for (const f of spec.cids ?? []) validateCid(obj, f);

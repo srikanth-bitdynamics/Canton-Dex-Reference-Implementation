@@ -4,12 +4,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-bash "$ROOT_DIR/scripts/build-vendored-token-standard.sh"
-
-echo "==> Building local canton-dex-trading surface package"
+# Token-standard dependencies are the canonical Splice release DARs committed
+# under vendor/splice/dars/ (see vendor/splice/VENDOR_PIN.md) — the same
+# package ids the network vets — so there is nothing to build from source here.
+echo "==> Building canton-dex-trading (deps: vendor/splice/dars/*.dar)"
 (
   cd "$ROOT_DIR/trading"
-  daml build
+  dpm build
 )
 
-echo "canton-dex-trading surface package built successfully."
+echo "canton-dex-trading built successfully."

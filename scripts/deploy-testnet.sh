@@ -16,7 +16,7 @@
 #   OPERATOR_ADMIN_TOKEN (for admin API calls)
 #
 # Optional:
-#   DEPLOY_SKIP_BUILD=1   skip `daml build` (use existing DARs)
+#   DEPLOY_SKIP_BUILD=1   skip `dpm build` (use existing DARs)
 #   DEPLOY_SKIP_UPLOAD=1  skip DAR upload (already uploaded)
 #   DEPLOY_SKIP_PARTIES=1 skip party allocation (already exist)
 #   DEPLOY_SKIP_SEED=1    skip initial pair/pool seeding
@@ -45,8 +45,8 @@ AUTH="Authorization: Bearer ${CANTON_LEDGER_TOKEN}"
 if [[ "${DEPLOY_SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> Building DARs"
   bash "$ROOT_DIR/scripts/build-trading-surface.sh"
-  (cd "$ROOT_DIR/trading-tests" && daml build)
-  (cd "$ROOT_DIR/examples/stable-pool" && daml build)
+  (cd "$ROOT_DIR/trading-tests" && dpm build)
+  (cd "$ROOT_DIR/examples/stable-pool" && dpm build)
 else
   echo "==> Skipping DAR build (DEPLOY_SKIP_BUILD=1)"
 fi

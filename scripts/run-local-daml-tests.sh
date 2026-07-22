@@ -10,10 +10,10 @@ bash "$ROOT_DIR/scripts/build-trading-surface.sh"
 
 (
   cd "$ROOT_DIR/trading-tests"
-  daml test
+  dpm test
 )
 
 (
   cd "$ROOT_DIR/examples/stable-pool"
-  daml test
+  dpm test
 )

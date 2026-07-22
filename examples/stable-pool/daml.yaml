@@ -1,4 +1,4 @@
-sdk-version: 3.4.11
+sdk-version: 3.5.2
 name: canton-dex-stable-pool-example
 version: 0.0.1
 source: .
@@ -8,12 +8,12 @@ dependencies:
   - daml-script
 data-dependencies:
   - ../../trading/.daml/dist/canton-dex-trading-0.1.0.dar
-  - ../../vendor/splice/token-standard/splice-api-token-metadata-v1/.daml/dist/splice-api-token-metadata-v1-current.dar
-  - ../../vendor/splice/token-standard/splice-api-token-holding-v2/.daml/dist/splice-api-token-holding-v2-current.dar
-  - ../../vendor/splice/token-standard/splice-api-token-allocation-v2/.daml/dist/splice-api-token-allocation-v2-current.dar
-  - ../../vendor/splice/token-standard/splice-api-token-allocation-request-v2/.daml/dist/splice-api-token-allocation-request-v2-current.dar
-  - ../../vendor/splice/token-standard/splice-api-token-allocation-instruction-v2/.daml/dist/splice-api-token-allocation-instruction-v2-current.dar
-  - ../../vendor/splice/token-standard/splice-api-token-transfer-events-v2/.daml/dist/splice-api-token-transfer-events-v2-current.dar
-  - ../../vendor/splice/token-standard/splice-api-token-transfer-instruction-v2/.daml/dist/splice-api-token-transfer-instruction-v2-current.dar
+  - ../../vendor/splice/dars/splice-api-token-metadata-v1-1.0.0.dar
+  - ../../vendor/splice/dars/splice-api-token-holding-v2-1.0.0.dar
+  - ../../vendor/splice/dars/splice-api-token-allocation-v2-1.0.0.dar
+  - ../../vendor/splice/dars/splice-api-token-allocation-request-v2-1.0.0.dar
+  - ../../vendor/splice/dars/splice-api-token-allocation-instruction-v2-1.0.0.dar
+  - ../../vendor/splice/dars/splice-api-token-transfer-events-v2-1.0.0.dar
+  - ../../vendor/splice/dars/splice-api-token-transfer-instruction-v2-1.0.0.dar
 build-options:
   - --target=2.1

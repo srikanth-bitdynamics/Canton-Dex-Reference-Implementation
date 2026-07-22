@@ -72,7 +72,7 @@ setup lps = do
   policyCid <- submit registry $ createCmd LP.LPTokenPolicy with
     lpRegistrar = registry; operator; lpInstrumentId
     totalSupply = 0.0; active = True
-  dvpCid <- submitMulti [operator, registry] [] $
+  dvpCid <- submit (actAs [operator, registry]) $
     createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar = registry
   pure Fixture with
     operator; registry; factoryCid; settleCid; poolId; poolCid; stateCid; policyCid; dvpCid
@@ -80,7 +80,7 @@ setup lps = do
 -- Mint a Registry.V2 holding directly (Holding is signatory admin+owner).
 mintHolding : Party -> Party -> Text -> Decimal -> Script (ContractId RegV2.Holding)
 mintHolding registry owner instrumentId amount =
-  submitMulti [registry, owner] [] $ createCmd RegV2.Holding with
+  submit (actAs [registry, owner]) $ createCmd RegV2.Holding with
     admin = registry; owner; instrumentId; amount; locked = False
 
 -- Create an allocation via the factory under `party`'s authority.
@@ -163,7 +163,7 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
   lpBaseDeposit <- mkAlloc fx.factoryCid lp settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid lp settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid lp settlement receiptSpec [] now
-  submitMulti [fx.operator, fx.registry] [] $
+  submit (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
       lpPolicyCid = policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = lp
@@ -201,7 +201,7 @@ dvpAddWithLp fx stateCid policyCid lp baseAmount quoteAmount lpAmount now = do
   lpBaseDeposit <- mkAlloc fx.factoryCid lp settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid lp settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid lp settlement receiptSpec [] now
-  submitMulti [fx.operator, fx.registry] [] $
+  submit (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
       lpPolicyCid = policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = lp
@@ -276,7 +276,7 @@ testDvpRemoveDeliversToHolder = do
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec [toInterfaceContractId lpHoldCid] now
 
-  remRes <- submitMulti [fx.operator, fx.registry] [] $
+  remRes <- submit (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
@@ -337,7 +337,7 @@ testStaleQuoteRejected = do
   bBase <- mkAlloc fx.factoryCid bob settlement bBaseSpec [toInterfaceContractId bBtc] now
   bQuote <- mkAlloc fx.factoryCid bob settlement bQuoteSpec [toInterfaceContractId bUsdc] now
   bRcpt <- mkAlloc fx.factoryCid bob settlement bRcptSpec [] now
-  submitMultiMustFail [fx.operator, fx.registry] [] $
+  submitMustFail (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
@@ -420,7 +420,7 @@ testDvpMultiSliceRemove = do
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec (map toInterfaceContractId lpCids) now
 
-  remRes <- submitMulti [fx.operator, fx.registry] [] $
+  remRes <- submit (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = add2.poolStateCid; lpPolicyCid = add2.lpPolicyCid
@@ -501,7 +501,7 @@ testExpiredAddRejected = do
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
   -- Even with a fresh `requestedAt`, the settle must abort on the expired
   -- ledger-anchored deadline.
-  submitMultiMustFail [fx.operator, fx.registry] [] $
+  submitMustFail (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
       lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
@@ -546,7 +546,7 @@ testExpiredRemoveRejected = do
   baseReceipt <- mkAlloc fx.factoryCid alice settlement baseReceiptSpec [] now
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec [toInterfaceContractId lpHoldCid] now
-  submitMultiMustFail [fx.operator, fx.registry] [] $
+  submitMustFail (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
@@ -591,7 +591,7 @@ testSettleRejectsForeignAllocation = do
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement forgedSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
-  submitMultiMustFail [fx.operator, fx.registry] [] $
+  submitMustFail (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
       lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
@@ -633,7 +633,7 @@ testSettleRejectsExpiredRequest = do
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
-  submitMultiMustFail [fx.operator, fx.registry] [] $
+  submitMustFail (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
       lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
@@ -676,7 +676,7 @@ testAddRejectsOverMint = do
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
-  submitMultiMustFail [fx.operator, fx.registry] [] $
+  submitMustFail (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
       lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
@@ -764,7 +764,7 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
     (V2.AllocationRequest_Accept with actors = [alice]; extraArgs = emptyExtraArgs)
 
   -- The settle can no longer bind to the consumed request.
-  submitMultiMustFail [fx.operator, fx.registry] [] $
+  submitMustFail (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
       lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None
@@ -780,7 +780,7 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
 
   -- Settling with neither request nor evidence fails (no binding to validate
   -- against): proves the evidence is load-bearing, not optional.
-  submitMultiMustFail [fx.operator, fx.registry] [] $
+  submitMustFail (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
       lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = None
@@ -799,7 +799,7 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
   accCid <- case accs of
     ((cid, _) :: _) -> pure cid
     [] -> abort "accept must leave acceptance evidence"
-  res <- submitMulti [fx.operator, fx.registry] [] $
+  res <- submit (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
       lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = Some accCid
@@ -895,7 +895,7 @@ testBatchedUtilityAddLiquidity = do
     ((cid, _) :: _) -> pure cid
     [] -> abort "batched accept must leave acceptance evidence"
 
-  res2 <- submitMulti [fx.operator, fx.registry] [] $
+  res2 <- submit (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
       lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = Some accCid

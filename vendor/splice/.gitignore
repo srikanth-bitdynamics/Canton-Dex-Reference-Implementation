@@ -79,3 +79,7 @@ docs/src/deployment/observability/metrics_reference.rst
 /.vagrant/
 /vagrant-nix-cache/
 lnav*work
+
+# Canonical Splice release DARs are committed build inputs (see VENDOR_PIN.md)
+!dars/
+!dars/*.dar

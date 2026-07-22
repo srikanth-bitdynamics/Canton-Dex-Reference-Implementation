@@ -220,3 +220,18 @@ describe("quote pool reference (poolCid or poolId)", () => {
     assert.equal(r.status, 404);
   });
 });
+
+// Integrator feedback: aggregated balances endpoint (finding #7).
+describe("GET /v1/balances", () => {
+  it("requires ?owner= → 400", async () => {
+    const r = await getJson("/v1/balances");
+    assert.equal(r.status, 400);
+    assert.equal((r.body as { code?: string }).code, "bad_request");
+  });
+
+  it("returns an array (empty when the owner holds nothing here)", async () => {
+    const r = await getJson("/v1/balances?owner=nobody::1220ab");
+    assert.equal(r.status, 200);
+    assert.ok(Array.isArray(r.body));
+  });
+});

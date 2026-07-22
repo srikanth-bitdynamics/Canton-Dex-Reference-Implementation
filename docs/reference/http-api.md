@@ -58,9 +58,20 @@ Open orders for a specific trader. **400** if `trader` is missing.
 ### `GET /v1/holdings?owner=:party` → `Holding[]`
 
 Holdings for the owner. **400** if `owner` is missing. Returns per-contract
-(UTXO-style) rows, not an aggregated balance: a trader "balance" is the sum of
-`amount` grouped by `instrumentId`, treating `locked` holdings separately from
-free ones. Clients aggregate client-side.
+(UTXO-style) rows. For a summed balance, use `/v1/balances` below.
+
+### `GET /v1/balances?owner=:party` → `Balance[]`
+
+Aggregated balances for the owner: the `/v1/holdings` rows summed per
+instrument, with `locked` (in open orders / swaps / allocations) split from
+`available`. **400** if `owner` is missing. Exact decimal math.
+
+```json
+[
+  { "instrumentId": "BTC",  "total": "0.2500000000", "available": "0.2500000000", "locked": "0.0000000000" },
+  { "instrumentId": "USDC", "total": "5000.0000000000", "available": "5000.0000000000", "locked": "0.0000000000" }
+]
+```
 
 ### `GET /v1/trades?trader=&pair=&limit=` → indexer rows
 

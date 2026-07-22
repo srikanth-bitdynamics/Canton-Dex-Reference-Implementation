@@ -12,7 +12,8 @@
 //     GET  /v1/pools                    -> Pool[]
 //     GET  /v1/pairs                    -> DexPair[]
 //     GET  /v1/orders?trader=:p         -> Order[]
-//     GET  /v1/holdings?owner=:p        -> Holding[]
+//     GET  /v1/holdings?owner=:p        -> Holding[] (per-contract, UTXO-style)
+//     GET  /v1/balances?owner=:p        -> Balance[] (aggregated by instrument)
 //
 //   Quote (off-chain; advisory, on-chain PoolRules_Swap re-validates):
 //     POST /v1/swaps/quote              -> { outputAmount }
@@ -41,6 +42,7 @@ import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
 import { LedgerError } from "../ledger/index.js";
+import * as dec from "../pool/decimal.js";
 import { DealersService } from "../dealers/index.js";
 import { checkAdminAuth, checkOperatorAuth, bearerMatches } from "./auth.js";
 import { checkCallerBinding, callerPartyFromRequest, type CallerAuthConfig } from "./caller-auth.js";
@@ -476,29 +478,37 @@ async function routeRequest(
     if (!owner) {
       throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
-    // Read holdings as the owner. V2 testnet/localnet flows use the
-    // registry-backed Holding template; older in-memory/demo paths can
-    // still surface the legacy instrument holding. Query both and merge
-    // so the browser sees trader funds on either backend.
-    const load = async (templateId: string) => {
-      try {
-        return await backend.ledger.query<{ owner: string }>({
-          templateId,
-          observingParty: owner as never,
-        });
-      } catch {
-        return [] as Array<{ owner: string }>;
-      }
-    };
-    const holdings = [
-      ...(await load("CantonDex.Registry.V2:Holding")),
-      ...(await load("CantonDex.Instrument.Holding:Holding")),
-    ];
-    respondJson(
-      res,
-      200,
-      holdings.filter((h) => h.owner === owner),
-    );
+    // Per-contract (UTXO-style) rows. For a summed balance, use /v1/balances.
+    respondJson(res, 200, await loadHoldings(backend, owner));
+    return;
+  }
+
+  // Aggregated balances: per-instrument total / available / locked, summed
+  // across the owner's holding contracts. Saves every client re-deriving a
+  // balance from the UTXO-style /v1/holdings rows. Exact decimal math.
+  if (method === "GET" && path === "/v1/balances") {
+    const owner = url.searchParams.get("owner");
+    if (!owner) {
+      throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
+    }
+    const holdings = await loadHoldings(backend, owner);
+    const byInstrument = new Map<string, { total: bigint; locked: bigint }>();
+    for (const h of holdings) {
+      const amt = dec.parseDecimal(String(h.amount));
+      const cur = byInstrument.get(h.instrumentId) ?? { total: 0n, locked: 0n };
+      cur.total += amt;
+      if (h.locked) cur.locked += amt;
+      byInstrument.set(h.instrumentId, cur);
+    }
+    const balances = [...byInstrument.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([instrumentId, { total, locked }]) => ({
+        instrumentId,
+        total: dec.formatDecimal(total),
+        available: dec.formatDecimal(total - locked),
+        locked: dec.formatDecimal(locked),
+      }));
+    respondJson(res, 200, balances);
     return;
   }
 
@@ -1237,6 +1247,33 @@ async function routeRequest(
 // malformed amount / party / cid / missing required field, and an HttpError
 // (401/403) when per-caller party binding is enabled and the caller is not the
 // route's subject party (finding B-2).
+// Load an owner's holdings across the V2 registry Holding and the legacy
+// instrument Holding templates, merged and filtered to that owner. Shared by
+// GET /v1/holdings and GET /v1/balances.
+async function loadHoldings(
+  backend: OperatorBackend,
+  owner: string,
+): Promise<
+  Array<{ owner: string; instrumentId: string; amount: string; locked: boolean }>
+> {
+  type H = { owner: string; instrumentId: string; amount: string; locked: boolean };
+  const load = async (templateId: string): Promise<H[]> => {
+    try {
+      return await backend.ledger.query<H>({
+        templateId,
+        observingParty: owner as never,
+      });
+    } catch {
+      return [];
+    }
+  };
+  const holdings = [
+    ...(await load("CantonDex.Registry.V2:Holding")),
+    ...(await load("CantonDex.Instrument.Holding:Holding")),
+  ];
+  return holdings.filter((h) => h.owner === owner);
+}
+
 async function readValidatedJson<T>(
   req: IncomingMessage,
   routeKey: string,

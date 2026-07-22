@@ -187,3 +187,36 @@ describe("write-body validation", () => {
     assert.equal(r.status, 400);
   });
 });
+
+// Integrator feedback: quote accepts poolCid OR poolId (finding #5). The
+// fixture seeds no pool, so a valid reference passes validation and 404s at
+// lookup — proving the anyOf rule accepted it (a validation failure is 400).
+describe("quote pool reference (poolCid or poolId)", () => {
+  it("rejects a body with neither poolCid nor poolId → 400", async () => {
+    const r = await postJson("/v1/swaps/quote", {
+      inputInstrumentId: "BTC",
+      inputAmount: "0.5",
+    });
+    assert.equal(r.status, 400);
+    assert.equal((r.body as { code?: string }).code, "bad_request");
+    assert.match(String((r.body as { error?: string }).error), /at least one/);
+  });
+
+  it("accepts poolCid (validation passes; 404 as no pool is seeded)", async () => {
+    const r = await postJson("/v1/swaps/quote", {
+      poolCid: "#p:0",
+      inputInstrumentId: "BTC",
+      inputAmount: "0.5",
+    });
+    assert.equal(r.status, 404);
+  });
+
+  it("still accepts legacy poolId (validation passes; 404)", async () => {
+    const r = await postJson("/v1/swaps/quote", {
+      poolId: "BTC-USDC",
+      inputInstrumentId: "BTC",
+      inputAmount: "0.5",
+    });
+    assert.equal(r.status, 404);
+  });
+});

@@ -57,7 +57,10 @@ Open orders for a specific trader. **400** if `trader` is missing.
 
 ### `GET /v1/holdings?owner=:party` → `Holding[]`
 
-Holdings for the owner. **400** if `owner` is missing.
+Holdings for the owner. **400** if `owner` is missing. Returns per-contract
+(UTXO-style) rows, not an aggregated balance: a trader "balance" is the sum of
+`amount` grouped by `instrumentId`, treating `locked` holdings separately from
+free ones. Clients aggregate client-side.
 
 ### `GET /v1/trades?trader=&pair=&limit=` → indexer rows
 
@@ -85,10 +88,24 @@ All operator config key-values.
 ### `POST /v1/swaps/quote`
 
 ```json
-// request
-{ "poolId": "ContractId<Pool>", "inputInstrumentId": "BTC", "inputAmount": "0.5" }
-// response
-{ "outputAmount": "9852.143..." }
+// request — supply `poolCid` (the pool ContractId). `poolId` is also accepted
+// and resolves EITHER the ContractId OR the logical pool id (e.g. "BTC-USDC").
+{ "poolCid": "#2:0", "inputInstrumentId": "BTC", "inputAmount": "0.5" }
+// response — the output plus the fields a trading client would otherwise
+// recompute from reserves + feeBps (all exact, no floats):
+{
+  "outputAmount": "9496.5947516312",
+  "inputAmount": "0.5",
+  "inputInstrumentId": "BTC",
+  "outputInstrumentId": "USDC",
+  "feeBps": 30,
+  "feeAmount": "0.0015000000",      // fee actually applied to the input
+  "executionPrice": "18993.18...",  // output per unit input
+  "spotPrice": "20000.00...",       // pre-trade reserve mid
+  "priceImpact": "0.0503...",       // (spot - execution) / spot
+  "poolCid": "#2:0",
+  "poolId": "BTC-USDC"
+}
 ```
 
 Advisory; the on-ledger `PoolRules_Swap` choice re-validates with the latest
@@ -152,10 +169,17 @@ Operator + lpRegistrar settle (`PoolLiquidityRules_SettleRemoveLiquidity`):
 base + quote are delivered to the holder and the LP tokens burn to the
 burn account, atomically.
 
-## Admin Endpoints
+## Authentication
 
-All `/v1/admin/*` write endpoints (PUT, DELETE) require the
-`Authorization: Bearer <OPERATOR_ADMIN_TOKEN>` header. **401** otherwise.
+**All state-changing routes require operator authorization** — not only
+`/v1/admin/*`, but also the trader-facing writes (`/v1/pools/swap*`,
+`/v1/rfq`, `/v1/orders/*`). They return **401** unless `DEX_OPERATOR_API_TOKEN`
+is configured (send `Authorization: Bearer <token>`) or, on the in-memory dev
+server only, `DEX_DEV_OPEN=1` is set. Read (GET) routes need no auth. Admin
+routes additionally require the `OPERATOR_ADMIN_TOKEN`. See
+[Local Setup → Exercising write paths](../getting-started.md#exercising-write-paths-in-demo-mode).
+
+## Admin Endpoints
 
 ### `POST /v1/admin/pairs` → `{ pairCid }`
 ### `POST /v1/admin/pairs/:cid/fee-model` → `{ pairCid }`

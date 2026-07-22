@@ -40,6 +40,7 @@ import type { Party, Pool } from "../types.js";
 import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
+import { LedgerError } from "../ledger/index.js";
 import { DealersService } from "../dealers/index.js";
 import { checkAdminAuth, checkOperatorAuth, bearerMatches } from "./auth.js";
 import { checkCallerBinding, callerPartyFromRequest, type CallerAuthConfig } from "./caller-auth.js";
@@ -251,6 +252,13 @@ export function startHttpServer(cfg: HttpServerConfig): {
         // Per-caller binding mismatch on a fetch-bound RFQ route (B-2).
         reqLog.warn("request rejected", { status: 403, code: "forbidden", error: e.message });
         respondJson(res, 403, { error: e.message, code: "forbidden", requestId });
+        return;
+      }
+      if (e instanceof LedgerError && e.kind === "unsupported") {
+        // A demo-mode limitation, not a server fault: surface it as a clean
+        // 501 with an actionable message rather than a 500 internal_error.
+        reqLog.warn("request unsupported", { status: 501, code: "not_supported", error: e.detail });
+        respondJson(res, 501, { error: e.detail, code: "not_supported", requestId });
         return;
       }
       reqLog.error("request failed", { error: e instanceof Error ? e.message : String(e) });
@@ -940,23 +948,31 @@ async function routeRequest(
 
   if (method === "POST" && path === "/v1/swaps/quote") {
     const raw = await readValidatedJson<unknown>(req, "POST /v1/swaps/quote", callerAuth);
-    const poolId = expectString(raw, "poolId");
+    // Pool reference: `poolCid` is canonical (the pool ContractId). `poolId` is
+    // accepted for compatibility and resolves EITHER the ContractId OR the
+    // logical pool id (e.g. "BTC-USDC"), removing the old field-name trap.
+    const body = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+    const poolRef =
+      typeof body.poolCid === "string" && body.poolCid
+        ? body.poolCid
+        : expectString(raw, "poolId");
     const inputInstrumentId = expectString(raw, "inputInstrumentId");
     const inputAmount = expectString(raw, "inputAmount");
     if (Number.isNaN(parseFloat(inputAmount)) || parseFloat(inputAmount) <= 0) {
       badRequest("inputAmount must be a positive decimal string", { field: "inputAmount" });
     }
     const pools = await backend.pool.listActive();
-    const pool = pools.find((p) => p.contractId === (poolId as never));
-    if (!pool) {
-      throw new HttpError(404, "not_found", "pool not found", { poolId });
-    }
-    const out = backend.pool.computeQuote(
-      pool,
-      inputInstrumentId,
-      inputAmount,
+    const pool = pools.find(
+      (p) => p.contractId === poolRef || p.poolId === poolRef,
     );
-    respondJson(res, 200, { outputAmount: out });
+    if (!pool) {
+      throw new HttpError(404, "not_found", "pool not found", { pool: poolRef });
+    }
+    respondJson(
+      res,
+      200,
+      backend.pool.computeQuoteDetailed(pool, inputInstrumentId, inputAmount),
+    );
     return;
   }
 

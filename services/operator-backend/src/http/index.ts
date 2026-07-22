@@ -14,6 +14,7 @@
 //     GET  /v1/orders?trader=:p         -> Order[]
 //     GET  /v1/holdings?owner=:p        -> Holding[] (per-contract, UTXO-style)
 //     GET  /v1/balances?owner=:p        -> Balance[] (aggregated by instrument)
+//     GET  /v1/instruments              -> Instrument[] (id, symbol, decimals)
 //
 //   Quote (off-chain; advisory, on-chain PoolRules_Swap re-validates):
 //     POST /v1/swaps/quote              -> { outputAmount }
@@ -256,6 +257,13 @@ export function startHttpServer(cfg: HttpServerConfig): {
         respondJson(res, 403, { error: e.message, code: "forbidden", requestId });
         return;
       }
+      if (e instanceof LedgerError && e.kind === "validation") {
+        // A precondition/input failure surfaced by a service or the ledger —
+        // a client error, not a server fault.
+        reqLog.warn("request rejected", { status: 400, code: "bad_request", error: e.detail });
+        respondJson(res, 400, { error: e.detail, code: "bad_request", requestId });
+        return;
+      }
       if (e instanceof LedgerError && e.kind === "unsupported") {
         // A demo-mode limitation, not a server fault: surface it as a clean
         // 501 with an actionable message rather than a 500 internal_error.
@@ -419,13 +427,71 @@ async function routeRequest(
   }
 
   if (method === "GET" && path === "/v1/instruments") {
+    // Instrument metadata. The reference registry carries decimals on
+    // Registry.V2 `InstrumentConfig` and isin/cusip/description on
+    // `InstrumentConfiguration`; query both and merge by instrumentId, then
+    // fall back to the instruments referenced by active pools so the endpoint
+    // is populated even before any config is registered (e.g. the demo).
+    // `symbol` is the instrument id. Optional `?ids=BTC,USDC` filters.
     const idsParam = url.searchParams.get("ids");
-    const ids = idsParam ? idsParam.split(",").map((s) => s.trim()).filter(Boolean) : null;
-    const all = await backend.ledger.query<{ instrumentId: string }>({
-      templateId: "CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration",
-      observingParty: backend.operatorParty,
-    });
-    respondJson(res, 200, ids ? all.filter((c) => ids.includes(c.instrumentId)) : all);
+    const ids = idsParam
+      ? idsParam.split(",").map((s) => s.trim()).filter(Boolean)
+      : null;
+    const q = async <T>(templateId: string): Promise<T[]> => {
+      try {
+        return await backend.ledger.query<T>({
+          templateId,
+          observingParty: backend.operatorParty,
+        });
+      } catch {
+        return [];
+      }
+    };
+    const cfgs = await q<{ instrumentId: string; decimals?: number }>(
+      "CantonDex.Registry.V2:InstrumentConfig",
+    );
+    const confs = await q<{
+      instrumentId: string;
+      isin?: string | null;
+      cusip?: string | null;
+      description?: string;
+    }>("CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration");
+    type Instrument = {
+      instrumentId: string;
+      symbol: string;
+      decimals: number | null;
+      isin: string | null;
+      cusip: string | null;
+      description: string | null;
+    };
+    const byId = new Map<string, Instrument>();
+    const put = (id: string): Instrument => {
+      let e = byId.get(id);
+      if (!e) {
+        e = { instrumentId: id, symbol: id, decimals: null, isin: null, cusip: null, description: null };
+        byId.set(id, e);
+      }
+      return e;
+    };
+    for (const c of cfgs) {
+      const e = put(c.instrumentId);
+      if (typeof c.decimals === "number") e.decimals = c.decimals;
+    }
+    for (const c of confs) {
+      const e = put(c.instrumentId);
+      e.isin = c.isin ?? e.isin;
+      e.cusip = c.cusip ?? e.cusip;
+      e.description = c.description ?? e.description;
+    }
+    for (const p of await backend.pool.listActive()) {
+      put(p.baseInstrumentId);
+      put(p.quoteInstrumentId);
+    }
+    let out = [...byId.values()].sort((a, b) =>
+      a.instrumentId.localeCompare(b.instrumentId),
+    );
+    if (ids) out = out.filter((c) => ids.includes(c.instrumentId));
+    respondJson(res, 200, out);
     return;
   }
 
@@ -511,6 +577,11 @@ async function routeRequest(
     respondJson(res, 200, balances);
     return;
   }
+
+  // Instrument metadata: the registry's InstrumentConfig (authoritative
+  // decimals / isin / cusip) unioned with the instruments referenced by active
+  // pools. `symbol` is the instrument id (the canonical symbol in this system);
+  // `decimals` is null for instruments with no on-ledger config row.
 
   // Execute path: discover crossing orders and create MatchedTrade
   // contracts. Operator-auth gated (state-changing). The read-only preview

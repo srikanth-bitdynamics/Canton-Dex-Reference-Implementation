@@ -73,6 +73,19 @@ instrument, with `locked` (in open orders / swaps / allocations) split from
 ]
 ```
 
+### `GET /v1/instruments` → `Instrument[]`
+
+Known instruments with metadata: `decimals` from the registry's
+`InstrumentConfig`, `isin`/`cusip`/`description` from `InstrumentConfiguration`,
+merged by `instrumentId` and unioned with the instruments referenced by active
+pools (so it is populated even before any config is registered — fields are
+`null` where no config exists). `symbol` is the instrument id. Optional
+`?ids=BTC,USDC` filters.
+
+```json
+[ { "instrumentId": "BTC", "symbol": "BTC", "decimals": 8, "isin": null, "cusip": null, "description": null } ]
+```
+
 ### `GET /v1/trades?trader=&pair=&limit=` → indexer rows
 
 Settled MatchedTrade history from the SQLite indexer. **503** if the

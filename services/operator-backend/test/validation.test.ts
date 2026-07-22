@@ -235,3 +235,19 @@ describe("GET /v1/balances", () => {
     assert.ok(Array.isArray(r.body));
   });
 });
+
+// Integrator feedback: instrument metadata surface (finding #8).
+describe("GET /v1/instruments", () => {
+  it("returns an array", async () => {
+    const r = await getJson("/v1/instruments");
+    assert.equal(r.status, 200);
+    assert.ok(Array.isArray(r.body));
+  });
+
+  it("honours the ?ids= filter", async () => {
+    const r = await getJson("/v1/instruments?ids=BTC");
+    assert.equal(r.status, 200);
+    const arr = r.body as Array<{ instrumentId: string }>;
+    assert.ok(arr.every((i) => i.instrumentId === "BTC"));
+  });
+});

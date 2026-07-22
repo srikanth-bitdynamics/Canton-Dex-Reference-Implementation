@@ -1,6 +1,7 @@
 // Pool orchestration and read models.
 
 import { createHash } from "node:crypto";
+import { LedgerError } from "../ledger/index.js";
 
 import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
@@ -418,7 +419,11 @@ export class PoolService {
       swapperAllocationCid = allocationCids[0] as ContractId<"Allocation">;
     }
     if (!swapperAllocationCid) {
-      throw new Error("swap: supply swapperAllocationCid or an updateId to recover it");
+      throw new LedgerError(
+        "validation",
+        "swap: supply swapperAllocationCid or an updateId to recover it",
+        false,
+      );
     }
     const factories = await this.registry.getFactories(pool.admin);
     const ctx = await this.choiceContext(pool.admin);

@@ -57,7 +57,7 @@ setup = do
 
 mintHolding : Fixture -> Party -> Text -> Decimal -> Script (ContractId RegV2.Holding)
 mintHolding fx owner instrumentId amount =
-  submitMulti [fx.admin, owner] [] $ createCmd RegV2.Holding with
+  submit (actAs [fx.admin, owner]) $ createCmd RegV2.Holding with
     admin = fx.admin; owner; instrumentId; amount; locked = False
 
 mkAlloc
@@ -299,7 +299,7 @@ testExpiredTransferFactoryRejected = do
         executeBefore = addRelTime now (hours (-1))
         inputHoldingCids = [toInterfaceContractId holdingCid]
         meta = emptyMetadata
-  submitMultiMustFail [fx.admin, fx.alice] [] $
+  submitMustFail (actAs [fx.admin, fx.alice]) $
     exerciseCmd fx.transferCid V2.TransferFactory_Transfer with
       transfer
       actors = [fx.admin, fx.alice]

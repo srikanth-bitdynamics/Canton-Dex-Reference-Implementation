@@ -208,7 +208,7 @@ lineage.
 ## Testing
 
 ```bash
-cd trading-tests && daml test            # in-script Daml suites
+cd trading-tests && dpm test            # in-script Daml suites
 ```
 
 Expected counts are listed in [Getting Started](../getting-started.md). Testnet

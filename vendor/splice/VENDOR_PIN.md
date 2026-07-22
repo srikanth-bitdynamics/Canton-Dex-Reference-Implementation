@@ -1,5 +1,19 @@
 # Vendored Token Standard pin
 
+> **Approach change (2026-07-22): the build consumes the canonical Splice
+> release DARs, not rebuilt vendored sources.** The token-standard dependencies
+> are committed DARs under `vendor/splice/dars/`, taken verbatim from the Splice
+> **0.6.12** `splice-node` release bundle (built with SDK **3.5.2**). These carry
+> the exact package ids the Testnet validator already vets, so
+> `canton-dex-trading` built against them uploads cleanly and interoperates with
+> real Amulet holdings. Rebuilding the standard from source yields *different*
+> package ids and is rejected on a real participant (`KNOWN_PACKAGE_VERSION`).
+> Refresh with `scripts/fetch-splice-dars.sh [version]`. The vendored **source**
+> tree below is retained for reference only and is no longer built (slated for
+> removal in a follow-up).
+
+## Prior vendored-source pin (superseded by the above)
+
 This file records exactly which upstream Splice Token Standard sources the
 `vendor/splice/` tree was synced from. It is the in-tree, authoritative pin;
 previously this information lived only in a git commit message.

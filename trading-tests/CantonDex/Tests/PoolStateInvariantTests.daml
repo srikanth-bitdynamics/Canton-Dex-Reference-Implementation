@@ -71,7 +71,7 @@ testReconcileAfterAddSwapRemove = do
   -- readAs registry: the settle fetches the swapper's locked holding
   -- (admin+owner stakeholders); on a real ledger the wallet discloses it
   -- (see RealRegistryDvpTests), in-script readAs stands in for that.
-  swapRes <- submitMulti [fx.operator] [fx.registry] $ exerciseCmd rulesCid PRules.PoolRules_Swap with
+  swapRes <- submit (actAs [fx.operator] <> readAs [fx.registry]) $ exerciseCmd rulesCid PRules.PoolRules_Swap with
     expectedPoolId = fx.poolId; poolCid = fx.poolCid
     poolStateCid = addRes.poolStateCid
     swapperAccount = Utils.basicAccount bob
@@ -111,7 +111,7 @@ testReconcileAfterAddSwapRemove = do
     (PLT.mkSpec fx.registry aliceAcct [quoteOutLeg] False) [] now
   burnSender <- PLT.mkAlloc fx.factoryCid alice settlement
     (PLT.mkSpec fx.registry aliceAcct [burnLeg] True) [toInterfaceContractId lpHoldCid] now
-  remRes <- submitMulti [fx.operator, fx.registry] [] $
+  remRes <- submit (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = swapRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
@@ -203,7 +203,7 @@ testSwapRejectsOperatorAsSwapper = do
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 100.0
   swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
     [toInterfaceContractId usdcHold] now
-  submitMultiMustFail [fx.operator] [fx.registry] $
+  submitMustFail (actAs [fx.operator] <> readAs [fx.registry]) $
     exerciseCmd rulesCid PRules.PoolRules_Swap with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid

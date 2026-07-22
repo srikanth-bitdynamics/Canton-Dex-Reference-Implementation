@@ -123,7 +123,7 @@ setup lp = do
     status = PS_Unfunded
     reserves = PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
     totalLpSupply = 0.0; publicReaders = []
-  dvpCid <- submitMulti [operator, lpRegistrar] [] $
+  dvpCid <- submit (actAs [operator, lpRegistrar]) $
     createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar
   rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with

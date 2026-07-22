@@ -36,7 +36,7 @@ separation of concerns. For local dev they can be the same party.
 ### 1. Build the DARs
 
 ```bash
-bash scripts/build-vendored-token-standard.sh
+bash scripts/fetch-splice-dars.sh
 bash scripts/build-trading-surface.sh
 ```
 

@@ -20,7 +20,7 @@ interface WalletStore {
   status: WalletConnectionStatus;
   account: WalletAccount | null;
 
-  connect(providerId: WalletProviderId): Promise<void>;
+  connect(providerId: WalletProviderId, walletId?: string): Promise<void>;
   disconnect(): Promise<void>;
   listProviders(): { id: WalletProviderId; label: string }[];
 }
@@ -44,7 +44,7 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
   status: { kind: "disconnected" },
   account: null,
 
-  async connect(providerId: WalletProviderId) {
+  async connect(providerId: WalletProviderId, walletId?: string) {
     // Tear down any previous session + its status subscription before swapping
     // providers (or re-connecting the same one).
     const current = get().activeProviderId;
@@ -70,7 +70,9 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
     });
     set({ activeProviderId: providerId });
     try {
-      const account = await provider.connect();
+      // `walletId` routes multi-wallet providers (dapp-sdk gateway vs injected;
+      // PartyLayer's catalog) to the exact wallet the picker chose.
+      const account = await provider.connect(walletId);
       set({ account, status: provider.getStatus() });
     } catch (e) {
       // Status was already set to `error` by the provider (which also fired the

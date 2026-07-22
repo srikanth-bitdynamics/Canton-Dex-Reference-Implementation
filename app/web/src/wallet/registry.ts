@@ -97,7 +97,15 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
 
   const map = new Map<WalletProviderId, WalletProvider>();
 
-  if (enableSdk) map.set("sdk", new SdkProvider(packagePrefix));
+  if (enableSdk) {
+    map.set(
+      "sdk",
+      new SdkProvider(packagePrefix, {
+        gatewayUrl: optionalEnv("VITE_WALLET_GATEWAY_URL"),
+        gatewayName: optionalEnv("VITE_WALLET_GATEWAY_NAME"),
+      }),
+    );
+  }
   // PartyLayer is env-gated because it opens external wallet surfaces. The real
   // SDK client is lazily imported only when selected.
   if (enablePartyLayer) {

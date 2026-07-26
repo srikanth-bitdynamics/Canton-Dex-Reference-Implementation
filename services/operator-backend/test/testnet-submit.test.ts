@@ -376,7 +376,7 @@ describe("testnet submit: command allowlist", () => {
             ExerciseCommand: {
               templateId: "cafe:CantonDex.Dex.Pool:Pool",
               contractId: "00pool:0",
-              choice: "Holding_Split",
+              choice: "AllocationFactory_Allocate",
               choiceArgument: {},
             },
           },
@@ -462,6 +462,32 @@ describe("testnet submit: command allowlist", () => {
     });
   });
 
+  // Holding_Split/Merge are `controller admin, owner`. This endpoint acts as the
+  // tester alone, so allowing them would only produce a confusing on-ledger
+  // DAML_AUTHORIZATION_ERROR. Partial amounts fund by locking whole holdings
+  // and letting the registry return change, so nothing needs them.
+  it("refuses holding split/merge, which could never carry admin authority", async () => {
+    await withServer(ON, {}, async (s) => {
+      for (const choice of ["Holding_Split", "Holding_Merge"]) {
+        const r = await postJson(s.url, "/v1/testnet/submit", {
+          party: HOSTED,
+          commands: [
+            {
+              ExerciseCommand: {
+                templateId: HOLDING_TID,
+                contractId: "00holding:0",
+                choice,
+                choiceArgument: {},
+              },
+            },
+          ],
+        });
+        assert.equal(r.status, 400, `${choice} must be refused`);
+      }
+      assert.deepEqual(s.submissions(), []);
+    });
+  });
+
   it("accepts the trader choices the DvP flow needs", async () => {
     await withServer(ON, {}, async (s) => {
       const r = await postJson(s.url, "/v1/testnet/submit", {
@@ -478,10 +504,11 @@ describe("testnet submit: command allowlist", () => {
           },
           {
             ExerciseCommand: {
-              templateId: HOLDING_TID,
-              contractId: "00holding:0",
-              choice: "Holding_Split",
-              choiceArgument: { splitAmount: "5.0" },
+              templateId:
+                "#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory",
+              contractId: "00factory:0",
+              choice: "AllocationFactory_Allocate",
+              choiceArgument: { actors: [HOSTED] },
             },
           },
         ],
@@ -492,7 +519,7 @@ describe("testnet submit: command allowlist", () => {
         (submitted.commands as Array<{ ExerciseCommand: { choice: string } }>).map(
           (c) => c.ExerciseCommand.choice,
         ),
-        ["AllocationRequest_Accept", "Holding_Split"],
+        ["AllocationRequest_Accept", "AllocationFactory_Allocate"],
       );
     });
   });

@@ -70,7 +70,14 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     // not hold the keys. Same "not a real wallet" caveat as the relay.
     dvp: "dev-only",
     note: "Testnet only — temporary demo party hosted and signed for by this deployment. Not a self-custody wallet.",
-    coSignsAdmin: true,
+    // False despite the operator hosting the party: /v1/testnet/submit fixes
+    // actAs to the tester alone, deliberately, so that a public endpoint never
+    // lends out admin authority. Split/merge would therefore fail on-ledger
+    // (`requires authorizers admin, owner`). Declaring false routes funding
+    // through the covering-set path instead, which locks whole holdings and
+    // lets the registry return the surplus via authorizerChangeCids -- what the
+    // standard expects anyway: inputHoldingCids are consumed whole.
+    coSignsAdmin: false,
   },
   "canton-direct": {
     dvp: "unsupported",

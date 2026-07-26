@@ -58,7 +58,13 @@ const ALLOWED_CHOICES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     "Splice.Api.Token.AllocationRequestV2:AllocationRequest",
     new Set(["AllocationRequest_Accept", "AllocationRequest_Reject"]),
   ],
-  ["CantonDex.Registry.V2:Holding", new Set(["Holding_Split", "Holding_Merge"])],
+  // Holding_Split / Holding_Merge are deliberately absent. They are
+  // `controller admin, owner`, and this endpoint fixes actAs to the tester
+  // alone, so they could only ever fail on-ledger with a confusing
+  // DAML_AUTHORIZATION_ERROR. Refusing them here gives a clear reason instead.
+  // Nothing is lost: the standard consumes inputHoldingCids whole ("the
+  // transfer MUST archive all of these holdings"), and Registry.V2 returns the
+  // surplus via authorizerChangeCids, so a partial amount funds without a split.
 ]);
 
 /** A command that passed the allowlist, rebuilt from validated fields only. */

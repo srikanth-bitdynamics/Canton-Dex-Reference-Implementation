@@ -61,8 +61,6 @@ export class AdminService {
             },
             active: input.active ?? true,
             publicReaders: null,
-            accumulatedMakerFees: null,
-            accumulatedTakerFees: null,
           },
         },
       }),

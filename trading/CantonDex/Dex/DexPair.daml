@@ -1,10 +1,7 @@
 -- | A listed trading pair: the operator's record of a supported base/quote
--- market with its execution mode, fee model, accrued maker/taker fee
--- counters, and active flag. Pair lifecycle changes go through the choices
--- defined here.
+-- market with its execution mode, fee model, and active flag. Pair lifecycle
+-- changes go through the choices defined here.
 module CantonDex.Dex.DexPair where
-
-import DA.TextMap qualified as TextMap
 
 -- | Which trading surfaces a pair exposes.
 data TradingMode
@@ -38,10 +35,6 @@ template DexPair with
     publicReaders : Optional [Party]
       -- ^ Parties allowed to observe the listing; None/[] = operator-private
       --   except for admin.
-    accumulatedMakerFees : Optional (TextMap.TextMap Decimal)
-      -- ^ Per-instrument maker-side fee accrual, bumped by RecordMatchedTrade.
-    accumulatedTakerFees : Optional (TextMap.TextMap Decimal)
-      -- ^ Per-instrument taker-side fee accrual, bumped by RecordMatchedTrade.
   where
     signatory operator
     observer admin :: optional [] identity publicReaders
@@ -69,38 +62,3 @@ template DexPair with
         newReaders : [Party]
       controller operator
       do create this with publicReaders = Some newReaders
-
-    -- Record fees for one matched trade (sender = taker, receiver = maker);
-    -- bumps both accrual counters at their respective bps.
-    nonconsuming choice DexPair_RecordMatchedTrade : ContractId DexPair
-      with
-        legNotionals : TextMap.TextMap Decimal
-          -- ^ Notional touched per instrument id by the matched trade.
-      controller operator
-      do
-        let curMaker = optional TextMap.empty identity accumulatedMakerFees
-            curTaker = optional TextMap.empty identity accumulatedTakerFees
-            bumpedMaker = foldl
-              (\acc (iid, notional) ->
-                let cur = optional 0.0 identity (TextMap.lookup iid acc)
-                    fee = notional * intToDecimal feeModel.makerFeeBps / 10000.0
-                in TextMap.insert iid (cur + fee) acc)
-              curMaker
-              (TextMap.toList legNotionals)
-            bumpedTaker = foldl
-              (\acc (iid, notional) ->
-                let cur = optional 0.0 identity (TextMap.lookup iid acc)
-                    fee = notional * intToDecimal feeModel.takerFeeBps / 10000.0
-                in TextMap.insert iid (cur + fee) acc)
-              curTaker
-              (TextMap.toList legNotionals)
-        archive self
-        create this with
-          accumulatedMakerFees = Some bumpedMaker
-          accumulatedTakerFees = Some bumpedTaker
-
-    -- Operator fee collection (DexPair_CollectFees) is intentionally out of
-    -- scope for this reference implementation: there is no asset-emission path
-    -- for the accrued maker/taker counters, so a collect choice would only
-    -- zero the counters without moving funds and would mislead. The counters
-    -- remain as a read-only accrual record.

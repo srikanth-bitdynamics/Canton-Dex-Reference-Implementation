@@ -135,7 +135,6 @@ testMatchedTradeViaTokenStandardRegistry = do
   settleRes <- submit venue $ exerciseCmd tradeCid MT.MatchedTrade_Settle with
     batchesByAdmin = Map.fromList [(admin, batch)]
     allocationRequests = []
-    dexPairCid = None
 
   -- Verify settlement happened for our admin via the V2 batch path —
   -- two allocations (sender + receiver) settled in one batch.

@@ -1,0 +1,87 @@
+-- | Authorization tests for the TradeAllocationRequest interface impls:
+-- AllocationRequest_Accept is gated to the request's authorizer parties, and
+-- AllocationRequest_Withdraw is gated to the settlement executors.
+module CantonDex.Tests.MatchedTradeAuth where
+
+import DA.Assert
+import DA.List (head)
+
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationRequestV2 qualified as V2
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+import Splice.Testing.Utils (emptyExtraArgs)
+
+import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Trading.Utils qualified as Utils
+
+-- Build a one-leg trade (alice -> bob, settled by venue) and post its
+-- per-authorizer allocation requests. Returns the sender's and receiver's
+-- request contract ids.
+mkTradeRequests
+  : Script (Party, Party, Party, ContractId MT.TradeAllocationRequest, ContractId MT.TradeAllocationRequest)
+mkTradeRequests = do
+  venue <- allocateParty "venue"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+
+  let leg = V2.TransferLeg with
+        transferLegId = "leg-1"
+        sender = Utils.basicAccount alice
+        receiver = Utils.basicAccount bob
+        amount = 10.0
+        instrumentId = "BTC"
+        meta = emptyMetadata
+
+  tradeCid <- submit venue $ createCmd MT.MatchedTrade with
+    venue
+    admin
+    transferLegs = [leg]
+    settlementDeadline = None
+    policyReceipt = None
+
+  _ <- submit venue $ exerciseCmd tradeCid MT.MatchedTrade_RequestAllocations
+
+  aliceReqs <- query @MT.TradeAllocationRequest alice
+  bobReqs <- query @MT.TradeAllocationRequest bob
+  length aliceReqs === 1
+  length bobReqs === 1
+  pure (venue, alice, bob, fst (head aliceReqs), fst (head bobReqs))
+
+-- Accept by a party that is not one of the request's authorizer parties is
+-- rejected, even when that party (here the venue) is a stakeholder.
+testAcceptRejectsNonAuthorizerActors : Script ()
+testAcceptRejectsNonAuthorizerActors = do
+  (venue, _alice, _bob, aliceReq, _bobReq) <- mkTradeRequests
+  let reqIface : ContractId V2.AllocationRequest = toInterfaceContractId aliceReq
+  submitMustFail venue $ exerciseCmd reqIface V2.AllocationRequest_Accept with
+    actors = [venue]
+    extraArgs = emptyExtraArgs
+
+-- Accept by the authorizer's own party archives the request.
+testAcceptSucceedsWithAuthorizerActors : Script ()
+testAcceptSucceedsWithAuthorizerActors = do
+  (_venue, alice, _bob, aliceReq, _bobReq) <- mkTradeRequests
+  let reqIface : ContractId V2.AllocationRequest = toInterfaceContractId aliceReq
+  _ <- submit alice $ exerciseCmd reqIface V2.AllocationRequest_Accept with
+    actors = [alice]
+    extraArgs = emptyExtraArgs
+  None <- queryContractId alice aliceReq
+  pure ()
+
+-- Withdraw is executor-only: the authorizer (bob), who is not a settlement
+-- executor, cannot withdraw; the executor (venue) can.
+testWithdrawRejectsNonExecutorActors : Script ()
+testWithdrawRejectsNonExecutorActors = do
+  (venue, _alice, bob, _aliceReq, bobReq) <- mkTradeRequests
+  let reqIface : ContractId V2.AllocationRequest = toInterfaceContractId bobReq
+  submitMustFail bob $ exerciseCmd reqIface V2.AllocationRequest_Withdraw with
+    actors = [bob]
+    extraArgs = emptyExtraArgs
+  _ <- submit venue $ exerciseCmd reqIface V2.AllocationRequest_Withdraw with
+    actors = [venue]
+    extraArgs = emptyExtraArgs
+  None <- queryContractId venue bobReq
+  pure ()

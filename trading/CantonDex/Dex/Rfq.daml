@@ -51,7 +51,8 @@ template Rfq with
     rfqId : Text
       -- ^ Operator-scoped unique id for this request.
     pair : Text
-      -- ^ "BASE/QUOTE".
+      -- ^ MUST be "<baseInstrumentId>/<quoteInstrumentId>": the registry
+      --   instrument ids under the shared admin, not display tickers.
     side : RfqSide
       -- ^ Buy or sell, from the trader's perspective.
     size : Decimal
@@ -184,6 +185,8 @@ template Rfq with
                     instrumentId = quoteSym
                     meta = emptyMetadata
                 ]
+
+        assertMsg "pair must be <baseId>/<quoteId> with non-empty registry instrument ids" (baseSym /= "" && quoteSym /= "")
 
         -- Rfq_Accept is consuming, so self is archived automatically. Quotes
         -- are dealer-signed; the trader consumes them via their own choice.

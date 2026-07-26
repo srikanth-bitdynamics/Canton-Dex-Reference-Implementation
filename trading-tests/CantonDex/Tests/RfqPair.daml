@@ -1,0 +1,78 @@
+-- | Rfq_Accept guards on the pair being a well-formed "<baseId>/<quoteId>":
+-- splitPair yields empty ids for malformed input and the choice aborts before
+-- creating a MatchedTrade.
+module CantonDex.Tests.RfqPair where
+
+import DA.Time (addRelTime, hours, seconds)
+
+import Daml.Script
+
+import CantonDex.Dex.Rfq qualified as Rfq
+
+-- Post an RFQ with the given pair plus one valid dealer quote, so an accept
+-- fails only on the pair check when the pair is malformed.
+setupRfq : Text -> Script (Party, Party, Party, ContractId Rfq.Rfq, ContractId Rfq.RfqQuote, Time)
+setupRfq pair = do
+  operator <- allocateParty "operator"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  dealer <- allocateParty "dealer"
+  now <- getTime
+
+  let expiresAt = addRelTime now (hours 1)
+      rfqId = "rfq-pair-001"
+
+  rfqCid <- submit alice $ createCmd Rfq.Rfq with
+    trader = alice
+    operator
+    rfqId
+    pair
+    side = Rfq.RFQ_Buy
+    size = 5.0
+    expiresAt
+    whitelist = [dealer]
+    createdAt = now
+
+  quoteCid <- submit dealer $ createCmd Rfq.RfqQuote with
+    dealer
+    trader = alice
+    operator
+    rfqId
+    price = 60000.0
+    expiresAt = addRelTime now (seconds 30)
+    postedAt = now
+    tier = Rfq.TierTrusted
+
+  pure (alice, operator, admin, rfqCid, quoteCid, now)
+
+accept
+  : Party -> ContractId Rfq.Rfq -> ContractId Rfq.RfqQuote -> Time
+  -> Commands Rfq.Rfq_AcceptResult
+accept admin rfqCid quoteCid now =
+  exerciseCmd rfqCid Rfq.Rfq_Accept with
+    acceptedQuoteCid = quoteCid
+    consideredQuoteCids = [quoteCid]
+    admin
+    currentTime = now
+    signature = "0xsig"
+
+-- A pair with no separator has empty base/quote ids and is rejected.
+testRfqAcceptRejectsMissingSeparator : Script ()
+testRfqAcceptRejectsMissingSeparator = do
+  (alice, operator, admin, rfqCid, quoteCid, now) <- setupRfq "BTCUSDC"
+  submitMustFail (actAs [alice, operator]) $ accept admin rfqCid quoteCid now
+
+-- A pair with more than one separator does not split into two ids and is
+-- rejected.
+testRfqAcceptRejectsThreeParts : Script ()
+testRfqAcceptRejectsThreeParts = do
+  (alice, operator, admin, rfqCid, quoteCid, now) <- setupRfq "A/B/C"
+  submitMustFail (actAs [alice, operator]) $ accept admin rfqCid quoteCid now
+
+-- Positive control: a well-formed pair accepts and yields a MatchedTrade.
+testRfqAcceptWellFormedPair : Script ()
+testRfqAcceptWellFormedPair = do
+  (alice, operator, admin, rfqCid, quoteCid, now) <- setupRfq "BTC/USDC"
+  res <- submit (actAs [alice, operator]) $ accept admin rfqCid quoteCid now
+  Some _ <- queryContractId operator res.tradeCid
+  pure ()

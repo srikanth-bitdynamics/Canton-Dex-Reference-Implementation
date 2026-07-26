@@ -233,8 +233,6 @@ async function seed(
         feeModel: { makerFeeBps: 10, takerFeeBps: 30, poolFeeBps: 30 },
         active: true,
         publicReaders: null,
-        accumulatedMakerFees: null,
-        accumulatedTakerFees: null,
       },
     },
   });

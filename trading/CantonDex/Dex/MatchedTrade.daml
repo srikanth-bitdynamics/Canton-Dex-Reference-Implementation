@@ -4,14 +4,13 @@ module CantonDex.Dex.MatchedTrade where
 
 import DA.Foldable (forA_)
 import DA.Map qualified as Map
-import DA.TextMap qualified as TextMap
+import DA.Set qualified as Set
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
-import CantonDex.Dex.DexPair qualified as DexPair
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Trading.Utils qualified as Utils
 
@@ -60,13 +59,16 @@ template TradeAllocationRequest with
 
       -- Accept consumes the request; the wallet composes it with the matching
       -- AllocationFactory_Allocate in the same transaction.
-      allocationRequest_acceptImpl = \self _arg -> do
+      allocationRequest_acceptImpl = \self arg -> do
+        assertMsg "accept actors must be authorizer parties" (not (null arg.actors) && all (\p -> p `elem` Utils.accountParties authorizer) arg.actors)
         archive self
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
       allocationRequest_rejectImpl = \self arg -> do
+        assertMsg "reject actors must be authorizer parties" (not (null arg.actors) && all (\p -> p `elem` Utils.accountParties authorizer) arg.actors)
         archive self
         pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
       allocationRequest_withdrawImpl = \self arg -> do
+        assertMsg "withdraw actors must be the settlement executors" (not (null arg.actors) && all (\p -> p `elem` settlement.executors) arg.actors)
         archive self
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
 
@@ -87,7 +89,7 @@ data MatchedTrade_CancelResult = MatchedTrade_CancelResult with
 mkTradeSettlementInfo : ContractId MatchedTrade -> MatchedTrade -> V2.SettlementInfo
 mkTradeSettlementInfo tradeCid trade = V2.SettlementInfo with
   executors = [trade.venue]
-  id = "MatchedTrade"
+  id = "MatchedTrade:" <> show tradeCid
   cid = Some (coerceContractId tradeCid)
   meta = PR.foldPolicyReceiptIntoMetadata trade.policyReceipt emptyMetadata
 
@@ -98,7 +100,7 @@ legParties legs = dedupParties $ do
   leg <- legs
   Utils.accountParties leg.sender ++ Utils.accountParties leg.receiver
   where
-    dedupParties xs = foldl (\acc p -> if p `elem` acc then acc else acc ++ [p]) [] xs
+    dedupParties = Set.toList . Set.fromList
 
 template MatchedTrade with
     venue : Party
@@ -137,14 +139,13 @@ template MatchedTrade with
       with
         batchesByAdmin : Map.Map Party SettlementBatchV2
         allocationRequests : [ContractId TradeAllocationRequest]
-        dexPairCid : Optional (ContractId DexPair.DexPair)
-          -- ^ When provided, fees accrue against the pair; None = no accrual.
       controller venue
       do
         let settlement = mkTradeSettlementInfo self this
 
         forA_ allocationRequests $ \reqCid -> do
           req <- fetch reqCid
+          assertMsg "allocation request must belong to this trade" (req.settlement.cid == Some (coerceContractId self))
           archive reqCid
 
         results <- forA (Map.toList batchesByAdmin) $ \(batchAdmin, batch) -> do
@@ -155,17 +156,6 @@ template MatchedTrade with
             actors = [venue]
             extraArgs = batch.extraArgs
           pure (batchAdmin, result)
-
-        forA_ dexPairCid $ \pairCid -> do
-          let legNotionals : TextMap.TextMap Decimal =
-                foldl
-                  (\m leg ->
-                    let cur = optional 0.0 identity (TextMap.lookup leg.instrumentId m)
-                    in TextMap.insert leg.instrumentId (cur + leg.amount) m)
-                  TextMap.empty
-                  transferLegs
-          _ <- exercise pairCid DexPair.DexPair_RecordMatchedTrade with legNotionals
-          pure ()
 
         pure MatchedTrade_SettleResult with
           resultsByAdmin = Map.fromList results
@@ -179,7 +169,8 @@ template MatchedTrade with
         let settlement = mkTradeSettlementInfo self this
 
         forA_ allocationRequestCids $ \reqCid -> do
-          fetch reqCid
+          req <- fetch reqCid
+          assertMsg "allocation request must belong to this trade" (req.settlement.cid == Some (coerceContractId self))
           archive reqCid
 
         cancelResults <- forA allocationsToCancel $ \(allocCid, extraArgs) -> do

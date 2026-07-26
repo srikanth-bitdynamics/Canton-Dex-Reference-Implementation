@@ -701,7 +701,6 @@ testMatchedTradeFullSettle = do
           extraArgs = emptyExtraArgs)
       ]
     allocationRequests = []  -- already consumed via Accept
-    dexPairCid = None
 
   -- Verify the result has one per-admin entry.
   Map.size settleResult.resultsByAdmin === 1

@@ -149,8 +149,7 @@ export function TradePage() {
             >
               {tradeablePools.map((p) => (
                 <option key={p.contractId} value={p.contractId}>
-                  {p.baseInstrumentId}/{p.quoteInstrumentId} · {p.status} · #
-                  {p.contractId.slice(0, 6)}
+                  {p.baseInstrumentId}/{p.quoteInstrumentId} · {p.status}
                 </option>
               ))}
             </select>

@@ -91,6 +91,20 @@ export class TestnetHostedProvider implements WalletProvider {
     }
   }
 
+  /** The session this browser already holds, if any. */
+  private readStoredSession(): PersistedSession | null {
+    if (typeof window === "undefined") return null;
+    const raw = window.localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as PersistedSession;
+      return parsed?.party ? parsed : null;
+    } catch {
+      window.localStorage.removeItem(LS_KEY);
+      return null;
+    }
+  }
+
   getStatus(): WalletConnectionStatus {
     return this.status;
   }
@@ -113,8 +127,18 @@ export class TestnetHostedProvider implements WalletProvider {
   }
 
   async connect(): Promise<WalletAccount> {
-    if (this.status.kind === "connected" && this.session)
-      return this.status.account;
+    // Reuse a party this browser already has, whether it came from an earlier
+    // connect() in this page view or was rehydrated from storage by the
+    // constructor. Keying only off `status` missed the rehydrated case, so a
+    // reconnect allocated a second party -- burning a slot of the deployment's
+    // daily cap and writing a topology entry that is permanent.
+    const existing = this.session ?? this.readStoredSession();
+    if (existing?.party) {
+      this.session = existing;
+      const account: WalletAccount = { party: existing.party, label: CONNECTED_LABEL };
+      this.setStatus({ kind: "connected", account, providerId: this.id });
+      return account;
+    }
 
     this.setStatus({ kind: "connecting" });
     try {

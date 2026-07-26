@@ -190,6 +190,12 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
     required: ["tradeCid", "allocationsByAdmin", "allocationRequestCids"],
     cids: ["tradeCid"],
   },
+  // Testnet party faucet. The body carries an optional display-only `label`
+  // and nothing else — the party id is server-generated, so there is no field
+  // to validate. Listed anyway so a non-object body is still rejected here.
+  "POST /v1/testnet/party": {
+    required: [],
+  },
   "POST /v1/swaps/quote": {
     required: ["poolId", "inputInstrumentId", "inputAmount"],
     decimals: ["inputAmount"],

@@ -8,8 +8,10 @@ import {
   type PartyLayerClient,
 } from "./partylayer-provider";
 import { SdkProvider } from "./sdk-provider";
+import { TestnetHostedProvider } from "./testnet-hosted-provider";
 import { TokenStandardProvider } from "./token-standard-provider";
 import { WalletConnectProvider } from "./walletconnect-provider";
+import { OperatorApi } from "@/services/operator-api";
 import type { WalletProvider } from "./types";
 
 export type WalletProviderId =
@@ -18,6 +20,7 @@ export type WalletProviderId =
   | "token-standard"
   | "walletconnect"
   | "canton-direct"
+  | "testnet-hosted"
   | "mock";
 
 function optionalEnv(name: string): string | undefined {
@@ -92,6 +95,11 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
     (import.meta.env.VITE_ENABLE_SDK ?? "") === "1";
   const enablePartyLayer =
     (import.meta.env.VITE_ENABLE_PARTYLAYER ?? "") === "1";
+  // Testnet-only onboarding: allocating a demo party on our own participant is
+  // meaningless (and must not be offered) anywhere else, so it is flag-gated
+  // and the backend route it calls is gated too.
+  const enableTestnetParty =
+    (import.meta.env.VITE_ENABLE_TESTNET_PARTY ?? "") === "1";
   const packagePrefix = (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID ??
     "#canton-dex-trading") as string;
 
@@ -109,6 +117,12 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
         optionalPositiveInt("VITE_PARTYLAYER_CONNECT_TIMEOUT_MS") ??
           DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
       ),
+    );
+  }
+  if (enableTestnetParty) {
+    map.set(
+      "testnet-hosted",
+      new TestnetHostedProvider(apiBase, packagePrefix, new OperatorApi(apiBase)),
     );
   }
   map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));

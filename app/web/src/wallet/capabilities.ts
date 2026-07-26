@@ -64,6 +64,14 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     note: "Settlement-accept only; cannot complete LP DvP.",
     coSignsAdmin: false,
   },
+  "testnet-hosted": {
+    // A demo party allocated on this deployment's own participant: the operator
+    // hosts it and signs for it, so every DvP flow completes, but the user does
+    // not hold the keys. Same "not a real wallet" caveat as the relay.
+    dvp: "dev-only",
+    note: "Testnet only — temporary demo party hosted and signed for by this deployment. Not a self-custody wallet.",
+    coSignsAdmin: true,
+  },
   "canton-direct": {
     dvp: "unsupported",
     note: "Settlement-accept only; cannot complete LP DvP.",

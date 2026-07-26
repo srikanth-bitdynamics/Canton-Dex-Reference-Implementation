@@ -56,6 +56,16 @@ describe("no duplicate route registration", () => {
     );
   });
 
+  it("registers the testnet onboarding routes", () => {
+    const guards = exactRouteGuards(routerSrc);
+    for (const route of [
+      "POST /v1/testnet/party",
+      "GET /v1/testnet/hosting",
+    ]) {
+      assert.ok(guards.includes(route), `missing route: ${route}`);
+    }
+  });
+
   it("registers the matched-trade settlement routes", () => {
     const guards = exactRouteGuards(routerSrc);
     for (const route of [

@@ -28,6 +28,10 @@
 //     POST /v1/orders/:cid/cancel       -> {}
 //     POST /v1/rfq/accept               -> { tradeCid, receipt }
 //
+//   Testnet-only party faucet (registered only under DEX_TESTNET_ONBOARDING=1):
+//     POST /v1/testnet/party            -> { partyId, airdrops }
+//     GET  /v1/testnet/hosting?party=:p -> { hostedHere }
+//
 // The dApp polls the ledger event stream directly for live state; the
 // HTTP API is for one-shot orchestration calls only. Trader-authority
 // writes (place order, add liquidity, swap-side allocation creation)
@@ -45,6 +49,11 @@ import { checkAdminAuth, checkOperatorAuth, bearerMatches } from "./auth.js";
 import { checkCallerBinding, callerPartyFromRequest, type CallerAuthConfig } from "./caller-auth.js";
 import { validateWriteBody, ValidationError } from "./validate.js";
 import { RfqAuthError } from "../rfq/index.js";
+import {
+  OnboardingThrottleError,
+  type TestnetOnboardingService,
+} from "../testnet-onboarding/index.js";
+import { RegistryBootstrapError } from "../testnet-onboarding/registry-mint.js";
 import { rootLogger } from "../lib/logger.js";
 
 const httpLog = rootLogger.child({ component: "http" });
@@ -163,6 +172,19 @@ export interface HttpServerConfig {
   ledgerUrl?: string;
   /** JWT used to read the ledger offset. */
   ledgerToken?: string;
+  /**
+   * Testnet-only party faucet. Supplied only when DEX_TESTNET_ONBOARDING=1
+   * (see testnetOnboardingFromEnv); when absent the /v1/testnet/* routes are
+   * not registered at all.
+   */
+  testnetOnboarding?: TestnetOnboardingService;
+  /**
+   * Read the client address for the faucet throttle from X-Forwarded-For.
+   * OFF by default: the header is caller-controlled, so honouring it on a
+   * directly-exposed server would let one client rotate it and defeat the
+   * per-IP cap. Set only when a trusted reverse proxy sets the header.
+   */
+  testnetTrustProxy?: boolean;
 }
 
 export function startHttpServer(cfg: HttpServerConfig): {
@@ -286,6 +308,8 @@ async function routeRequest(
   const adminToken = cfg.adminToken;
   const ledgerUrl = cfg.ledgerUrl;
   const ledgerToken = cfg.ledgerToken;
+  // Present only on a testnet deployment that opted into the party faucet.
+  const onboarding = cfg.testnetOnboarding;
   // Per-caller party binding config (finding B-2): secret + optional audience.
   const callerAuth: CallerAuthConfig = {
     callerJwtSecret: cfg.callerJwtSecret,
@@ -1213,6 +1237,54 @@ async function routeRequest(
     return;
   }
 
+  // === testnet-only hosted-party onboarding ==============================
+  // Registered only when the server was handed an onboarding service, which
+  // `testnetOnboardingFromEnv` builds only under DEX_TESTNET_ONBOARDING=1.
+  // With the flag off these two guards are false and the request falls
+  // through to the 404 below -- the paths genuinely do not exist.
+
+  if (onboarding && method === "POST" && path === "/v1/testnet/party") {
+    // The body is display-only. A caller cannot name the party it gets: the
+    // id is generated server-side, because granting CanActAs on a
+    // caller-chosen party would hand out authority over an existing one.
+    const body = await readValidatedJson<{ label?: unknown }>(
+      req,
+      "POST /v1/testnet/party",
+      callerAuth,
+    );
+    const label =
+      typeof body.label === "string" ? body.label.slice(0, 64) : undefined;
+    try {
+      const result = await onboarding.createParty({
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+        label,
+      });
+      respondJson(res, 201, result);
+    } catch (e) {
+      if (e instanceof OnboardingThrottleError) {
+        throw new HttpError(429, "too_many_requests", e.message, e.details);
+      }
+      if (e instanceof RegistryBootstrapError) {
+        // The faucet is switched on but the ledger it points at was never
+        // bootstrapped, so it can mint nothing. That is an operator
+        // misconfiguration the caller can only wait out -- 503, and the
+        // message names the bootstrap step.
+        throw new HttpError(503, "service_unavailable", e.message, e.details);
+      }
+      throw e;
+    }
+    return;
+  }
+
+  if (onboarding && method === "GET" && path === "/v1/testnet/hosting") {
+    const party = url.searchParams.get("party");
+    if (!party) {
+      throw new HttpError(400, "bad_request", "missing ?party= query parameter");
+    }
+    respondJson(res, 200, { hostedHere: await onboarding.isHostedHere(party) });
+    return;
+  }
+
   throw new HttpError(404, "not_found", `no route: ${method} ${path}`);
 }
 
@@ -1264,6 +1336,21 @@ function requireCallerForFetchBoundRoute(
     );
   }
   return caller as Party;
+}
+
+/**
+ * Client address the testnet faucet throttle is charged to. X-Forwarded-For is
+ * set by the caller unless a reverse proxy overwrites it, so it is only read
+ * when the deployment declares it sits behind one (testnetTrustProxy);
+ * otherwise one client could rotate the header and mint parties without limit.
+ */
+function clientAddress(req: IncomingMessage, trustProxy: boolean): string {
+  if (trustProxy) {
+    const fwd = req.headers["x-forwarded-for"];
+    const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress ?? "unknown";
 }
 
 async function readJson<T>(req: IncomingMessage): Promise<T> {

@@ -12,6 +12,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { ConnectWalletButton } from '@/components/ConnectWalletButton';
+import { HostedPartyNotice } from '@/components/HostedPartyNotice';
 import { ledger } from '@/services/ledger';
 
 const APP_VERSION = (import.meta.env.VITE_APP_VERSION as string | undefined) ?? 'v0.6.0';
@@ -100,6 +101,7 @@ export function Layout() {
         </div>
       </header>
       <main className="max-w-7xl mx-auto px-6 py-6">
+        <HostedPartyNotice />
         <Outlet />
       </main>
     </div>

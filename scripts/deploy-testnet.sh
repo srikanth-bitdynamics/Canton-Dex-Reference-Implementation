@@ -101,6 +101,10 @@ fi
 # 4. Registry bootstrap --------------------------------------------------
 
 echo "==> Running registry bootstrap"
+echo "    (instrument configs, LP configs, credentials, and the Registry.V2"
+echo "     registry + its instruments -- what Registry_Mint and the testnet"
+echo "     party faucet need; note the Registry.V2 cid it logs, it is the"
+echo "     value for CANTON_ALLOC_FACTORY_CID / CANTON_SETTLE_FACTORY_CID)"
 (cd "$ROOT_DIR" && node --import tsx scripts/bootstrap-registry.ts)
 
 # 5. Seed initial pair/pool ---------------------------------------------

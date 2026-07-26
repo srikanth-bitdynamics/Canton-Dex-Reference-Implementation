@@ -13,6 +13,7 @@ const ALL_IDS: WalletProviderId[] = [
   "token-standard",
   "walletconnect",
   "canton-direct",
+  "testnet-hosted",
   "mock",
 ];
 

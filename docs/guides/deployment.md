@@ -71,12 +71,27 @@ export CANTON_LEDGER_URL=...
 export CANTON_LEDGER_TOKEN=...
 export CANTON_ADMIN=...
 export CANTON_LP_REGISTRAR=...
+export CANTON_OPERATOR=...
 node --import tsx scripts/bootstrap-registry.ts
 ```
 
 The script is idempotent — running it twice is a no-op. See
 [Registry Integration](registry-integration.md) for what
 contracts are created and why.
+
+Among them is the `Registry.V2` registry and one `InstrumentConfig` per
+instrument in `registryV2.instruments`
+(`scripts/bootstrap-registry.json`). Those are what `Registry_Mint`
+needs, so they are a hard prerequisite for the testnet party faucet:
+with `DEX_TESTNET_ONBOARDING=1`, `POST /v1/testnet/party` mints the
+airdrop through the registry and answers 503 for any instrument in
+`DEX_TESTNET_AIRDROP` that has no config — it never registers one
+itself. Keep the two lists in sync.
+
+The bootstrap logs the `Registry.V2` contract id when it creates one.
+That cid is also the value for `CANTON_ALLOC_FACTORY_CID` and
+`CANTON_SETTLE_FACTORY_CID`: the allocation, settlement and transfer
+factories are interface views of that one contract.
 
 ## Environment Variables
 

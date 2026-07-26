@@ -16,6 +16,9 @@
 //       PoolLiquidityRules_RequestRemoveLiquidity, PoolLiquidityRules_SettleRemoveLiquidity
 //       MatchedTrade_RequestAllocations, MatchedTrade_Settle, MatchedTrade_Cancel
 //       DexPair_UpdateFeeModel, DexPair_SetActive, DexPair_UpdateTradingMode
+//       Registry_Mint (testnet party faucet only, under
+//         DEX_TESTNET_ONBOARDING=1; mints the airdrop to a party the faucet
+//         itself just allocated)
 //     Plus operator-signed creates of DexPair and Pool (admin seeding).
 //     Plus the V2 token-standard choices the operator may compose:
 //       AllocationFactory_Allocate (only for committed pool allocations)

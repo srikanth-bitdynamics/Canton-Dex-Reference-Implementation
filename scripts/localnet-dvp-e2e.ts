@@ -1,16 +1,18 @@
 // Headless DvP liquidity end-to-end against a live Canton participant.
 //
 // Stands in for the trader's wallet (the one piece a browser CIP-0103
-// wallet normally does): it authors the trader's 3 allocations for each
-// DvP add/remove, then settles. Exercises the full operator two-call
-// flow (request -> wallet authors allocations -> settle) plus a swap,
-// on a real ledger -- the seam that can't be driven through the UI
-// without a human approving in the wallet popup.
+// wallet normally does): it authors the trader's 3 allocations for the
+// DvP add, then settles. Exercises the full operator two-call flow
+// (request -> wallet authors allocations -> settle) on a real ledger --
+// the seam that can't be driven through the UI without a human approving
+// in the wallet popup.
 //
 // Self-contained: creates its own V2 Registry (admin == pool admin ==
 // lpRegistrar, the self-registry case), registers base/quote/LP
 // instruments, mints to the trader, creates the pool contracts, then
-// runs add -> swap -> remove and asserts the on-ledger reserves/LP.
+// runs add-liquidity and asserts the on-ledger reserves/LP. Add is where
+// it stops; for the swap against an existing pool see
+// scripts/seed-testnet-pool.ts.
 //
 // Env (all from the LocalNet bring-up):
 //   CANTON_LEDGER_URL, CANTON_LEDGER_TOKEN, CANTON_SYNCHRONIZER,

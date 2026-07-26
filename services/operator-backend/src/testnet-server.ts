@@ -29,6 +29,7 @@ import { openDb } from "./indexer/db.js";
 import { Indexer } from "./indexer/index.js";
 import { IdempotentLedger } from "./indexer/idempotency.js";
 import { DealersService } from "./dealers/index.js";
+import { testnetOnboardingFromEnv } from "./testnet-onboarding/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
 import { rootLogger } from "./lib/logger.js";
@@ -125,6 +126,20 @@ async function main(): Promise<void> {
     }
   }
 
+  // Testnet party faucet. Off unless DEX_TESTNET_ONBOARDING=1; the returned
+  // service is what registers the /v1/testnet/* routes. Party and user
+  // management sit outside the LedgerSubmitter abstraction, so it is handed
+  // the participant's URL + token directly. `userId` is this backend's own
+  // ledger user: the airdrop mint acts as the tester's party, so that user
+  // needs CanActAs on each party the faucet allocates.
+  const testnetOnboarding = testnetOnboardingFromEnv({
+    ledger,
+    admin,
+    ledgerUrl: baseUrl,
+    ledgerToken: token,
+    userId,
+  });
+
   const indexer = new Indexer(db, ledger, {
     intervalMs: Number(process.env.INDEXER_INTERVAL_MS ?? 5000),
     observingParty: operator,
@@ -167,6 +182,10 @@ async function main(): Promise<void> {
     callerJwtAudience: process.env.DEX_CALLER_JWT_AUDIENCE || undefined,
     ledgerUrl: baseUrl,
     ledgerToken: token,
+    testnetOnboarding,
+    // Only honour X-Forwarded-For for the faucet throttle when a trusted
+    // reverse proxy is in front of this process.
+    testnetTrustProxy: process.env.DEX_TESTNET_TRUST_PROXY === "1",
   });
   log.info("server started", {
     url,

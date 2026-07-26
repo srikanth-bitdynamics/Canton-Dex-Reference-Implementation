@@ -18,6 +18,14 @@
 import { InMemoryLedger } from "./ledger/in-memory.js";
 import { OperatorBackend } from "./index.js";
 import { startHttpServer } from "./http/index.js";
+import {
+  parseAirdropSpec,
+  testnetOnboardingFromEnv,
+} from "./testnet-onboarding/index.js";
+import {
+  registerRegistryV2Handlers,
+  seedRegistryV2,
+} from "./testnet-onboarding/in-memory-registry.js";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type {
   ContractId,
@@ -82,6 +90,12 @@ function registerHandlers(
       ],
     }),
   );
+  // Registry.V2 issuance, so the party faucet's Registry_Mint path runs here
+  // exactly as it does on a participant (V2 holding template, rotating
+  // InstrumentConfig cid). The demo trader's holdings below stay on the legacy
+  // template on purpose -- /v1/holdings merges both, and keeping one of each
+  // around locally is what the merge exists for.
+  registerRegistryV2Handlers(ledger, { admin, observers: [operator] });
   ledger.registerCreateHandler("CantonDex.Dex.Order:Order", (payload) => ({
     observers: [operator, (payload as { trader: Party }).trader],
   }));
@@ -336,6 +350,19 @@ async function seed(
     },
   });
 
+  // Registry + one InstrumentConfig per faucet instrument. The airdrop mints
+  // through Registry_Mint and registers nothing itself, so without this the
+  // faucet 503s here just as it would on an unbootstrapped participant. This
+  // is the local stand-in for scripts/bootstrap-registry.ts; the instrument
+  // list comes from the same env var the faucet reads.
+  await seedRegistryV2(ledger, {
+    admin,
+    users: [operator, lpRegistrar],
+    instruments: parseAirdropSpec(process.env.DEX_TESTNET_AIRDROP).map(
+      (g) => g.instrumentId,
+    ),
+  });
+
   // A few holdings for the demo trader.
   for (const [instrumentId, amount] of [
     ["USDC", "5000.0000000000"],
@@ -376,6 +403,11 @@ async function main(): Promise<void> {
     operatorParty: operator,
   });
 
+  // Party faucet, off unless DEX_TESTNET_ONBOARDING=1. With no participant
+  // URL/token it falls back to the in-memory provisioner, so the whole
+  // onboarding flow is exercisable here without Canton.
+  const testnetOnboarding = testnetOnboardingFromEnv({ ledger, admin });
+
   const port = Number(process.env.PORT ?? 8080);
   const { url } = startHttpServer({
     backend,
@@ -403,6 +435,8 @@ async function main(): Promise<void> {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    testnetOnboarding,
+    testnetTrustProxy: process.env.DEX_TESTNET_TRUST_PROXY === "1",
   });
   // eslint-disable-next-line no-console
   console.log(`[operator-backend] dev server listening at ${url}`);

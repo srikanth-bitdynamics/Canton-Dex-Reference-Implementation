@@ -90,6 +90,17 @@ export interface LedgerRfqQuote {
   tier: "TierTrusted" | "TierWhitelist";
 }
 
+/** A test balance seeded onto a freshly created testnet party. */
+export interface TestnetAirdrop {
+  instrumentId: string;
+  amount: Decimal;
+}
+
+export interface TestnetPartyResult {
+  partyId: Party;
+  airdrops: TestnetAirdrop[];
+}
+
 export class OperatorApi {
   constructor(private readonly baseUrl: string) {}
 
@@ -186,6 +197,29 @@ export class OperatorApi {
     allocationRequestCid: ContractId<"OrderAllocationRequest">;
   }> {
     return this.post("/v1/orders/bind", req);
+  }
+
+  // === testnet onboarding ====================================================
+  //
+  // Both routes are testnet-only: the backend registers them only when it runs
+  // with DEX_TESTNET_ONBOARDING=1, so on any other deployment they 404.
+
+  /**
+   * Allocate a demo party on this deployment's participant and seed it with the
+   * configured test balances. `label` is display-only. Subject to the
+   * deployment's daily cap.
+   */
+  async createTestnetParty(
+    req: { label?: string } = {},
+  ): Promise<TestnetPartyResult> {
+    return this.post("/v1/testnet/party", req);
+  }
+
+  /** Whether the given party is hosted on this deployment's participant. */
+  async getTestnetHosting(party: Party): Promise<{ hostedHere: boolean }> {
+    return this.get(
+      `/v1/testnet/hosting?party=${encodeURIComponent(party)}`,
+    );
   }
 
   // === admin =================================================================

@@ -92,6 +92,12 @@ const OPERATOR_WRITE_EXACT = new Set<string>([
   "/v1/matched-trades/cancel",
   "/v1/rfq",
   "/v1/rfq/accept",
+  // Deliberately NOT listed: POST /v1/testnet/party. The faucet's whole job is
+  // to bootstrap a tester who has no credentials yet, so requiring the
+  // operator token would defeat it. It is gated instead by
+  // DEX_TESTNET_ONBOARDING (the route does not exist without it), a per-IP
+  // throttle and a global daily cap, and it only ever grants rights on the
+  // party it just allocated.
 ]);
 
 const OPERATOR_WRITE_PATTERNS: RegExp[] = [

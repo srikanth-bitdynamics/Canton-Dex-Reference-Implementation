@@ -1,9 +1,14 @@
 {
   "instruments": [
-    { "instrumentId": "BTC", "description": "Demo Bitcoin" },
-    { "instrumentId": "USDC", "description": "Demo USD Coin" },
-    { "instrumentId": "ETH", "description": "Demo Ether" }
+    { "instrumentId": "dBTC", "description": "Test asset issued by this deployment; not bitcoin" },
+    { "instrumentId": "dUSD", "description": "Test asset issued by this deployment; not a stablecoin" }
   ],
-  "lpInstruments": ["BTC-USDC-LP", "ETH-USDC-LP"],
-  "credentials": []
+  "lpInstruments": ["dBTC-dUSD-LP"],
+  "credentials": [],
+  "registryV2": {
+    "instruments": [
+      { "instrumentId": "dBTC" },
+      { "instrumentId": "dUSD" }
+    ]
+  }
 }

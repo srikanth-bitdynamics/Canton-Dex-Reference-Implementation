@@ -39,24 +39,39 @@
 // The party is only half of what a tester needs: it lives on the operator's
 // participant, so the browser cannot submit for it. `submitForParty` is the
 // other half -- a narrow public relay whose command allowlist and server-set
-// actAs live in submit.ts.
+// actAs live in submit.ts. `swapForParty` builds on both: it drives the two
+// operator-authority halves of a swap around that relay, for the same reason
+// and under the same invariants -- see swap.ts.
 
 import { randomUUID } from "node:crypto";
 
-import type { DisclosedContract } from "@canton-dex/registry-client";
+import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import type { LedgerSubmitter } from "../ledger/index.js";
 import { isDecimalString } from "../http/validate.js";
-import type { Party } from "../types.js";
+import * as dec from "../pool/decimal.js";
+import type { PoolService } from "../pool/index.js";
+import type { Party, Pool } from "../types.js";
 import { rootLogger } from "../lib/logger.js";
-import { RegistryMinter } from "./registry-mint.js";
+import { REGISTRY_HOLDING_TEMPLATE_ID, RegistryMinter } from "./registry-mint.js";
 import {
   JsonApiCommandRelay,
+  TestnetLedgerError,
   TestnetPartyIneligibleError,
   TestnetSubmitUnavailableError,
+  ledgerErrorCode,
   validateCommands,
   type TestnetCommandRelay,
   type TestnetSubmitReceipt,
 } from "./submit.js";
+import {
+  allocateCommand,
+  createdAllocationCid,
+  dedupeDisclosure,
+  selectCoveringHoldings,
+  TestnetSwapRejectedError,
+  type RegistryHolding,
+  type TestnetSwapReceipt,
+} from "./swap.js";
 
 const log = rootLogger.child({ component: "testnet-onboarding" });
 
@@ -408,6 +423,12 @@ export interface TestnetOnboardingConfig {
    * simply not a thing this process can do.
    */
   relay?: TestnetCommandRelay;
+  /**
+   * Pool orchestration, for the two operator-authority halves of
+   * `swapForParty`. Absent -> the swap endpoint reports itself unavailable
+   * rather than half-driving a trade.
+   */
+  pool?: PoolService;
   /** Submissions relayed per UTC day across all callers. */
   submitDailyCap: number;
   /** Submissions relayed per UTC day per client address. */
@@ -436,6 +457,26 @@ export interface SubmitForPartyInput {
    * which a caller-supplied blob could arrive here.
    */
   resolveDisclosure: () => Promise<DisclosedContract[]>;
+}
+
+/**
+ * Everything POST /v1/testnet/swap accepts. Notably absent: holding cids,
+ * actAs / readAs / userId, and any disclosure -- all four are decided
+ * server-side, which is what makes the endpoint safe to leave unauthenticated.
+ */
+export interface SwapForPartyInput {
+  /** The swapper. Accepted only if this faucet minted and hosts it. */
+  party: string;
+  poolCid: string;
+  inputInstrumentId: string;
+  inputAmount: string;
+  /**
+   * Slippage floor. Absent -> the operator's own quote for this input is used,
+   * so the swap cannot settle at a worse price than the one it was quoted.
+   */
+  minOutputAmount?: string;
+  /** Client address the request is charged to. */
+  clientIp: string;
 }
 
 export class TestnetOnboardingService {
@@ -496,6 +537,37 @@ export class TestnetOnboardingService {
   }
 
   /**
+   * (a) The party id hint. Only parties this faucet minted carry it, so an
+   * operator / admin / lpRegistrar party is refused here, before any lookup --
+   * a string check, no I/O, so a hostile request costs the deployment nothing.
+   *
+   * Shared by every public testnet write; there is exactly one definition of
+   * "a party this endpoint may act for" and it is this pair of checks.
+   */
+  private assertFaucetParty(party: string): void {
+    const hint = party.split("::")[0] ?? "";
+    if (!party.includes("::") || !hint.startsWith(PARTY_HINT_PREFIX)) {
+      throw new TestnetPartyIneligibleError(
+        "this endpoint submits only for parties created by the testnet faucet",
+        { party },
+      );
+    }
+  }
+
+  /**
+   * (b) Hosting. The hint is only a claim; a party that merely LOOKS like a
+   * faucet party but lives on another participant is not ours to act for.
+   */
+  private async assertHostedHere(party: string): Promise<void> {
+    if (!(await this.cfg.provisioner.isHostedHere(party))) {
+      throw new TestnetPartyIneligibleError(
+        "party is not hosted on this participant",
+        { party },
+      );
+    }
+  }
+
+  /**
    * Relay a tester's commands under their own party's authority.
    *
    * Order matters and is defensive, cheapest-first:
@@ -518,28 +590,13 @@ export class TestnetOnboardingService {
       );
     }
 
-    // (a) The party id hint. Only parties this faucet minted carry it, so an
-    // operator / admin / lpRegistrar party is refused here, before any lookup.
-    const hint = input.party.split("::")[0] ?? "";
-    if (!input.party.includes("::") || !hint.startsWith(PARTY_HINT_PREFIX)) {
-      throw new TestnetPartyIneligibleError(
-        "this endpoint submits only for parties created by the testnet faucet",
-        { party: input.party },
-      );
-    }
+    this.assertFaucetParty(input.party);
 
     const commands = validateCommands(input.commands);
 
     this.submitQuota.charge(input.clientIp);
 
-    // (b) Hosting. The hint is only a claim; a party that merely LOOKS like a
-    // faucet party but lives on another participant is not ours to act for.
-    if (!(await this.cfg.provisioner.isHostedHere(input.party))) {
-      throw new TestnetPartyIneligibleError(
-        "party is not hosted on this participant",
-        { party: input.party },
-      );
-    }
+    await this.assertHostedHere(input.party);
 
     const receipt = await relay.submit({
       party: input.party,
@@ -553,6 +610,221 @@ export class TestnetOnboardingService {
       updateId: receipt.updateId,
     });
     return receipt;
+  }
+
+  /**
+   * Drive a whole swap for a faucet party: the operator's PoolRules_RequestSwap,
+   * the party's own AllocationFactory_Allocate (through the relay above), and
+   * the operator's PoolRules_Swap. See swap.ts for why this exists at all
+   * rather than the two operator routes simply dropping their token.
+   *
+   * Same defensive, cheapest-first order as `submitForParty`, extended over the
+   * three steps:
+   *   1. the party is one this faucet minted and the amounts parse -- a hostile
+   *      or malformed request is refused before anything is queried;
+   *   2. the quota is charged, so the operator submissions that follow are
+   *      bounded per client and per day;
+   *   3. the participant confirms it hosts the party;
+   *   4. the pool, the price floor and the input holdings are all resolved
+   *      server-side, the holdings from the party's OWN unlocked balance;
+   *   5. request -> relay -> settle, with the settle bound to the allocation the
+   *      relay actually produced.
+   *
+   * A swap spends the submission budget twice: once here for the operator work
+   * it is about to pay for, and once inside `submitForParty` for the relayed
+   * allocation. That is deliberate -- a swap costs the deployment two operator
+   * submissions plus a relay, so it should not be as cheap as a bare relay.
+   */
+  async swapForParty(input: SwapForPartyInput): Promise<TestnetSwapReceipt> {
+    const pool = this.cfg.pool;
+    if (!pool || !this.cfg.relay) {
+      throw new TestnetSubmitUnavailableError(
+        "this deployment has no participant to settle testnet swaps on",
+      );
+    }
+
+    this.assertFaucetParty(input.party);
+
+    // Parse only what has already been shape-checked: parseDecimal assumes a
+    // well-formed decimal string and would throw on anything else.
+    if (!isDecimalString(input.inputAmount)) {
+      throw new TestnetSwapRejectedError(
+        "inputAmount must be a Daml Decimal string",
+        { field: "inputAmount" },
+      );
+    }
+    const inputUnits = dec.parseDecimal(input.inputAmount);
+    if (inputUnits <= 0n) {
+      throw new TestnetSwapRejectedError("inputAmount must be positive", {
+        field: "inputAmount",
+      });
+    }
+    if (input.minOutputAmount !== undefined) {
+      if (
+        !isDecimalString(input.minOutputAmount) ||
+        dec.parseDecimal(input.minOutputAmount) < 0n
+      ) {
+        throw new TestnetSwapRejectedError(
+          "minOutputAmount must be a non-negative Daml Decimal string",
+          { field: "minOutputAmount" },
+        );
+      }
+    }
+
+    this.submitQuota.charge(input.clientIp);
+
+    await this.assertHostedHere(input.party);
+
+    const target = await this.swapPool(pool, input.poolCid);
+    if (
+      input.inputInstrumentId !== target.baseInstrumentId &&
+      input.inputInstrumentId !== target.quoteInstrumentId
+    ) {
+      throw new TestnetSwapRejectedError(
+        "inputInstrumentId is not one of the pool's two instruments",
+        { field: "inputInstrumentId" },
+      );
+    }
+
+    // The security-critical selection: holdings are picked here, from what the
+    // ledger says this party OWNS. A caller-supplied cid would let them fund a
+    // swap with someone else's balance.
+    const holdings = await this.cfg.ledger.query<RegistryHolding>({
+      templateId: REGISTRY_HOLDING_TEMPLATE_ID,
+      observingParty: input.party,
+    });
+    const funding = selectCoveringHoldings(
+      holdings,
+      {
+        owner: input.party,
+        admin: target.admin,
+        instrumentId: input.inputInstrumentId,
+      },
+      inputUnits,
+    );
+    if (!funding.cids || funding.cids.length === 0) {
+      throw new TestnetSwapRejectedError(
+        `insufficient unlocked ${input.inputInstrumentId} balance: ` +
+          `have ${dec.formatDecimal(funding.available)}, need ${input.inputAmount}`,
+        {
+          instrumentId: input.inputInstrumentId,
+          available: dec.formatDecimal(funding.available),
+          required: input.inputAmount,
+        },
+      );
+    }
+
+    // The operator's own quote. It is both what the receipt reports and, when
+    // the caller named no floor, the floor itself -- so an unattended client
+    // cannot be settled into a worse price than it was quoted. The trade-off is
+    // deliberate: with a zero-tolerance floor, another swap landing on the pool
+    // between here and the settle fails this one (502) instead of filling it at
+    // a price nobody quoted. A caller that wants slippage room names its own.
+    const outputAmount = pool.computeQuote(
+      target,
+      input.inputInstrumentId,
+      input.inputAmount,
+    );
+    const minOutputAmount = input.minOutputAmount ?? outputAmount;
+
+    // 1. Operator builds, in Daml, the exact spec the party has to author.
+    const request = await this.operatorStep("request", () =>
+      pool.requestSwap({
+        poolCid: input.poolCid as ContractId<"Pool">,
+        swapper: input.party,
+        inputInstrumentId: input.inputInstrumentId,
+        inputAmount: input.inputAmount,
+      }),
+    );
+
+    // 2. The party authors it, through the same relay a browser would use: the
+    // allowlist re-checks the command, actAs is fixed to this one party, and
+    // the disclosure is the operator's own -- here, exactly the one the request
+    // resolved for the pool's admin.
+    const receipt = await this.submitForParty({
+      party: input.party,
+      commands: [
+        allocateCommand({
+          factoryCid: request.factoryCid,
+          settlement: request.settlement,
+          allocation: request.allocationSpec,
+          inputHoldingCids: funding.cids,
+          party: input.party,
+          requestedAt: new Date().toISOString(),
+          extraArgs: request.allocationFactoryExtraArgs,
+        }),
+      ],
+      clientIp: input.clientIp,
+      resolveDisclosure: async () =>
+        dedupeDisclosure(request.allocationFactoryDisclosure),
+    });
+
+    // 3. Settle against the allocation the relay actually produced -- never one
+    // named by the caller. Falls back to the same updateId discovery the dApp
+    // uses when a receipt carries no created events.
+    const allocationCid = createdAllocationCid(receipt.createdEvents);
+    await this.operatorStep("settle", () =>
+      pool.swap({
+        poolCid: input.poolCid as ContractId<"Pool">,
+        swapperAccount: { owner: input.party, provider: null, id: "" },
+        inputInstrumentId: input.inputInstrumentId,
+        inputAmount: input.inputAmount,
+        minOutputAmount,
+        ...(allocationCid
+          ? { swapperAllocationCid: allocationCid as ContractId<"Allocation"> }
+          : { updateId: receipt.updateId }),
+      }),
+    );
+
+    log.info("settled a testnet swap", {
+      party: input.party,
+      poolId: target.poolId,
+      inputInstrumentId: input.inputInstrumentId,
+      inputAmount: input.inputAmount,
+      outputAmount,
+      holdings: funding.cids.length,
+      updateId: receipt.updateId,
+    });
+    return {
+      updateId: receipt.updateId,
+      inputAmount: input.inputAmount,
+      outputAmount,
+      allocationCid: allocationCid ?? null,
+    };
+  }
+
+  /** The pool this swap runs against, or a 400-shaped refusal. */
+  private async swapPool(pool: PoolService, poolCid: string): Promise<Pool> {
+    const found = (await pool.listActive()).find((p) => p.contractId === poolCid);
+    if (!found) {
+      throw new TestnetSwapRejectedError("unknown or inactive pool", {
+        field: "poolCid",
+      });
+    }
+    return found;
+  }
+
+  /**
+   * Run one operator-authority step and summarize whatever the participant said
+   * about it. The raw text can quote the submitted payload back and this
+   * endpoint is public, so it is logged here and never put on the wire -- the
+   * caller gets the stage and, when one is recognizable, Canton's error id.
+   */
+  private async operatorStep<T>(
+    stage: "request" | "settle",
+    run: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await run();
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      log.warn("testnet swap: an operator step failed", { stage, error: detail });
+      throw new TestnetLedgerError(
+        "ledger_rejected",
+        `the ledger rejected the swap at the ${stage} step`,
+        { stage, ledgerErrorCode: ledgerErrorCode(detail) },
+      );
+    }
   }
 
   private async mint(owner: string, grant: AirdropGrant): Promise<void> {
@@ -577,16 +849,22 @@ export interface TestnetOnboardingDeps {
   userId?: string;
   /** Synchronizer id (CANTON_SYNCHRONIZER) for relayed submissions. */
   synchronizerId?: string;
+  /**
+   * The backend's pool orchestration, for the operator-authority halves of
+   * POST /v1/testnet/swap. Absent -> that one route reports itself unavailable;
+   * the party and submit routes are unaffected.
+   */
+  pool?: PoolService;
   /** Override fetch for tests. */
   fetchImpl?: typeof fetch;
 }
 
 /**
  * Build the service from the environment, or return undefined when the feature
- * is off. This is the single gate: the HTTP layer registers the two testnet
- * routes only when it is handed a service, so with DEX_TESTNET_ONBOARDING
- * unset the paths do not exist at all (404) rather than answering with a
- * "disabled" error.
+ * is off. This is the single gate: the HTTP layer registers the testnet routes
+ * only when it is handed a service, so with DEX_TESTNET_ONBOARDING unset the
+ * paths do not exist at all (404) rather than answering with a "disabled"
+ * error.
  *
  *   DEX_TESTNET_ONBOARDING          "1" to enable. Anything else: off.
  *   DEX_TESTNET_PARTY_DAILY_CAP     global allocations per UTC day (200)
@@ -653,6 +931,7 @@ export function testnetOnboardingFromEnv(
     dailyCap,
     perIpCap,
     submitRelay: relay ? "participant" : "unavailable",
+    swapRoute: relay && deps.pool ? "enabled" : "unavailable",
     submitDailyCap,
     submitPerIpCap,
     airdrops,
@@ -666,6 +945,7 @@ export function testnetOnboardingFromEnv(
     dailyCap,
     perIpCap,
     relay,
+    pool: deps.pool,
     submitDailyCap,
     submitPerIpCap,
   });

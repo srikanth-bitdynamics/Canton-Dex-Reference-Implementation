@@ -9,7 +9,7 @@
 // a new method here is an explicit, auditable extension; the React
 // components below this layer should never reach past it.
 
-import { OperatorApi } from './operator-api';
+import { OperatorApi, type TestnetSwapResult } from './operator-api';
 import { handToWallet } from '@/wallet/handoff';
 import { getProvider } from '@/wallet/registry';
 import { coSignsAdmin } from '@/wallet/capabilities';
@@ -376,6 +376,72 @@ function activeWalletCoSignsAdmin(): boolean {
 }
 
 /**
+ * Whether the connected wallet is a demo party this deployment hosts and signs
+ * for. Its swap runs server-side through the testnet route instead of the
+ * three-call flow — see `executeTestnetHostedSwap`.
+ */
+function activeWalletIsTestnetHosted(): boolean {
+  return useWalletStore.getState().activeProviderId === 'testnet-hosted';
+}
+
+/**
+ * Whole swap for a hosted testnet party, in one call.
+ *
+ * The three-call flow below cannot run from a public browser for this provider:
+ * steps 1 and 3 (`/v1/pools/swap/request` and `/v1/pools/swap`) require the
+ * operator token, and handing that to a page would grant arbitrary operator
+ * writes. The operator hosts this party and already signs for it, so it does
+ * all three steps itself behind `/v1/testnet/swap` — including the input
+ * allocation, which is why no funding normalization happens here. Resolves on
+ * the real settle result, exactly like the flow it replaces.
+ */
+async function executeTestnetHostedSwap(params: {
+  pool: { contractId: string };
+  inputInstrumentId: string;
+  inputAmount: number;
+  minOutputAmount: number;
+  swapperParty: string;
+}): Promise<TestnetSwapResult> {
+  try {
+    return await operator.submitTestnetSwap({
+      party: params.swapperParty,
+      poolCid: params.pool.contractId as ContractId<'Pool'>,
+      inputInstrumentId: params.inputInstrumentId,
+      inputAmount: formatDecimal10(params.inputAmount),
+      minOutputAmount: formatDecimal10(params.minOutputAmount),
+    });
+  } catch (e) {
+    throw new Error(describeTestnetSwapError(e));
+  }
+}
+
+/**
+ * User-actionable copy for the hosted-swap route. The swap card renders
+ * `error.message` verbatim, so translate the states a visitor can actually hit
+ * — a balance too small to fund the input, a party this deployment does not
+ * host, the daily cap, and the route being off (404 when it is not registered,
+ * 501 when the build has it but the deployment does not enable it). Mirrors
+ * `describeSubmitError` in wallet/testnet-hosted-provider.ts; anything else
+ * (including a 502 the ledger rejected) keeps the backend's own wording.
+ */
+function describeTestnetSwapError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (raw.startsWith('400')) {
+    return 'Not enough unlocked balance to fund this swap.';
+  }
+  if (raw.startsWith('403')) {
+    return 'This party is not eligible to swap here. Only parties hosted by this deployment can use the testnet endpoint.';
+  }
+  if (raw.startsWith('429')) {
+    return 'This deployment has reached its daily limit for testnet swaps. Try again later.';
+  }
+  if (raw.startsWith('404') || raw.startsWith('501')) {
+    return 'The testnet endpoint is not enabled on this deployment.';
+  }
+  return `Could not complete the swap through the testnet endpoint: ${raw}`;
+}
+
+/**
  * Resolve the cid of the holding produced by a merge, given the running set of
  * already-consumed cids and the accumulated units. Providers like PartyLayer
  * return only an `updateId` (no `createdHoldingCids`), so we re-query the ACS
@@ -658,6 +724,11 @@ export const ledger = {
     swapperParty: string;
     inputHoldingCids?: string[];
   }) => {
+    // A party this deployment hosts swaps through the single testnet route
+    // instead: the operator signs for that party, so it runs all three steps
+    // server-side. Every other provider takes the three-call flow below.
+    if (activeWalletIsTestnetHosted()) return executeTestnetHostedSwap(params);
+
     // Three-call DvP swap: (1) the operator builds the swapper's input
     // allocation spec in Daml (PoolRules_RequestSwap); (2) the wallet authors
     // that single allocation, locking the trader's input holdings, and returns

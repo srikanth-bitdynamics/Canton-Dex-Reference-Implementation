@@ -111,6 +111,21 @@ const OPERATOR_WRITE_EXACT = new Set<string>([
   // (template, choice) allowlist, disclosure is attached by the operator, and
   // per-IP + global daily caps bound the whole thing. See
   // ../testnet-onboarding/submit.ts.
+  //
+  // Deliberately NOT listed, and the one exemption that covers OPERATOR-
+  // authority writes: POST /v1/testnet/swap. A swap is three transactions and
+  // two of them — /v1/pools/swap/request and /v1/pools/swap, both listed above —
+  // are the operator's. So a faucet party gets through the trader step via
+  // /v1/testnet/submit and then stops. The alternative is dropping the token
+  // from those two operator routes, which would let anyone drive the operator's
+  // swap surface for any party; this route instead performs all three steps for
+  // one faucet party and hands the caller no degree of freedom to abuse:
+  // DEX_TESTNET_ONBOARDING gates its existence, the party must pass the same
+  // faucet-provenance + hosting check the relay applies, the input holdings are
+  // SELECTED server-side from holdings that party owns (never named in the
+  // body), the price floor defaults to the operator's own quote, the trader step
+  // goes through the relay above unchanged, and the same daily caps apply. See
+  // ../testnet-onboarding/swap.ts.
 ]);
 
 const OPERATOR_WRITE_PATTERNS: RegExp[] = [

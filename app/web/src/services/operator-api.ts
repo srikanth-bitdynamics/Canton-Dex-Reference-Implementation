@@ -111,6 +111,23 @@ export interface TestnetSubmitResult {
   createdEvents?: Array<{ contractId: string; templateId: string }>;
 }
 
+/**
+ * What the testnet swap route reports once the swap has settled: the settling
+ * transaction's update id, the amounts that actually moved, and the input
+ * allocation the backend authored for the party on its way there.
+ */
+export interface TestnetSwapResult {
+  updateId: string;
+  inputAmount: Decimal;
+  outputAmount: Decimal;
+  /**
+   * Null when the participant committed the allocation but served no created
+   * events, in which case the backend bound the settle by updateId instead.
+   * The swap still happened; only this handle is unavailable.
+   */
+  allocationCid: ContractId<"Allocation"> | null;
+}
+
 export class OperatorApi {
   constructor(private readonly baseUrl: string) {}
 
@@ -243,6 +260,25 @@ export class OperatorApi {
     signal?: AbortSignal,
   ): Promise<TestnetSubmitResult> {
     return this.post("/v1/testnet/submit", req, signal);
+  }
+
+  /**
+   * Run a whole swap for a party this deployment hosts. A swap is three
+   * transactions and two of them — `/v1/pools/swap/request` and
+   * `/v1/pools/swap` — are operator writes behind the operator token, which a
+   * browser must never hold. For a hosted party the operator already signs, so
+   * it performs all three steps itself behind this one route. Rejects with 403
+   * for a party the deployment does not host, 429 at the cap, and 400 when the
+   * party cannot fund the input.
+   */
+  async submitTestnetSwap(req: {
+    party: Party;
+    poolCid: ContractId<"Pool">;
+    inputInstrumentId: string;
+    inputAmount: Decimal;
+    minOutputAmount?: Decimal;
+  }): Promise<TestnetSwapResult> {
+    return this.post("/v1/testnet/swap", req);
   }
 
   // === admin =================================================================

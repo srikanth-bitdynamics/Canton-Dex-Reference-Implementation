@@ -32,6 +32,7 @@
 //     POST /v1/testnet/party            -> { partyId, airdrops }
 //     GET  /v1/testnet/hosting?party=:p -> { hostedHere }
 //     POST /v1/testnet/submit           -> { updateId, createdEvents }
+//     POST /v1/testnet/swap             -> { updateId, inputAmount, outputAmount, allocationCid }
 //
 // The dApp polls the ledger event stream directly for live state; the
 // HTTP API is for one-shot orchestration calls only. Trader-authority
@@ -61,6 +62,7 @@ import {
   TestnetPartyIneligibleError,
   TestnetSubmitUnavailableError,
 } from "../testnet-onboarding/submit.js";
+import { TestnetSwapRejectedError } from "../testnet-onboarding/swap.js";
 import { rootLogger } from "../lib/logger.js";
 
 const httpLog = rootLogger.child({ component: "http" });
@@ -1324,6 +1326,74 @@ async function routeRequest(
       if (e instanceof TestnetLedgerError) {
         // Summarized on purpose: the participant's own error text can quote the
         // submitted payload back, and this response is public.
+        throw new HttpError(502, e.code, e.message, e.details);
+      }
+      throw e;
+    }
+    return;
+  }
+
+  // Public, unauthenticated, and the only route on this server that drives an
+  // operator-authority write for an anonymous caller. It exists because a swap
+  // is three transactions and two of them are the operator's: without it a
+  // faucet party can author its allocation (above) and then has nowhere to go.
+  // Exempting POST /v1/pools/swap/request + POST /v1/pools/swap from the
+  // operator token instead would open those for ANY party; this route takes the
+  // party, pool and amounts from a validated body, selects the party's own
+  // holdings server-side, and can do nothing else. See
+  // ../testnet-onboarding/swap.ts; the deliberate absence of the operator token
+  // is noted in ./auth.ts.
+  if (onboarding && method === "POST" && path === "/v1/testnet/swap") {
+    const body = await readValidatedJson<{
+      party: string;
+      poolCid: string;
+      inputInstrumentId: string;
+      inputAmount: string;
+      minOutputAmount?: unknown;
+    }>(req, "POST /v1/testnet/swap", callerAuth);
+    // Optional, so the route spec cannot declare it; held to the same
+    // string-typed Decimal rule the spec applies to the required amounts.
+    const minOutputAmount = body.minOutputAmount;
+    if (
+      minOutputAmount !== undefined &&
+      minOutputAmount !== null &&
+      typeof minOutputAmount !== "string"
+    ) {
+      badRequest("minOutputAmount must be a Daml Decimal string when present", {
+        field: "minOutputAmount",
+      });
+    }
+    try {
+      // Rebuilt field by field: `inputHoldingCids`, `actAs`, `swapperAccount`
+      // and anything else a caller attached are not read, here or below.
+      const receipt = await onboarding.swapForParty({
+        party: expectString(body, "party"),
+        poolCid: expectString(body, "poolCid"),
+        inputInstrumentId: expectString(body, "inputInstrumentId"),
+        inputAmount: expectString(body, "inputAmount"),
+        ...(typeof minOutputAmount === "string" ? { minOutputAmount } : {}),
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+      });
+      respondJson(res, 200, receipt);
+    } catch (e) {
+      if (e instanceof TestnetSwapRejectedError) {
+        throw new HttpError(400, "bad_request", e.message, e.details);
+      }
+      if (e instanceof TestnetCommandRejectedError) {
+        throw new HttpError(400, "bad_request", e.message, e.details);
+      }
+      if (e instanceof TestnetPartyIneligibleError) {
+        throw new HttpError(403, "forbidden", e.message, e.details);
+      }
+      if (e instanceof OnboardingThrottleError) {
+        throw new HttpError(429, "too_many_requests", e.message, e.details);
+      }
+      if (e instanceof TestnetSubmitUnavailableError) {
+        throw new HttpError(501, "not_implemented", e.message);
+      }
+      if (e instanceof TestnetLedgerError) {
+        // Summarized on purpose, on both the relayed and the operator steps:
+        // the participant's error text can quote the payload back.
         throw new HttpError(502, e.code, e.message, e.details);
       }
       throw e;

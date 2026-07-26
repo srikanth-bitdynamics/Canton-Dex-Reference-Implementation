@@ -404,8 +404,9 @@ export class JsonApiCommandRelay implements TestnetCommandRelay {
  * Canton's error id out of a participant error body (`CONTRACT_NOT_FOUND`,
  * `DAML_AUTHORIZATION_ERROR`, ...). Returns undefined when none is recognized,
  * which is the safe direction: the caller gets a status and nothing else rather
- * than a slice of their own payload echoed back.
+ * than a slice of their own payload echoed back. Exported so the operator-side
+ * steps of the testnet swap summarize their failures the same way.
  */
-function ledgerErrorCode(text: string): string | undefined {
+export function ledgerErrorCode(text: string): string | undefined {
   return /\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b/.exec(text)?.[1];
 }

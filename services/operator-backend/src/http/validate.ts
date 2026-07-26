@@ -204,6 +204,18 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
     required: ["party", "commands"],
     parties: ["party"],
   },
+  // Testnet hosted-party swap. Same treatment as the relay above: `party` is
+  // checked for the canonical form here and for faucet provenance + hosting by
+  // the service. `minOutputAmount` is optional (absent = the operator's own
+  // quote is the floor) so it is checked in the service rather than declared
+  // required here. Nothing else in the body is read -- the input holdings, the
+  // allocation and the settle's authority are all server-side.
+  "POST /v1/testnet/swap": {
+    required: ["party", "poolCid", "inputInstrumentId", "inputAmount"],
+    decimals: ["inputAmount"],
+    parties: ["party"],
+    cids: ["poolCid"],
+  },
   "POST /v1/swaps/quote": {
     required: ["poolId", "inputInstrumentId", "inputAmount"],
     decimals: ["inputAmount"],

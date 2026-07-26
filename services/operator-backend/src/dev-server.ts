@@ -405,8 +405,14 @@ async function main(): Promise<void> {
 
   // Party faucet, off unless DEX_TESTNET_ONBOARDING=1. With no participant
   // URL/token it falls back to the in-memory provisioner, so the whole
-  // onboarding flow is exercisable here without Canton.
-  const testnetOnboarding = testnetOnboardingFromEnv({ ledger, admin });
+  // onboarding flow is exercisable here without Canton. The hosted-party swap
+  // still reports itself unavailable: it needs a relay, and this ledger has
+  // nothing to relay to.
+  const testnetOnboarding = testnetOnboardingFromEnv({
+    ledger,
+    admin,
+    pool: backend.pool,
+  });
 
   const port = Number(process.env.PORT ?? 8080);
   const { url } = startHttpServer({

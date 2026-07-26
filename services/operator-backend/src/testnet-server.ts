@@ -199,6 +199,10 @@ async function main(): Promise<void> {
     // commands and need the transaction tree back), so they need the same
     // synchronizer id the JsonApiLedger envelope carries.
     synchronizerId: process.env.CANTON_SYNCHRONIZER,
+    // The two operator-authority halves of a hosted-party swap
+    // (PoolRules_RequestSwap / PoolRules_Swap) run through the same pool
+    // service the token-gated routes use.
+    pool: backend.pool,
   });
 
   const indexer = new Indexer(db, ledger, {

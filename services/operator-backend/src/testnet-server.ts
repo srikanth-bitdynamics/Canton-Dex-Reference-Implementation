@@ -31,7 +31,7 @@ import { IdempotentLedger } from "./indexer/idempotency.js";
 import { DealersService } from "./dealers/index.js";
 import { testnetOnboardingFromEnv } from "./testnet-onboarding/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
+import type { ChoiceContextRef, ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { rootLogger } from "./lib/logger.js";
 
 const log = rootLogger.child({ component: "testnet-server" });
@@ -47,22 +47,79 @@ function required(name: string): string {
 
 // Lightweight registry client: returns the configured factory CIDs for
 // every admin. Production deployments use a real registry index.
+//
+// It also discloses the registry contract. Registry.V2 is `observer users`
+// and that list is fixed at creation, so a party outside it -- every party the
+// testnet faucet hands out -- cannot see the factory it has to exercise, and
+// its allocation fails with CONTRACT_NOT_FOUND. Explicit contract disclosure
+// is the supported way through: attach the contract's createdEventBlob to the
+// submission. A real registry serves this from its off-ledger API alongside
+// factoryId and choiceContextData; here it is read straight off the ledger,
+// which is the same data by a shorter path.
 class FixedRegistry extends RegistryClient {
+  private cached: DisclosedContract[] | null = null;
+
   constructor(
     private readonly allocCid: ContractId<"AllocationFactory">,
     private readonly settleCid: ContractId<"SettlementFactory">,
+    private readonly ledgerBaseUrl: string,
+    private readonly ledgerToken: string,
+    private readonly adminParty: string,
   ) {
     super({ baseUrl: "http://fixed-registry" });
   }
+
+  /** The Registry contract, disclosed so non-observers can exercise its factories. */
+  private async registryDisclosure(): Promise<DisclosedContract[]> {
+    if (this.cached) return this.cached;
+    const hdrs = { Authorization: `Bearer ${this.ledgerToken}`, "Content-Type": "application/json" };
+    const endRes = await fetch(`${this.ledgerBaseUrl}/v2/state/ledger-end`, { headers: hdrs });
+    const { offset } = (await endRes.json()) as { offset: number };
+    const res = await fetch(`${this.ledgerBaseUrl}/v2/state/active-contracts`, {
+      method: "POST",
+      headers: hdrs,
+      body: JSON.stringify({
+        verbose: false,
+        activeAtOffset: offset,
+        filter: { filtersByParty: { [this.adminParty]: { cumulative: [
+          { identifierFilter: { TemplateFilter: { value: {
+            // ACS filters take the package-NAME form.
+            templateId: "#canton-dex-trading:CantonDex.Registry.V2:Registry",
+            includeCreatedEventBlob: true,
+          } } } },
+        ] } } },
+      }),
+    });
+    const body = (await res.json()) as Array<{
+      contractEntry?: { JsActiveContract?: { createdEvent?: {
+        contractId: string; templateId: string; createdEventBlob?: string;
+      } } };
+    }>;
+    const ev = body
+      .map((e) => e.contractEntry?.JsActiveContract?.createdEvent)
+      .find((c) => c?.contractId === this.allocCid && c?.createdEventBlob);
+    if (!ev?.createdEventBlob) {
+      log.warn("registry createdEventBlob unavailable; parties outside the registry's " +
+        "observer list will not be able to allocate", { registryCid: this.allocCid });
+      return [];
+    }
+    // The disclosed templateId must carry the resolved package id -- the
+    // `#package-name` form used in the filter above is rejected here.
+    this.cached = [{
+      templateId: ev.templateId, contractId: ev.contractId, createdEventBlob: ev.createdEventBlob,
+    }];
+    return this.cached;
+  }
+
   override async getFactories() {
     return {
       allocationFactoryCid: this.allocCid,
       settlementFactoryCid: this.settleCid,
-      disclosure: [] as never[],
+      disclosure: await this.registryDisclosure(),
     };
   }
   override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
+    return { context: { values: {} }, disclosure: await this.registryDisclosure() };
   }
 }
 
@@ -99,7 +156,7 @@ async function main(): Promise<void> {
 
   const backend = new OperatorBackend({
     ledger,
-    registry: new FixedRegistry(allocCid, settleCid),
+    registry: new FixedRegistry(allocCid, settleCid, baseUrl, token, admin),
     operatorParty: operator,
   });
 

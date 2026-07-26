@@ -368,10 +368,14 @@ async function routeRequest(
         context: choiceContext.context,
         meta: { values: {} },
       },
+      // Deduplicated by contract id: a registry may legitimately return the
+      // same disclosed contract from both calls (the factory contract is often
+      // also what the choice context needs), and the participant rejects a
+      // submission that discloses the same contract twice.
       allocationFactoryDisclosure: [
         ...factories.disclosure,
         ...choiceContext.disclosure,
-      ],
+      ].filter((d, i, all) => all.findIndex((o) => o.contractId === d.contractId) === i),
     });
     return;
   }

@@ -32,7 +32,7 @@ production build:
 
 | Component | Flag | Notes |
 | --- | --- | --- |
-| `POST /v1/testnet/party`, `GET /v1/testnet/hosting` | `DEX_TESTNET_ONBOARDING=1` | routes are not registered at all when unset |
+| `POST /v1/testnet/party`, `GET /v1/testnet/hosting`, `POST /v1/testnet/submit` | `DEX_TESTNET_ONBOARDING=1` | routes are not registered at all when unset |
 | `testnet-hosted` wallet provider + hosting notice | `VITE_ENABLE_TESTNET_PARTY=1` | absent from the provider registry when unset |
 
 ## The faucet is a public write endpoint
@@ -50,6 +50,30 @@ from the open internet. Topology entries are permanent. Before enabling it, conf
 - the per-IP and daily caps are set, and the per-IP cap actually sees real client
   addresses (see the proxy note below);
 - airdrop amounts are capped.
+
+## So is the submit relay
+
+A faucet party lives on the operator's participant, so the tester's browser has
+no way to submit for it — `POST /v1/testnet/submit` does that on their behalf,
+also unauthenticated. It is not `/v1/wallet/submit`: that route relays arbitrary
+commands under the operator's JWT and is gated by `DEX_OPERATOR_API_TOKEN`, which
+cannot be shipped to a browser. The relay is safe only because the request has no
+say in anything that matters. Before enabling it, confirm:
+
+- the submission acts as **exactly the party in the request body**, and only
+  after that party has been checked to (a) carry the faucet's `dex-tester-`
+  prefix and (b) be hosted on this participant. `actAs`, `readAs` and `userId`
+  are never read from the body;
+- commands are restricted to an **allowlist** of `(template, choice)` pairs — the
+  allocation and holding choices a trader needs — and capped in number per
+  request. A `CreateCommand`, or any other choice, is refused with `400`;
+- disclosed contracts are attached **server-side** from the operator's own
+  registry, never taken from the body;
+- per-IP and daily caps apply (`DEX_TESTNET_SUBMIT_IP_DAILY_CAP`,
+  `DEX_TESTNET_SUBMIT_DAILY_CAP`), read through the same proxy rule as the
+  faucet's;
+- participant error text is summarized, not echoed: a public response must not
+  quote the submitted payload back.
 
 ### Proxy note
 

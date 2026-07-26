@@ -61,6 +61,7 @@ describe("no duplicate route registration", () => {
     for (const route of [
       "POST /v1/testnet/party",
       "GET /v1/testnet/hosting",
+      "POST /v1/testnet/submit",
     ]) {
       assert.ok(guards.includes(route), `missing route: ${route}`);
     }

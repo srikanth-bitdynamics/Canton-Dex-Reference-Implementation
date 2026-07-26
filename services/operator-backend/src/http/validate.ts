@@ -196,6 +196,14 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
   "POST /v1/testnet/party": {
     required: [],
   },
+  // Testnet hosted-party submit relay. `party` is checked for the canonical
+  // form here and for faucet provenance + hosting by the service; `commands`
+  // is checked against the choice allowlist there. Nothing else in the body is
+  // read — actAs, readAs, userId and disclosed contracts are all server-set.
+  "POST /v1/testnet/submit": {
+    required: ["party", "commands"],
+    parties: ["party"],
+  },
   "POST /v1/swaps/quote": {
     required: ["poolId", "inputInstrumentId", "inputAmount"],
     decimals: ["inputAmount"],

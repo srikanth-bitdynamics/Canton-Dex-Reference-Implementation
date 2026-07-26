@@ -35,14 +35,28 @@
 // rotates on every mint -- see registry-mint.ts. The registry and its
 // instruments are bootstrap state: when either is missing the request fails
 // loudly (503) naming the bootstrap step rather than registering anything.
+//
+// The party is only half of what a tester needs: it lives on the operator's
+// participant, so the browser cannot submit for it. `submitForParty` is the
+// other half -- a narrow public relay whose command allowlist and server-set
+// actAs live in submit.ts.
 
 import { randomUUID } from "node:crypto";
 
+import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { LedgerSubmitter } from "../ledger/index.js";
 import { isDecimalString } from "../http/validate.js";
 import type { Party } from "../types.js";
 import { rootLogger } from "../lib/logger.js";
 import { RegistryMinter } from "./registry-mint.js";
+import {
+  JsonApiCommandRelay,
+  TestnetPartyIneligibleError,
+  TestnetSubmitUnavailableError,
+  validateCommands,
+  type TestnetCommandRelay,
+  type TestnetSubmitReceipt,
+} from "./submit.js";
 
 const log = rootLogger.child({ component: "testnet-onboarding" });
 
@@ -59,6 +73,12 @@ const MAX_AIRDROP_AMOUNT = 1_000_000;
 const DEFAULT_AIRDROP_SPEC = "dUSD:10000";
 const DEFAULT_DAILY_CAP = 200;
 const DEFAULT_PER_IP_DAILY_CAP = 3;
+
+// Submissions are far cheaper than party allocations -- they leave no permanent
+// topology entry -- and a single trade costs several, so they get their own,
+// much looser budget rather than sharing the allocation caps.
+const DEFAULT_SUBMIT_DAILY_CAP = 2000;
+const DEFAULT_SUBMIT_PER_IP_DAILY_CAP = 200;
 
 /** One instrument's faucet grant, as returned to the caller. */
 export interface AirdropGrant {
@@ -324,6 +344,9 @@ function positiveIntEnv(name: string, fallback: number): number {
  * and both held in process memory (a testnet faucet does not need the counts
  * to survive a restart). The per-IP cap is what stops one tester draining the
  * global budget; the global cap bounds the participant's party table.
+ *
+ * `subject` names what is being charged ("party", "submission") so the two
+ * budgets this service keeps produce their own messages.
  */
 class OnboardingQuota {
   private day = "";
@@ -331,24 +354,25 @@ class OnboardingQuota {
   private perIp = new Map<string, number>();
 
   constructor(
+    private readonly subject: string,
     private readonly dailyCap: number,
     private readonly perIpCap: number,
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** Charge one allocation to `ip`. Throws when either cap is exhausted. */
+  /** Charge one unit to `ip`. Throws when either cap is exhausted. */
   charge(ip: string): void {
     this.rollOver();
     const used = this.perIp.get(ip) ?? 0;
     if (used >= this.perIpCap) {
       throw new OnboardingThrottleError(
-        `testnet party quota exhausted for this client (${this.perIpCap}/day)`,
+        `testnet ${this.subject} quota exhausted for this client (${this.perIpCap}/day)`,
         { scope: "ip", cap: this.perIpCap },
       );
     }
     if (this.globalCount >= this.dailyCap) {
       throw new OnboardingThrottleError(
-        `testnet party daily cap reached (${this.dailyCap}/day)`,
+        `testnet ${this.subject} daily cap reached (${this.dailyCap}/day)`,
         { scope: "global", cap: this.dailyCap },
       );
     }
@@ -378,6 +402,16 @@ export interface TestnetOnboardingConfig {
   dailyCap: number;
   /** Parties allocated per UTC day per client address. */
   perIpCap: number;
+  /**
+   * Relay for hosted-party submissions. Absent on a deployment with no
+   * participant behind it (the in-memory dev server), where submitting is
+   * simply not a thing this process can do.
+   */
+  relay?: TestnetCommandRelay;
+  /** Submissions relayed per UTC day across all callers. */
+  submitDailyCap: number;
+  /** Submissions relayed per UTC day per client address. */
+  submitPerIpCap: number;
   /** Injectable clock for the quota window (tests). */
   now?: () => number;
 }
@@ -389,12 +423,39 @@ export interface CreatePartyInput {
   label?: string;
 }
 
+export interface SubmitForPartyInput {
+  /** Party to act as. Accepted only if this faucet minted and hosts it. */
+  party: string;
+  /** Raw `commands` from the request body; validated against the allowlist. */
+  commands: unknown;
+  /** Client address the request is charged to. */
+  clientIp: string;
+  /**
+   * Registry disclosure, resolved server-side. A thunk so the round-trip is
+   * only paid once the request has earned it -- and so there is no path by
+   * which a caller-supplied blob could arrive here.
+   */
+  resolveDisclosure: () => Promise<DisclosedContract[]>;
+}
+
 export class TestnetOnboardingService {
   private readonly quota: OnboardingQuota;
+  private readonly submitQuota: OnboardingQuota;
   private readonly minter: RegistryMinter;
 
   constructor(private readonly cfg: TestnetOnboardingConfig) {
-    this.quota = new OnboardingQuota(cfg.dailyCap, cfg.perIpCap, cfg.now);
+    this.quota = new OnboardingQuota(
+      "party",
+      cfg.dailyCap,
+      cfg.perIpCap,
+      cfg.now,
+    );
+    this.submitQuota = new OnboardingQuota(
+      "submission",
+      cfg.submitDailyCap,
+      cfg.submitPerIpCap,
+      cfg.now,
+    );
     this.minter = new RegistryMinter({ ledger: cfg.ledger, admin: cfg.admin });
   }
 
@@ -429,6 +490,71 @@ export class TestnetOnboardingService {
     return this.cfg.provisioner.isHostedHere(party);
   }
 
+  /** Can this deployment relay submissions at all? False on the dev server. */
+  canSubmit(): boolean {
+    return this.cfg.relay !== undefined;
+  }
+
+  /**
+   * Relay a tester's commands under their own party's authority.
+   *
+   * Order matters and is defensive, cheapest-first:
+   *   1. the party is one this faucet minted (a string check, no I/O) and the
+   *      commands are all on the allowlist -- a malformed or hostile request is
+   *      rejected before it can cost the deployment anything;
+   *   2. the quota is charged, so what follows -- a participant round-trip and
+   *      a ledger submission -- is bounded per client and per day;
+   *   3. the participant confirms it actually hosts the party;
+   *   4. the disclosure is resolved server-side and the submission goes out as
+   *      exactly this one party.
+   */
+  async submitForParty(
+    input: SubmitForPartyInput,
+  ): Promise<TestnetSubmitReceipt> {
+    const relay = this.cfg.relay;
+    if (!relay) {
+      throw new TestnetSubmitUnavailableError(
+        "this deployment has no participant to relay testnet submissions to",
+      );
+    }
+
+    // (a) The party id hint. Only parties this faucet minted carry it, so an
+    // operator / admin / lpRegistrar party is refused here, before any lookup.
+    const hint = input.party.split("::")[0] ?? "";
+    if (!input.party.includes("::") || !hint.startsWith(PARTY_HINT_PREFIX)) {
+      throw new TestnetPartyIneligibleError(
+        "this endpoint submits only for parties created by the testnet faucet",
+        { party: input.party },
+      );
+    }
+
+    const commands = validateCommands(input.commands);
+
+    this.submitQuota.charge(input.clientIp);
+
+    // (b) Hosting. The hint is only a claim; a party that merely LOOKS like a
+    // faucet party but lives on another participant is not ours to act for.
+    if (!(await this.cfg.provisioner.isHostedHere(input.party))) {
+      throw new TestnetPartyIneligibleError(
+        "party is not hosted on this participant",
+        { party: input.party },
+      );
+    }
+
+    const receipt = await relay.submit({
+      party: input.party,
+      commands,
+      disclosedContracts: await input.resolveDisclosure(),
+    });
+    log.info("relayed testnet submission", {
+      party: input.party,
+      commands: commands.length,
+      choices: commands.map((c) => c.ExerciseCommand.choice),
+      updateId: receipt.updateId,
+    });
+    return receipt;
+  }
+
   private async mint(owner: string, grant: AirdropGrant): Promise<void> {
     // Goes through Registry_Mint so the tester ends up with a V2 holding the
     // swap path can actually allocate. The minter owns the config-cid
@@ -449,6 +575,8 @@ export interface TestnetOnboardingDeps {
    * which acts as the tester's party, is permitted for that user.
    */
   userId?: string;
+  /** Synchronizer id (CANTON_SYNCHRONIZER) for relayed submissions. */
+  synchronizerId?: string;
   /** Override fetch for tests. */
   fetchImpl?: typeof fetch;
 }
@@ -463,6 +591,8 @@ export interface TestnetOnboardingDeps {
  *   DEX_TESTNET_ONBOARDING          "1" to enable. Anything else: off.
  *   DEX_TESTNET_PARTY_DAILY_CAP     global allocations per UTC day (200)
  *   DEX_TESTNET_PARTY_IP_DAILY_CAP  per-client allocations per UTC day (3)
+ *   DEX_TESTNET_SUBMIT_DAILY_CAP    global submissions per UTC day (2000)
+ *   DEX_TESTNET_SUBMIT_IP_DAILY_CAP per-client submissions per UTC day (200)
  *   DEX_TESTNET_AIRDROP             "<instrumentId>:<amount>,..." (dUSD:10000)
  *
  * Prerequisite: every instrument named in DEX_TESTNET_AIRDROP must already be
@@ -486,6 +616,20 @@ export function testnetOnboardingFromEnv(
         })
       : new InMemoryPartyProvisioner();
 
+  // Relaying needs a real participant: the in-memory dev ledger has no
+  // submit-and-wait endpoint and no transaction trees to read back, so the dev
+  // server simply has no submit route (501) rather than a fake one.
+  const relay =
+    deps.ledgerUrl && deps.ledgerToken
+      ? new JsonApiCommandRelay({
+          baseUrl: deps.ledgerUrl,
+          token: deps.ledgerToken,
+          userId: deps.userId,
+          synchronizerId: deps.synchronizerId,
+          fetchImpl: deps.fetchImpl,
+        })
+      : undefined;
+
   const airdrops = parseAirdropSpec(process.env.DEX_TESTNET_AIRDROP);
   const dailyCap = positiveIntEnv(
     "DEX_TESTNET_PARTY_DAILY_CAP",
@@ -495,11 +639,22 @@ export function testnetOnboardingFromEnv(
     "DEX_TESTNET_PARTY_IP_DAILY_CAP",
     DEFAULT_PER_IP_DAILY_CAP,
   );
+  const submitDailyCap = positiveIntEnv(
+    "DEX_TESTNET_SUBMIT_DAILY_CAP",
+    DEFAULT_SUBMIT_DAILY_CAP,
+  );
+  const submitPerIpCap = positiveIntEnv(
+    "DEX_TESTNET_SUBMIT_IP_DAILY_CAP",
+    DEFAULT_SUBMIT_PER_IP_DAILY_CAP,
+  );
 
   log.info("testnet party onboarding enabled", {
     provisioner: provisioner instanceof JsonApiPartyProvisioner ? "participant" : "in-memory",
     dailyCap,
     perIpCap,
+    submitRelay: relay ? "participant" : "unavailable",
+    submitDailyCap,
+    submitPerIpCap,
     airdrops,
   });
 
@@ -510,5 +665,8 @@ export function testnetOnboardingFromEnv(
     airdrops,
     dailyCap,
     perIpCap,
+    relay,
+    submitDailyCap,
+    submitPerIpCap,
   });
 }

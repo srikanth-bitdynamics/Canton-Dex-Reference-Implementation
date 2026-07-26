@@ -101,6 +101,16 @@ export interface TestnetPartyResult {
   airdrops: TestnetAirdrop[];
 }
 
+/**
+ * What the testnet relay reports for a submitted tree. `createdEvents` is the
+ * transaction's created contracts; it is optional here so a caller can still
+ * fall back to operator-discovery from the `updateId` alone.
+ */
+export interface TestnetSubmitResult {
+  updateId: string;
+  createdEvents?: Array<{ contractId: string; templateId: string }>;
+}
+
 export class OperatorApi {
   constructor(private readonly baseUrl: string) {}
 
@@ -201,7 +211,7 @@ export class OperatorApi {
 
   // === testnet onboarding ====================================================
   //
-  // Both routes are testnet-only: the backend registers them only when it runs
+  // These routes are testnet-only: the backend registers them only when it runs
   // with DEX_TESTNET_ONBOARDING=1, so on any other deployment they 404.
 
   /**
@@ -220,6 +230,19 @@ export class OperatorApi {
     return this.get(
       `/v1/testnet/hosting?party=${encodeURIComponent(party)}`,
     );
+  }
+
+  /**
+   * Submit a command tree for a party this deployment hosts. The body carries
+   * the party and the commands only: the backend owns actAs/readAs, the user id
+   * and the disclosures, so the browser needs no operator credential. Rejects
+   * with 403 for a party the deployment does not host and 429 at the cap.
+   */
+  async submitTestnetCommands(
+    req: { party: Party; commands: unknown[] },
+    signal?: AbortSignal,
+  ): Promise<TestnetSubmitResult> {
+    return this.post("/v1/testnet/submit", req, signal);
   }
 
   // === admin =================================================================
@@ -286,11 +309,16 @@ export class OperatorApi {
     return (await res.json()) as T;
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
+  private async post<T>(
+    path: string,
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     return (await res.json()) as T;

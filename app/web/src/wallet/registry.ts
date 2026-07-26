@@ -122,7 +122,7 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   if (enableTestnetParty) {
     map.set(
       "testnet-hosted",
-      new TestnetHostedProvider(apiBase, packagePrefix, new OperatorApi(apiBase)),
+      new TestnetHostedProvider(packagePrefix, new OperatorApi(apiBase)),
     );
   }
   map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));

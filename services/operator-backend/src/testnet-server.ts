@@ -195,6 +195,10 @@ async function main(): Promise<void> {
     ledgerUrl: baseUrl,
     ledgerToken: token,
     userId,
+    // Relayed submissions go to submit-and-wait directly (they carry several
+    // commands and need the transaction tree back), so they need the same
+    // synchronizer id the JsonApiLedger envelope carries.
+    synchronizerId: process.env.CANTON_SYNCHRONIZER,
   });
 
   const indexer = new Indexer(db, ledger, {

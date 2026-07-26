@@ -8,13 +8,15 @@
 // can only issue holdings to parties this validator hosts.
 //
 // This is NOT a self-custody wallet. The party lives on the operator's
-// participant and the operator signs for it, so writes are relayed through the
-// backend's /v1/wallet/submit endpoint — the same transport the token-standard
-// relay uses. The provider is registered only when VITE_ENABLE_TESTNET_PARTY=1,
-// and the backend routes only exist when DEX_TESTNET_ONBOARDING=1, so it cannot
-// appear in a mainnet build.
+// participant and the operator signs for it, so writes go to the backend's
+// testnet-only POST /v1/testnet/submit. That endpoint takes the party and the
+// commands and nothing else — it fills in actAs/readAs, the user id and the
+// disclosures itself — so this provider never needs the operator token the
+// general-purpose relay requires. The provider is registered only when
+// VITE_ENABLE_TESTNET_PARTY=1, and the backend routes only exist when
+// DEX_TESTNET_ONBOARDING=1, so it cannot appear in a mainnet build.
 //
-// Result shape: full-tree AND updateId. The relay returns the transaction's
+// Result shape: full-tree AND updateId. The endpoint returns the transaction's
 // created events, so DvP intents get their real `createdAllocationCids`; the
 // `updateId` is also surfaced so any flow can fall back to operator-discovery
 // (and so a backend that does not return created events still settles).
@@ -28,9 +30,9 @@ import {
 import type {
   TestnetAirdrop,
   TestnetPartyResult,
+  TestnetSubmitResult,
 } from "@/services/operator-api";
 import type {
-  DisclosedContract,
   WalletAccount,
   WalletConnectionStatus,
   WalletIntent,
@@ -43,30 +45,21 @@ const LS_KEY = "canton-dex:testnet-hosted:session";
 // wallet pill should say what the party IS, not what the button did.
 const CONNECTED_LABEL = "Testnet party (demo)";
 const SUBMIT_TIMEOUT_MS = 60_000;
-const SYNCHRONIZER_ID =
-  (import.meta.env.VITE_CANTON_SYNCHRONIZER as string | undefined) ?? "";
-const USER_ID =
-  (import.meta.env.VITE_CANTON_USER_ID as string | undefined) ??
-  "ledger-api-user";
 const ALLOCATION_TEMPLATE_SUFFIX = "CantonDex.Registry.V2:Allocation";
 const HOLDING_TEMPLATE_SUFFIX = "CantonDex.Registry.V2:Holding";
 
-/** The one operator-backend call this provider needs (injected for tests). */
+/** The operator-backend calls this provider needs (injected for tests). */
 export interface TestnetPartyClient {
   createTestnetParty(req: { label?: string }): Promise<TestnetPartyResult>;
+  submitTestnetCommands(
+    req: { party: string; commands: unknown[] },
+    signal?: AbortSignal,
+  ): Promise<TestnetSubmitResult>;
 }
 
 interface PersistedSession {
   party: string;
   airdrops: TestnetAirdrop[];
-}
-
-interface RelaySubmitResponse {
-  updateId: string;
-  completionOffset?: number;
-  // The relay follows the transaction tree and returns its created contracts,
-  // so DvP intents can recover the allocation cids the settle needs.
-  createdEvents?: Array<{ contractId: string; templateId: string }>;
 }
 
 export class TestnetHostedProvider implements WalletProvider {
@@ -78,7 +71,6 @@ export class TestnetHostedProvider implements WalletProvider {
   private session: PersistedSession | null = null;
 
   constructor(
-    private readonly apiBase: string,
     private readonly packagePrefix: string,
     private readonly client: TestnetPartyClient,
   ) {
@@ -162,9 +154,9 @@ export class TestnetHostedProvider implements WalletProvider {
       packagePrefix: this.packagePrefix,
       now: () => new Date(),
     });
-    const result = await this.relaySubmit(composed);
+    const result = await this.submitCommands(party, composed);
     const created = result.createdEvents ?? [];
-    // Only claim created cids when the relay actually reported the tree;
+    // Only claim created cids when the backend actually reported the tree;
     // otherwise leave them out and let the operator recover them from the
     // updateId rather than failing the count check.
     const createdAllocationCids =
@@ -193,34 +185,23 @@ export class TestnetHostedProvider implements WalletProvider {
     };
   }
 
-  // The operator's participant hosts this party, so the backend relay submits
-  // the composed tree on its behalf.
-  private async relaySubmit(
+  // The operator's participant hosts this party, so the backend submits the
+  // composed tree on its behalf. Only the party and the commands go on the
+  // wire: actAs/readAs, the user id and the disclosures are the backend's to
+  // decide, and the composed values for them are deliberately dropped here.
+  private async submitCommands(
+    party: string,
     composed: ComposedCommands,
-  ): Promise<RelaySubmitResponse> {
-    const body = {
-      commands: composed.commands,
-      userId: USER_ID,
-      actAs: composed.actAs,
-      commandId: composed.commandId,
-      synchronizerId: SYNCHRONIZER_ID || undefined,
-      disclosedContracts: (composed.disclosedContracts ??
-        []) as DisclosedContract[],
-    };
+  ): Promise<TestnetSubmitResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
     try {
-      const res = await fetch(`${this.apiBase}/v1/wallet/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      const text = await res.text();
-      if (!res.ok) {
-        throw new Error(`wallet/submit ${res.status}: ${text.slice(0, 400)}`);
-      }
-      return JSON.parse(text) as RelaySubmitResponse;
+      return await this.client.submitTestnetCommands(
+        { party, commands: composed.commands },
+        controller.signal,
+      );
+    } catch (e) {
+      throw new Error(describeSubmitError(e));
     } finally {
       clearTimeout(timer);
     }
@@ -241,4 +222,25 @@ function describeConnectError(err: unknown): string {
     return "This deployment has reached its daily limit for new testnet parties. Try again later.";
   }
   return `Could not create a testnet party: ${raw}`;
+}
+
+/**
+ * Same treatment for the submit path: the client throws `<status>: <body>` and
+ * the swap/liquidity cards render `error.message` verbatim, so name the three
+ * states a visitor can hit — a party this deployment does not host, the daily
+ * cap, and the route being off (404 when it is not registered, 501 when the
+ * build has it but the deployment does not enable it).
+ */
+function describeSubmitError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (raw.startsWith("403")) {
+    return "This party is not eligible to submit here. Only parties hosted by this deployment can use the testnet endpoint.";
+  }
+  if (raw.startsWith("429")) {
+    return "This deployment has reached its daily limit for testnet submissions. Try again later.";
+  }
+  if (raw.startsWith("404") || raw.startsWith("501")) {
+    return "The testnet endpoint is not enabled on this deployment.";
+  }
+  return `Could not submit through the testnet endpoint: ${raw}`;
 }

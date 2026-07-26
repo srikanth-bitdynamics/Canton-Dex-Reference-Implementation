@@ -31,6 +31,7 @@
 //   Testnet-only party faucet (registered only under DEX_TESTNET_ONBOARDING=1):
 //     POST /v1/testnet/party            -> { partyId, airdrops }
 //     GET  /v1/testnet/hosting?party=:p -> { hostedHere }
+//     POST /v1/testnet/submit           -> { updateId, createdEvents }
 //
 // The dApp polls the ledger event stream directly for live state; the
 // HTTP API is for one-shot orchestration calls only. Trader-authority
@@ -54,6 +55,12 @@ import {
   type TestnetOnboardingService,
 } from "../testnet-onboarding/index.js";
 import { RegistryBootstrapError } from "../testnet-onboarding/registry-mint.js";
+import {
+  TestnetCommandRejectedError,
+  TestnetLedgerError,
+  TestnetPartyIneligibleError,
+  TestnetSubmitUnavailableError,
+} from "../testnet-onboarding/submit.js";
 import { rootLogger } from "../lib/logger.js";
 
 const httpLog = rootLogger.child({ component: "http" });
@@ -368,14 +375,10 @@ async function routeRequest(
         context: choiceContext.context,
         meta: { values: {} },
       },
-      // Deduplicated by contract id: a registry may legitimately return the
-      // same disclosed contract from both calls (the factory contract is often
-      // also what the choice context needs), and the participant rejects a
-      // submission that discloses the same contract twice.
-      allocationFactoryDisclosure: [
+      allocationFactoryDisclosure: dedupeDisclosure([
         ...factories.disclosure,
         ...choiceContext.disclosure,
-      ].filter((d, i, all) => all.findIndex((o) => o.contractId === d.contractId) === i),
+      ]),
     });
     return;
   }
@@ -1280,6 +1283,54 @@ async function routeRequest(
     return;
   }
 
+  // Public, unauthenticated ledger write. It is safe only because every degree
+  // of freedom a caller would need to abuse it has been taken away here rather
+  // than in the caller: the authority is fixed to the one party the faucet
+  // minted for them, the commands are allowlisted, and the disclosure is the
+  // operator's own. See ../testnet-onboarding/submit.ts for the reasoning; the
+  // deliberate absence of the operator token is noted in ./auth.ts.
+  if (onboarding && method === "POST" && path === "/v1/testnet/submit") {
+    const body = await readValidatedJson<{ party: string; commands: unknown }>(
+      req,
+      "POST /v1/testnet/submit",
+      callerAuth,
+    );
+    const party = expectString(body, "party");
+    try {
+      const receipt = await onboarding.submitForParty({
+        party,
+        commands: body.commands,
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+        // Registry.V2 fixes its observer list at creation, so a faucet party
+        // cannot see the factory it has to exercise. The operator discloses it
+        // from its own registry client -- the same source GET /v1/context
+        // serves -- so that a caller has no blob of their own to inject.
+        resolveDisclosure: () => registryDisclosure(backend, context.admin),
+      });
+      respondJson(res, 200, receipt);
+    } catch (e) {
+      if (e instanceof TestnetCommandRejectedError) {
+        throw new HttpError(400, "bad_request", e.message, e.details);
+      }
+      if (e instanceof TestnetPartyIneligibleError) {
+        throw new HttpError(403, "forbidden", e.message, e.details);
+      }
+      if (e instanceof OnboardingThrottleError) {
+        throw new HttpError(429, "too_many_requests", e.message, e.details);
+      }
+      if (e instanceof TestnetSubmitUnavailableError) {
+        throw new HttpError(501, "not_implemented", e.message);
+      }
+      if (e instanceof TestnetLedgerError) {
+        // Summarized on purpose: the participant's own error text can quote the
+        // submitted payload back, and this response is public.
+        throw new HttpError(502, e.code, e.message, e.details);
+      }
+      throw e;
+    }
+    return;
+  }
+
   if (onboarding && method === "GET" && path === "/v1/testnet/hosting") {
     const party = url.searchParams.get("party");
     if (!party) {
@@ -1340,6 +1391,34 @@ function requireCallerForFetchBoundRoute(
     );
   }
   return caller as Party;
+}
+
+/**
+ * The registry's disclosed contracts, from the operator's own registry client.
+ * Both the factory refs and the choice context carry disclosure, and a registry
+ * may legitimately return the same contract from both (the factory contract is
+ * often also what the choice context needs) — the participant rejects a
+ * submission that discloses the same contract twice, hence the dedupe.
+ */
+async function registryDisclosure(
+  backend: OperatorBackend,
+  admin: Party,
+): Promise<DisclosedContract[]> {
+  const [factories, choiceContext] = await Promise.all([
+    backend.registry.getFactories(admin),
+    backend.registry.getChoiceContext(admin),
+  ]);
+  return dedupeDisclosure([
+    ...factories.disclosure,
+    ...choiceContext.disclosure,
+  ]);
+}
+
+/** Disclosed contracts, unique by contract id, first occurrence wins. */
+function dedupeDisclosure(all: DisclosedContract[]): DisclosedContract[] {
+  return all.filter(
+    (d, i) => all.findIndex((o) => o.contractId === d.contractId) === i,
+  );
 }
 
 /**

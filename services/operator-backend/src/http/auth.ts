@@ -98,6 +98,19 @@ const OPERATOR_WRITE_EXACT = new Set<string>([
   // DEX_TESTNET_ONBOARDING (the route does not exist without it), a per-IP
   // throttle and a global daily cap, and it only ever grants rights on the
   // party it just allocated.
+  //
+  // Deliberately NOT listed for the same reason: POST /v1/testnet/submit. The
+  // party the faucet hands out lives on the operator's participant, so the
+  // tester's browser has to ask this backend to submit for it — and the
+  // operator token cannot be shipped to a browser without handing every visitor
+  // the keys to /v1/wallet/submit, which relays arbitrary commands under the
+  // operator's JWT. The submit route earns its exemption by removing the
+  // freedoms the token would otherwise have to guard: DEX_TESTNET_ONBOARDING
+  // gates its existence, actAs is fixed server-side to the one faucet-minted
+  // party the caller was verified to own, the commands must match a fixed
+  // (template, choice) allowlist, disclosure is attached by the operator, and
+  // per-IP + global daily caps bound the whole thing. See
+  // ../testnet-onboarding/submit.ts.
 ]);
 
 const OPERATOR_WRITE_PATTERNS: RegExp[] = [

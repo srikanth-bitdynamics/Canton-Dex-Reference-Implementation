@@ -4,18 +4,25 @@ import {
   TestnetHostedProvider,
   type TestnetPartyClient,
 } from "@/wallet/testnet-hosted-provider";
-import type { TestnetPartyResult } from "@/services/operator-api";
+import { OperatorApi, type TestnetPartyResult } from "@/services/operator-api";
 import type { WalletIntent } from "@/wallet/types";
 
+const API_BASE = "http://backend.test";
+
 // A fake operator-backend client: records the create calls and returns the
-// party + airdrops the testnet route promises.
+// party + airdrops the testnet route promises. Submits go through the real
+// typed client (against a stubbed fetch) so the tests see the wire body the
+// provider actually produces.
 function fakeClient(result: TestnetPartyResult) {
   const calls: Array<{ label?: string }> = [];
+  const api = new OperatorApi(API_BASE);
   const client: TestnetPartyClient = {
     async createTestnetParty(req) {
       calls.push(req);
       return result;
     },
+    submitTestnetCommands: (req, signal) =>
+      api.submitTestnetCommands(req, signal),
   };
   return { client, calls };
 }
@@ -25,9 +32,34 @@ function failingClient(error: Error) {
     async createTestnetParty() {
       throw error;
     },
+    async submitTestnetCommands() {
+      throw error;
+    },
   };
   return { client };
 }
+
+/** Stub fetch with a single canned response and record what was sent. */
+function stubFetch(response: () => Response) {
+  const submissions: Array<{ url: string; body: Record<string, unknown> }> = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).fetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      submissions.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      return response();
+    },
+  );
+  return submissions;
+}
+
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 
 const swapIntent: WalletIntent = {
   kind: "request-swap",
@@ -54,11 +86,9 @@ const partyResult: TestnetPartyResult = {
 };
 
 const provider = (client: TestnetPartyClient) =>
-  new TestnetHostedProvider(
-    "http://backend.test",
-    "#canton-dex-trading",
-    client,
-  );
+  new TestnetHostedProvider("#canton-dex-trading", client);
+
+const realFetch = globalThis.fetch;
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -66,6 +96,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  globalThis.fetch = realFetch;
   window.localStorage.clear();
 });
 
@@ -126,40 +157,25 @@ describe("TestnetHostedProvider", () => {
     await expect(p.submit(swapIntent)).rejects.toThrow(/not connected/);
   });
 
-  it("relays the composed tree and returns created cids plus the updateId", async () => {
+  it("posts the composed tree to the testnet endpoint and returns created cids plus the updateId", async () => {
     const p = provider(fakeClient(partyResult).client);
     await p.connect();
-    const submissions: Array<{ url: string; body: Record<string, unknown> }> = [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).fetch = vi.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        submissions.push({
-          url: String(input),
-          body: JSON.parse(String(init?.body)) as Record<string, unknown>,
-        });
-        return new Response(
-          JSON.stringify({
-            updateId: "update-1",
-            createdEvents: [
-              {
-                contractId: "alloc-1",
-                templateId: "abcd:CantonDex.Registry.V2:Allocation",
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      },
+    const submissions = stubFetch(() =>
+      jsonResponse({
+        updateId: "update-1",
+        createdEvents: [
+          {
+            contractId: "alloc-1",
+            templateId: "abcd:CantonDex.Registry.V2:Allocation",
+          },
+        ],
+      }),
     );
 
     const res = await p.submit(swapIntent);
 
     expect(submissions).toHaveLength(1);
-    expect(submissions[0].url).toBe("http://backend.test/v1/wallet/submit");
-    expect(submissions[0].body).toMatchObject({
-      actAs: ["demo::1220a"],
-      commandId: expect.stringMatching(/^swap-pool-abc-/),
-    });
+    expect(submissions[0].url).toBe("http://backend.test/v1/testnet/submit");
     expect(res).toEqual({
       submittedBy: "demo::1220a",
       primaryCid: "alloc-1",
@@ -169,23 +185,60 @@ describe("TestnetHostedProvider", () => {
     });
   });
 
-  it("falls back to operator-discovery when the relay reports no created events", async () => {
+  it("sends the party and the commands only", async () => {
     const p = provider(fakeClient(partyResult).client);
     await p.connect();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).fetch = vi.fn(
-      async () =>
-        new Response(JSON.stringify({ updateId: "update-2" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-    );
+    const submissions = stubFetch(() => jsonResponse({ updateId: "update-1" }));
+
+    await p.submit(swapIntent);
+
+    const body = submissions[0].body;
+    // The backend owns actAs/readAs, the user id and the disclosures; shipping
+    // them from the browser is what made this path need an operator token.
+    expect(Object.keys(body).sort()).toEqual(["commands", "party"]);
+    expect(body.party).toBe("demo::1220a");
+    expect(Array.isArray(body.commands)).toBe(true);
+    expect((body.commands as unknown[]).length).toBeGreaterThan(0);
+    expect(body).not.toHaveProperty("actAs");
+    expect(body).not.toHaveProperty("readAs");
+    expect(body).not.toHaveProperty("userId");
+    expect(body).not.toHaveProperty("disclosedContracts");
+  });
+
+  it("falls back to operator-discovery when no created events come back", async () => {
+    const p = provider(fakeClient(partyResult).client);
+    await p.connect();
+    stubFetch(() => jsonResponse({ updateId: "update-2" }));
 
     const res = await p.submit(swapIntent);
 
     expect(res.createdAllocationCids).toBeUndefined();
     expect(res.primaryCid).toBe("update-2");
     expect(res.auxiliaryCids?.updateId).toBe("update-2");
+  });
+
+  it("explains a submit rejected because the party is not hosted here", async () => {
+    const p = provider(fakeClient(partyResult).client);
+    await p.connect();
+    stubFetch(() => jsonResponse({ error: "party not eligible" }, 403));
+
+    await expect(p.submit(swapIntent)).rejects.toThrow(/not eligible/);
+  });
+
+  it("explains a submit rejected by the daily limit", async () => {
+    const p = provider(fakeClient(partyResult).client);
+    await p.connect();
+    stubFetch(() => jsonResponse({ error: "rate limited" }, 429));
+
+    await expect(p.submit(swapIntent)).rejects.toThrow(/daily limit/);
+  });
+
+  it("explains a submit to a deployment without the testnet endpoint", async () => {
+    const p = provider(fakeClient(partyResult).client);
+    await p.connect();
+    stubFetch(() => jsonResponse({ error: "not found" }, 404));
+
+    await expect(p.submit(swapIntent)).rejects.toThrow(/not enabled/);
   });
 
   it("disconnect clears the stored session", async () => {

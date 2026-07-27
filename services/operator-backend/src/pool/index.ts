@@ -243,10 +243,14 @@ export class PoolService {
    * One submission per allocation, and one failure does not stop the rest --
    * the legs are independent, and releasing two of three still returns most of
    * the balance. Returns the cids it could not release.
+   *
+   * `owner` is the party whose holdings the allocations locked; pass it
+   * whenever there is one, or the cancel cannot see what it is releasing.
    */
   async releaseAllocations(
     allocationCids: string[],
     admin: Party,
+    owner?: Party,
   ): Promise<{ released: number; failed: string[] }> {
     if (allocationCids.length === 0) return { released: 0, failed: [] };
     const ctx = await this.choiceContext(admin);
@@ -255,6 +259,10 @@ export class PoolService {
       try {
         await this.ledger.submit({
           actAs: [this.operatorParty],
+          // Same reason the settles read as their counterparty: cancelling
+          // unlocks the holdings the allocation locked, and those are
+          // contracts between their admin and their owner.
+          readAs: owner ? [owner] : [],
           commandId: `alloc-release:${contractId}`,
           disclosure: ctx.disclosure,
           command: {

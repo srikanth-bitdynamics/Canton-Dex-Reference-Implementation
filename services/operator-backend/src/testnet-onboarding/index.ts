@@ -1413,7 +1413,7 @@ export class TestnetOnboardingService {
       // 3. Settle against the live request and the allocations the relay
       // actually produced -- never ones named by the caller. The LP floor is
       // the operator's own quote, so the add cannot mint less than quoted.
-      await this.settleOrRelease(pool, relayed.allocationCids, target.admin, () =>
+      await this.settleOrRelease(pool, relayed.allocationCids, target.admin, input.party, () =>
         pool.settleAddLiquidity({
           poolCid: input.poolCid as ContractId<"Pool">,
           requestCid: request.requestCid,
@@ -1507,7 +1507,7 @@ export class TestnetOnboardingService {
     const baseOut = sumDecimals(request.baseOuts);
     const quoteOut = sumDecimals(request.quoteOuts);
 
-    await this.settleOrRelease(pool, relayed.allocationCids, target.admin, () =>
+    await this.settleOrRelease(pool, relayed.allocationCids, target.admin, input.party, () =>
       pool.settleRemoveLiquidity({
         poolCid: input.poolCid as ContractId<"Pool">,
         requestCid: request.requestCid,
@@ -1651,13 +1651,14 @@ export class TestnetOnboardingService {
     pool: PoolService,
     allocationCids: string[],
     admin: Party,
+    owner: Party,
     settle: () => Promise<T>,
   ): Promise<T> {
     try {
       return await this.operatorLiquidityStep("settle", settle);
     } catch (settleError) {
       try {
-        const outcome = await pool.releaseAllocations(allocationCids, admin);
+        const outcome = await pool.releaseAllocations(allocationCids, admin, owner);
         log.info("testnet liquidity: released the party's allocations after a failed settle", {
           ...outcome,
           allocationCids,

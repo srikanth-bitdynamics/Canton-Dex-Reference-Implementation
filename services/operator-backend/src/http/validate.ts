@@ -256,6 +256,27 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
     parties: ["party"],
     cids: ["orderCid"],
   },
+  // Testnet hosted-party RFQ compose. Same treatment as the swap above:
+  // `party` is checked for the canonical form here and for faucet provenance +
+  // hosting by the service, which also holds `side` to RFQ_Buy/RFQ_Sell and
+  // resolves the market against its own listings. The pair may be named either
+  // as `pair` or as `poolCid`, so neither can be declared required here.
+  // Nothing else in the body is read -- the dealer whitelist, the quoted
+  // prices, the tiers and the rfqId are all server-side.
+  "POST /v1/testnet/rfq": {
+    required: ["party", "side", "size"],
+    decimals: ["size"],
+    parties: ["party"],
+  },
+  // Testnet hosted-party RFQ accept. Both cids are shape-checked here and
+  // resolved on-ledger by the service, which refuses the RFQ unless its trader
+  // is the calling party and the quote unless it is live on that RFQ -- a cid
+  // in a body is a claim, not a proof.
+  "POST /v1/testnet/rfq/accept": {
+    required: ["party", "rfqCid", "acceptedQuoteCid"],
+    parties: ["party"],
+    cids: ["rfqCid", "acceptedQuoteCid"],
+  },
   "POST /v1/swaps/quote": {
     required: ["poolId", "inputInstrumentId", "inputAmount"],
     decimals: ["inputAmount"],

@@ -52,15 +52,21 @@ import type {
   DisclosedContract,
   RegistryClient,
 } from "@canton-dex/registry-client";
+import type { DealersService } from "../dealers/index.js";
 import { fetchChoiceContext } from "../ledger/choice-context.js";
 import type { LedgerSubmitter } from "../ledger/index.js";
 import { isCidString, isDecimalString } from "../http/validate.js";
+import type { MatchedTradeService } from "../matched-trade/index.js";
 import type { OrderService } from "../order/index.js";
 import * as dec from "../pool/decimal.js";
 import type { PoolService } from "../pool/index.js";
+import type { RfqService } from "../rfq/index.js";
 import type {
+  DealerTier,
   Party,
   Pool,
+  Rfq,
+  RfqQuote,
   Side,
   Time,
   V2AllocationSpecification,
@@ -114,6 +120,26 @@ import {
   type TestnetOrderCancelReceipt,
   type TestnetOrderReceipt,
 } from "./order.js";
+import {
+  dealerQuotePrice,
+  dealerSpreadBps,
+  isRfqSide,
+  legsToSides,
+  poolMid,
+  rfqExpiry,
+  rfqPairString,
+  rfqQuoteArgument,
+  rfqSize,
+  senderSide,
+  tradeAllocationSpec,
+  RFQ_QUOTE_TEMPLATE_ID,
+  TRADE_ALLOCATION_REQUEST_TEMPLATE_ID,
+  TestnetRfqRejectedError,
+  type TestnetRfqAcceptReceipt,
+  type TestnetRfqReceipt,
+  type TestnetRfqSide,
+  type TradeAllocationRequestContract,
+} from "./rfq.js";
 
 const log = rootLogger.child({ component: "testnet-onboarding" });
 
@@ -478,6 +504,13 @@ export interface TestnetOnboardingConfig {
    * than half-placing an order.
    */
   order?: TestnetOrderDeps;
+  /**
+   * RFQ orchestration for `rfqForParty` / `rfqAcceptForParty`, with the dealer
+   * table, the registry and the operator party those flows need alongside it.
+   * All of it or none: absent -> the RFQ endpoints report themselves
+   * unavailable rather than half-composing a request for quotes.
+   */
+  rfq?: TestnetRfqDeps;
   /** Submissions relayed per UTC day across all callers. */
   submitDailyCap: number;
   /** Submissions relayed per UTC day per client address. */
@@ -589,6 +622,61 @@ export interface CancelOrderForPartyInput {
   /** The order's trader, as claimed. Verified against the order itself. */
   party: string;
   orderCid: string;
+  /** Client address the request is charged to. */
+  clientIp: string;
+}
+
+/**
+ * What the RFQ flows need beyond the ledger and the relay. Grouped for the same
+ * reason the order deps are: they are only useful together. `service` drives the
+ * trader-authority create and the joint accept, `matchedTrade` the two
+ * operator-authority halves of settlement, `dealers` supplies both the whitelist
+ * and the tier each quote is posted at, and `registry` resolves the allocation
+ * factory the counterparties exercise.
+ */
+export interface TestnetRfqDeps {
+  service: RfqService;
+  matchedTrade: MatchedTradeService;
+  dealers: DealersService;
+  registry: RegistryClient;
+  /** Operator party: the Rfq's and every quote's observer, and the settle's. */
+  operator: Party;
+}
+
+/**
+ * Everything POST /v1/testnet/rfq accepts. Notably absent, for the same reason
+ * as on the swap: the dealer set, the quoted prices, the tiers, the rfqId,
+ * actAs / readAs / userId, and any holding or contract id -- all decided
+ * server-side, which is what makes the endpoint safe to leave unauthenticated.
+ *
+ * `pair` is a REQUEST, not an instruction: it is matched against this
+ * deployment's own listed pairs and the on-ledger `pair` text is rebuilt from
+ * the listing that matched. Rfq_Accept splits that text literally into leg
+ * instrument ids, so a caller that could write it would mint legs naming
+ * instruments with no registry config.
+ */
+export interface RfqForPartyInput {
+  /** The trader. Accepted only if this faucet minted and hosts it. */
+  party: string;
+  /** "BASE/QUOTE" against a listed pair. Either this or poolCid. */
+  pair?: string;
+  /** A pool whose two instruments name the pair. Either this or pair. */
+  poolCid?: string;
+  /** "RFQ_Buy" or "RFQ_Sell"; anything else is a 400. */
+  side: string;
+  size: string;
+  /** Clamped to [MIN_RFQ_MINUTES, MAX_RFQ_MINUTES]. Absent -> 60. */
+  expiryMinutes?: number;
+  /** Client address the request is charged to. */
+  clientIp: string;
+}
+
+/** Everything POST /v1/testnet/rfq/accept accepts. */
+export interface RfqAcceptForPartyInput {
+  /** The RFQ's trader, as claimed. Verified against the RFQ itself. */
+  party: string;
+  rfqCid: string;
+  acceptedQuoteCid: string;
   /** Client address the request is charged to. */
   clientIp: string;
 }
@@ -1738,6 +1826,531 @@ export class TestnetOnboardingService {
     }
   }
 
+  /**
+   * Compose a whole RFQ for a faucet party: the trader's Rfq, plus one
+   * dealer-signed RfqQuote per whitelisted dealer. See rfq.ts for why this
+   * exists at all rather than the relay learning to accept creates.
+   *
+   * Same defensive, cheapest-first order as `swapForParty`:
+   *   1. the party is one this faucet minted and the side / size / expiry parse
+   *      -- a hostile or malformed request is refused before anything is
+   *      queried;
+   *   2. the quota is charged, so the submissions that follow are bounded per
+   *      client and per day;
+   *   3. the participant confirms it hosts the party;
+   *   4. the pair is resolved against this deployment's OWN listings, the mid
+   *      comes from the operator's own pool reserves, and the dealer set comes
+   *      from the operator's own table -- none of the three from the body;
+   *   5. the Rfq is created as the trader, then each quote as its own dealer.
+   */
+  async rfqForParty(input: RfqForPartyInput): Promise<TestnetRfqReceipt> {
+    const deps = this.cfg.rfq;
+    const pool = this.cfg.pool;
+    if (!deps || !pool || !this.cfg.relay) {
+      throw new TestnetSubmitUnavailableError(
+        "this deployment has no participant to compose testnet RFQs on",
+      );
+    }
+
+    this.assertFaucetParty(input.party);
+
+    if (!isRfqSide(input.side)) {
+      throw new TestnetRfqRejectedError("side must be RFQ_Buy or RFQ_Sell", {
+        field: "side",
+      });
+    }
+    const side: TestnetRfqSide = input.side;
+    const size = rfqSize(input.size, isDecimalString);
+    if (
+      input.expiryMinutes !== undefined &&
+      (typeof input.expiryMinutes !== "number" ||
+        !Number.isFinite(input.expiryMinutes))
+    ) {
+      throw new TestnetRfqRejectedError(
+        "expiryMinutes must be a number when present",
+        { field: "expiryMinutes" },
+      );
+    }
+
+    this.submitQuota.charge(input.clientIp);
+
+    await this.assertHostedHere(input.party);
+
+    // The pair bounds the instruments, exactly as it does for an order: an RFQ
+    // is only composable on a market this deployment lists, under its own asset
+    // admin. The `pair` TEXT is then built from the listing rather than echoed,
+    // because Rfq_Accept splits it literally into leg instrument ids.
+    const target = await this.rfqPool(pool, input);
+    const pair = rfqPairString(target.baseInstrumentId, target.quoteInstrumentId);
+    await this.rfqPair(target);
+
+    // The whitelist comes from the operator's own table and never from the
+    // body: it decides who may quote AND who observes the Rfq contract.
+    const dealers = deps.dealers.list().filter((d) => d.whitelisted);
+    if (dealers.length === 0) {
+      throw new TestnetRfqRejectedError(
+        "this deployment has no whitelisted dealers to quote an RFQ",
+        { field: "pair" },
+      );
+    }
+
+    // The operator's own mid. Every quote below is derived from it, so a caller
+    // cannot induce a quote at a price of their choosing.
+    const mid = poolMid(target.reserves.baseAmount, target.reserves.quoteAmount);
+
+    const now = new Date();
+    const createdAt = now.toISOString();
+    const expiresAt = rfqExpiry(now, input.expiryMinutes);
+    // Server-generated: the rfqId becomes the commandId of both the create and
+    // the accept, which is an idempotency key on the participant, so a
+    // caller-chosen one would let two callers collide or one replay another's.
+    const rfqId = `testnet-${randomUUID()}`;
+
+    const { rfqCid } = await this.rfqStep("create", () =>
+      deps.service.create({
+        trader: input.party,
+        rfqId,
+        pair,
+        side,
+        size,
+        expiresAt,
+        whitelist: dealers.map((d) => d.party),
+        createdAt,
+      }),
+    );
+
+    const quotes: TestnetRfqReceipt["quotes"] = [];
+    for (const [index, dealer] of dealers.entries()) {
+      const tier: DealerTier = dealer.trusted ? "TierTrusted" : "TierWhitelist";
+      const price = dealerQuotePrice(
+        mid,
+        side,
+        dealerSpreadBps(index, dealer.trusted),
+      );
+      try {
+        const quoteCid = await this.cfg.ledger.submit<string>({
+          // RfqQuote is `signatory dealer`. The dealer is a party this operator
+          // allocated and holds CanActAs on -- the same authority the faucet
+          // grants itself over every party it creates.
+          actAs: [dealer.party],
+          commandId: `testnet-rfq-quote:${rfqId}:${index}`,
+          command: {
+            kind: "create",
+            templateId: RFQ_QUOTE_TEMPLATE_ID,
+            argument: rfqQuoteArgument({
+              dealer: dealer.party,
+              trader: input.party,
+              operator: deps.operator,
+              rfqId,
+              price,
+              // The quote expires with the RFQ. Rfq_Accept asserts every
+              // considered quote is still valid at accept time, so a quote that
+              // outlived or predeceased its RFQ could only ever narrow the
+              // window in which the trade is acceptable.
+              expiresAt,
+              postedAt: new Date().toISOString(),
+              tier,
+            }),
+          },
+        });
+        quotes.push({ dealer: dealer.party, quoteCid, price, tier });
+      } catch (e) {
+        // One dealer failing to quote is a thin book, not a dead RFQ: the
+        // trader can still accept whoever did answer. It is only fatal when
+        // nobody did, which is handled below.
+        log.warn("testnet rfq: a dealer could not post its quote", {
+          rfqId,
+          dealer: dealer.party,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    if (quotes.length === 0) {
+      // An RFQ nobody quoted is unacceptable in the literal sense -- Rfq_Accept
+      // needs a quote -- so it would sit in the book until the expiry sweep.
+      // Withdraw it instead; the trader authority to do so is the same one that
+      // created it a moment ago.
+      await this.cancelStrandedRfq(deps, rfqCid);
+      throw new TestnetLedgerError(
+        "ledger_rejected",
+        "no dealer could post a quote for this RFQ",
+        { rfqId },
+      );
+    }
+
+    log.info("composed a testnet RFQ", {
+      party: input.party,
+      rfqId,
+      pair,
+      side,
+      size,
+      expiresAt,
+      quotes: quotes.length,
+    });
+    return { rfqId, rfqCid, pair, expiresAt, quotes };
+  }
+
+  /**
+   * Accept a quote on a faucet party's RFQ and settle the resulting trade end
+   * to end: Rfq_Accept, MatchedTrade_RequestAllocations, one
+   * AllocationFactory_Allocate per counterparty through the public relay, then
+   * MatchedTrade_Settle.
+   *
+   * The ownership check is not a formality. Rfq_Accept is submitted as
+   * [trader, operator] under the operator's own ledger user, which holds
+   * CanActAs on every party this faucet allocated -- so without it any caller
+   * could accept any faucet party's RFQ. It is checked here AND again inside
+   * `RfqService.accept` via `requireTrader`, against the RFQ the ledger
+   * actually holds rather than the cid in the body.
+   *
+   * Rfq_Accept is CONSUMING: it archives the Rfq and every considered quote. A
+   * failure after it therefore cannot be unwound, which is why the considered
+   * set is read and filtered server-side (a single lapsed cid aborts the choice
+   * after the archives) and why the dealers are stocked on both sides before
+   * any of this can be reached.
+   */
+  async rfqAcceptForParty(
+    input: RfqAcceptForPartyInput,
+  ): Promise<TestnetRfqAcceptReceipt> {
+    const deps = this.cfg.rfq;
+    if (!deps || !this.cfg.relay) {
+      throw new TestnetSubmitUnavailableError(
+        "this deployment has no participant to settle testnet RFQs on",
+      );
+    }
+
+    this.assertFaucetParty(input.party);
+
+    for (const field of ["rfqCid", "acceptedQuoteCid"] as const) {
+      if (!isCidString(input[field])) {
+        throw new TestnetRfqRejectedError(`${field} must be a contract id`, {
+          field,
+        });
+      }
+    }
+
+    this.submitQuota.charge(input.clientIp);
+
+    await this.assertHostedHere(input.party);
+
+    const { rfqs, quotes } = await deps.service.list();
+    const rfq = rfqs.find((r) => r.contractId === input.rfqCid);
+    if (!rfq) {
+      throw new TestnetRfqRejectedError("unknown or inactive RFQ", {
+        field: "rfqCid",
+      });
+    }
+    // The load-bearing line of this endpoint.
+    if (rfq.trader !== input.party) {
+      throw new TestnetPartyIneligibleError(
+        "this RFQ was composed by another party",
+        { party: input.party },
+      );
+    }
+
+    const now = new Date().toISOString();
+    const considered = this.consideredQuotes(rfq, quotes, now);
+    if (!considered.some((q) => q.contractId === input.acceptedQuoteCid)) {
+      throw new TestnetRfqRejectedError(
+        "that quote is not a live quote on this RFQ",
+        { field: "acceptedQuoteCid" },
+      );
+    }
+
+    const accepted = await this.rfqStep("accept", () =>
+      deps.service.accept({
+        rfqCid: rfq.contractId,
+        acceptedQuoteCid: input.acceptedQuoteCid as ContractId<"RfqQuote">,
+        // Read from the ledger and filtered here, never taken from the body:
+        // Rfq_Accept asserts every considered quote is still unexpired, and the
+        // choice is consuming, so one lapsed cid aborts it after the Rfq and
+        // every quote would have been archived, with no unwind.
+        consideredQuoteCids: considered.map((q) => q.contractId),
+        admin: this.cfg.admin,
+        now,
+        requireTrader: input.party,
+      }),
+    );
+
+    const requestCids = await this.rfqStep("request-allocations", () =>
+      deps.matchedTrade.requestAllocations({ tradeCid: accepted.tradeCid }),
+    );
+    const requests = await this.tradeAllocationRequests(requestCids);
+
+    // The factory and its disclosure are the operator's own, as on every other
+    // relayed step: a caller-supplied blob would let anyone hand the
+    // participant a contract of their choosing.
+    const [factories, choiceContext] = await Promise.all([
+      deps.registry.getFactories(this.cfg.admin),
+      fetchChoiceContext(deps.registry, this.cfg.admin),
+    ]);
+    const disclosure = dedupeDisclosure([
+      ...factories.disclosure,
+      ...choiceContext.disclosure,
+    ]);
+
+    const allocationCids: string[] = [];
+    let updateId = "";
+    for (const request of requests) {
+      // Deliberately NOT AllocationRequest_Accept: it archives the request, and
+      // MatchedTrade_Settle fetches and archives them itself. Authoring the
+      // allocation directly leaves the settle the state it expects.
+      const cid = await this.relayTradeAllocation(
+        request,
+        factories.allocationFactoryCid,
+        choiceContext.extraArgs,
+        disclosure,
+        input.clientIp,
+      );
+      allocationCids.push(cid.allocationCid);
+      updateId = cid.updateId;
+    }
+
+    await this.rfqStep("settle", () =>
+      deps.matchedTrade.settle({
+        tradeCid: accepted.tradeCid,
+        batchesByAdmin: new Map([
+          [
+            this.cfg.admin,
+            { allocationCids: allocationCids as ContractId<"Allocation">[] },
+          ],
+        ]),
+        // Empty on purpose: every counterparty above authored its allocation
+        // directly, so its request is still active and the settle archives it
+        // itself. See MatchedTradeSettleInput.
+        allocationRequestCids: [],
+        dexPairCid: null,
+      }),
+    );
+
+    log.info("settled a testnet RFQ", {
+      party: input.party,
+      rfqId: rfq.rfqId,
+      tradeCid: accepted.tradeCid,
+      acceptedDealer: accepted.receipt.acceptedDealer,
+      acceptedRank: accepted.receipt.acceptedRank,
+      allocations: allocationCids.length,
+      updateId,
+    });
+    return {
+      tradeCid: accepted.tradeCid,
+      acceptedDealer: accepted.receipt.acceptedDealer,
+      acceptedRank: accepted.receipt.acceptedRank,
+      consideredCount: accepted.receipt.consideredCount,
+      updateId,
+    };
+  }
+
+  /**
+   * Author one counterparty's side of the trade through the PUBLIC relay -- the
+   * same path a browser would take, with the same allowlist re-check and the
+   * same server-fixed actAs.
+   *
+   * The funding is the security-critical part, as on the swap: holdings are
+   * selected here from what the ledger says the AUTHORIZER owns. A receiver
+   * locks nothing, so it funds with an empty list.
+   */
+  private async relayTradeAllocation(
+    request: TradeAllocationRequestContract,
+    factoryCid: string,
+    extraArgs: unknown,
+    disclosure: DisclosedContract[],
+    clientIp: string,
+  ): Promise<{ allocationCid: string; updateId: string }> {
+    const party = request.authorizer.owner as Party;
+    const sides = legsToSides(request.authorizer, request.transferLegs);
+    const leg = senderSide(sides);
+
+    let inputHoldingCids: string[] = [];
+    if (leg) {
+      const holdings = await this.cfg.ledger.query<RegistryHolding>({
+        templateId: REGISTRY_HOLDING_TEMPLATE_ID,
+        observingParty: party,
+      });
+      const selection = selectCoveringHoldings(
+        holdings,
+        { owner: party, admin: request.admin, instrumentId: leg.instrumentId },
+        dec.parseDecimal(leg.amount),
+      );
+      if (!selection.cids || selection.cids.length === 0) {
+        // Reached only after Rfq_Accept has consumed the RFQ and its quotes, so
+        // there is nothing to unwind -- which is exactly why the dealers are
+        // stocked on both sides of the pair before the route goes live.
+        throw new TestnetRfqRejectedError(
+          `a counterparty cannot cover ${leg.amount} ${leg.instrumentId}: ` +
+            `unlocked ${dec.formatDecimal(selection.available)}`,
+          {
+            party,
+            instrumentId: leg.instrumentId,
+            available: dec.formatDecimal(selection.available),
+            required: leg.amount,
+          },
+        );
+      }
+      inputHoldingCids = selection.cids;
+    }
+
+    const receipt = await this.submitForParty({
+      party,
+      commands: [
+        allocateCommand({
+          factoryCid,
+          settlement: request.settlement,
+          allocation: tradeAllocationSpec(request),
+          inputHoldingCids,
+          party,
+          requestedAt: new Date().toISOString(),
+          extraArgs,
+        }),
+      ],
+      clientIp,
+      resolveDisclosure: async () => disclosure,
+    });
+
+    const allocationCid = createdAllocationCid(receipt.createdEvents);
+    if (!allocationCid) {
+      // Not softened into a settle-by-updateId fallback the way the swap's is:
+      // a settle binds to every counterparty's allocation at once, so one
+      // missing cid is not recoverable from the other's update.
+      throw new TestnetLedgerError(
+        "tree_fetch_failed",
+        "an allocation committed but could not be identified for settlement",
+        { updateId: receipt.updateId, party },
+      );
+    }
+    return { allocationCid, updateId: receipt.updateId };
+  }
+
+  /** The live quotes on this RFQ, as the operator's own read model sees them. */
+  private consideredQuotes(rfq: Rfq, quotes: RfqQuote[], now: Time): RfqQuote[] {
+    return quotes.filter(
+      (q) => q.rfqId === rfq.rfqId && Date.parse(q.expiresAt) > Date.parse(now),
+    );
+  }
+
+  /** The allocation asks this trade just produced, with their payloads. */
+  private async tradeAllocationRequests(
+    cids: ContractId<"TradeAllocationRequest">[],
+  ): Promise<TradeAllocationRequestContract[]> {
+    // The choice returns the new cids; this read is only to recover their
+    // PAYLOADS (settlement, legs, authorizer), which the result does not carry.
+    // Filtered to the returned cids -- an earlier trade can leave other
+    // requests on the ledger, and taking the newest would settle someone
+    // else's.
+    const wanted = new Set<string>(cids as unknown as string[]);
+    const rows = await this.cfg.ledger.query<TradeAllocationRequestContract>({
+      templateId: TRADE_ALLOCATION_REQUEST_TEMPLATE_ID,
+      observingParty: this.cfg.rfq!.operator,
+    });
+    const mine = rows.filter((r) => wanted.has(r.contractId));
+    if (mine.length !== wanted.size) {
+      throw new TestnetLedgerError(
+        "tree_fetch_failed",
+        "the trade's allocation requests could not be read back",
+        { expected: wanted.size, found: mine.length },
+      );
+    }
+    return mine;
+  }
+
+  /** The pool an RFQ is priced off, named either directly or by its pair. */
+  private async rfqPool(pool: PoolService, input: RfqForPartyInput): Promise<Pool> {
+    const pools = await pool.listActive();
+    if (input.poolCid !== undefined) {
+      const found = pools.find((p) => p.contractId === input.poolCid);
+      if (!found) {
+        throw new TestnetRfqRejectedError("unknown or inactive pool", {
+          field: "poolCid",
+        });
+      }
+      return found;
+    }
+    if (typeof input.pair !== "string" || !input.pair.includes("/")) {
+      throw new TestnetRfqRejectedError(
+        'pair must be "BASE/QUOTE", or name a pool with poolCid',
+        { field: "pair" },
+      );
+    }
+    const [base, quote] = input.pair.split("/");
+    const found = pools.find(
+      (p) => p.baseInstrumentId === base && p.quoteInstrumentId === quote,
+    );
+    if (!found) {
+      throw new TestnetRfqRejectedError(
+        "this deployment has no active pool for that pair",
+        { field: "pair" },
+      );
+    }
+    return found;
+  }
+
+  /** The pair listing behind an RFQ, or a 400-shaped refusal. */
+  private async rfqPair(target: Pool): Promise<DexPairListing> {
+    const pairs = await this.cfg.ledger.query<DexPairListing>({
+      templateId: DEX_PAIR_TEMPLATE_ID,
+      observingParty: this.cfg.admin,
+    });
+    const found = findListedPair(pairs, {
+      admin: this.cfg.admin,
+      baseInstrumentId: target.baseInstrumentId,
+      quoteInstrumentId: target.quoteInstrumentId,
+    });
+    if (!found) {
+      throw new TestnetRfqRejectedError(
+        "this deployment does not list an active pair for those instruments",
+        { field: "pair" },
+      );
+    }
+    return found;
+  }
+
+  /**
+   * Best-effort withdrawal of an RFQ nobody could quote. It holds no funds, so
+   * leaving it would only litter the book with a request that can never be
+   * accepted; a failure to clean it up is logged and never masks the error that
+   * stranded it.
+   */
+  private async cancelStrandedRfq(
+    deps: TestnetRfqDeps,
+    rfqCid: ContractId<"Rfq">,
+  ): Promise<void> {
+    try {
+      await deps.service.cancel({ rfqCid });
+      log.warn("cancelled a testnet RFQ that no dealer would quote", { rfqCid });
+    } catch (e) {
+      log.warn("a testnet RFQ has no quotes and would not cancel", {
+        rfqCid,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /**
+   * Run one step of an RFQ flow and summarize whatever the participant said
+   * about it, for the same reason `operatorStep` does: the raw text can quote
+   * the submitted payload back and this endpoint is public.
+   */
+  private async rfqStep<T>(
+    stage: "create" | "accept" | "request-allocations" | "settle",
+    run: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await run();
+    } catch (e) {
+      // A refusal this module raised itself is already caller-shaped and
+      // caller-safe; only a ledger failure needs summarizing.
+      if (e instanceof TestnetRfqRejectedError) throw e;
+      const detail = e instanceof Error ? e.message : String(e);
+      log.warn("testnet rfq: a step failed", { stage, error: detail });
+      throw new TestnetLedgerError(
+        "ledger_rejected",
+        `the ledger rejected the RFQ at the ${stage} step`,
+        { stage, ledgerErrorCode: ledgerErrorCode(detail) },
+      );
+    }
+  }
+
   private async mint(owner: string, grant: AirdropGrant): Promise<void> {
     // Goes through Registry_Mint so the tester ends up with a V2 holding the
     // swap path can actually allocate. The minter owns the config-cid
@@ -1773,6 +2386,13 @@ export interface TestnetOnboardingDeps {
    * unaffected.
    */
   order?: TestnetOrderDeps;
+  /**
+   * The backend's RFQ + matched-trade orchestration, the dealer table, the
+   * registry and the operator party, for POST /v1/testnet/rfq and its accept.
+   * Absent -> those two routes report themselves unavailable; every other route
+   * is unaffected.
+   */
+  rfq?: TestnetRfqDeps;
   /** Override fetch for tests. */
   fetchImpl?: typeof fetch;
 }
@@ -1852,6 +2472,7 @@ export function testnetOnboardingFromEnv(
     swapRoute: relay && deps.pool ? "enabled" : "unavailable",
     liquidityRoute: relay && deps.pool ? "enabled" : "unavailable",
     orderRoute: relay && deps.order ? "enabled" : "unavailable",
+    rfqRoute: relay && deps.rfq && deps.pool ? "enabled" : "unavailable",
     submitDailyCap,
     submitPerIpCap,
     airdrops,
@@ -1867,6 +2488,7 @@ export function testnetOnboardingFromEnv(
     relay,
     pool: deps.pool,
     order: deps.order,
+    rfq: deps.rfq,
     submitDailyCap,
     submitPerIpCap,
   });

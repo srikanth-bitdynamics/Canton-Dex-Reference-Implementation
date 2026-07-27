@@ -131,6 +131,18 @@ async function main(): Promise<void> {
     // allocation factory the collateral step exercises, and the operator party
     // is named on the trader's funding request.
     order: { service: backend.order, registry: backend.registry, operator },
+    // The RFQ round trip needs more hands than any other flow: the trader's
+    // Rfq and the joint accept (backend.rfq), the two operator-authority
+    // settlement halves (backend.matchedTrade), the dealer table that decides
+    // who may quote and at which tier, and the registry that resolves the
+    // allocation factory each counterparty exercises.
+    rfq: {
+      service: backend.rfq,
+      matchedTrade: backend.matchedTrade,
+      dealers: new DealersService(db),
+      registry: backend.registry,
+      operator,
+    },
   });
 
   const indexer = new Indexer(db, ledger, {

@@ -36,6 +36,8 @@
 //     POST /v1/testnet/liquidity        -> { updateId, lpAmount, baseAmount, quoteAmount }
 //     POST /v1/testnet/order            -> { updateId, orderCid, status }
 //     POST /v1/testnet/order/cancel     -> { updateId }
+//     POST /v1/testnet/rfq              -> { rfqId, rfqCid, pair, expiresAt, quotes }
+//     POST /v1/testnet/rfq/accept       -> { tradeCid, acceptedDealer, ... }
 //
 // The dApp polls the ledger event stream directly for live state; the
 // HTTP API is for one-shot orchestration calls only. Trader-authority
@@ -68,6 +70,7 @@ import {
 import { TestnetSwapRejectedError } from "../testnet-onboarding/swap.js";
 import { TestnetLiquidityRejectedError } from "../testnet-onboarding/liquidity.js";
 import { TestnetOrderRejectedError } from "../testnet-onboarding/order.js";
+import { TestnetRfqRejectedError } from "../testnet-onboarding/rfq.js";
 import { rootLogger } from "../lib/logger.js";
 
 const httpLog = rootLogger.child({ component: "http" });
@@ -1609,6 +1612,101 @@ async function routeRequest(
     return;
   }
 
+  // Public, unauthenticated, and the route that drives the most authorities of
+  // any of them. An RFQ round trip is the trader's Rfq (a CREATE), one
+  // dealer-signed RfqQuote per dealer (also CREATEs), the joint trader+operator
+  // Rfq_Accept, the operator's MatchedTrade_RequestAllocations, each
+  // counterparty's own AllocationFactory_Allocate, and the operator's
+  // MatchedTrade_Settle. Three of those are creates, which the relay's
+  // exercise-only allowlist refuses by design, and three are operator-authority
+  // writes behind POST /v1/rfq, /v1/rfq/accept and /v1/matched-trades/*, all
+  // token-gated. A faucet party can take no step of it from a browser.
+  //
+  // Widening the relay to admit creates would let any caller author any
+  // template the package defines; dropping the token from the operator routes
+  // would open the RFQ and matched-trade surface for any party. So this route
+  // drives every step for ONE faucet party instead, with each degree of freedom
+  // removed here rather than in the caller: the pair must be one this
+  // deployment lists, the on-ledger `pair` text is REBUILT from that listing
+  // (Rfq_Accept splits it literally into leg instrument ids), the dealers and
+  // their tiers come from the operator's own table, the prices are derived from
+  // the operator's own pool mid, and the rfqId is server-generated. See
+  // ../testnet-onboarding/rfq.ts; the deliberate absence of the operator token
+  // is noted in ./auth.ts.
+  if (onboarding && method === "POST" && path === "/v1/testnet/rfq") {
+    const body = await readValidatedJson<{
+      party: string;
+      pair?: unknown;
+      poolCid?: unknown;
+      side: string;
+      size: string;
+      expiryMinutes?: unknown;
+    }>(req, "POST /v1/testnet/rfq", callerAuth);
+    // The pair may be named either way round, so neither can be a required
+    // field of the route spec; the service refuses a request that names
+    // neither, and resolves both against its own listings.
+    for (const field of ["pair", "poolCid"] as const) {
+      const value = body[field];
+      if (value !== undefined && value !== null && typeof value !== "string") {
+        badRequest(`${field} must be a string when present`, { field });
+      }
+    }
+    const expiryMinutes = body.expiryMinutes;
+    if (
+      expiryMinutes !== undefined &&
+      expiryMinutes !== null &&
+      typeof expiryMinutes !== "number"
+    ) {
+      badRequest("expiryMinutes must be a number when present", {
+        field: "expiryMinutes",
+      });
+    }
+    try {
+      // Rebuilt field by field: `whitelist`, `rfqId`, quote prices, tiers,
+      // holding cids, `actAs` and anything else a caller attached are not read,
+      // here or below.
+      const receipt = await onboarding.rfqForParty({
+        party: expectString(body, "party"),
+        ...(typeof body.pair === "string" ? { pair: body.pair } : {}),
+        ...(typeof body.poolCid === "string" ? { poolCid: body.poolCid } : {}),
+        side: expectString(body, "side"),
+        size: expectString(body, "size"),
+        ...(typeof expiryMinutes === "number" ? { expiryMinutes } : {}),
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+      });
+      respondJson(res, 200, receipt);
+    } catch (e) {
+      throw testnetRfqHttpError(e);
+    }
+    return;
+  }
+
+  // The other half. Rfq_Accept is submitted as [trader, operator] under the
+  // operator's own ledger user, which holds CanActAs on every party this faucet
+  // allocated — so the service resolves the RFQ on-ledger and refuses it unless
+  // the RFQ's own trader is the calling party, rather than trusting the cid in
+  // the body. Everything downstream of the accept (the allocations and the
+  // settle) is bound to what the ledger returned, never to a caller's cid.
+  if (onboarding && method === "POST" && path === "/v1/testnet/rfq/accept") {
+    const body = await readValidatedJson<{
+      party: string;
+      rfqCid: string;
+      acceptedQuoteCid: string;
+    }>(req, "POST /v1/testnet/rfq/accept", callerAuth);
+    try {
+      const receipt = await onboarding.rfqAcceptForParty({
+        party: expectString(body, "party"),
+        rfqCid: expectString(body, "rfqCid"),
+        acceptedQuoteCid: expectString(body, "acceptedQuoteCid"),
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+      });
+      respondJson(res, 200, receipt);
+    } catch (e) {
+      throw testnetRfqHttpError(e);
+    }
+    return;
+  }
+
   if (onboarding && method === "GET" && path === "/v1/testnet/hosting") {
     const party = url.searchParams.get("party");
     if (!party) {
@@ -1627,6 +1725,41 @@ async function routeRequest(
  * swap route's, plus the order service's own 400. Anything unrecognized is
  * handed back untouched for the generic 500 path.
  */
+/**
+ * Map an RFQ-flow failure onto its HTTP shape. Shared by the two testnet RFQ
+ * routes because they refuse for the same reasons; the mapping is the swap
+ * route's, plus the RFQ service's own 400. Anything unrecognized is handed back
+ * untouched for the generic 500 path.
+ */
+function testnetRfqHttpError(e: unknown): unknown {
+  if (e instanceof TestnetRfqRejectedError) {
+    return new HttpError(400, "bad_request", e.message, e.details);
+  }
+  if (e instanceof RfqAuthError) {
+    // The service checks ownership before submitting anything; this is the
+    // second, ledger-read check inside RfqService.accept firing.
+    return new HttpError(403, "forbidden", e.message);
+  }
+  if (e instanceof TestnetCommandRejectedError) {
+    return new HttpError(400, "bad_request", e.message, e.details);
+  }
+  if (e instanceof TestnetPartyIneligibleError) {
+    return new HttpError(403, "forbidden", e.message, e.details);
+  }
+  if (e instanceof OnboardingThrottleError) {
+    return new HttpError(429, "too_many_requests", e.message, e.details);
+  }
+  if (e instanceof TestnetSubmitUnavailableError) {
+    return new HttpError(501, "not_implemented", e.message);
+  }
+  if (e instanceof TestnetLedgerError) {
+    // Summarized on purpose, on both the relayed and the operator steps: the
+    // participant's error text can quote the payload back.
+    return new HttpError(502, e.code, e.message, e.details);
+  }
+  return e;
+}
+
 function testnetOrderHttpError(e: unknown): unknown {
   if (e instanceof TestnetOrderRejectedError) {
     return new HttpError(400, "bad_request", e.message, e.details);

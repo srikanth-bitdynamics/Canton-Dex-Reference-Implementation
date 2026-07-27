@@ -164,6 +164,35 @@ const OPERATOR_WRITE_EXACT = new Set<string>([
   // the operator can cancel any order on the book — and earns its exemption by
   // resolving the order on-ledger and refusing it unless the order's trader is
   // the calling party. See ../testnet-onboarding/order.ts.
+  //
+  // Deliberately NOT listed, on the same terms: POST /v1/testnet/rfq and POST
+  // /v1/testnet/rfq/accept. An RFQ round trip touches more authorities than any
+  // other flow here — the trader's Rfq, one dealer-signed RfqQuote per dealer,
+  // the joint trader+operator Rfq_Accept, the operator's
+  // MatchedTrade_RequestAllocations, each counterparty's own
+  // AllocationFactory_Allocate, and the operator's MatchedTrade_Settle. Three
+  // of those are CREATEs, refused by the relay's exercise-only allowlist, and
+  // three are operator-authority writes behind /v1/rfq, /v1/rfq/accept and
+  // /v1/matched-trades/*, all listed above. A faucet party can take no step of
+  // it. The alternatives are the same two bad ones as for orders: admitting
+  // creates to the relay would let anyone author any template the package
+  // defines, and dropping the token from the operator routes would open the RFQ
+  // and matched-trade surface for any party. These two routes instead perform
+  // every step for one faucet party under the same bounds as the swap:
+  // DEX_TESTNET_ONBOARDING gates their existence, the party must pass the same
+  // faucet-provenance + hosting check, the pair must be one this deployment
+  // lists and the on-ledger `pair` text is REBUILT from that listing rather
+  // than echoed (Rfq_Accept splits it literally into leg instrument ids), the
+  // dealers and their tiers come from the operator's own table rather than the
+  // body, every quoted price is derived from the operator's own pool mid, the
+  // rfqId is server-generated, each counterparty's funding holdings are
+  // SELECTED server-side from holdings that party owns, the allocation step
+  // goes through the relay above unchanged, the settle binds to the allocations
+  // the relay actually produced, and the same daily caps apply. Accept is
+  // additionally refused unless the RFQ's own trader — read from the ledger, not
+  // the body — is the calling party, because Rfq_Accept is submitted as
+  // [trader, operator] under a ledger user that can act as every party this
+  // faucet allocated. See ../testnet-onboarding/rfq.ts.
 ]);
 
 const OPERATOR_WRITE_PATTERNS: RegExp[] = [

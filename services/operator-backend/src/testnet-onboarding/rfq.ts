@@ -34,10 +34,46 @@
 // which was already allowlisted.
 
 import * as dec from "../pool/decimal.js";
-import type { Decimal, Party, Time } from "../types.js";
+import type {
+  Decimal,
+  DealerTier,
+  Party,
+  Time,
+  V2Account,
+  V2AllocationSpecification,
+  V2SettlementInfo,
+  V2TransferLeg,
+  V2TransferLegSide,
+} from "../types.js";
 
 /** Which way the trader wants to trade. The only two values the route takes. */
 export type TestnetRfqSide = "RFQ_Buy" | "RFQ_Sell";
+
+export function isRfqSide(v: unknown): v is TestnetRfqSide {
+  return v === "RFQ_Buy" || v === "RFQ_Sell";
+}
+
+/** The dealer-signed quote the operator posts on each whitelisted dealer's behalf. */
+export const RFQ_QUOTE_TEMPLATE_ID = "CantonDex.Dex.Rfq:RfqQuote";
+
+/** The per-counterparty allocation ask MatchedTrade_RequestAllocations creates. */
+export const TRADE_ALLOCATION_REQUEST_TEMPLATE_ID =
+  "CantonDex.Dex.MatchedTrade:TradeAllocationRequest";
+
+/**
+ * Daml `Metadata` on the wire is `{ values: <TextMap Text> }`. The shared V2
+ * types model it as a flat record (they are only ever read from choice results,
+ * where the participant fills it in), so the empty value is built once here
+ * rather than cast at each use. Same reason as order.ts's copy.
+ */
+const EMPTY_META = { values: {} } as unknown as Record<string, string>;
+
+/** V2 `Account` for a bare party, the shape `Utils.basicAccount` produces. */
+export function basicAccount(owner: Party): V2Account {
+  // `id` is NON-optional in HoldingV2.daml: omit it and the participant refuses
+  // the whole command with "Missing non-optional fields: Set(id)".
+  return { owner, provider: null, id: "" };
+}
 
 /**
  * Raised when a request cannot be turned into an RFQ: an unknown pair, a
@@ -146,4 +182,121 @@ export function rfqExpiry(now: Date, minutes: number | undefined): Time {
     Math.max(MIN_RFQ_MINUTES, Math.floor(minutes ?? 60)),
   );
   return new Date(now.getTime() + m * 60_000).toISOString();
+}
+
+/**
+ * The operator's own mid for a pool, as an exact 10dp Decimal.
+ *
+ * `quoteReserve / baseReserve` -- the same constant-product spot price
+ * PoolPriceSource serves -- but computed through the BigInt decimal module
+ * rather than IEEE-754, because this number is multiplied into a quoted price
+ * that is then multiplied by size ON-LEDGER to produce the quote leg's amount.
+ * A float here would leave the trader short by a few units of the last digit
+ * and fail the allocation, not the arithmetic.
+ */
+export function poolMid(baseReserve: Decimal, quoteReserve: Decimal): Decimal {
+  const base = dec.parseDecimal(baseReserve);
+  if (base <= 0n) {
+    throw new TestnetRfqRejectedError(
+      "this deployment has no priceable liquidity for that pair",
+      { field: "pair" },
+    );
+  }
+  return dec.formatDecimal(dec.div(dec.parseDecimal(quoteReserve), base));
+}
+
+/** The create argument of one demo dealer's quote, rebuilt field by field. */
+export function rfqQuoteArgument(input: {
+  dealer: Party;
+  trader: Party;
+  operator: Party;
+  rfqId: string;
+  price: Decimal;
+  expiresAt: Time;
+  postedAt: Time;
+  tier: DealerTier;
+}): Record<string, unknown> {
+  return {
+    dealer: input.dealer,
+    trader: input.trader,
+    operator: input.operator,
+    rfqId: input.rfqId,
+    price: input.price,
+    expiresAt: input.expiresAt,
+    postedAt: input.postedAt,
+    tier: input.tier,
+  };
+}
+
+/** A `CantonDex.Dex.MatchedTrade:TradeAllocationRequest` as the ACS returns it. */
+export interface TradeAllocationRequestContract {
+  contractId: string;
+  authorizer: V2Account;
+  admin: Party;
+  settlement: V2SettlementInfo;
+  settlementDeadline: Time | null;
+  transferLegs: V2TransferLeg[];
+}
+
+/**
+ * One leg projected onto the authorizer's side, mirroring `Utils.legToSide`.
+ * Returns undefined for a leg the authorizer is neither end of, which
+ * `Utils.legsToSides` drops via mapOptional -- the spec the authorizer signs
+ * has to match the one the settle recomputes, leg for leg and in order.
+ */
+export function legToSide(
+  authorizer: V2Account,
+  leg: V2TransferLeg,
+): V2TransferLegSide | undefined {
+  const isSender = leg.sender.owner === authorizer.owner;
+  const isReceiver = leg.receiver.owner === authorizer.owner;
+  if (!isSender && !isReceiver) return undefined;
+  return {
+    transferLegId: leg.transferLegId,
+    side: isSender ? "SenderSide" : "ReceiverSide",
+    otherside: isSender ? leg.receiver : leg.sender,
+    amount: leg.amount,
+    instrumentId: leg.instrumentId,
+    meta: leg.meta,
+  };
+}
+
+export function legsToSides(
+  authorizer: V2Account,
+  legs: V2TransferLeg[],
+): V2TransferLegSide[] {
+  return legs
+    .map((leg) => legToSide(authorizer, leg))
+    .filter((s): s is V2TransferLegSide => s !== undefined);
+}
+
+/**
+ * The spec one counterparty authors for its side of a matched trade.
+ *
+ * It carries NO `settlement`: that is a sibling argument of
+ * AllocationFactory_Allocate, not part of the specification
+ * (AllocationV2.daml). The deadline comes from the REQUEST rather than being
+ * recomputed, so the spec the authorizer signs is byte-identical to the one
+ * SettlementFactory_SettleBatch validates -- and that deadline is the RFQ's own
+ * expiry, which Rfq_Accept copied onto the MatchedTrade.
+ */
+export function tradeAllocationSpec(
+  request: TradeAllocationRequestContract,
+): V2AllocationSpecification {
+  return {
+    admin: request.admin,
+    authorizer: basicAccount(request.authorizer.owner as Party),
+    transferLegSides: legsToSides(request.authorizer, request.transferLegs),
+    settlementDeadline: request.settlementDeadline,
+    nextIterationFunding: null,
+    committed: false,
+    meta: EMPTY_META,
+  };
+}
+
+/** The leg this authorizer has to fund, if any. A receiver locks nothing. */
+export function senderSide(
+  sides: V2TransferLegSide[],
+): V2TransferLegSide | undefined {
+  return sides.find((s) => s.side === "SenderSide");
 }

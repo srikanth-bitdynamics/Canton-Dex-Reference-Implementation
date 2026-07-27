@@ -1,0 +1,406 @@
+-- | The RFQ round trip, end to end, against REAL holdings.
+--
+-- WHY THIS IS NOT IN TokenStandardHarnessTests. The harness registry
+-- (`CantonDex.TokenStandardHarness.DexRegistry`) holds no holdings: its
+-- allocation factory hands back an Allocation without ever locking anything,
+-- and its settlement factory archives allocations without moving value. That
+-- makes it perfect for testing choice plumbing and useless for testing
+-- settlement -- and it is why an entire class of bug stayed invisible to this
+-- suite while the deployment kept rejecting the flow. Three separate wire
+-- shapes shipped wrong (the settle payload, the V2 Account record, the
+-- AllocationSpecification) and every one of them passed a harness test.
+--
+-- So this module runs the whole thing against `CantonDex.Registry.V2`, the
+-- production reference registry, with holdings that really exist and really
+-- move:
+--
+--   Rfq_Accept  ->  MatchedTrade_RequestAllocations
+--               ->  AllocationFactory_Allocate, once per counterparty, funded
+--                   from that counterparty's OWN unlocked holdings
+--               ->  MatchedTrade_Settle
+--
+-- Two properties it exists to pin, both of which cost a live deployment real
+-- money to learn:
+--
+--   1. On an RFQ_Buy the DEALER is the sender of the BASE leg. A dealer stocked
+--      only with the quote asset therefore fails at the allocation -- AFTER
+--      Rfq_Accept has consumed the Rfq and every quote, with no unwind. Both
+--      directions are exercised here, from both sides' inventory.
+--   2. Rfq_Accept copies the RFQ's `expiresAt` onto the MatchedTrade's
+--      `settlementDeadline`, and Allocation_Settle aborts once it passes. An
+--      RFQ that expires between accept and settle is therefore unsettleable,
+--      and the funds stay locked until someone cancels. That coupling is
+--      asserted, not assumed.
+module CantonDex.Tests.RfqSettlementTests where
+
+import DA.Assert
+import DA.Foldable (forA_)
+import DA.Map qualified as Map
+import DA.Optional (fromSome)
+import DA.Time (addRelTime, hours, minutes)
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+import Splice.Testing.Utils (emptyExtraArgs)
+
+import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Dex.Rfq
+import CantonDex.Registry.V2 qualified as RegV2
+import CantonDex.Trading.Utils qualified as Utils
+
+base : Text
+base = "dBTC"
+
+quote : Text
+quote = "dUSD"
+
+pairText : Text
+pairText = "dBTC/dUSD"
+
+data Fixture = Fixture with
+    admin : Party
+    operator : Party
+    trader : Party
+    -- One trusted dealer and one merely whitelisted, so the tier -- the first
+    -- key of the ranking policy -- actually separates the book.
+    trusted : Party
+    whitelisted : Party
+    regCid : ContractId RegV2.Registry
+
+setup : Script Fixture
+setup = do
+  admin <- allocateParty "dex-admin"
+  operator <- allocateParty "dex-operator"
+  trader <- allocateParty "trader"
+  trusted <- allocateParty "dealer-trusted"
+  whitelisted <- allocateParty "dealer-whitelisted"
+  regCid <- submit admin $ createCmd RegV2.Registry with
+    admin; users = [trader, trusted, whitelisted]
+
+  -- Inventory on BOTH sides for both dealers, which is the point of property
+  -- (1) above: an RFQ_Buy takes base off the dealer, an RFQ_Sell takes quote.
+  mint admin trader quote 10000.0
+  mint admin trader base 1.0
+  forA_ [trusted, whitelisted] $ \d -> do
+    mint admin d base 5.0
+    mint admin d quote 500000.0
+
+  pure Fixture with admin; operator; trader; trusted; whitelisted; regCid
+
+mint : Party -> Party -> Text -> Decimal -> Script (ContractId RegV2.Holding)
+mint admin owner instrumentId amount =
+  submit (actAs [admin, owner]) $ createCmd RegV2.Holding with
+    admin; owner; instrumentId; amount; locked = False
+
+-- | The party's unlocked balance of one instrument.
+unlocked : Party -> Text -> Script Decimal
+unlocked owner instrumentId = do
+  hs <- query @RegV2.Holding owner
+  pure $ sum [ h.amount | (_, h) <- hs
+             , h.owner == owner, h.instrumentId == instrumentId, not h.locked ]
+
+-- | How many of the party's holdings are locked. Zero is the post-settle
+-- invariant: a flow that strands a lock has failed even if the legs moved.
+lockedCount : Party -> Script Int
+lockedCount owner = do
+  hs <- query @RegV2.Holding owner
+  pure $ length [ () | (_, h) <- hs, h.owner == owner, h.locked ]
+
+-- | Unlocked holding cids of `owner` covering `amount` of `instrumentId`.
+--
+-- Mirrors the backend's `selectCoveringHoldings`: whole holdings whose sum
+-- covers the target, never a split. This path carries no admin authority and
+-- Holding_Split is `controller admin, owner`, so covering is all it can do --
+-- the standard consumes the inputs whole and Registry.V2 returns the surplus.
+fundingFor : Party -> Text -> Decimal -> Script [ContractId RegV2.Holding]
+fundingFor owner instrumentId amount = do
+  hs <- query @RegV2.Holding owner
+  let candidates = [ (cid, h.amount) | (cid, h) <- hs
+                   , h.owner == owner, h.instrumentId == instrumentId, not h.locked ]
+      -- Accumulate until the running total covers the target, then stop taking.
+      -- A fold rather than the obvious recursion: Daml-LF has no local
+      -- recursive bindings.
+      step (taken, running) (cid, amt)
+        | running >= amount = (taken, running)
+        | otherwise = (taken ++ [cid], running + amt)
+  pure (fst (foldl step ([], 0.0) candidates))
+
+-- | Compose an RFQ and one quote per dealer, exactly as the operator does.
+--
+-- The quotes share the RFQ's `expiresAt`: Rfq_Accept asserts every considered
+-- quote is still valid at accept time, so a quote outliving or predeceasing its
+-- RFQ could only narrow the window in which the trade is acceptable.
+compose
+  : Fixture -> RfqSide -> Decimal -> Time
+  -> Script (ContractId Rfq, ContractId RfqQuote, ContractId RfqQuote)
+compose fx side size expiresAt = do
+  now <- getTime
+  let rfqId = "rfq-1"
+  rfq <- submit fx.trader $ createCmd Rfq with
+    trader = fx.trader; operator = fx.operator; rfqId
+    pair = pairText; side; size; expiresAt
+    whitelist = [fx.trusted, fx.whitelisted]
+    createdAt = now
+  -- The trusted dealer quotes tighter, and the sign follows the side: the
+  -- trader buys above mid and sells below it, so the spread is always against
+  -- the trader.
+  let (tightP, wideP) = case side of
+        RFQ_Buy -> (93400.0, 93600.0)
+        RFQ_Sell -> (93300.0, 93100.0)
+  qTight <- submit fx.trusted $ createCmd RfqQuote with
+    dealer = fx.trusted; trader = fx.trader; operator = fx.operator; rfqId
+    price = tightP; expiresAt; postedAt = now; tier = TierTrusted
+  qWide <- submit fx.whitelisted $ createCmd RfqQuote with
+    dealer = fx.whitelisted; trader = fx.trader; operator = fx.operator; rfqId
+    price = wideP; expiresAt; postedAt = now; tier = TierWhitelist
+  pure (rfq, qTight, qWide)
+
+-- | Author one counterparty's side of the trade, funded from its own holdings.
+--
+-- The spec is rebuilt from the REQUEST rather than recomputed: it must be
+-- byte-identical to the one SettlementFactory_SettleBatch validates, and the
+-- deadline in particular has to come from the request (it is the RFQ's own
+-- expiry, which Rfq_Accept copied onto the trade).
+allocateFor
+  : Fixture -> ContractId MT.TradeAllocationRequest -> Script (ContractId V2.Allocation)
+allocateFor fx reqCid = do
+  req <- fromSome <$> queryContractId fx.operator reqCid
+  now <- getTime
+  let party = fromSome req.authorizer.owner
+      sides = Utils.legsToSides req.authorizer req.transferLegs
+      -- A receiver locks nothing; only a sender has to fund.
+      senders = [ s | s <- sides, s.side == V2.SenderSide ]
+  funding <- case senders of
+    [] -> pure []
+    (s :: _) -> fundingFor party s.instrumentId s.amount
+  let spec = V2.AllocationSpecification with
+        admin = req.admin
+        authorizer = req.authorizer
+        transferLegSides = sides
+        settlementDeadline = req.settlementDeadline
+        nextIterationFunding = None
+        committed = False
+        meta = emptyMetadata
+  res <- submit party $ exerciseCmd (toInterfaceContractId @V2.AllocationFactory fx.regCid)
+    V2.AllocationFactory_Allocate with
+      settlement = req.settlement
+      allocation = spec
+      requestedAt = now
+      inputHoldingCids = map toInterfaceContractId funding
+      actors = [party]
+      extraArgs = emptyExtraArgs
+  case res.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "the counterparty's allocation must complete"
+
+-- | The operator's settle, with the payload shape the live participant accepts.
+--
+-- `batchesByAdmin` is a Daml Map of a plain SettlementBatchV2 RECORD -- not the
+-- vendored upstream variant. Submitted with the ADMIN as a reader: a registry
+-- Holding is `signatory admin, owner`, so the operator is not a stakeholder of
+-- the locked holdings this choice fetches and archives.
+settleTrade
+  : Fixture -> ContractId MT.MatchedTrade -> [ContractId V2.Allocation]
+  -> [ContractId MT.TradeAllocationRequest] -> Commands MT.MatchedTrade_SettleResult
+settleTrade fx tradeCid allocationCids reqs =
+  exerciseCmd tradeCid MT.MatchedTrade_Settle with
+    batchesByAdmin = Map.fromList
+      [ (fx.admin, MT.SettlementBatchV2 with
+          allocations =
+            [ V2.FinalizedAllocation with
+                allocationCid; extraTransferLegSides = []; nextIterationFunding = None
+            | allocationCid <- allocationCids ]
+          factoryCid = toInterfaceContractId fx.regCid
+          extraArgs = emptyExtraArgs)
+      ]
+    allocationRequests = reqs
+    dexPairCid = None
+
+-- | Accept the trusted dealer's quote and drive the trade to settlement.
+acceptAndSettle
+  : Fixture -> ContractId Rfq -> ContractId RfqQuote -> [ContractId RfqQuote]
+  -> Script (MT.MatchedTrade_SettleResult, Rfq_AcceptResult)
+acceptAndSettle fx rfq accepted considered = do
+  now <- getTime
+  res <- submit (actAs [fx.trader, fx.operator]) $ exerciseCmd rfq Rfq_Accept with
+    acceptedQuoteCid = accepted
+    consideredQuoteCids = considered
+    admin = fx.admin
+    currentTime = now
+    signature = "0xtest"
+  reqs <- submit fx.operator $
+    exerciseCmd res.tradeCid MT.MatchedTrade_RequestAllocations
+  allocs <- forA reqs (allocateFor fx)
+  -- readAs admin, for the reason spelled out on settleTrade.
+  settled <- submit (actAs [fx.operator] <> readAs [fx.admin]) $
+    settleTrade fx res.tradeCid allocs reqs
+  pure (settled, res)
+
+-- | RFQ_Buy: the dealer delivers base, the trader delivers quote.
+testRfqBuySettlesAgainstRealHoldings : Script ()
+testRfqBuySettlesAgainstRealHoldings = do
+  fx <- setup
+  now <- getTime
+  let size = 0.01
+      price = 93400.0
+      notional = price * size
+  (rfq, qTight, qWide) <- compose fx RFQ_Buy size (addRelTime now (hours 1))
+
+  traderBase0 <- unlocked fx.trader base
+  traderQuote0 <- unlocked fx.trader quote
+  dealerBase0 <- unlocked fx.trusted base
+  dealerQuote0 <- unlocked fx.trusted quote
+
+  (_, accept) <- acceptAndSettle fx rfq qTight [qTight, qWide]
+
+  -- The tier is the policy's first key, so the trusted dealer is rank 1 and the
+  -- receipt says so. This is the number the operator signs and a trader audits.
+  let receipt = accept.receipt
+  receipt.acceptedRank === 1
+  receipt.consideredCount === 2
+  receipt.acceptedDealer === fx.trusted
+  receipt.policyVersion === "v2.0"
+
+  traderBase1 <- unlocked fx.trader base
+  traderQuote1 <- unlocked fx.trader quote
+  dealerBase1 <- unlocked fx.trusted base
+  dealerQuote1 <- unlocked fx.trusted quote
+
+  traderBase1 === traderBase0 + size
+  traderQuote1 === traderQuote0 - notional
+  dealerBase1 === dealerBase0 - size
+  dealerQuote1 === dealerQuote0 + notional
+
+  -- Whole holdings are locked and the surplus comes back unlocked, so a
+  -- settled trade must leave nothing behind. A stranded lock bricks the party:
+  -- Allocation_Cancel is the executor's choice, not the owner's.
+  traderLocks <- lockedCount fx.trader
+  dealerLocks <- lockedCount fx.trusted
+  traderLocks === 0
+  dealerLocks === 0
+
+  -- The losing dealer is untouched: its quote was consumed, not filled.
+  loserBase <- unlocked fx.whitelisted base
+  loserQuote <- unlocked fx.whitelisted quote
+  loserBase === 5.0
+  loserQuote === 500000.0
+
+-- | RFQ_Sell: the mirror. The DEALER is now the sender of the QUOTE leg, which
+-- is the case a dealer stocked only with the quote asset used to pass and a
+-- dealer stocked only with base now fails.
+testRfqSellSettlesAgainstRealHoldings : Script ()
+testRfqSellSettlesAgainstRealHoldings = do
+  fx <- setup
+  now <- getTime
+  let size = 0.02
+      price = 93300.0
+      notional = price * size
+  (rfq, qTight, qWide) <- compose fx RFQ_Sell size (addRelTime now (hours 1))
+
+  traderBase0 <- unlocked fx.trader base
+  traderQuote0 <- unlocked fx.trader quote
+  dealerBase0 <- unlocked fx.trusted base
+  dealerQuote0 <- unlocked fx.trusted quote
+
+  _ <- acceptAndSettle fx rfq qTight [qTight, qWide]
+
+  traderBase1 <- unlocked fx.trader base
+  traderQuote1 <- unlocked fx.trader quote
+  dealerBase1 <- unlocked fx.trusted base
+  dealerQuote1 <- unlocked fx.trusted quote
+
+  traderBase1 === traderBase0 - size
+  traderQuote1 === traderQuote0 + notional
+  dealerBase1 === dealerBase0 + size
+  dealerQuote1 === dealerQuote0 - notional
+
+  traderLocks <- lockedCount fx.trader
+  dealerLocks <- lockedCount fx.trusted
+  traderLocks === 0
+  dealerLocks === 0
+
+-- | The RFQ's expiry IS the settlement deadline.
+--
+-- Rfq_Accept sets `settlementDeadline = Some expiresAt` on the MatchedTrade,
+-- and Allocation_Settle aborts once that time passes. So an RFQ accepted just
+-- before its expiry cannot be settled after it -- and because Rfq_Accept is
+-- consuming, there is no RFQ and no quote left to retry with. The counterparties'
+-- funds simply stay locked.
+--
+-- This is why the backend clamps the requested expiry to a floor: an unclamped
+-- one-minute RFQ fails INSIDE the settle, for a reason that looks nothing like
+-- the expiry the caller chose.
+testExpiryBetweenAcceptAndSettleBlocksTheSettle : Script ()
+testExpiryBetweenAcceptAndSettleBlocksTheSettle = do
+  fx <- setup
+  now <- getTime
+  let expiresAt = addRelTime now (minutes 10)
+  (rfq, qTight, qWide) <- compose fx RFQ_Buy 0.01 expiresAt
+
+  res <- submit (actAs [fx.trader, fx.operator]) $ exerciseCmd rfq Rfq_Accept with
+    acceptedQuoteCid = qTight
+    consideredQuoteCids = [qTight, qWide]
+    admin = fx.admin
+    currentTime = now
+    signature = "0xtest"
+  reqs <- submit fx.operator $
+    exerciseCmd res.tradeCid MT.MatchedTrade_RequestAllocations
+  allocs <- forA reqs (allocateFor fx)
+
+  -- Past the RFQ's expiry, which the trade inherited as its deadline.
+  setTime (addRelTime expiresAt (minutes 1))
+  submitMustFail (actAs [fx.operator] <> readAs [fx.admin]) $
+    settleTrade fx res.tradeCid allocs reqs
+
+  -- And the money is where the failure leaves it: locked behind allocations
+  -- that can now only be cancelled, never settled.
+  traderLocks <- lockedCount fx.trader
+  dealerLocks <- lockedCount fx.trusted
+  traderLocks === 1
+  dealerLocks === 1
+
+-- | A quote that lapsed before the accept takes the whole accept down.
+--
+-- Rfq_Accept asserts EVERY considered quote is still valid, and it is a
+-- consuming choice -- so one stale cid in the considered set aborts it. The
+-- backend therefore filters the considered set against its own clock rather
+-- than forwarding whatever the caller sent; this pins why.
+testOneLapsedQuoteAbortsTheAccept : Script ()
+testOneLapsedQuoteAbortsTheAccept = do
+  fx <- setup
+  now <- getTime
+  let rfqId = "rfq-lapsed"
+      rfqExpiry = addRelTime now (hours 1)
+  rfq <- submit fx.trader $ createCmd Rfq with
+    trader = fx.trader; operator = fx.operator; rfqId
+    pair = pairText; side = RFQ_Buy; size = 0.01; expiresAt = rfqExpiry
+    whitelist = [fx.trusted, fx.whitelisted]; createdAt = now
+  live <- submit fx.trusted $ createCmd RfqQuote with
+    dealer = fx.trusted; trader = fx.trader; operator = fx.operator; rfqId
+    price = 93400.0; expiresAt = rfqExpiry; postedAt = now; tier = TierTrusted
+  -- Valid when posted, lapsed by the time the trader gets round to accepting.
+  stale <- submit fx.whitelisted $ createCmd RfqQuote with
+    dealer = fx.whitelisted; trader = fx.trader; operator = fx.operator; rfqId
+    price = 93600.0; expiresAt = addRelTime now (minutes 5)
+    postedAt = now; tier = TierWhitelist
+
+  setTime (addRelTime now (minutes 10))
+  later <- getTime
+  submitMustFail (actAs [fx.trader, fx.operator]) $ exerciseCmd rfq Rfq_Accept with
+    acceptedQuoteCid = live
+    consideredQuoteCids = [live, stale]
+    admin = fx.admin
+    currentTime = later
+    signature = "0xtest"
+
+  -- Dropping the lapsed one is all it takes, and the Rfq is still there to do
+  -- it with -- the aborted accept consumed nothing.
+  res <- submit (actAs [fx.trader, fx.operator]) $ exerciseCmd rfq Rfq_Accept with
+    acceptedQuoteCid = live
+    consideredQuoteCids = [live]
+    admin = fx.admin
+    currentTime = later
+    signature = "0xtest"
+  res.receipt.consideredCount === 1

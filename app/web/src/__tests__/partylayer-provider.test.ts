@@ -314,4 +314,71 @@ describe("PartyLayerProvider", () => {
     await p.disconnect();
     expect(p.getStatus().kind).toBe("disconnected");
   });
+
+  it("connect(walletId) routes the chosen wallet through to the client", async () => {
+    fake = fakeClient({ updateId: "u" });
+    const p = ctx();
+    await p.connect("loop");
+    expect(fake.connectCalls[0]).toMatchObject({ walletId: "loop" });
+  });
+
+  it("connect() without a walletId omits it (client probes its configured list)", async () => {
+    fake = fakeClient({ updateId: "u" });
+    const p = ctx();
+    await p.connect();
+    expect((fake.connectCalls[0] as { walletId?: string }).walletId).toBeUndefined();
+  });
+
+  it("listWallets() maps the PartyLayer catalog into picker entries", async () => {
+    const client: PartyLayerClient = {
+      async connect() {
+        return { partyId: "a", label: "A" };
+      },
+      async disconnect() {},
+      async submitTransaction() {
+        return {};
+      },
+      async ledgerApi() {
+        return { response: "{}" };
+      },
+      async listWallets() {
+        return [
+          { walletId: "loop", name: "Loop", installUrl: "https://loop.example", installed: true },
+          { walletId: "console", name: "Console", installed: false },
+        ];
+      },
+    };
+    const p = new PartyLayerProvider("#canton-dex-trading", async () => client);
+    const wallets = await p.listWallets();
+    expect(wallets).toEqual([
+      {
+        id: "partylayer:loop",
+        providerId: "partylayer",
+        walletId: "loop",
+        name: "Loop",
+        description: undefined,
+        icon: undefined,
+        installed: true,
+        installUrl: "https://loop.example",
+        badge: "Loop",
+      },
+      {
+        id: "partylayer:console",
+        providerId: "partylayer",
+        walletId: "console",
+        name: "Console",
+        description: undefined,
+        icon: undefined,
+        installed: false,
+        installUrl: undefined,
+        badge: "Hosted",
+      },
+    ]);
+  });
+
+  it("listWallets() is empty when the client cannot enumerate", async () => {
+    fake = fakeClient({ updateId: "u" }); // fakeClient has no listWallets
+    const p = ctx();
+    expect(await p.listWallets()).toEqual([]);
+  });
 });

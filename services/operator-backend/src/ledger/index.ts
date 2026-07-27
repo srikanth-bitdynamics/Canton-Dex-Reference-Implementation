@@ -92,7 +92,8 @@ export type LedgerErrorKind =
   | "contention"
   | "authorization"
   | "validation"
-  | "transport";
+  | "transport"
+  | "unsupported";
 
 export class LedgerError extends Error {
   constructor(

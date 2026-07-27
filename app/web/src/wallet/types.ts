@@ -315,6 +315,44 @@ export type WalletConnectionStatus =
   | { kind: "connected"; account: WalletAccount; providerId: string }
   | { kind: "error"; message: string };
 
+// === wallet discovery ====================================================
+//
+// A concrete, connectable wallet surfaced by a provider's optional
+// `listWallets()`. The combined picker (`./detection`) queries every
+// detection-capable provider, merges the results, and shows one list; each
+// row routes back to its owning provider via `providerId`, and — when the
+// provider connects to more than one underlying wallet (the dapp-sdk gateway
+// vs an injected extension; PartyLayer's Loop/Console/Nightly/Send) — to the
+// specific `walletId` passed to `connect(walletId)`.
+
+export interface DetectedWallet {
+  /** Unique id within the merged picker. Convention: `${providerId}:${walletId}`. */
+  readonly id: string;
+  /** Owning provider id (a `WalletProviderId`) — routes the connect. */
+  readonly providerId: string;
+  /**
+   * Sub-wallet id within the owning provider, passed to `connect(walletId)`.
+   * dapp-sdk: the discovered providerId (`remote:<url>`, `browser:*`). PartyLayer:
+   * the adapter wallet id (`loop`, `console`, …). Omitted when the provider has a
+   * single implicit wallet.
+   */
+  readonly walletId?: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly icon?: string;
+  /**
+   * Detected install/reachability: `true` installed/reachable, `false`
+   * explicitly not-installed (shown greyed with an install link), `undefined`
+   * when the provider has no opinion.
+   */
+  readonly installed?: boolean;
+  /** Where to install the wallet if it isn't yet. */
+  readonly installUrl?: string;
+  /** Short route/kind label shown on the right of the row (e.g. "Gateway",
+   * "Loop", "Extension", "Injected"). */
+  readonly badge?: string;
+}
+
 // === provider interface ==================================================
 
 export interface WalletProvider {
@@ -323,11 +361,26 @@ export interface WalletProvider {
   /** Human-readable label for the Connect UI. */
   readonly label: string;
 
-  /** Initialize SDKs, open the modal, return once connected. */
-  connect(): Promise<WalletAccount>;
+  /**
+   * Initialize SDKs, open the wallet UI, return once connected. When the
+   * combined picker has already chosen a specific wallet the provider owns,
+   * `walletId` names it (the provider connects directly to that wallet and
+   * skips its own picker); when omitted, the provider runs its native default
+   * flow. Providers with a single implicit wallet ignore the argument.
+   */
+  connect(walletId?: string): Promise<WalletAccount>;
 
   /** Terminate the session. Idempotent. */
   disconnect(): Promise<void>;
+
+  /**
+   * Optional wallet discovery. Providers that front more than one concrete
+   * wallet (dapp-sdk: injected + announced + a CIP-103 gateway; PartyLayer: its
+   * multi-wallet catalog) enumerate them here so the combined picker can show
+   * only wallets that are actually available. Absence means "single implicit
+   * wallet" — the provider is offered as one row.
+   */
+  listWallets?(): Promise<readonly DetectedWallet[]>;
 
   /** Current cached status. Sync — call after subscribing to update. */
   getStatus(): WalletConnectionStatus;

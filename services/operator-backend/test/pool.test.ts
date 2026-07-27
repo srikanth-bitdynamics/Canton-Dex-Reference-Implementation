@@ -548,3 +548,29 @@ describe("PoolService DvP liquidity", () => {
     );
   });
 });
+
+// Integrator feedback: enriched quote (finding #6) — the output plus the
+// fields a trading client would otherwise recompute from reserves + feeBps.
+describe("PoolService.computeQuoteDetailed", () => {
+  const svc = new PoolService(
+    new InMemoryLedger(),
+    new StubRegistry(),
+    "op" as never,
+  );
+
+  it("returns exact fee, spot/execution price, and impact", () => {
+    const q = svc.computeQuoteDetailed(mkPool(10, 200_000, 30), "BTC", "0.5");
+    assert.equal(q.outputAmount, "9496.5947516312");
+    assert.equal(q.inputInstrumentId, "BTC");
+    assert.equal(q.outputInstrumentId, "USDC");
+    assert.equal(q.feeBps, 30);
+    assert.equal(q.feeAmount, "0.0015000000"); // 0.5 * 30/10000
+    assert.equal(q.spotPrice, "20000.0000000000"); // 200000/10
+    assert.equal(q.poolCid, "#p:0");
+    assert.equal(q.poolId, "BTC-USDC");
+    const impact = parseFloat(q.priceImpact);
+    assert.ok(impact > 0 && impact < 0.1, `impact ~0.05, got ${impact}`);
+    const exec = parseFloat(q.executionPrice);
+    assert.ok(exec > 18900 && exec < 19000, `exec ~18993, got ${exec}`);
+  });
+});

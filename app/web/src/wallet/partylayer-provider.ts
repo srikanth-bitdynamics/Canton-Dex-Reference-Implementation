@@ -17,6 +17,7 @@
 import { composeCommands } from "./commands";
 import type { Holding } from "@/types/contracts";
 import type {
+  DetectedWallet,
   Party,
   WalletAccount,
   WalletConnectionStatus,
@@ -29,6 +30,24 @@ export interface PartyLayerConnectOptions {
   requiredCapabilities?: string[];
   preferInstalled?: boolean;
   timeoutMs?: number;
+  /**
+   * Connect directly to this PartyLayer wallet id (`loop`, `console`, …). When
+   * omitted, the client tries its configured wallet ids in order. Set by the
+   * combined picker, which already chose the wallet.
+   */
+  walletId?: string;
+}
+
+/** One wallet from PartyLayer's catalog, with best-effort install detection. */
+export interface PartyLayerWalletInfo {
+  walletId: string;
+  name: string;
+  description?: string;
+  /** Vendor / install page. */
+  installUrl?: string;
+  icon?: string;
+  /** From the adapter's `detectInstalled()`; undefined if not probed. */
+  installed?: boolean;
 }
 
 export interface PartyLayerSession {
@@ -72,6 +91,12 @@ export interface PartyLayerClient {
     signedTx: PartyLayerCommandSubmission;
   }): Promise<PartyLayerTxReceipt>;
   ledgerApi(params: PartyLayerLedgerApiParams): Promise<PartyLayerLedgerApiResult>;
+  /**
+   * Enumerate the configured wallet catalog with per-adapter install
+   * detection, for the combined picker. Optional so older/fake clients (tests)
+   * need not implement it.
+   */
+  listWallets?(): Promise<PartyLayerWalletInfo[]>;
 }
 
 const HOLDING_V2_INTERFACE_ID =
@@ -251,7 +276,7 @@ export class PartyLayerProvider implements WalletProvider {
     private readonly connectTimeoutMs: number = DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
   ) {}
 
-  async connect(): Promise<WalletAccount> {
+  async connect(walletId?: string): Promise<WalletAccount> {
     this.setStatus({ kind: "connecting" });
     try {
       this.client ??= await this.clientFactory();
@@ -259,6 +284,9 @@ export class PartyLayerProvider implements WalletProvider {
         requiredCapabilities: ["submitTransaction", "ledgerApi"],
         preferInstalled: true,
         timeoutMs: this.connectTimeoutMs,
+        // When the combined picker chose a specific wallet, connect straight to
+        // it; otherwise the client tries its configured wallet ids in order.
+        ...(walletId ? { walletId } : {}),
       });
       const account: WalletAccount = { party: session.partyId, label: session.label };
       this.setStatus({ kind: "connected", account, providerId: this.id });
@@ -273,6 +301,32 @@ export class PartyLayerProvider implements WalletProvider {
       this.setStatus({ kind: "error", message });
       throw err;
     }
+  }
+
+  /**
+   * PartyLayer's wallet catalog (Loop, Console, Nightly, Send, …) with
+   * best-effort install detection, mapped into the combined picker's shape.
+   * Loading the PartyLayer SDK here (via the lazy client factory) is acceptable
+   * because discovery is user-initiated (they opened the Connect picker).
+   */
+  async listWallets(): Promise<readonly DetectedWallet[]> {
+    this.client ??= await this.clientFactory();
+    if (!this.client.listWallets) return [];
+    const wallets = await this.client.listWallets();
+    return wallets.map((w): DetectedWallet => {
+      const isLoop = /loop/i.test(w.walletId) || /loop/i.test(w.name);
+      return {
+        id: `partylayer:${w.walletId}`,
+        providerId: this.id,
+        walletId: w.walletId,
+        name: w.name,
+        description: w.description,
+        icon: w.icon,
+        installed: w.installed,
+        installUrl: w.installUrl,
+        badge: isLoop ? "Loop" : "Hosted",
+      };
+    });
   }
 
   async disconnect(): Promise<void> {

@@ -1,16 +1,17 @@
 // CIP-0103 wallet provider backed by @canton-network/dapp-sdk.
 // Composes commands via ./commands and delegates signing+submit to the wallet.
+//
+// This provider owns a private `DappSDK` instance (rather than the module
+// singleton) so it can install a custom `walletPicker`: when the combined
+// wallet picker (`./detection`) has already chosen a specific wallet, we route
+// dapp-sdk's connect straight to it instead of popping the SDK's own picker.
+// It also enumerates the wallets the SDK can reach — the configured CIP-103
+// gateway plus any injected / announced browser wallets — via `listWallets()`,
+// so the combined picker can show only wallets that are actually available.
 
 import {
-  init as sdkInit,
-  connect as sdkConnect,
-  disconnect as sdkDisconnect,
-  listAccounts as sdkListAccounts,
-  prepareExecuteAndWait,
-  onStatusChanged,
-  onAccountsChanged,
-  removeOnStatusChanged,
-  removeOnAccountsChanged,
+  DappSDK,
+  RemoteAdapter,
   type StatusEvent,
   type AccountsChangedEvent,
   type Wallet,
@@ -18,12 +19,108 @@ import {
 
 import { composeCommands } from "./commands";
 import type {
+  DetectedWallet,
   WalletAccount,
   WalletConnectionStatus,
   WalletIntent,
   WalletProvider,
   WalletResult,
 } from "./types";
+
+/** Default CIP-103 wallet gateway (Splice LocalNet validator Amulet wallet). */
+export const DEFAULT_WALLET_GATEWAY_URL = "http://localhost:3030/api/v0/dapp";
+export const DEFAULT_WALLET_GATEWAY_NAME = "Canton wallet gateway";
+
+export interface SdkProviderOptions {
+  /** CIP-103 gateway rpc URL. Replaces the SDK's baked-in localhost default. */
+  gatewayUrl?: string;
+  /** Display name for the gateway row in the picker. */
+  gatewayName?: string;
+}
+
+// Structural mirror of core-wallet-discovery's WalletPickerEntry/Result (not
+// re-exported by @canton-network/dapp-sdk 1.1.0). The SDK calls our walletPicker
+// with the discovered adapters and expects one back.
+interface PickerEntry {
+  providerId: string;
+  name: string;
+  type: string;
+  description?: string;
+  icon?: string;
+  url?: string;
+  reuseGlobalWalletPopup?: boolean;
+}
+
+// --- Browser CIP-103 wallet discovery ------------------------------------
+//
+// @canton-network/dapp-sdk 1.1.0 does not re-export its internal
+// injected/announced discovery helpers, so we mirror the standard CIP-103
+// browser handshake here (same shape the SDK uses internally): read the
+// `window.canton` injection namespace, and dispatch `canton:requestProvider`
+// then collect `canton:announceProvider` replies. Ids are prefixed `browser:`
+// so they're distinct from the remote gateway.
+
+interface InjectedWallet {
+  id: string;
+  name: string;
+  description: string;
+}
+
+function isProviderLike(o: unknown): boolean {
+  if (typeof o !== "object" || o === null) return false;
+  const p = o as Record<string, unknown>;
+  return (
+    typeof p.request === "function" &&
+    typeof p.on === "function" &&
+    typeof p.emit === "function" &&
+    typeof p.removeListener === "function"
+  );
+}
+
+function discoverInjectedWallets(): InjectedWallet[] {
+  if (typeof window === "undefined") return [];
+  const out: InjectedWallet[] = [];
+  const cand = (window as unknown as Record<string, unknown>)["canton"];
+  if (cand == null) return out;
+  if (isProviderLike(cand)) {
+    out.push({
+      id: "browser:canton",
+      name: "canton (injected)",
+      description: "Injected provider from window.canton",
+    });
+  } else if (typeof cand === "object") {
+    for (const [key, val] of Object.entries(cand as Record<string, unknown>)) {
+      if (isProviderLike(val)) {
+        out.push({
+          id: `browser:canton.${key}`,
+          name: `canton.${key} (injected)`,
+          description: `Injected provider from window.canton.${key}`,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+async function discoverAnnouncedWallets(): Promise<Array<{ id: string; name: string; icon?: string }>> {
+  if (typeof window === "undefined") return [];
+  const found = new Map<string, { id: string; name: string; icon?: string }>();
+  const handler = (e: Event) => {
+    const d = (e as CustomEvent).detail as
+      | { id?: string; name?: string; icon?: string }
+      | undefined;
+    if (!d?.id || !d.name || found.has(d.id)) return;
+    found.set(d.id, { id: `browser:ext:${d.id}`, name: d.name, icon: d.icon });
+  };
+  window.addEventListener("canton:announceProvider", handler);
+  try {
+    window.dispatchEvent(new CustomEvent("canton:requestProvider", { detail: {} }));
+    await new Promise((r) => setTimeout(r, 300));
+  } finally {
+    window.removeEventListener("canton:announceProvider", handler);
+  }
+  return [...found.values()];
+}
 
 // The CIP-0103 SDK / wallet gateway rejects with a structured JSON-RPC error
 // object (e.g. `{ error: { message, code, cause } }`), not an Error. The dApp's
@@ -65,16 +162,96 @@ export class SdkProvider implements WalletProvider {
   private statusListener: ((e: StatusEvent) => void) | null = null;
   private accountsListener: ((e: AccountsChangedEvent) => void) | null = null;
 
-  constructor(private readonly packagePrefix: string) {}
+  private readonly sdk: DappSDK;
+  private readonly gatewayAdapter: RemoteAdapter;
+  private readonly gatewayName: string;
+  private readonly gatewayUrl: string;
+  private readonly gatewayProviderId: string;
+  // Set by connect(walletId) so the walletPicker routes to the chosen wallet
+  // instead of prompting. Cleared in connect()'s finally.
+  private pendingWalletId: string | null = null;
 
-  async connect(): Promise<WalletAccount> {
-    this.setStatus({ kind: "connecting" });
+  constructor(
+    private readonly packagePrefix: string,
+    options: SdkProviderOptions = {},
+  ) {
+    this.gatewayUrl = options.gatewayUrl ?? DEFAULT_WALLET_GATEWAY_URL;
+    this.gatewayName = options.gatewayName ?? DEFAULT_WALLET_GATEWAY_NAME;
+    this.gatewayProviderId = `remote:${this.gatewayUrl}`;
+    this.gatewayAdapter = new RemoteAdapter({
+      providerId: this.gatewayProviderId,
+      name: this.gatewayName,
+      rpcUrl: this.gatewayUrl,
+      description: "CIP-103 Splice / Amulet wallet gateway",
+    });
+    this.sdk = new DappSDK({
+      walletPicker: (entries: PickerEntry[]) => this.pickWallet(entries),
+    } as unknown as ConstructorParameters<typeof DappSDK>[0]);
+  }
+
+  private async ensureInit(): Promise<void> {
+    if (this.initialised) return;
+    // The configured gateway is the sole `defaultAdapters` entry, replacing the
+    // SDK's baked-in localhost:3030 default. Injected / announced CIP-103
+    // wallets are still discovered independently of `defaultAdapters`.
+    await this.sdk.init({ defaultAdapters: [this.gatewayAdapter] });
+    this.initialised = true;
+  }
+
+  // The SDK's wallet picker. When a specific wallet was requested
+  // (connect(walletId)), route to exactly it; otherwise (native default flow)
+  // prefer the remote gateway, then the first entry.
+  private async pickWallet(entries: PickerEntry[]): Promise<PickerEntry> {
+    if (this.pendingWalletId) {
+      const match = entries.find((e) => e.providerId === this.pendingWalletId);
+      if (match) return match;
+      // The chosen wallet is no longer among the SDK's discovered adapters
+      // (e.g. an injected/announced wallet that stopped responding between the
+      // picker snapshot and connect). Do NOT silently fall back to the gateway
+      // — that would connect a DIFFERENT wallet/party than the user picked.
+      // Fail so they re-pick.
+      throw new Error(
+        `selected wallet "${this.pendingWalletId}" is no longer available — reopen Connect wallet and pick again`,
+      );
+    }
+    const remote = entries.find((e) => e.type === "remote") ?? entries[0];
+    if (!remote) {
+      throw new Error("sdk-provider: no CIP-103 wallet available to connect");
+    }
+    return remote;
+  }
+
+  /** POST a CIP-103 `status` probe at the gateway to tell "gateway down" apart
+   * from other failures. Throws an actionable error when unreachable. */
+  private async assertGatewayReachable(): Promise<void> {
     try {
-      if (!this.initialised) {
-        await sdkInit();
-        this.initialised = true;
-      }
-      const conn = await sdkConnect();
+      const res = await fetch(this.gatewayUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "dex-wallet-preflight",
+          method: "status",
+          params: {},
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      const suffix = err instanceof Error ? ` (${err.message})` : "";
+      throw new Error(
+        `Canton wallet gateway is not reachable at ${this.gatewayUrl}${suffix}. ` +
+          "Start the wallet gateway, then retry Connect wallet.",
+      );
+    }
+  }
+
+  async connect(walletId?: string): Promise<WalletAccount> {
+    this.setStatus({ kind: "connecting" });
+    this.pendingWalletId = walletId ?? null;
+    const targetIsGateway = !walletId || walletId.startsWith("remote:");
+    try {
+      await this.ensureInit();
+      const conn = await this.sdk.connect();
       if (!conn.isConnected) {
         throw new Error(`sdk-provider: wallet refused connect (${conn.reason ?? "no reason"})`);
       }
@@ -84,14 +261,91 @@ export class SdkProvider implements WalletProvider {
       this.setStatus({ kind: "connected", account, providerId: this.id });
       return account;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      let msg = err instanceof Error ? err.message : String(err);
+      // The SDK's connect() retry loop assumes ITS OWN popup picker is mounted;
+      // with our headless walletPicker a gateway-side failure surfaces as the
+      // opaque "Wallet picker is not open" (or "not connected"). When the target
+      // was the gateway, probe it so the user sees the real reason (down /
+      // misconfigured) instead of a misleading picker message.
+      if (targetIsGateway && /wallet picker is not open|not connected/i.test(msg)) {
+        try {
+          await this.assertGatewayReachable();
+          msg =
+            `Connected to the wallet gateway at ${this.gatewayUrl}, but no wallet ` +
+            "session was established. Sign in at the gateway, then retry Connect wallet.";
+        } catch (probeErr) {
+          msg = probeErr instanceof Error ? probeErr.message : String(probeErr);
+        }
+      }
       this.setStatus({ kind: "error", message: msg });
-      throw err;
+      // Rethrow with the clarified message so callers/logs see it too.
+      throw err instanceof Error ? Object.assign(err, { message: msg }) : err;
+    } finally {
+      this.pendingWalletId = null;
     }
   }
 
+  /**
+   * Enumerate the wallets this provider can reach: the configured CIP-103
+   * gateway (always), plus any injected (`window.canton*`) and announced
+   * (browser-extension) CIP-103 wallets discovered at call time. The gateway
+   * row routes exactly (its providerId is our RemoteAdapter's); injected /
+   * announced rows are surfaced and best-effort routed (the SDK re-discovers
+   * and connects them on pick).
+   */
+  async listWallets(): Promise<readonly DetectedWallet[]> {
+    const out: DetectedWallet[] = [
+      {
+        id: `sdk:${this.gatewayProviderId}`,
+        providerId: this.id,
+        walletId: this.gatewayProviderId,
+        name: this.gatewayName,
+        description: "CIP-103 Splice / Amulet wallet gateway",
+        installed: true,
+        badge: "Gateway",
+      },
+    ];
+
+    try {
+      for (const inj of discoverInjectedWallets()) {
+        out.push({
+          id: `sdk:${inj.id}`,
+          providerId: this.id,
+          walletId: inj.id,
+          name: inj.name,
+          description: inj.description,
+          installed: true,
+          badge: "Injected",
+        });
+      }
+    } catch {
+      /* discovery unavailable (SSR / no window) — skip injected */
+    }
+
+    try {
+      const announced = await discoverAnnouncedWallets();
+      for (const a of announced) {
+        out.push({
+          id: `sdk:${a.id}`,
+          providerId: this.id,
+          walletId: a.id,
+          name: a.name,
+          icon: a.icon,
+          description: "Browser extension CIP-103 wallet",
+          installed: true,
+          badge: "Extension",
+        });
+      }
+    } catch {
+      /* announce handshake timed out / unsupported — skip announced */
+    }
+
+    const seen = new Set<string>();
+    return out.filter((e) => !seen.has(e.id) && seen.add(e.id));
+  }
+
   async disconnect(): Promise<void> {
-    try { await sdkDisconnect(); } catch { /* already disconnected */ }
+    try { await this.sdk.disconnect(); } catch { /* already disconnected */ }
     // Tear down the event subscriptions: the SDK drops them with its client on
     // disconnect, and connect() only re-wires when statusListener === null. Not
     // clearing them here leaves the provider deaf to status/account events after
@@ -119,9 +373,9 @@ export class SdkProvider implements WalletProvider {
       packagePrefix: this.packagePrefix,
       now: () => new Date(),
     });
-    let result: Awaited<ReturnType<typeof prepareExecuteAndWait>>;
+    let result: Awaited<ReturnType<DappSDK["prepareExecuteAndWait"]>>;
     try {
-      result = await prepareExecuteAndWait({
+      result = await this.sdk.prepareExecuteAndWait({
         commandId: composed.commandId,
         commands: composed.commands as unknown as Record<string, unknown>,
         actAs: composed.actAs,
@@ -131,7 +385,7 @@ export class SdkProvider implements WalletProvider {
         ...(composed.disclosedContracts && composed.disclosedContracts.length > 0
           ? { disclosedContracts: composed.disclosedContracts }
           : {}),
-      });
+      } as Parameters<DappSDK["prepareExecuteAndWait"]>[0]);
     } catch (e) {
       // Surface the wallet/gateway's real error instead of "[object Object]".
       throw new Error(`wallet submission failed: ${describeWalletError(e)}`);
@@ -156,7 +410,7 @@ export class SdkProvider implements WalletProvider {
   }
 
   private async primaryAccount(): Promise<WalletAccount> {
-    const accounts: Wallet[] = await sdkListAccounts();
+    const accounts: Wallet[] = await this.sdk.listAccounts();
     if (accounts.length === 0) {
       throw new Error("sdk-provider: wallet returned no accounts");
     }
@@ -190,8 +444,8 @@ export class SdkProvider implements WalletProvider {
         });
       }
     };
-    void onStatusChanged(this.statusListener);
-    void onAccountsChanged(this.accountsListener);
+    void this.sdk.onStatusChanged(this.statusListener);
+    void this.sdk.onAccountsChanged(this.accountsListener);
   }
 
   async destroy(): Promise<void> {
@@ -202,11 +456,11 @@ export class SdkProvider implements WalletProvider {
   // against the SDK's new client. Shared by disconnect() and destroy().
   private async teardownEvents(): Promise<void> {
     if (this.statusListener) {
-      await removeOnStatusChanged(this.statusListener);
+      await this.sdk.removeOnStatusChanged(this.statusListener);
       this.statusListener = null;
     }
     if (this.accountsListener) {
-      await removeOnAccountsChanged(this.accountsListener);
+      await this.sdk.removeOnAccountsChanged(this.accountsListener);
       this.accountsListener = null;
     }
   }

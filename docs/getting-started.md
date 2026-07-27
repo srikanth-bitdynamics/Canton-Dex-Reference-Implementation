@@ -79,10 +79,48 @@ curl -s http://localhost:8080/v1/pools | python3 -m json.tool
 > `/v1/pairs` returns "method not allowed", run on another port and point the
 > dApp at it: `PORT=8091 npm run dev` and set `VITE_API_BASE=http://127.0.0.1:8091`.
 
+### Exercising write paths in demo mode
+
+Read paths (`/v1/pairs`, `/v1/pools`, `/v1/holdings`, `/v1/swaps/quote`) work
+with no configuration. **State-changing routes** — `/v1/pools/swap*`,
+`/v1/rfq`, `/v1/orders/*`, `/v1/admin/*` — are auth-gated and return **401**
+unless an operator token is configured or the dev bypass is on. To exercise
+writes against the in-memory demo, set one flag:
+
+```bash
+DEX_DEV_OPEN=1 npm run dev
+```
+
+`DEX_DEV_OPEN=1` opens the operator-write gate **and** (because the dev server
+seeds bare-hint parties like `trader-demo`) auto-relaxes party validation, so
+the seeded demo data passes writes out of the box. Example demo swap:
+
+```bash
+curl -s -X POST http://localhost:8080/v1/pools/swap \
+  -H 'content-type: application/json' \
+  -d '{"poolCid":"#2:0","swapperAccount":{"owner":"trader-demo"},
+       "inputInstrumentId":"BTC","inputAmount":"0.1","minOutputAmount":"0",
+       "swapperAllocationCid":"#synthetic:0"}'
+# → { "amountOut": "1974.31...", ... }  and pool reserves move to 10.1 / 198025.68
+```
+
+Demo-mode flags (in-memory dev server only; never set in production):
+
+| Env | Effect |
+|---|---|
+| `DEX_DEV_OPEN=1` | open the operator-write gate; also auto-allows the seeded bare parties |
+| `DEX_ALLOW_BARE_PARTIES` | override the bare-party relaxation (`=0` to force strict `hint::hexfingerprint`) |
+| `DEX_DEV_WALLET_RELAY=1` | enable the dev wallet-relay endpoint |
+| `DEX_OPERATOR_API_TOKEN` | require this bearer token on writes instead of the open bypass |
+
+> The **two-step** swap (`/v1/pools/swap/request` → allocate → settle) needs a
+> real Canton participant; the in-memory ledger returns **501 `not_supported`**
+> for it. Use the single-step `/v1/pools/swap` above for the demo.
+
 Tests + typecheck:
 ```bash
 npm run typecheck      # tsc, clean
-npm test               # node:test, ~77 pass / 0 fail
+npm test               # node:test, 100 pass / 0 fail / 1 skip
 ```
 
 ---

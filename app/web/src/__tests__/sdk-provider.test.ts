@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import type { RequestSwapIntent, WalletIntent } from "@/wallet/types";
 
-// SdkProvider talks to @canton-network/dapp-sdk through module-level function
-// imports (not an injected client), so we mock the module surface. vi.hoisted
-// keeps the mock fns + captured listeners addressable from both the factory and
-// the tests. These cover the bug class the audit flagged as previously untested:
-// the result shape (updateId-only), disclosure forwarding, and the nested
-// connection.isConnected disconnect signal.
+// SdkProvider owns a private DappSDK instance (with a custom walletPicker) and
+// a RemoteAdapter for the configured gateway. We mock those two classes so every
+// instance delegates to the shared `sdk` mock fns; vi.hoisted keeps the fns +
+// captured listeners addressable from both the factory and the tests. These
+// cover the easy-to-regress behaviours: the result shape (updateId-only),
+// disclosure forwarding, and the nested connection.isConnected disconnect signal.
 const sdk = vi.hoisted(() => ({
   init: vi.fn(async () => {}),
   connect: vi.fn(async () => ({ isConnected: true }) as { isConnected: boolean; reason?: string }),
@@ -22,18 +22,39 @@ const sdk = vi.hoisted(() => ({
   removeOnAccountsChanged: vi.fn(async () => {}),
   statusListeners: [] as Array<(e: unknown) => void>,
   accountsListeners: [] as Array<(e: unknown) => void>,
+  // When set, the mock DappSDK.connect first invokes the provider's walletPicker
+  // with these entries — exercising the routing/rejection logic in pickWallet.
+  pickerEntries: undefined as
+    | undefined
+    | Array<{ providerId: string; name: string; type: string }>,
 }));
 
 vi.mock("@canton-network/dapp-sdk", () => ({
-  init: sdk.init,
-  connect: sdk.connect,
-  disconnect: sdk.disconnect,
-  listAccounts: sdk.listAccounts,
-  prepareExecuteAndWait: sdk.prepareExecuteAndWait,
-  onStatusChanged: (cb: (e: unknown) => void) => { sdk.statusListeners.push(cb); },
-  onAccountsChanged: (cb: (e: unknown) => void) => { sdk.accountsListeners.push(cb); },
-  removeOnStatusChanged: sdk.removeOnStatusChanged,
-  removeOnAccountsChanged: sdk.removeOnAccountsChanged,
+  DappSDK: class {
+    private readonly walletPicker?: (entries: unknown[]) => Promise<unknown>;
+    constructor(opts?: { walletPicker?: (entries: unknown[]) => Promise<unknown> }) {
+      this.walletPicker = opts?.walletPicker;
+    }
+    init = sdk.init;
+    connect = async () => {
+      if (sdk.pickerEntries) await this.walletPicker?.(sdk.pickerEntries);
+      return sdk.connect();
+    };
+    disconnect = sdk.disconnect;
+    listAccounts = sdk.listAccounts;
+    prepareExecuteAndWait = sdk.prepareExecuteAndWait;
+    open = vi.fn(async () => {});
+    onStatusChanged = (cb: (e: unknown) => void) => { sdk.statusListeners.push(cb); };
+    onAccountsChanged = (cb: (e: unknown) => void) => { sdk.accountsListeners.push(cb); };
+    removeOnStatusChanged = sdk.removeOnStatusChanged;
+    removeOnAccountsChanged = sdk.removeOnAccountsChanged;
+  },
+  RemoteAdapter: class {
+    constructor(private readonly config: { providerId: string }) {}
+    get providerId(): string {
+      return this.config.providerId;
+    }
+  },
 }));
 
 import { SdkProvider } from "@/wallet/sdk-provider";
@@ -77,6 +98,7 @@ describe("SdkProvider", () => {
     });
     sdk.removeOnStatusChanged.mockClear();
     sdk.removeOnAccountsChanged.mockClear();
+    sdk.pickerEntries = undefined;
   });
 
   it("submit() returns an updateId-only result (no client-side cid extraction)", async () => {
@@ -120,6 +142,57 @@ describe("SdkProvider", () => {
     // bug read e.isConnected (always undefined) and never transitioned.
     sdk.statusListeners[0]!({ connection: { isConnected: false } });
     expect(provider.getStatus().kind).toBe("disconnected");
+  });
+
+  it("listWallets() surfaces the configured gateway as a Gateway row", async () => {
+    const provider = new SdkProvider("#canton-dex-trading", {
+      gatewayUrl: "http://gw.example/api/v0/dapp",
+      gatewayName: "Example gateway",
+    });
+    const wallets = await provider.listWallets();
+    // No window.canton / announced extensions in jsdom, so only the gateway.
+    expect(wallets).toContainEqual(
+      expect.objectContaining({
+        providerId: "sdk",
+        walletId: "remote:http://gw.example/api/v0/dapp",
+        name: "Example gateway",
+        badge: "Gateway",
+        installed: true,
+      }),
+    );
+  });
+
+  it("fails the connect (not silently routes to the gateway) when the picked wallet is gone", async () => {
+    const provider = new SdkProvider("#canton-dex-trading", {
+      gatewayUrl: "http://gw.example/api/v0/dapp",
+    });
+    // SDK offers only the gateway, but the user picked an injected wallet that
+    // is no longer present. pickWallet must reject, not connect the gateway.
+    sdk.pickerEntries = [
+      { providerId: "remote:http://gw.example/api/v0/dapp", name: "gw", type: "remote" },
+    ];
+    await expect(provider.connect("browser:canton")).rejects.toThrow(/no longer available/);
+    expect(sdk.listAccounts).not.toHaveBeenCalled();
+  });
+
+  it("translates the SDK's opaque picker error into a gateway-unreachable message", async () => {
+    const provider = new SdkProvider("#canton-dex-trading", {
+      gatewayUrl: "http://gw.example/api/v0/dapp",
+    });
+    // The SDK masks a gateway-side failure as "Wallet picker is not open".
+    sdk.connect.mockRejectedValueOnce(new Error("Wallet picker is not open"));
+    const fetchMock = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await expect(provider.connect()).rejects.toThrow(/not reachable/);
+      const status = provider.getStatus();
+      expect(status.kind).toBe("error");
+      expect((status as { message: string }).message).toMatch(/not reachable/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("re-wires event listeners after a reconnect", async () => {

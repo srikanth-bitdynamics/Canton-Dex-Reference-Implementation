@@ -54,8 +54,9 @@ describe("compareDecimal is exact", () => {
 
 function mkQuote(o: {
   dealer: string;
-  price: string;
+  price?: string;
   postedAt?: string;
+  expiresAt?: string;
   tier?: "TierTrusted" | "TierWhitelist";
 }): RfqQuote {
   return {
@@ -64,59 +65,87 @@ function mkQuote(o: {
     trader: "alice" as never,
     operator: "op" as never,
     rfqId: "rfq-1",
-    price: o.price,
-    expiresAt: "2099-01-01T00:00:00Z",
+    // Defaulted: under v2.0 the ranking never reads price, so most cases have
+    // no reason to state one.
+    price: o.price ?? "1.00",
+    expiresAt: o.expiresAt ?? "2099-01-01T00:00:00Z",
     postedAt: o.postedAt ?? "2026-01-01T00:00:00Z",
     tier: (o.tier ?? "TierTrusted") as never,
   };
 }
 
-describe("rankQuotes ordering uses decimal comparison", () => {
+// The operator's off-chain ranking is replayed against `policyCmp` in
+// trading/CantonDex/Dex/Rfq.daml, so these pin the chain's ordering, not a
+// plausible one. v2.0 does NOT rank by price: `side` is unused in policy mode
+// because the trader picks among ranked candidates. Tests that asserted
+// "cheapest first" agreed with an ordering the deployed Daml does not have.
+describe("rankQuotes reproduces the on-ledger policyCmp (v2.0)", () => {
   const now = "2026-01-01T00:00:00Z";
 
-  it("RFQ_Buy: cheapest first (decimal order)", () => {
+  it("ranks later expiry first — more time to act", () => {
     const quotes = [
-      mkQuote({ dealer: "a", price: "60530.00" }),
-      mkQuote({ dealer: "b", price: "60510.00" }),
-      mkQuote({ dealer: "c", price: "60509.50" }),
+      mkQuote({ dealer: "soon", expiresAt: "2026-01-01T01:00:00Z" }),
+      mkQuote({ dealer: "latest", expiresAt: "2026-01-01T09:00:00Z" }),
+      mkQuote({ dealer: "mid", expiresAt: "2026-01-01T05:00:00Z" }),
     ];
-    const ranked = rankQuotes("RFQ_Buy", quotes, now);
     assert.deepEqual(
-      ranked.map((q) => q.dealer),
-      ["c", "b", "a"],
+      rankQuotes("RFQ_Buy", quotes, now).map((q) => q.dealer),
+      ["latest", "mid", "soon"],
     );
   });
 
-  it("RFQ_Sell: highest first", () => {
+  it("ignores price entirely, in both directions", () => {
     const quotes = [
-      mkQuote({ dealer: "a", price: "60530.00" }),
-      mkQuote({ dealer: "b", price: "60510.00" }),
+      mkQuote({ dealer: "dear", price: "99999.00" }),
+      mkQuote({ dealer: "cheap", price: "1.00" }),
     ];
-    const ranked = rankQuotes("RFQ_Sell", quotes, now);
+    // Same expiry and postedAt, so the dealer tie-break decides -- price does
+    // not enter the comparison at all, and the side does not change it.
+    for (const side of ["RFQ_Buy", "RFQ_Sell"] as const) {
+      assert.deepEqual(
+        rankQuotes(side, quotes, now).map((q) => q.dealer),
+        ["cheap", "dear"],
+        `${side}: ordered by dealer tie-break, not price`,
+      );
+    }
+  });
+
+  it("trusted tier ranks ahead of whitelist regardless of expiry", () => {
+    const quotes = [
+      mkQuote({
+        dealer: "later-wl",
+        tier: "TierWhitelist",
+        expiresAt: "2026-01-01T09:00:00Z",
+      }),
+      mkQuote({
+        dealer: "sooner-trusted",
+        tier: "TierTrusted",
+        expiresAt: "2026-01-01T02:00:00Z",
+      }),
+    ];
+    assert.equal(rankQuotes("RFQ_Buy", quotes, now)[0]?.dealer, "sooner-trusted");
+  });
+
+  it("breaks an expiry tie by earlier postedAt, then by dealer", () => {
+    const quotes = [
+      mkQuote({ dealer: "b-late", postedAt: "2026-01-01T00:00:05Z" }),
+      mkQuote({ dealer: "a-early", postedAt: "2026-01-01T00:00:01Z" }),
+      mkQuote({ dealer: "c-late", postedAt: "2026-01-01T00:00:05Z" }),
+    ];
     assert.deepEqual(
-      ranked.map((q) => q.dealer),
-      ["a", "b"],
+      rankQuotes("RFQ_Buy", quotes, now).map((q) => q.dealer),
+      ["a-early", "b-late", "c-late"],
     );
   });
 
-  it("trusted tier ranks ahead of whitelist regardless of price", () => {
+  it("drops quotes that have already expired", () => {
     const quotes = [
-      mkQuote({ dealer: "cheap-wl", price: "1.0", tier: "TierWhitelist" }),
-      mkQuote({ dealer: "dear-trusted", price: "9.0", tier: "TierTrusted" }),
+      mkQuote({ dealer: "live", expiresAt: "2026-01-01T02:00:00Z" }),
+      mkQuote({ dealer: "lapsed", expiresAt: "2025-12-31T23:00:00Z" }),
     ];
-    const ranked = rankQuotes("RFQ_Buy", quotes, now);
-    assert.equal(ranked[0]?.dealer, "dear-trusted");
-  });
-
-  it("distinguishes prices that differ only in the 10th decimal", () => {
-    const quotes = [
-      mkQuote({ dealer: "hi", price: "1.0000000002" }),
-      mkQuote({ dealer: "lo", price: "1.0000000001" }),
-    ];
-    const ranked = rankQuotes("RFQ_Buy", quotes, now);
     assert.deepEqual(
-      ranked.map((q) => q.dealer),
-      ["lo", "hi"],
+      rankQuotes("RFQ_Buy", quotes, now).map((q) => q.dealer),
+      ["live"],
     );
   });
 });

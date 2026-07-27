@@ -14,8 +14,13 @@ import type {
   Time,
 } from "../types.js";
 
-export const POLICY_VERSION = "v1.4";
-export const POLICY_HASH = "sha256:rfq-policy-v1.4";
+// Must name the ordering `policyCmp` in trading/CantonDex/Dex/Rfq.daml
+// actually implements. The receipt this module signs is committed on-ledger
+// and replayed against that ordering, so a version that ranks differently
+// does not merely mislabel the receipt -- it makes every receipt this
+// deployment produces fail verifyReceipt.
+export const POLICY_VERSION = "v2.0";
+export const POLICY_HASH = "sha256:rfq-policy-v2.0";
 
 // Compare two Daml Decimal strings exactly (10dp, no IEEE-754) so the
 // ranking agrees with the on-ledger Decimal ordering in
@@ -34,17 +39,27 @@ export function rankQuotes(
   const valid = quotes.filter(
     (q) => Date.parse(q.expiresAt) > Date.parse(now),
   );
+  // Reproduces `policyCmp` (Rfq.daml:241-256) exactly: trusted tier first,
+  // then LATER expiresAt (more time to act), then EARLIER postedAt
+  // (first-mover), then a deterministic dealer-party tie-break.
+  //
+  // Deliberately NOT ranked by price. `side` is unused in policy mode
+  // on-ledger -- the trader picks among ranked candidates -- and a price key
+  // here would order quotes differently from the chain, which is exactly the
+  // divergence that invalidated every receipt before v2.0.
   return [...valid].sort((a, b) => {
     const tierA = a.tier === "TierTrusted" ? 0 : 1;
     const tierB = b.tier === "TierTrusted" ? 0 : 1;
     if (tierA !== tierB) return tierA - tierB;
-    // Exact decimal-string price comparison (matches the Daml Decimal order).
-    const priceCmp = compareDecimal(a.price, b.price);
-    if (priceCmp !== 0) return side === "RFQ_Buy" ? priceCmp : -priceCmp;
+    const expA = Date.parse(a.expiresAt);
+    const expB = Date.parse(b.expiresAt);
+    if (expA !== expB) return expB - expA;
     const ta = Date.parse(a.postedAt);
     const tb = Date.parse(b.postedAt);
     if (ta !== tb) return ta - tb;
-    return a.dealer.localeCompare(b.dealer);
+    // Daml compares the party TEXT; localeCompare is locale-sensitive and can
+    // disagree on the same strings, so compare by code unit as Daml does.
+    return a.dealer < b.dealer ? -1 : a.dealer > b.dealer ? 1 : 0;
   });
 }
 

@@ -236,7 +236,16 @@ export class RfqService {
           choice: "Rfq_Accept",
           argument: {
             acceptedQuoteCid: input.acceptedQuoteCid,
-            consideredQuoteCids: input.consideredQuoteCids,
+            // The quotes that survived OUR OWN validity filter, not the
+            // caller's list. Rfq_Accept asserts every considered quote is
+            // still unexpired (Rfq.daml:112-116), and the choice is
+            // CONSUMING: one lapsed cid in the caller's set aborts it after
+            // the Rfq and every quote would have been archived, with no
+            // unwind. The accepted quote is necessarily in this set --
+            // `acceptedRank >= 0` above already proved it survived the same
+            // filter -- so the Daml's `acceptedQuoteCid elem
+            // consideredQuoteCids` still holds.
+            consideredQuoteCids: ranked.map((q) => q.contractId),
             admin: input.admin,
             currentTime: input.now,
             signature: receipt.signature,

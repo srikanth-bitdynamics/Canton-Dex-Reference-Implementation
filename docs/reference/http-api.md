@@ -244,7 +244,9 @@ authority writes. Instead it hands intents to the active
 ## Examples
 
 All examples assume the local backend on `http://localhost:8080`. Reads need no
-auth; `/v1/admin/*` writes need `Authorization: Bearer $OPERATOR_ADMIN_TOKEN`.
+auth; **every** write does — see [Authentication](#authentication) above, and
+run the demo server with `DEX_DEV_OPEN=1` to exercise the write examples.
+`/v1/admin/*` additionally needs `Authorization: Bearer $OPERATOR_ADMIN_TOKEN`.
 
 ```bash
 # Read: trading pairs, pools, and a trader's holdings

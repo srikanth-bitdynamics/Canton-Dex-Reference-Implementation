@@ -147,13 +147,25 @@ async function main(): Promise<void> {
   // Both counterparties come from the PUBLIC faucet, so their holdings are
   // ordinary registry holdings owned by parties the operator is not a
   // stakeholder of -- which is the whole point of the exercise.
-  const [seller, buyer] = await step("allocate two faucet parties", async () => {
+  // Reusable on purpose: the faucet has a per-IP daily cap, and a probe that
+  // burns two slots per run stops being runnable long before it stops being
+  // useful. Pass PROBE_SELLER / PROBE_BUYER to reuse parties from an earlier
+  // run; both must already hold enough dBTC / dUSD respectively.
+  const [seller, buyer] = await step("obtain two faucet parties", async () => {
+    const reuseA = process.env.PROBE_SELLER;
+    const reuseB = process.env.PROBE_BUYER;
+    if (reuseA && reuseB) {
+      console.log("    reusing PROBE_SELLER / PROBE_BUYER");
+      return [reuseA as Party, reuseB as Party];
+    }
     const a = await api<{ partyId: string }>("/v1/testnet/party", {});
     const b = await api<{ partyId: string }>("/v1/testnet/party", {});
-    console.log(`    seller ${a.partyId.split("::")[0]}`);
-    console.log(`    buyer  ${b.partyId.split("::")[0]}`);
+    console.log(`    seller ${a.partyId}`);
+    console.log(`    buyer  ${b.partyId}`);
     return [a.partyId as Party, b.partyId as Party];
   });
+  console.log(`    seller ${seller.split("::")[0]}`);
+  console.log(`    buyer  ${buyer.split("::")[0]}`);
 
   // Seller delivers base, buyer delivers quote.
   const legs: Leg[] = [

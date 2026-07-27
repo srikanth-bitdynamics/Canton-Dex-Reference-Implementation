@@ -11,6 +11,7 @@
 import type { Db } from "./db.js";
 import type { LedgerSubmitter } from "../ledger/index.js";
 import type { Party } from "../types.js";
+import * as dec from "../pool/decimal.js";
 
 type LedgerQuery = Pick<LedgerSubmitter, "query">;
 
@@ -272,14 +273,36 @@ export class Indexer {
           predecessor?.cid ?? null,
         );
         if (predecessor) {
-          const baseDelta = (
-            parseFloat(p.reserves.baseAmount) -
-            parseFloat(predecessor.baseReserve)
-          ).toFixed(10);
-          const quoteDelta = (
-            parseFloat(p.reserves.quoteAmount) -
-            parseFloat(predecessor.quoteReserve)
-          ).toFixed(10);
+          // Exact, scaled-integer arithmetic. Everything else on this API
+          // computes decimals exactly; this block used parseFloat and
+          // .toFixed(10), which drifts by 1 ulp at this deployment's real
+          // magnitudes -- and /v1/swaps is what a client reconciles fills
+          // against, so a feed that disagrees with the swap response by an
+          // ulp is worse than it looks. Subtraction on scaled BigInts is
+          // exact natively, which is why decimal.ts exposes only mul/div/sqrt.
+          //
+          // A malformed or absent reserve must not reach the DB: parseDecimal
+          // would throw inside the transaction and kill pool reconciliation
+          // for the whole tick, and the previous code wrote the literal
+          // string "NaN" into a NOT NULL column. Skip the row instead.
+          let newBase: bigint;
+          let newQuote: bigint;
+          let oldBase: bigint;
+          let oldQuote: bigint;
+          try {
+            newBase = dec.parseDecimal(p.reserves.baseAmount);
+            newQuote = dec.parseDecimal(p.reserves.quoteAmount);
+            oldBase = dec.parseDecimal(predecessor.baseReserve);
+            oldQuote = dec.parseDecimal(predecessor.quoteReserve);
+          } catch {
+            console.warn(
+              `[indexer] unparseable reserves on ${p.contractId}; skipping the rotation row`,
+            );
+            continue;
+          }
+          const baseDelta = dec.formatDecimal(newBase - oldBase);
+          const quoteDelta = dec.formatDecimal(newQuote - oldQuote);
+
           // What this rotation actually was. Five Daml choices rotate a
           // PoolState -- Swap, Pause, Resume, SettleAdd/RemoveLiquidity -- and
           // the indexer only polls the ACS, so no choice name is available.
@@ -287,23 +310,34 @@ export class Indexer {
           // a remove burns them, and nothing else touches supply (swap fees
           // accrue through the reserves without minting).
           //
-          // A NaN supply -- a pre-v1 row, or a null -- must not fall through
-          // to `=== 0`, which it fails along with both inequalities and would
-          // route every swap to "state_change", emptying the list. Fall back
-          // to the sign test in that case: a swap's reserve deltas have
-          // opposite signs, a liquidity move's share one.
-          const lpDelta =
-            parseFloat(p.totalLpSupply) - parseFloat(predecessor.totalLpSupply);
-          const bd = parseFloat(baseDelta);
-          const qd = parseFloat(quoteDelta);
+          // Exact here too, and for a sharper reason than tidiness: float
+          // subtraction collapses to exactly 0 once totalLpSupply reaches
+          // ~2e6, which would misclassify a 1-ulp LP mint as a swap -- the
+          // very bug the `kind` column was added to eliminate.
+          //
+          // An unparseable supply must not fall through to `=== 0`, which it
+          // would fail along with both inequalities, routing every swap to
+          // "state_change" and emptying the feed. Fall back to the sign test:
+          // a swap's reserve deltas have opposite signs, a liquidity move's
+          // share one.
+          let lpDelta: bigint | null;
+          try {
+            lpDelta =
+              dec.parseDecimal(p.totalLpSupply) -
+              dec.parseDecimal(predecessor.totalLpSupply);
+          } catch {
+            lpDelta = null;
+          }
+          const bd = newBase - oldBase;
+          const qd = newQuote - oldQuote;
           let kind: string;
-          if (!Number.isFinite(lpDelta)) {
-            kind = bd * qd > 0 ? "add_liquidity" : "swap";
-          } else if (lpDelta > 0) {
+          if (lpDelta === null) {
+            kind = (bd > 0n) === (qd > 0n) && bd !== 0n ? "add_liquidity" : "swap";
+          } else if (lpDelta > 0n) {
             kind = "add_liquidity";
-          } else if (lpDelta < 0) {
+          } else if (lpDelta < 0n) {
             kind = "remove_liquidity";
-          } else if (bd !== 0 || qd !== 0) {
+          } else if (bd !== 0n || qd !== 0n) {
             // Supply unchanged and reserves moved: a swap. Tested on either
             // side alone, because constantProductOut floors to 10dp and a dust
             // swap can round one side to exactly zero.
@@ -313,12 +347,9 @@ export class Indexer {
             kind = "state_change";
           }
           const price =
-            parseFloat(p.reserves.baseAmount) > 0
-              ? (
-                  parseFloat(p.reserves.quoteAmount) /
-                  parseFloat(p.reserves.baseAmount)
-                ).toFixed(10)
-              : "0";
+            newBase > 0n
+              ? dec.formatDecimal(dec.div(newQuote, newBase))
+              : dec.formatDecimal(0n);
           insertSwap.run(
             ts,
             predecessor.cid,

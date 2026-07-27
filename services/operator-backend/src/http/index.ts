@@ -233,6 +233,27 @@ export interface HttpServerConfig {
  * back the requested port. It also means a caller that awaits this can issue a
  * request immediately without racing the bind.
  */
+/**
+ * The pair-scoped reads accept `?pair=BASE/QUOTE`. `?base=&quote=` is kept for
+ * callers that already use it, so this is additive.
+ *
+ * Every other pair-scoped read on this API takes `?pair=` -- /v1/trades,
+ * /v1/swaps, /v1/price-history, /v1/stats/24h -- and the two order routes were
+ * the only ones that did not, which is a trap an integrator hits once per
+ * route rather than once.
+ */
+function pairParams(url: URL): { base: string; quote: string } | undefined {
+  const pair = url.searchParams.get("pair");
+  if (pair) {
+    const parts = pair.split("/");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
+    return { base: parts[0], quote: parts[1] };
+  }
+  const base = url.searchParams.get("base");
+  const quote = url.searchParams.get("quote");
+  return base && quote ? { base, quote } : undefined;
+}
+
 export function startHttpServer(cfg: HttpServerConfig): Promise<HttpServerHandle> {
   // Slot is the ledger's latest offset (ACS pruning watermark). We poll
   // the participant every 2s and cache the result. Falls back to a local

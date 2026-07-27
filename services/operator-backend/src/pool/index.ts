@@ -220,6 +220,12 @@ function selectCoveringPrefix(slices: PoolSlice[], target: bigint): ContractId<"
 const ALLOCATION_INTERFACE_ID =
   "#splice-api-token-allocation-v2:Splice.Api.Token.AllocationV2:Allocation";
 
+/** Raw Daml `PS_*` constructor -> the spelling types.ts declares. Idempotent. */
+function normalizePoolStatus(raw: unknown): Pool["status"] {
+  const s = String(raw);
+  return (s.startsWith("PS_") ? s.slice(3) : s) as Pool["status"];
+}
+
 export class PoolService {
   constructor(
     private readonly ledger: LedgerSubmitter,
@@ -364,8 +370,18 @@ export class PoolService {
         amount: s.amount,
         side: s.side,
       });
-      const status = state.status as string;
-      if (status === "PS_Paused" || status === "Paused") continue;
+      // A real participant returns the raw Daml constructor ("PS_Active"),
+      // while types.ts declares "Unfunded" | "Active" | "Paused" and the
+      // in-memory dev server already emits the short form. Normalise HERE, on
+      // the ledger read path, so every client sees the declared type -- a
+      // client written against the published type would otherwise see zero
+      // tradable pools, which is exactly what an external integrator hit.
+      //
+      // Read path only. admin/index.ts submits `status: "PS_Unfunded"` as a
+      // PoolState create argument; those are ledger-bound and must stay
+      // prefixed. Same shape as OrderService.listOpen's OS_ strip.
+      const status = normalizePoolStatus(state.status);
+      if (status === "Paused") continue;
       combined.push({
         contractId: cfg.contractId,
         poolId: cfg.poolId,
@@ -379,7 +395,7 @@ export class PoolService {
         quoteInstrumentId: cfg.quoteInstrumentId,
         lpInstrumentId: cfg.lpInstrumentId,
         feeBps: cfg.feeBps,
-        status: state.status,
+        status,
         reserves: state.reserves,
         totalLpSupply: state.totalLpSupply,
         baseSlices: poolSlices.filter((s) => s.side === "BaseSide").map(toSlice),

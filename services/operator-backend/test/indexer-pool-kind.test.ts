@@ -184,6 +184,60 @@ describe("indexer: classifying a PoolState rotation", () => {
     assert.equal(rows[0]!.kind, "state_change");
   });
 
+  it("computes deltas exactly, not in floating point", async () => {
+    // Real magnitudes from the live deployment. In IEEE-754 this subtraction
+    // lands on ...4461; exact scaled-integer arithmetic gives ...4462. The
+    // swaps feed is what a client reconciles fills against, so a feed that
+    // disagrees with the swap response by an ulp is a reconciliation break.
+    ledger.state = {
+      contractId: "#state:0",
+      base: "16.6788007560",
+      quote: "499074.5945995643",
+      lpSupply: "1000.0",
+    };
+    await step(1);
+    ledger.state = {
+      contractId: "#state:1",
+      base: "16.6788007560",
+      quote: "504686.1354490105",
+      lpSupply: "1000.0",
+    };
+    await step(2);
+
+    const rows = kinds();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.quoteDelta, "5611.5408494462");
+    assert.notEqual(
+      rows[0]!.quoteDelta,
+      (504686.1354490105 - 499074.5945995643).toFixed(10),
+      "must not agree with the float computation",
+    );
+  });
+
+  it("sees an LP mint that float subtraction would lose entirely", async () => {
+    // At ~2e6 supply, `2000000.0000000001 - 2000000.0 === 0` in IEEE-754, so a
+    // one-ulp mint was classified as a swap -- the exact misclassification the
+    // `kind` column exists to prevent.
+    ledger.state = {
+      contractId: "#state:0",
+      base: "10.0",
+      quote: "200000.0",
+      lpSupply: "2000000.0000000000",
+    };
+    await step(1);
+    ledger.state = {
+      contractId: "#state:1",
+      base: "10.0000000001",
+      quote: "200000.0000000001",
+      lpSupply: "2000000.0000000001",
+    };
+    await step(2);
+
+    const rows = kinds();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.kind, "add_liquidity");
+  });
+
   it("still calls a dust swap a swap when one side rounds to zero", async () => {
     await step(1);
     // constantProductOut floors to 10dp, so a small enough input can leave one

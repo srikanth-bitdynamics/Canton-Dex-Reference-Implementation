@@ -98,6 +98,21 @@ describe("HTTP input validation", () => {
     assert.equal(r.status, 400);
   });
 
+  it("GET /v1/orders/book accepts ?pair= like every other pair-scoped read", async () => {
+    const r = await getJson("/v1/orders/book?pair=BTC/USDC");
+    assert.equal(r.status, 200);
+  });
+
+  it("GET /v1/orders/matches accepts ?pair= too", async () => {
+    const r = await getJson("/v1/orders/matches?pair=BTC/USDC");
+    assert.equal(r.status, 200);
+  });
+
+  it("GET /v1/orders/book rejects a ?pair= with no slash → 400", async () => {
+    const r = await getJson("/v1/orders/book?pair=BTC");
+    assert.equal(r.status, 400);
+  });
+
   it("GET /v1/prices without ?pairs= → 400", async () => {
     const r = await getJson("/v1/prices");
     assert.equal(r.status, 400);

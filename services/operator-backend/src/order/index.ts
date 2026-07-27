@@ -169,6 +169,11 @@ export class OrderService {
     ]);
     const req: SubmitRequest = {
       actAs: [this.operatorParty],
+      // readAs the trader: cancelling releases the collateral holdings the
+      // order's allocation locked, and a registry Holding is a contract
+      // between its admin and its owner -- the operator is not a stakeholder
+      // and cannot see it. Same reason PoolRules_Swap reads as the swapper.
+      readAs: order.trader ? [order.trader] : [],
       commandId: `order-cancel:${orderCid}`,
       disclosure: [...factories.disclosure, ...ctx.disclosure],
       command: {

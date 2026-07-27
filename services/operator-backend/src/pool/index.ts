@@ -653,9 +653,16 @@ export class PoolService {
     // Split-admin DvP: the base/quote batch settles under pool.admin and the
     // LP-mint batch under pool.lpRegistrar, so each carries its own registry
     // choice context. For the self-registry both contexts are empty.
+    //
+    // readAs the LP for the same reason PoolRules_Swap reads as the swapper:
+    // the settle fetches the holdings the LP's allocations locked, and a
+    // registry Holding is a contract between its admin and its owner -- the
+    // operator is not a stakeholder and cannot see it otherwise. Without this
+    // the settle fails with CONTRACT_NOT_FOUND on the LP's own locked deposit.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
+        readAs: input.recipient ? [input.recipient] : [],
         commandId: `lp-add-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,
@@ -808,9 +815,14 @@ export class PoolService {
     // Split-admin DvP: base/quote batch under pool.admin, LP-burn batch under
     // pool.lpRegistrar — each carries its own registry choice context.
     // For the self-registry both contexts are empty.
+    //
+    // readAs the holder for the same reason the add does: the settle fetches
+    // the LP-token holdings the burn-sender allocation locked, and those are
+    // contracts between the LP registrar and the holder.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
+        readAs: input.holder ? [input.holder] : [],
         commandId: `lp-remove-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,

@@ -216,6 +216,46 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
     parties: ["party"],
     cids: ["poolCid"],
   },
+  // Testnet hosted-party add/remove liquidity. Same treatment as the swap
+  // above: `party` is checked for the canonical form here and for faucet
+  // provenance + hosting by the service. The amounts are conditional on
+  // `action` -- baseAmount/quoteAmount on an add, lpAmount on a remove -- so
+  // none of them can be declared required here; the service requires and
+  // range-checks the pair its action actually uses. Nothing else in the body is
+  // read: the funding holdings, the three allocations, the request cid and the
+  // settle's authority are all server-side.
+  "POST /v1/testnet/liquidity": {
+    required: ["party", "poolCid", "action"],
+    parties: ["party"],
+    cids: ["poolCid"],
+  },
+  // Testnet hosted-party order placement. Same treatment as the swap above:
+  // `party` is checked for the canonical form here and for faucet provenance +
+  // hosting by the service, which also holds `side` to Bid/Ask and the pair to
+  // one this deployment lists. `expiry` is optional so it is checked there too.
+  // Nothing else in the body is read -- the trader on the funding request, the
+  // collateral holdings, the settlement reference and the bind/fund authority
+  // are all server-side.
+  "POST /v1/testnet/order": {
+    required: [
+      "party",
+      "baseInstrumentId",
+      "quoteInstrumentId",
+      "side",
+      "limitPrice",
+      "quantity",
+    ],
+    decimals: ["limitPrice", "quantity"],
+    parties: ["party"],
+  },
+  // Testnet hosted-party order cancel. `orderCid` is shape-checked here and
+  // resolved on-ledger by the service, which refuses it unless the order's
+  // trader is the calling party -- a cid in a body is a claim, not a proof.
+  "POST /v1/testnet/order/cancel": {
+    required: ["party", "orderCid"],
+    parties: ["party"],
+    cids: ["orderCid"],
+  },
   "POST /v1/swaps/quote": {
     required: ["poolId", "inputInstrumentId", "inputAmount"],
     decimals: ["inputAmount"],

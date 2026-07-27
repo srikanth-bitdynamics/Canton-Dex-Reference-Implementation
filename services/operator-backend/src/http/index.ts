@@ -33,6 +33,9 @@
 //     GET  /v1/testnet/hosting?party=:p -> { hostedHere }
 //     POST /v1/testnet/submit           -> { updateId, createdEvents }
 //     POST /v1/testnet/swap             -> { updateId, inputAmount, outputAmount, allocationCid }
+//     POST /v1/testnet/liquidity        -> { updateId, lpAmount, baseAmount, quoteAmount }
+//     POST /v1/testnet/order            -> { updateId, orderCid, status }
+//     POST /v1/testnet/order/cancel     -> { updateId }
 //
 // The dApp polls the ledger event stream directly for live state; the
 // HTTP API is for one-shot orchestration calls only. Trader-authority
@@ -63,6 +66,8 @@ import {
   TestnetSubmitUnavailableError,
 } from "../testnet-onboarding/submit.js";
 import { TestnetSwapRejectedError } from "../testnet-onboarding/swap.js";
+import { TestnetLiquidityRejectedError } from "../testnet-onboarding/liquidity.js";
+import { TestnetOrderRejectedError } from "../testnet-onboarding/order.js";
 import { rootLogger } from "../lib/logger.js";
 
 const httpLog = rootLogger.child({ component: "http" });
@@ -1401,6 +1406,159 @@ async function routeRequest(
     return;
   }
 
+  // Public, unauthenticated, and the second route that drives operator-authority
+  // writes for an anonymous caller. It exists for the same reason the swap above
+  // does: a liquidity change is three transactions and two of them are the
+  // operator's, so a faucet party authors its allocations via /v1/testnet/submit
+  // and then stops -- today the add simply fails with 401. Exempting the four
+  // /v1/pools/{add,remove}-liquidity/* routes from the operator token instead
+  // would open that whole surface for ANY party; this route takes the party,
+  // pool and amounts from a validated body, selects the party's own deposits or
+  // LP position server-side, and can do nothing else. See
+  // ../testnet-onboarding/liquidity.ts -- including why the three allocations go
+  // through the relay as three commands rather than the dApp's batched one --
+  // and ./auth.ts for the deliberate absence of the operator token.
+  if (onboarding && method === "POST" && path === "/v1/testnet/liquidity") {
+    const body = await readValidatedJson<{
+      party: string;
+      poolCid: string;
+      action: string;
+      baseAmount?: unknown;
+      quoteAmount?: unknown;
+      lpAmount?: unknown;
+    }>(req, "POST /v1/testnet/liquidity", callerAuth);
+
+    const action = expectString(body, "action");
+    if (action !== "add" && action !== "remove") {
+      badRequest('action must be "add" or "remove"', { field: "action" });
+    }
+    // Conditional on the action, so the route spec cannot declare any of them;
+    // held to the same string-typed Decimal rule the spec applies elsewhere,
+    // with the service deciding which pair this action requires.
+    const amounts: Record<string, string> = {};
+    for (const field of ["baseAmount", "quoteAmount", "lpAmount"] as const) {
+      const value = body[field];
+      if (value === undefined || value === null) continue;
+      if (typeof value !== "string") {
+        badRequest(`${field} must be a Daml Decimal string when present`, {
+          field,
+        });
+      }
+      amounts[field] = value;
+    }
+
+    try {
+      // Rebuilt field by field: holding cids, allocation cids, `requestCid`,
+      // `actAs` and anything else a caller attached are not read, here or below.
+      const receipt = await onboarding.liquidityForParty({
+        party: expectString(body, "party"),
+        poolCid: expectString(body, "poolCid"),
+        action,
+        ...amounts,
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+      });
+      respondJson(res, 200, receipt);
+    } catch (e) {
+      if (e instanceof TestnetLiquidityRejectedError) {
+        throw new HttpError(400, "bad_request", e.message, e.details);
+      }
+      if (e instanceof TestnetCommandRejectedError) {
+        throw new HttpError(400, "bad_request", e.message, e.details);
+      }
+      if (e instanceof TestnetPartyIneligibleError) {
+        throw new HttpError(403, "forbidden", e.message, e.details);
+      }
+      if (e instanceof OnboardingThrottleError) {
+        throw new HttpError(429, "too_many_requests", e.message, e.details);
+      }
+      if (e instanceof TestnetSubmitUnavailableError) {
+        throw new HttpError(501, "not_implemented", e.message);
+      }
+      if (e instanceof TestnetLedgerError) {
+        // Summarized on purpose, on both the relayed and the operator steps:
+        // the participant's error text can quote the payload back.
+        throw new HttpError(502, e.code, e.message, e.details);
+      }
+      throw e;
+    }
+    return;
+  }
+
+  // Public, unauthenticated, and the one route here whose first step is a
+  // trader-authority CREATE. Placing an order is four transactions: the
+  // trader's OrderFundingRequest, the operator's bind, the trader's collateral
+  // allocation, the operator's fund. The two operator halves are
+  // /v1/orders/bind + /v1/orders/fund, both token-gated, and the create is not
+  // on the relay's allowlist -- a faucet party cannot take a single step of it
+  // from a browser. Widening the relay to accept creates would let any caller
+  // author any template in the package, so this route drives all four steps for
+  // one faucet party instead: the pair must be one this deployment lists, the
+  // collateral holdings are SELECTED server-side from holdings that party owns,
+  // and the settlement reference is server-generated. See
+  // ../testnet-onboarding/order.ts; the deliberate absence of the operator
+  // token is noted in ./auth.ts.
+  if (onboarding && method === "POST" && path === "/v1/testnet/order") {
+    const body = await readValidatedJson<{
+      party: string;
+      baseInstrumentId: string;
+      quoteInstrumentId: string;
+      side: string;
+      limitPrice: string;
+      quantity: string;
+      expiry?: unknown;
+    }>(req, "POST /v1/testnet/order", callerAuth);
+    // Optional, so the route spec cannot declare it; the service holds it to
+    // the ISO-8601 form OrderFundingRequest's `Optional Time` expects.
+    const expiry = body.expiry;
+    if (expiry !== undefined && expiry !== null && typeof expiry !== "string") {
+      badRequest("expiry must be an ISO-8601 timestamp when present", {
+        field: "expiry",
+      });
+    }
+    try {
+      // Rebuilt field by field: `trader`, `operator`, `admin`, holding cids,
+      // `settlementRef` and anything else a caller attached are not read, here
+      // or below.
+      const receipt = await onboarding.orderForParty({
+        party: expectString(body, "party"),
+        baseInstrumentId: expectString(body, "baseInstrumentId"),
+        quoteInstrumentId: expectString(body, "quoteInstrumentId"),
+        side: expectString(body, "side"),
+        limitPrice: expectString(body, "limitPrice"),
+        quantity: expectString(body, "quantity"),
+        ...(typeof expiry === "string" ? { expiry } : {}),
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+      });
+      respondJson(res, 200, receipt);
+    } catch (e) {
+      throw testnetOrderHttpError(e);
+    }
+    return;
+  }
+
+  // The other half of the order route. Order_Cancel is `controller operator`,
+  // so the operator can cancel any order on the book -- which is why the
+  // service resolves the order and compares its trader to the calling party
+  // before submitting anything, rather than trusting the cid in the body.
+  if (onboarding && method === "POST" && path === "/v1/testnet/order/cancel") {
+    const body = await readValidatedJson<{ party: string; orderCid: string }>(
+      req,
+      "POST /v1/testnet/order/cancel",
+      callerAuth,
+    );
+    try {
+      const receipt = await onboarding.cancelOrderForParty({
+        party: expectString(body, "party"),
+        orderCid: expectString(body, "orderCid"),
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+      });
+      respondJson(res, 200, receipt);
+    } catch (e) {
+      throw testnetOrderHttpError(e);
+    }
+    return;
+  }
+
   if (onboarding && method === "GET" && path === "/v1/testnet/hosting") {
     const party = url.searchParams.get("party");
     if (!party) {
@@ -1411,6 +1569,36 @@ async function routeRequest(
   }
 
   throw new HttpError(404, "not_found", `no route: ${method} ${path}`);
+}
+
+/**
+ * Map an order-flow failure onto its HTTP shape. Shared by the two testnet
+ * order routes because they refuse for the same reasons; the mapping is the
+ * swap route's, plus the order service's own 400. Anything unrecognized is
+ * handed back untouched for the generic 500 path.
+ */
+function testnetOrderHttpError(e: unknown): unknown {
+  if (e instanceof TestnetOrderRejectedError) {
+    return new HttpError(400, "bad_request", e.message, e.details);
+  }
+  if (e instanceof TestnetCommandRejectedError) {
+    return new HttpError(400, "bad_request", e.message, e.details);
+  }
+  if (e instanceof TestnetPartyIneligibleError) {
+    return new HttpError(403, "forbidden", e.message, e.details);
+  }
+  if (e instanceof OnboardingThrottleError) {
+    return new HttpError(429, "too_many_requests", e.message, e.details);
+  }
+  if (e instanceof TestnetSubmitUnavailableError) {
+    return new HttpError(501, "not_implemented", e.message);
+  }
+  if (e instanceof TestnetLedgerError) {
+    // Summarized on purpose, on both the relayed and the operator steps: the
+    // participant's error text can quote the payload back.
+    return new HttpError(502, e.code, e.message, e.details);
+  }
+  return e;
 }
 
 // Read the JSON body and validate it against the write spec for this route.

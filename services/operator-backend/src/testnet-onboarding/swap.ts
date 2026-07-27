@@ -62,7 +62,7 @@ export const ALLOCATION_FACTORY_INTERFACE_ID =
   "#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory";
 
 /** The template whose creates are the allocations a settle binds to. */
-const ALLOCATION_TEMPLATE_SUFFIX = "CantonDex.Registry.V2:Allocation";
+export const ALLOCATION_TEMPLATE_SUFFIX = "CantonDex.Registry.V2:Allocation";
 
 /** Response body of POST /v1/testnet/swap. */
 export interface TestnetSwapReceipt {

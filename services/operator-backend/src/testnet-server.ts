@@ -203,6 +203,12 @@ async function main(): Promise<void> {
     // (PoolRules_RequestSwap / PoolRules_Swap) run through the same pool
     // service the token-gated routes use.
     pool: backend.pool,
+    // The two operator-authority halves of a hosted-party order
+    // (OrderFundingRequest_Bind / Order_Fund) and its cancel run through the
+    // same order service the token-gated routes use. The registry resolves the
+    // allocation factory the collateral step exercises, and the operator party
+    // is named on the trader's funding request.
+    order: { service: backend.order, registry: backend.registry, operator },
   });
 
   const indexer = new Indexer(db, ledger, {

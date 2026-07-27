@@ -126,6 +126,44 @@ const OPERATOR_WRITE_EXACT = new Set<string>([
   // body), the price floor defaults to the operator's own quote, the trader step
   // goes through the relay above unchanged, and the same daily caps apply. See
   // ../testnet-onboarding/swap.ts.
+  //
+  // Deliberately NOT listed, on the same terms: POST /v1/testnet/liquidity. Add
+  // and remove are three transactions each and two of them are the operator's —
+  // /v1/pools/add-liquidity/{request,settle} and their remove twins, all four
+  // listed above — so a faucet party authors its allocations and then stops,
+  // and the add fails with 401. The alternative is dropping the token from
+  // those four, which would let anyone drive the operator's liquidity surface
+  // for any party. This route instead performs all three steps for one faucet
+  // party under the same bounds as the swap: DEX_TESTNET_ONBOARDING gates its
+  // existence, the party must pass the same faucet-provenance + hosting check,
+  // the funding is SELECTED server-side from holdings that party owns (its
+  // deposits on an add, its LP position on a remove — never named in the body),
+  // the settle binds to the request and the allocations the relay produced
+  // rather than to any cid the caller supplied, the LP-mint and payout floors
+  // default to the operator's own quote, the LP step goes through the relay
+  // above unchanged, and the same daily caps apply. See
+  // ../testnet-onboarding/liquidity.ts.
+  //
+  // Deliberately NOT listed, on the same terms: POST /v1/testnet/order and POST
+  // /v1/testnet/order/cancel. Placing an order is four transactions and two of
+  // them are the operator's — /v1/orders/bind and /v1/orders/fund, both listed
+  // above — while the first, the trader's own OrderFundingRequest, is a CREATE
+  // and so is refused by the relay's exercise-only allowlist. A faucet party
+  // therefore cannot take a single step of it. The alternatives are both worse:
+  // dropping the token from bind/fund would let anyone drive the operator's
+  // order surface for any party, and admitting creates to the relay's allowlist
+  // would let anyone author any template the package defines. This route
+  // instead performs all four steps for one faucet party under the same bounds
+  // as the swap: DEX_TESTNET_ONBOARDING gates its existence, the party must
+  // pass the same faucet-provenance + hosting check, the pair must be one this
+  // deployment lists under its own admin, the collateral is SELECTED
+  // server-side from holdings that party owns (never named in the body), the
+  // settlement reference is server-generated, the collateral step goes through
+  // the relay above unchanged, and the same daily caps apply. Cancel is
+  // operator-authority throughout — Order_Cancel is `controller operator`, so
+  // the operator can cancel any order on the book — and earns its exemption by
+  // resolving the order on-ledger and refusing it unless the order's trader is
+  // the calling party. See ../testnet-onboarding/order.ts.
 ]);
 
 const OPERATOR_WRITE_PATTERNS: RegExp[] = [

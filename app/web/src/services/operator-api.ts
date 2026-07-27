@@ -128,6 +128,29 @@ export interface TestnetSwapResult {
   allocationCid: ContractId<"Allocation"> | null;
 }
 
+/** What the testnet order route reports once the order is funded and on the book. */
+export interface TestnetOrderResult {
+  updateId: string;
+  orderCid: ContractId<"Order">;
+  status: string;
+}
+
+/** What the testnet order-cancel route reports. */
+export interface TestnetOrderCancelResult {
+  updateId: string | null;
+}
+
+/**
+ * What the testnet liquidity route reports. Each amount is whichever side of
+ * the action actually settled, so each is optional.
+ */
+export interface TestnetLiquidityResult {
+  updateId: string;
+  lpAmount?: Decimal;
+  baseAmount?: Decimal;
+  quoteAmount?: Decimal;
+}
+
 export class OperatorApi {
   constructor(private readonly baseUrl: string) {}
 
@@ -271,6 +294,39 @@ export class OperatorApi {
    * for a party the deployment does not host, 429 at the cap, and 400 when the
    * party cannot fund the input.
    */
+  /** Place an order for a party this deployment hosts (all four steps server-side). */
+  async submitTestnetOrder(req: {
+    party: Party;
+    baseInstrumentId: string;
+    quoteInstrumentId: string;
+    side: "Bid" | "Ask";
+    limitPrice: Decimal;
+    quantity: Decimal;
+    expiry?: string | null;
+  }): Promise<TestnetOrderResult> {
+    return this.post("/v1/testnet/order", req);
+  }
+
+  /** Cancel an order the hosted party placed. The backend re-checks ownership. */
+  async cancelTestnetOrder(req: {
+    party: Party;
+    orderCid: ContractId<"Order">;
+  }): Promise<TestnetOrderCancelResult> {
+    return this.post("/v1/testnet/order/cancel", req);
+  }
+
+  /** Add or remove pool liquidity for a party this deployment hosts. */
+  async submitTestnetLiquidity(req: {
+    party: Party;
+    poolCid: ContractId<"Pool">;
+    action: "add" | "remove";
+    baseAmount?: Decimal;
+    quoteAmount?: Decimal;
+    lpAmount?: Decimal;
+  }): Promise<TestnetLiquidityResult> {
+    return this.post("/v1/testnet/liquidity", req);
+  }
+
   async submitTestnetSwap(req: {
     party: Party;
     poolCid: ContractId<"Pool">;

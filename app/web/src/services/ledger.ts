@@ -424,6 +424,82 @@ async function executeTestnetHostedSwap(params: {
  * `describeSubmitError` in wallet/testnet-hosted-provider.ts; anything else
  * (including a 502 the ledger rejected) keeps the backend's own wording.
  */
+// The order and liquidity flows have the same shape problem the swap had: their
+// operator steps are token-gated and their trader step is a command the testnet
+// relay refuses by design. A hosted party therefore runs each through the one
+// server-side route built for it, exactly as the swap does above.
+async function executeTestnetHostedOrder(params: {
+  pairBase: string;
+  pairQuote: string;
+  side: 'Bid' | 'Ask';
+  limitPrice: number;
+  quantity: number;
+  expiry: string | null;
+  onProgress?: (phase: number) => void;
+}) {
+  const party = connectedParty();
+  const progress = params.onProgress ?? (() => {});
+  progress(0);
+  try {
+    const res = await operator.submitTestnetOrder({
+      party,
+      baseInstrumentId: params.pairBase,
+      quoteInstrumentId: params.pairQuote,
+      side: params.side,
+      limitPrice: formatDecimal10(params.limitPrice),
+      quantity: formatDecimal10(params.quantity),
+      expiry: params.expiry,
+    });
+    // The route returns only once the order is funded and on the book, so the
+    // intermediate phases have already happened by the time it resolves.
+    progress(3);
+    return res;
+  } catch (e) {
+    throw new Error(describeTestnetFlowError(e));
+  }
+}
+
+async function executeTestnetHostedCancel(orderCid: string) {
+  const party = connectedParty();
+  try {
+    return await operator.cancelTestnetOrder({ party, orderCid });
+  } catch (e) {
+    throw new Error(describeTestnetFlowError(e));
+  }
+}
+
+async function executeTestnetHostedLiquidity(req: {
+  poolCid: string;
+  action: 'add' | 'remove';
+  baseAmount?: number;
+  quoteAmount?: number;
+  lpAmount?: number;
+}) {
+  const party = connectedParty();
+  try {
+    return await operator.submitTestnetLiquidity({
+      party,
+      poolCid: req.poolCid,
+      action: req.action,
+      ...(req.baseAmount !== undefined ? { baseAmount: formatDecimal10(req.baseAmount) } : {}),
+      ...(req.quoteAmount !== undefined ? { quoteAmount: formatDecimal10(req.quoteAmount) } : {}),
+      ...(req.lpAmount !== undefined ? { lpAmount: formatDecimal10(req.lpAmount) } : {}),
+    });
+  } catch (e) {
+    throw new Error(describeTestnetFlowError(e));
+  }
+}
+
+/** Shared wording for the testnet routes, matching the swap copy. */
+function describeTestnetFlowError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (raw.startsWith('403')) return 'This party is not eligible to act here. Only parties hosted by this deployment can use the testnet endpoints.';
+  if (raw.startsWith('429')) return 'This deployment has reached its daily limit for testnet actions. Try again later.';
+  if (raw.startsWith('400') && /balance|insufficient|shortfall/i.test(raw)) return 'Not enough unlocked balance to fund this action.';
+  if (raw.startsWith('404') || raw.startsWith('501')) return 'The testnet endpoint is not enabled on this deployment.';
+  return raw;
+}
+
 function describeTestnetSwapError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   if (raw.startsWith('400')) {
@@ -807,6 +883,11 @@ export const ledger = {
      */
     onProgress?: (phase: number) => void;
   }) => {
+    // A hosted party places through the single testnet route: its trader-side
+    // create is a CreateCommand the relay refuses by design, and the bind/fund
+    // steps are operator-gated. Every other provider keeps the flow below.
+    if (activeWalletIsTestnetHosted()) return executeTestnetHostedOrder(params);
+
     const progress = params.onProgress ?? (() => {});
     const trader = connectedParty();
     const result = await handToWallet({
@@ -930,10 +1011,14 @@ export const ledger = {
   },
 
   // Operator-authority write -- straight HTTP, no wallet involvement.
-  cancelOrder: (orderId: string) =>
-    fetchJson<void>(`/v1/orders/${encodeURIComponent(orderId)}/cancel`, {
+  cancelOrder: (orderId: string) => {
+    // Order_Cancel is `controller operator`, so the hosted route re-checks that
+    // the order belongs to the calling party before the operator cancels it.
+    if (activeWalletIsTestnetHosted()) return executeTestnetHostedCancel(orderId);
+    return fetchJson<void>(`/v1/orders/${encodeURIComponent(orderId)}/cancel`, {
       method: 'POST',
-    }),
+    });
+  },
 
   // DvP add, two calls around one wallet submission:
   //   1. operator creates the LiquidityAllocationRequest (/request);
@@ -949,6 +1034,15 @@ export const ledger = {
     baseHoldingCids?: string[];
     quoteHoldingCids?: string[];
   }) => {
+    if (activeWalletIsTestnetHosted()) {
+      return executeTestnetHostedLiquidity({
+        poolCid: params.poolId,
+        action: 'add',
+        baseAmount: params.baseAmount,
+        quoteAmount: params.quoteAmount,
+      });
+    }
+
     const recipient = connectedParty();
     const requestedAt = new Date().toISOString();
     const req = await fetchJson<RequestAddResult>('/v1/pools/add-liquidity/request', {
@@ -1040,6 +1134,14 @@ export const ledger = {
     minBaseOut: number;
     minQuoteOut: number;
   }) => {
+    if (activeWalletIsTestnetHosted()) {
+      return executeTestnetHostedLiquidity({
+        poolCid: params.poolId,
+        action: 'remove',
+        lpAmount: params.lpTokens,
+      });
+    }
+
     const lpTokensToRedeem = formatDecimal10(params.lpTokens);
     const holderLpHoldingCids = await normalizeSwapFunding({
       admin: params.lpAdmin,

@@ -41,16 +41,31 @@
 // other half -- a narrow public relay whose command allowlist and server-set
 // actAs live in submit.ts. `swapForParty` builds on both: it drives the two
 // operator-authority halves of a swap around that relay, for the same reason
-// and under the same invariants -- see swap.ts.
+// and under the same invariants -- see swap.ts. `orderForParty` and
+// `cancelOrderForParty` do the same for a resting order -- see order.ts, which
+// also explains why the order's first step cannot go through the relay at all.
 
 import { randomUUID } from "node:crypto";
 
-import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
+import type {
+  ContractId,
+  DisclosedContract,
+  RegistryClient,
+} from "@canton-dex/registry-client";
+import { fetchChoiceContext } from "../ledger/choice-context.js";
 import type { LedgerSubmitter } from "../ledger/index.js";
-import { isDecimalString } from "../http/validate.js";
+import { isCidString, isDecimalString } from "../http/validate.js";
+import type { OrderService } from "../order/index.js";
 import * as dec from "../pool/decimal.js";
 import type { PoolService } from "../pool/index.js";
-import type { Party, Pool } from "../types.js";
+import type {
+  Party,
+  Pool,
+  Side,
+  Time,
+  V2AllocationSpecification,
+  V2SettlementInfo,
+} from "../types.js";
 import { rootLogger } from "../lib/logger.js";
 import { REGISTRY_HOLDING_TEMPLATE_ID, RegistryMinter } from "./registry-mint.js";
 import {
@@ -72,6 +87,33 @@ import {
   type RegistryHolding,
   type TestnetSwapReceipt,
 } from "./swap.js";
+import {
+  createdAllocationCids,
+  liquidityAllocateCommands,
+  liquidityDisclosure,
+  selectLiquidityFunding,
+  sumDecimals,
+  TestnetLiquidityRejectedError,
+  LIQUIDITY_ALLOCATION_COUNT,
+  type LiquidityAllocationLeg,
+  type TestnetLiquidityAction,
+  type TestnetLiquidityReceipt,
+} from "./liquidity.js";
+import {
+  collateralAllocationSpec,
+  collateralLeg,
+  collateralSettlement,
+  findListedPair,
+  fundingRequestArgument,
+  isOrderSide,
+  DEX_PAIR_TEMPLATE_ID,
+  ORDER_FUNDING_REQUEST_TEMPLATE_ID,
+  TestnetOrderRejectedError,
+  type CollateralLeg,
+  type DexPairListing,
+  type TestnetOrderCancelReceipt,
+  type TestnetOrderReceipt,
+} from "./order.js";
 
 const log = rootLogger.child({ component: "testnet-onboarding" });
 
@@ -429,6 +471,13 @@ export interface TestnetOnboardingConfig {
    * rather than half-driving a trade.
    */
   pool?: PoolService;
+  /**
+   * Order orchestration for `orderForParty` / `cancelOrderForParty`, with the
+   * two parties and the registry those flows need alongside it. All of it or
+   * none: absent -> the order endpoints report themselves unavailable rather
+   * than half-placing an order.
+   */
+  order?: TestnetOrderDeps;
   /** Submissions relayed per UTC day across all callers. */
   submitDailyCap: number;
   /** Submissions relayed per UTC day per client address. */
@@ -475,6 +524,71 @@ export interface SwapForPartyInput {
    * so the swap cannot settle at a worse price than the one it was quoted.
    */
   minOutputAmount?: string;
+  /** Client address the request is charged to. */
+  clientIp: string;
+}
+
+/**
+ * Everything POST /v1/testnet/liquidity accepts. Notably absent, for the same
+ * reason as on the swap: holding cids, allocation cids, the request cid,
+ * actAs / readAs / userId, and any disclosure -- all decided server-side, which
+ * is what makes the endpoint safe to leave unauthenticated.
+ */
+export interface LiquidityForPartyInput {
+  /** The LP. Accepted only if this faucet minted and hosts it. */
+  party: string;
+  poolCid: string;
+  action: TestnetLiquidityAction;
+  /** Required on an add, ignored on a remove. */
+  baseAmount?: string;
+  /** Required on an add, ignored on a remove. */
+  quoteAmount?: string;
+  /** LP tokens to redeem. Required on a remove, ignored on an add. */
+  lpAmount?: string;
+  /** Client address the request is charged to. */
+  clientIp: string;
+}
+
+/**
+ * What the order flows need beyond the ledger and the relay. Grouped because
+ * they are only useful together: the service drives the operator's bind/fund
+ * through `service`, names `operator` on the trader's intent contract, and
+ * resolves the allocation factory the collateral step exercises from
+ * `registry`.
+ */
+export interface TestnetOrderDeps {
+  service: OrderService;
+  registry: RegistryClient;
+  /** Operator party: controller of _Bind, Order_Fund and Order_Cancel. */
+  operator: Party;
+}
+
+/**
+ * Everything POST /v1/testnet/order accepts. Notably absent, for the same
+ * reason as on the swap: holding cids, the settlement reference, the order and
+ * allocation cids, actAs / readAs / userId, and any disclosure -- all decided
+ * server-side, which is what makes the endpoint safe to leave unauthenticated.
+ */
+export interface OrderForPartyInput {
+  /** The trader. Accepted only if this faucet minted and hosts it. */
+  party: string;
+  baseInstrumentId: string;
+  quoteInstrumentId: string;
+  /** "Bid" or "Ask"; anything else is a 400. */
+  side: string;
+  limitPrice: string;
+  quantity: string;
+  /** Good-till time. Absent or null -> good-till-cancelled. */
+  expiry?: string | null;
+  /** Client address the request is charged to. */
+  clientIp: string;
+}
+
+/** Everything POST /v1/testnet/order/cancel accepts. */
+export interface CancelOrderForPartyInput {
+  /** The order's trader, as claimed. Verified against the order itself. */
+  party: string;
+  orderCid: string;
   /** Client address the request is charged to. */
   clientIp: string;
 }
@@ -793,6 +907,752 @@ export class TestnetOnboardingService {
     };
   }
 
+  /**
+   * Place a whole resting order for a faucet party: the trader's own funding
+   * request, the operator's OrderFundingRequest_Bind, the trader's collateral
+   * allocation (through the relay), and the operator's Order_Fund. See order.ts
+   * for why the first step cannot go through the relay and is submitted here
+   * instead.
+   *
+   * Same defensive, cheapest-first order as `swapForParty`, extended over the
+   * four steps:
+   *   1. the party is one this faucet minted and the side / price / quantity
+   *      parse -- a hostile or malformed request is refused before anything is
+   *      queried;
+   *   2. the quota is charged, so the operator submissions that follow are
+   *      bounded per client and per day;
+   *   3. the participant confirms it hosts the party;
+   *   4. the pair, the collateral leg and the funding holdings are all resolved
+   *      server-side, the holdings from the party's OWN unlocked balance;
+   *   5. request -> bind -> relay -> fund, with the fund bound to the
+   *      allocation the relay actually produced.
+   *
+   * Everything past the bind operates on a live on-ledger Order, so a failure
+   * there would strand a Pending order holding nothing. That window is closed
+   * with a best-effort cancel before the error is re-raised.
+   */
+  async orderForParty(input: OrderForPartyInput): Promise<TestnetOrderReceipt> {
+    const deps = this.cfg.order;
+    if (!deps || !this.cfg.relay) {
+      throw new TestnetSubmitUnavailableError(
+        "this deployment has no participant to place testnet orders on",
+      );
+    }
+
+    this.assertFaucetParty(input.party);
+
+    if (!isOrderSide(input.side)) {
+      throw new TestnetOrderRejectedError("side must be Bid or Ask", {
+        field: "side",
+      });
+    }
+    const side: Side = input.side;
+    const limitPrice = this.orderAmount(input.limitPrice, "limitPrice");
+    const quantity = this.orderAmount(input.quantity, "quantity");
+    const expiry = this.orderExpiry(input.expiry);
+
+    this.submitQuota.charge(input.clientIp);
+
+    await this.assertHostedHere(input.party);
+
+    // The pair bounds the instruments: an order is only placeable on a market
+    // this deployment lists, under its own asset admin.
+    await this.orderPair(input.baseInstrumentId, input.quoteInstrumentId);
+
+    const collateral = collateralLeg({
+      side,
+      baseInstrumentId: input.baseInstrumentId,
+      quoteInstrumentId: input.quoteInstrumentId,
+      limitPrice,
+      quantity,
+    });
+
+    // The security-critical selection, as on the swap: holdings are picked here
+    // from what the ledger says this party OWNS. A caller-supplied cid would
+    // let them collateralize an order with someone else's balance.
+    const funding = await this.orderFunding(input.party, collateral);
+
+    // The settlement reference is server-generated: it becomes the bind's
+    // commandId, which is an idempotency key on the participant, so a
+    // caller-chosen one would let two callers collide or one replay another's.
+    const settlementRef = `testnet-${randomUUID()}`;
+
+    // 1. The trader's signed intent. It cannot go through the relay (a create
+    // is not on its allowlist, by design), so it is submitted here with actAs
+    // pinned to the one eligible party -- the same authority the participant
+    // granted this backend when the faucet allocated that party.
+    const fundingRequestCid = await this.orderStep("request", () =>
+      this.cfg.ledger.submit<string>({
+        actAs: [input.party],
+        commandId: `testnet-order-request:${settlementRef}`,
+        command: {
+          kind: "create",
+          templateId: ORDER_FUNDING_REQUEST_TEMPLATE_ID,
+          argument: fundingRequestArgument({
+            operator: deps.operator,
+            admin: this.cfg.admin,
+            party: input.party,
+            baseInstrumentId: input.baseInstrumentId,
+            quoteInstrumentId: input.quoteInstrumentId,
+            side,
+            limitPrice,
+            quantity,
+            expiry,
+          }),
+        },
+      }),
+    );
+
+    // 2. Operator binds it, creating the Order (Pending) and the allocation
+    // request that describes the collateral.
+    const bound = await this.orderStep("bind", () =>
+      deps.service.bind({
+        fundingRequestCid:
+          fundingRequestCid as ContractId<"OrderFundingRequest">,
+        settlementRef,
+      }),
+    );
+
+    try {
+      // 3. The trader authors the collateral, through the same relay a browser
+      // would use: the allowlist re-checks the command, actAs is fixed to this
+      // one party, and the disclosure is the operator's own.
+      const [factories, choiceContext] = await Promise.all([
+        deps.registry.getFactories(this.cfg.admin),
+        fetchChoiceContext(deps.registry, this.cfg.admin),
+      ]);
+      const receipt = await this.submitForParty({
+        party: input.party,
+        commands: [
+          allocateCommand({
+            factoryCid: factories.allocationFactoryCid,
+            settlement: collateralSettlement(deps.operator, settlementRef),
+            allocation: collateralAllocationSpec({
+              admin: this.cfg.admin,
+              party: input.party,
+              collateral,
+              expiry,
+            }),
+            inputHoldingCids: funding,
+            party: input.party,
+            requestedAt: new Date().toISOString(),
+            extraArgs: choiceContext.extraArgs,
+          }),
+        ],
+        clientIp: input.clientIp,
+        resolveDisclosure: async () =>
+          dedupeDisclosure([
+            ...factories.disclosure,
+            ...choiceContext.disclosure,
+          ]),
+      });
+
+      // 4. Fund against the allocation the relay actually produced -- never one
+      // named by the caller. Falls back to the same updateId discovery the dApp
+      // uses when a receipt carries no created events. The bind's allocation
+      // request goes with it, so it cannot linger once the order is funded.
+      const allocationCid = createdAllocationCid(receipt.createdEvents);
+      const funded = await this.orderStep("fund", () =>
+        deps.service.fund({
+          orderCid: bound.orderCid,
+          allocationRequestCid: bound.allocationRequestCid,
+          ...(allocationCid
+            ? { allocationCid: allocationCid as ContractId<"Allocation"> }
+            : { updateId: receipt.updateId }),
+        }),
+      );
+
+      log.info("placed a testnet order", {
+        party: input.party,
+        side,
+        baseInstrumentId: input.baseInstrumentId,
+        quoteInstrumentId: input.quoteInstrumentId,
+        limitPrice,
+        quantity,
+        collateral: collateral.amount,
+        holdings: funding.length,
+        updateId: receipt.updateId,
+      });
+      return {
+        updateId: receipt.updateId,
+        orderCid: funded.orderCid,
+        status: "Funded",
+      };
+    } catch (e) {
+      await this.cancelStrandedOrder(deps, bound.orderCid);
+      throw e;
+    }
+  }
+
+  /**
+   * Cancel a faucet party's resting order, releasing its collateral.
+   *
+   * Order_Cancel is `controller operator`, so the cancel itself is an operator
+   * step -- which is exactly why the ownership check cannot be skipped: the
+   * operator can cancel ANY order, so an orderCid taken on trust would let one
+   * tester cancel another's. The order is resolved from the operator's own read
+   * model and its trader compared to the calling party BEFORE anything is
+   * submitted.
+   */
+  async cancelOrderForParty(
+    input: CancelOrderForPartyInput,
+  ): Promise<TestnetOrderCancelReceipt> {
+    const deps = this.cfg.order;
+    if (!deps || !this.cfg.relay) {
+      throw new TestnetSubmitUnavailableError(
+        "this deployment has no participant to cancel testnet orders on",
+      );
+    }
+
+    this.assertFaucetParty(input.party);
+
+    if (!isCidString(input.orderCid)) {
+      throw new TestnetOrderRejectedError("orderCid must be a contract id", {
+        field: "orderCid",
+      });
+    }
+
+    this.submitQuota.charge(input.clientIp);
+
+    await this.assertHostedHere(input.party);
+
+    const open = await deps.service.listOpen();
+    const order = open.find((o) => o.contractId === input.orderCid);
+    if (!order) {
+      throw new TestnetOrderRejectedError("unknown or inactive order", {
+        field: "orderCid",
+      });
+    }
+    // The load-bearing line of this endpoint.
+    if (order.trader !== input.party) {
+      throw new TestnetPartyIneligibleError(
+        "this order was placed by another party",
+        { party: input.party },
+      );
+    }
+
+    const { updateId } = await this.orderStep("cancel", () =>
+      deps.service.cancel(order.contractId),
+    );
+    log.info("cancelled a testnet order", {
+      party: input.party,
+      orderCid: order.contractId,
+      updateId,
+    });
+    return { updateId };
+  }
+
+  /** A required order amount, or a 400-shaped refusal. */
+  private orderAmount(raw: string, field: string): string {
+    // Parse only what has already been shape-checked: parseDecimal assumes a
+    // well-formed decimal string and would throw on anything else.
+    if (!isDecimalString(raw)) {
+      throw new TestnetOrderRejectedError(
+        `${field} must be a Daml Decimal string`,
+        { field },
+      );
+    }
+    if (dec.parseDecimal(raw) <= 0n) {
+      throw new TestnetOrderRejectedError(`${field} must be positive`, {
+        field,
+      });
+    }
+    return raw;
+  }
+
+  /** The order's good-till time, or a 400-shaped refusal. */
+  private orderExpiry(raw: string | null | undefined): Time | null {
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw !== "string" || Number.isNaN(Date.parse(raw))) {
+      throw new TestnetOrderRejectedError(
+        "expiry must be an ISO-8601 timestamp when present",
+        { field: "expiry" },
+      );
+    }
+    return raw as Time;
+  }
+
+  /** The pair this order rests on, or a 400-shaped refusal. */
+  private async orderPair(
+    baseInstrumentId: string,
+    quoteInstrumentId: string,
+  ): Promise<DexPairListing> {
+    const pairs = await this.cfg.ledger.query<DexPairListing>({
+      templateId: DEX_PAIR_TEMPLATE_ID,
+      observingParty: this.cfg.admin,
+    });
+    const found = findListedPair(pairs, {
+      admin: this.cfg.admin,
+      baseInstrumentId,
+      quoteInstrumentId,
+    });
+    if (!found) {
+      throw new TestnetOrderRejectedError(
+        "this deployment does not list an active pair for those instruments",
+        { field: "baseInstrumentId" },
+      );
+    }
+    return found;
+  }
+
+  /** The party's own unlocked holdings covering the collateral, or a 400. */
+  private async orderFunding(
+    party: string,
+    collateral: CollateralLeg,
+  ): Promise<string[]> {
+    const holdings = await this.cfg.ledger.query<RegistryHolding>({
+      templateId: REGISTRY_HOLDING_TEMPLATE_ID,
+      observingParty: party,
+    });
+    const selection = selectCoveringHoldings(
+      holdings,
+      {
+        owner: party,
+        admin: this.cfg.admin,
+        instrumentId: collateral.instrumentId,
+      },
+      dec.parseDecimal(collateral.amount),
+    );
+    if (!selection.cids || selection.cids.length === 0) {
+      throw new TestnetOrderRejectedError(
+        `insufficient unlocked ${collateral.instrumentId} balance: ` +
+          `have ${dec.formatDecimal(selection.available)}, need ${collateral.amount}`,
+        {
+          instrumentId: collateral.instrumentId,
+          available: dec.formatDecimal(selection.available),
+          required: collateral.amount,
+        },
+      );
+    }
+    return selection.cids;
+  }
+
+  /**
+   * Best-effort release of an order that was bound but never funded. It holds
+   * no collateral, so leaving it would only litter the book with an order that
+   * can never fill; a failure to clean it up is logged and never masks the
+   * error that stranded it.
+   */
+  private async cancelStrandedOrder(
+    deps: TestnetOrderDeps,
+    orderCid: ContractId<"Order">,
+  ): Promise<void> {
+    try {
+      await deps.service.cancel(orderCid);
+      log.warn("cancelled a testnet order that was bound but never funded", {
+        orderCid,
+      });
+    } catch (e) {
+      log.warn("a testnet order is bound but not funded and would not cancel", {
+        orderCid,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /**
+   * Run one step of an order flow and summarize whatever the participant said
+   * about it, for the same reason `operatorStep` does: the raw text can quote
+   * the submitted payload back and this endpoint is public.
+   */
+  private async orderStep<T>(
+    stage: "request" | "bind" | "fund" | "cancel",
+    run: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await run();
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      log.warn("testnet order: a step failed", { stage, error: detail });
+      throw new TestnetLedgerError(
+        "ledger_rejected",
+        `the ledger rejected the order at the ${stage} step`,
+        { stage, ledgerErrorCode: ledgerErrorCode(detail) },
+      );
+    }
+  }
+
+  /**
+   * Drive a whole liquidity change for a faucet party: the operator's
+   * PoolLiquidityRules_Request{Add,Remove}Liquidity, the party's own three
+   * AllocationFactory_Allocate commands (through the relay above), and the
+   * operator's PoolLiquidityRules_Settle{Add,Remove}Liquidity. See liquidity.ts
+   * for why this exists at all rather than the four operator routes simply
+   * dropping their token, and for why the three allocations are authored as
+   * three commands rather than the dApp's single batched one.
+   *
+   * Same defensive, cheapest-first order as `swapForParty`:
+   *   1. the party is one this faucet minted and the amounts this action needs
+   *      parse and are positive -- a hostile or malformed request is refused
+   *      before anything is queried;
+   *   2. the quota is charged, so the operator submissions that follow are
+   *      bounded per client and per day;
+   *   3. the participant confirms it hosts the party;
+   *   4. the pool and the funding holdings are resolved server-side, the
+   *      holdings from the party's OWN unlocked balance -- their deposits on an
+   *      add, their LP position on a remove -- so a party that could never fund
+   *      the change costs the operator no submission;
+   *   5. request -> relay -> settle, with the settle bound to the live request
+   *      and to the three allocations the relay actually produced.
+   *
+   * Like a swap, this spends the submission budget twice: once here for the
+   * operator work it is about to pay for, and once inside `submitForParty` for
+   * the relayed allocations.
+   */
+  async liquidityForParty(
+    input: LiquidityForPartyInput,
+  ): Promise<TestnetLiquidityReceipt> {
+    const pool = this.cfg.pool;
+    if (!pool || !this.cfg.relay) {
+      throw new TestnetSubmitUnavailableError(
+        "this deployment has no participant to settle testnet liquidity on",
+      );
+    }
+
+    this.assertFaucetParty(input.party);
+
+    // Only the amounts the named action actually uses are required. The other
+    // pair is ignored rather than rejected, so a client that sends one body
+    // shape for both actions is not punished for it -- and, more to the point,
+    // an amount that does not apply can never reach a choice.
+    const isAdd = input.action === "add";
+    const baseAmount = isAdd
+      ? this.liquidityAmount(input.baseAmount, "baseAmount")
+      : "";
+    const quoteAmount = isAdd
+      ? this.liquidityAmount(input.quoteAmount, "quoteAmount")
+      : "";
+    const lpAmount = isAdd
+      ? ""
+      : this.liquidityAmount(input.lpAmount, "lpAmount");
+
+    this.submitQuota.charge(input.clientIp);
+
+    await this.assertHostedHere(input.party);
+
+    const target = await this.liquidityPool(pool, input.poolCid);
+
+    // The security-critical read, as on the swap: what the ledger says this
+    // party OWNS. Every funding decision below is taken from it, and nothing
+    // from the request body.
+    const holdings = await this.cfg.ledger.query<RegistryHolding>({
+      templateId: REGISTRY_HOLDING_TEMPLATE_ID,
+      observingParty: input.party,
+    });
+
+    // One timestamp for the request, the LP's allocations and the settle: the
+    // Daml settle re-derives the operator's own legs at `requestedAt`, so the
+    // three steps have to agree on it.
+    const requestedAt = new Date().toISOString();
+
+    if (isAdd) {
+      // Both deposits are funded from the party's own unlocked balance of the
+      // pool's two instruments, under the POOL's admin -- a holding of the same
+      // instrument from another registry is not this pool's to take.
+      const baseFunding = selectLiquidityFunding(
+        holdings,
+        {
+          owner: input.party,
+          admin: target.admin,
+          instrumentId: target.baseInstrumentId,
+        },
+        baseAmount,
+      );
+      const quoteFunding = selectLiquidityFunding(
+        holdings,
+        {
+          owner: input.party,
+          admin: target.admin,
+          instrumentId: target.quoteInstrumentId,
+        },
+        quoteAmount,
+      );
+
+      // 1. Operator builds, in Daml, the exact three specs the party authors.
+      const request = await this.operatorLiquidityStep("request", () =>
+        pool.requestAddLiquidity({
+          poolCid: input.poolCid as ContractId<"Pool">,
+          recipient: input.party,
+          baseAmount,
+          quoteAmount,
+          requestedAt,
+        }),
+      );
+
+      // 2. The party authors them, through the same relay a browser would use.
+      const relayed = await this.relayLiquidityAllocations(
+        input,
+        request.settlement,
+        request.allocations,
+        [
+          // Deposits: pool-admin factory, funded. LP mint: the registrar's
+          // factory, and the party is the RECEIVER, so it locks nothing.
+          {
+            factoryCid: request.depositFactoryCid,
+            extraArgs: request.depositFactoryExtraArgs,
+            inputHoldingCids: baseFunding,
+          },
+          {
+            factoryCid: request.depositFactoryCid,
+            extraArgs: request.depositFactoryExtraArgs,
+            inputHoldingCids: quoteFunding,
+          },
+          {
+            factoryCid: request.lpFactoryCid,
+            extraArgs: request.lpFactoryExtraArgs,
+            inputHoldingCids: [],
+          },
+        ],
+        liquidityDisclosure(
+          request.depositFactoryDisclosure,
+          request.lpFactoryDisclosure,
+        ),
+        requestedAt,
+      );
+
+      // 3. Settle against the live request and the allocations the relay
+      // actually produced -- never ones named by the caller. The LP floor is
+      // the operator's own quote, so the add cannot mint less than quoted.
+      await this.operatorLiquidityStep("settle", () =>
+        pool.settleAddLiquidity({
+          poolCid: input.poolCid as ContractId<"Pool">,
+          requestCid: request.requestCid,
+          recipient: input.party,
+          lpBaseDepositCid: relayed.allocationCids[0] as ContractId<"Allocation">,
+          lpQuoteDepositCid: relayed.allocationCids[1] as ContractId<"Allocation">,
+          lpReceiptCid: relayed.allocationCids[2] as ContractId<"Allocation">,
+          baseAmount,
+          quoteAmount,
+          minLpTokens: request.lpAmount,
+          knownTotalLpSupply: request.knownTotalLpSupply,
+          requestedAt,
+        }),
+      );
+
+      log.info("settled a testnet add-liquidity", {
+        party: input.party,
+        poolId: target.poolId,
+        baseAmount,
+        quoteAmount,
+        lpAmount: request.lpAmount,
+        holdings: baseFunding.length + quoteFunding.length,
+        updateId: relayed.updateId,
+      });
+      return {
+        updateId: relayed.updateId,
+        lpAmount: request.lpAmount,
+        baseAmount,
+        quoteAmount,
+      };
+    }
+
+    // Remove: only the burn leg is funded, from the party's own unlocked
+    // balance of THIS pool's LP token (administered by its lpRegistrar). It is
+    // also the ownership check the endpoint needs -- redeeming more than the
+    // party holds is refused here, before any operator submission.
+    const lpFunding = selectLiquidityFunding(
+      holdings,
+      {
+        owner: input.party,
+        admin: target.lpRegistrar,
+        instrumentId: target.lpInstrumentId.id,
+      },
+      lpAmount,
+    );
+
+    const request = await this.operatorLiquidityStep("request", () =>
+      pool.requestRemoveLiquidity({
+        poolCid: input.poolCid as ContractId<"Pool">,
+        holder: input.party,
+        lpTokensToRedeem: lpAmount,
+        requestedAt,
+      }),
+    );
+
+    const relayed = await this.relayLiquidityAllocations(
+      input,
+      request.settlement,
+      request.allocations,
+      [
+        // Payout receipts: the party is the receiver, so nothing is locked.
+        // The burn: the party is the sender, funded from its LP holdings.
+        {
+          factoryCid: request.depositFactoryCid,
+          extraArgs: request.depositFactoryExtraArgs,
+          inputHoldingCids: [],
+        },
+        {
+          factoryCid: request.depositFactoryCid,
+          extraArgs: request.depositFactoryExtraArgs,
+          inputHoldingCids: [],
+        },
+        {
+          factoryCid: request.lpFactoryCid,
+          extraArgs: request.lpFactoryExtraArgs,
+          inputHoldingCids: lpFunding,
+        },
+      ],
+      liquidityDisclosure(
+        request.depositFactoryDisclosure,
+        request.lpFactoryDisclosure,
+      ),
+      requestedAt,
+    );
+
+    // The payout floors default to the operator's own redemption plan -- the
+    // same numbers the request quoted -- so an unattended client cannot be
+    // settled for less than it was told. Zero-tolerance on purpose, exactly as
+    // the swap's default floor is: a pool that moved between request and settle
+    // fails this remove (502) instead of paying out an amount nobody quoted.
+    const baseOut = sumDecimals(request.baseOuts);
+    const quoteOut = sumDecimals(request.quoteOuts);
+
+    await this.operatorLiquidityStep("settle", () =>
+      pool.settleRemoveLiquidity({
+        poolCid: input.poolCid as ContractId<"Pool">,
+        requestCid: request.requestCid,
+        holder: input.party,
+        lpTokensToRedeem: lpAmount,
+        knownTotalLpSupply: request.knownTotalLpSupply,
+        minBaseOut: baseOut,
+        minQuoteOut: quoteOut,
+        holderBaseReceiptCid: relayed.allocationCids[0] as ContractId<"Allocation">,
+        holderQuoteReceiptCid: relayed.allocationCids[1] as ContractId<"Allocation">,
+        holderBurnSenderCid: relayed.allocationCids[2] as ContractId<"Allocation">,
+        requestedAt,
+      }),
+    );
+
+    log.info("settled a testnet remove-liquidity", {
+      party: input.party,
+      poolId: target.poolId,
+      lpAmount,
+      baseAmount: baseOut,
+      quoteAmount: quoteOut,
+      holdings: lpFunding.length,
+      updateId: relayed.updateId,
+    });
+    return {
+      updateId: relayed.updateId,
+      lpAmount,
+      baseAmount: baseOut,
+      quoteAmount: quoteOut,
+    };
+  }
+
+  /**
+   * Relay the three LP-authority allocations as one submission and read back
+   * the allocations it created.
+   *
+   * They go in ONE submission so the three land atomically: a settle can only
+   * bind to all three, so two committed without the third would leave the party
+   * with locked funds and nothing to settle them into.
+   *
+   * A receipt that does not carry exactly three allocations is reported, not
+   * settled around. The updateId-discovery fallback the swap uses is not
+   * available here: it recovers a LiquidityAllocationAcceptance and drops the
+   * request cid, and this flow never creates an acceptance (see liquidity.ts).
+   */
+  private async relayLiquidityAllocations(
+    input: LiquidityForPartyInput,
+    settlement: V2SettlementInfo,
+    allocations: V2AllocationSpecification[],
+    legs: LiquidityAllocationLeg[],
+    disclosure: DisclosedContract[],
+    requestedAt: string,
+  ): Promise<{ updateId: string; allocationCids: string[] }> {
+    const receipt = await this.submitForParty({
+      party: input.party,
+      commands: liquidityAllocateCommands({
+        allocations,
+        settlement,
+        legs,
+        party: input.party,
+        requestedAt,
+      }),
+      clientIp: input.clientIp,
+      resolveDisclosure: async () => disclosure,
+    });
+
+    const allocationCids = createdAllocationCids(receipt.createdEvents);
+    if (allocationCids.length !== LIQUIDITY_ALLOCATION_COUNT) {
+      log.warn("testnet liquidity: the relayed allocations could not be read back", {
+        party: input.party,
+        updateId: receipt.updateId,
+        allocations: allocationCids.length,
+      });
+      throw new TestnetLedgerError(
+        "tree_fetch_failed",
+        "the allocations committed but could not be identified for settlement",
+        {
+          updateId: receipt.updateId,
+          expected: LIQUIDITY_ALLOCATION_COUNT,
+          found: allocationCids.length,
+        },
+      );
+    }
+    return { updateId: receipt.updateId, allocationCids };
+  }
+
+  /** A required liquidity amount, or a 400-shaped refusal. */
+  private liquidityAmount(raw: string | undefined, field: string): string {
+    // Shape first: parseDecimal assumes a well-formed decimal string and would
+    // throw on anything else.
+    if (!isDecimalString(raw)) {
+      throw new TestnetLiquidityRejectedError(
+        `${field} must be a Daml Decimal string`,
+        { field },
+      );
+    }
+    if (dec.parseDecimal(raw) <= 0n) {
+      throw new TestnetLiquidityRejectedError(`${field} must be positive`, {
+        field,
+      });
+    }
+    return raw;
+  }
+
+  /** The pool this liquidity change runs against, or a 400-shaped refusal. */
+  private async liquidityPool(
+    pool: PoolService,
+    poolCid: string,
+  ): Promise<Pool> {
+    const found = (await pool.listActive()).find(
+      (p) => p.contractId === poolCid,
+    );
+    if (!found) {
+      throw new TestnetLiquidityRejectedError("unknown or inactive pool", {
+        field: "poolCid",
+      });
+    }
+    return found;
+  }
+
+  /**
+   * Run one operator-authority liquidity step and summarize whatever the
+   * participant said about it, for the same reason `operatorStep` does: the raw
+   * text can quote the submitted payload back and this endpoint is public.
+   */
+  private async operatorLiquidityStep<T>(
+    stage: "request" | "settle",
+    run: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await run();
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      log.warn("testnet liquidity: an operator step failed", {
+        stage,
+        error: detail,
+      });
+      throw new TestnetLedgerError(
+        "ledger_rejected",
+        `the ledger rejected the liquidity change at the ${stage} step`,
+        { stage, ledgerErrorCode: ledgerErrorCode(detail) },
+      );
+    }
+  }
+
   /** The pool this swap runs against, or a 400-shaped refusal. */
   private async swapPool(pool: PoolService, poolCid: string): Promise<Pool> {
     const found = (await pool.listActive()).find((p) => p.contractId === poolCid);
@@ -855,6 +1715,13 @@ export interface TestnetOnboardingDeps {
    * the party and submit routes are unaffected.
    */
   pool?: PoolService;
+  /**
+   * The backend's order orchestration + the registry and operator party the
+   * order flows need, for POST /v1/testnet/order and its cancel. Absent ->
+   * those two routes report themselves unavailable; every other route is
+   * unaffected.
+   */
+  order?: TestnetOrderDeps;
   /** Override fetch for tests. */
   fetchImpl?: typeof fetch;
 }
@@ -932,6 +1799,8 @@ export function testnetOnboardingFromEnv(
     perIpCap,
     submitRelay: relay ? "participant" : "unavailable",
     swapRoute: relay && deps.pool ? "enabled" : "unavailable",
+    liquidityRoute: relay && deps.pool ? "enabled" : "unavailable",
+    orderRoute: relay && deps.order ? "enabled" : "unavailable",
     submitDailyCap,
     submitPerIpCap,
     airdrops,
@@ -946,6 +1815,7 @@ export function testnetOnboardingFromEnv(
     perIpCap,
     relay,
     pool: deps.pool,
+    order: deps.order,
     submitDailyCap,
     submitPerIpCap,
   });

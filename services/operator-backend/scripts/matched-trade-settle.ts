@@ -192,8 +192,9 @@ async function main(): Promise<void> {
   // visibility failure this run exists to retire.
   const deadline = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
 
-  const tradeCid = await step("create MatchedTrade (operator is sole signatory)", async () => {
-    const r = await ledger.submitWithUpdateId!<unknown>({
+  // A create returns the new contract id directly (json-api extractResult).
+  const tradeCid = await step("create MatchedTrade (operator is sole signatory)", () =>
+    ledger.submit<ContractId<"MatchedTrade">>({
       actAs: [OPERATOR],
       commandId: `mt-probe-create:${Date.now()}`,
       command: {
@@ -207,15 +208,16 @@ async function main(): Promise<void> {
           policyReceipt: null,
         },
       },
-    });
-    const created = (r as { createdEvents?: Array<{ templateId: string; contractId: string }> })
-      .createdEvents?.find((e) => e.templateId.endsWith("MatchedTrade:MatchedTrade"));
-    if (!created) throw new Error("no MatchedTrade in the create result");
-    return created.contractId as ContractId<"MatchedTrade">;
-  });
+    }),
+  );
 
   const requests = await step("MatchedTrade_RequestAllocations", async () => {
-    await matchedTrade.requestAllocations({ tradeCid });
+    // The choice returns the new cids; the ACS read is only to recover their
+    // PAYLOADS (settlement, legs, authorizer), which the result does not
+    // carry. Filter to the returned cids -- an earlier probe run can leave
+    // other requests on the ledger, and taking "the last two" would settle
+    // against somebody else's.
+    const cids = new Set(await matchedTrade.requestAllocations({ tradeCid }));
     const rows = await ledger.query<{
       contractId: string;
       authorizer: { owner: string };
@@ -225,8 +227,11 @@ async function main(): Promise<void> {
       templateId: "CantonDex.Dex.MatchedTrade:TradeAllocationRequest",
       observingParty: OPERATOR,
     });
-    if (rows.length < 2) throw new Error(`expected 2 requests, saw ${rows.length}`);
-    return rows.slice(-2);
+    const mine = rows.filter((r) => cids.has(r.contractId as never));
+    if (mine.length !== 2) {
+      throw new Error(`expected 2 requests for this trade, matched ${mine.length}`);
+    }
+    return mine;
   });
 
   // Each counterparty authors its own allocation through the PUBLIC relay --

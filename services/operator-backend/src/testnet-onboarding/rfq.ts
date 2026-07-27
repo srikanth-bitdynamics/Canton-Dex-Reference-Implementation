@@ -38,6 +38,7 @@ import type {
   Decimal,
   DealerTier,
   Party,
+  PolicyReceipt,
   Time,
   V2Account,
   V2AllocationSpecification,
@@ -106,6 +107,13 @@ export interface TestnetRfqAcceptReceipt {
   acceptedDealer: Party;
   acceptedRank: number;
   consideredCount: number;
+  /**
+   * The operator-signed policy attestation Rfq_Accept committed onto the
+   * MatchedTrade. Returned because it is the whole point of the flow: it is
+   * what a trader audits the ranking against, and a hosted caller has no other
+   * way to read it (the trade is archived by the settle in the same request).
+   */
+  receipt: PolicyReceipt;
   /** Update id of the counterparties' allocation submission. */
   updateId: string;
 }

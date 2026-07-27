@@ -2146,6 +2146,7 @@ export class TestnetOnboardingService {
       acceptedDealer: accepted.receipt.acceptedDealer,
       acceptedRank: accepted.receipt.acceptedRank,
       consideredCount: accepted.receipt.consideredCount,
+      receipt: accepted.receipt,
       updateId,
     };
   }

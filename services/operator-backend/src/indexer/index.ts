@@ -198,13 +198,14 @@ export class Indexer {
     const known = new Map(
       (this.db
         .prepare(
-          "SELECT poolCid, pairKey, baseReserve, quoteReserve FROM pool_states WHERE archived = 0",
+          "SELECT poolCid, pairKey, baseReserve, quoteReserve, totalLpSupply FROM pool_states WHERE archived = 0",
         )
         .all() as Array<{
         poolCid: string;
         pairKey: string;
         baseReserve: string;
         quoteReserve: string;
+        totalLpSupply: string;
       }>).map((r) => [r.poolCid, r]),
     );
     const liveCids = new Set(live.map((p) => p.contractId));
@@ -219,8 +220,8 @@ export class Indexer {
       "UPDATE pool_states SET archived = 1 WHERE poolCid = ?",
     );
     const insertSwap = this.db.prepare(
-      `INSERT INTO swaps (ts, oldPoolCid, newPoolCid, pair, baseDelta, quoteDelta, priceAfter)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO swaps (ts, oldPoolCid, newPoolCid, pair, baseDelta, quoteDelta, priceAfter, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const event = this.db.prepare(
       `INSERT INTO events (ts, kind, templateId, contractId, party, payload)
@@ -236,6 +237,7 @@ export class Indexer {
         pairKey: string;
         baseReserve: string;
         quoteReserve: string;
+        totalLpSupply: string;
       }> = [];
       for (const [cid, row] of known.entries()) {
         if (!liveCids.has(cid)) {
@@ -244,6 +246,7 @@ export class Indexer {
             pairKey: row.pairKey,
             baseReserve: row.baseReserve,
             quoteReserve: row.quoteReserve,
+            totalLpSupply: row.totalLpSupply,
           });
           markArchived.run(cid);
         }
@@ -277,6 +280,38 @@ export class Indexer {
             parseFloat(p.reserves.quoteAmount) -
             parseFloat(predecessor.quoteReserve)
           ).toFixed(10);
+          // What this rotation actually was. Five Daml choices rotate a
+          // PoolState -- Swap, Pause, Resume, SettleAdd/RemoveLiquidity -- and
+          // the indexer only polls the ACS, so no choice name is available.
+          // `totalLpSupply` is the causal discriminator: an add mints shares,
+          // a remove burns them, and nothing else touches supply (swap fees
+          // accrue through the reserves without minting).
+          //
+          // A NaN supply -- a pre-v1 row, or a null -- must not fall through
+          // to `=== 0`, which it fails along with both inequalities and would
+          // route every swap to "state_change", emptying the list. Fall back
+          // to the sign test in that case: a swap's reserve deltas have
+          // opposite signs, a liquidity move's share one.
+          const lpDelta =
+            parseFloat(p.totalLpSupply) - parseFloat(predecessor.totalLpSupply);
+          const bd = parseFloat(baseDelta);
+          const qd = parseFloat(quoteDelta);
+          let kind: string;
+          if (!Number.isFinite(lpDelta)) {
+            kind = bd * qd > 0 ? "add_liquidity" : "swap";
+          } else if (lpDelta > 0) {
+            kind = "add_liquidity";
+          } else if (lpDelta < 0) {
+            kind = "remove_liquidity";
+          } else if (bd !== 0 || qd !== 0) {
+            // Supply unchanged and reserves moved: a swap. Tested on either
+            // side alone, because constantProductOut floors to 10dp and a dust
+            // swap can round one side to exactly zero.
+            kind = "swap";
+          } else {
+            // Pause / resume: the state rotated, the numbers did not.
+            kind = "state_change";
+          }
           const price =
             parseFloat(p.reserves.baseAmount) > 0
               ? (
@@ -292,10 +327,11 @@ export class Indexer {
             baseDelta,
             quoteDelta,
             price,
+            kind,
           );
           event.run(
             ts,
-            "pool_swap",
+            kind,
             "CantonDex.Dex.PoolState:PoolState",
             p.contractId,
             this.cfg.observingParty,

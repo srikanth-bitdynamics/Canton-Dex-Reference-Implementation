@@ -169,11 +169,22 @@ export class OrderService {
     ]);
     const req: SubmitRequest = {
       actAs: [this.operatorParty],
-      // readAs the trader: cancelling releases the collateral holdings the
-      // order's allocation locked, and a registry Holding is a contract
-      // between its admin and its owner -- the operator is not a stakeholder
-      // and cannot see it. Same reason PoolRules_Swap reads as the swapper.
-      readAs: order.trader ? [order.trader] : [],
+      // Cancelling a FUNDED order releases the collateral holdings its
+      // allocation locked, and a registry Holding is `signatory admin, owner`
+      // -- the operator is not a stakeholder and cannot see it.
+      //
+      // Read as the ADMIN, not the trader: the admin is a signatory of every
+      // holding it issued no matter where the owner is hosted, and the
+      // backend's own token already reads the ACS as it.
+      //
+      // Conditional, because an UNFUNDED order has `allocationCid = None` and
+      // Order_Cancel then fetches nothing at all. Attaching readAs there is
+      // not merely useless -- `/v1/orders/:cid/cancel` is an unbound operator
+      // route, so naming a party the token cannot read turns a cancel that
+      // needs no visibility into a PERMISSION_DENIED. It also folds into the
+      // `parties=` filter of the post-commit transaction-tree read
+      // (json-api.ts), which would fail AFTER the cancel had committed.
+      readAs: order.allocationCid ? [order.admin] : [],
       commandId: `order-cancel:${orderCid}`,
       disclosure: [...factories.disclosure, ...ctx.disclosure],
       command: {

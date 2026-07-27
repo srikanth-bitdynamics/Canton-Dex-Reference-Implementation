@@ -259,10 +259,11 @@ export class PoolService {
       try {
         await this.ledger.submit({
           actAs: [this.operatorParty],
-          // Same reason the settles read as their counterparty: cancelling
-          // unlocks the holdings the allocation locked, and those are
-          // contracts between their admin and their owner.
-          readAs: owner ? [owner] : [],
+          // Cancelling unlocks the holdings the allocation locked, so the
+          // submission has to see them. The admin signs every one of them;
+          // `owner` is kept only as a fallback for a caller that has the
+          // owner but not a readable admin.
+          readAs: owner && owner !== admin ? [admin, owner] : [admin],
           commandId: `alloc-release:${contractId}`,
           disclosure: ctx.disclosure,
           command: {
@@ -714,15 +715,22 @@ export class PoolService {
     // LP-mint batch under pool.lpRegistrar, so each carries its own registry
     // choice context. For the self-registry both contexts are empty.
     //
-    // readAs the LP for the same reason PoolRules_Swap reads as the swapper:
-    // the settle fetches the holdings the LP's allocations locked, and a
-    // registry Holding is a contract between its admin and its owner -- the
-    // operator is not a stakeholder and cannot see it otherwise. Without this
-    // the settle fails with CONTRACT_NOT_FOUND on the LP's own locked deposit.
+    // readAs the deposit ADMIN: the settle fetches the holdings the LP's
+    // allocations locked, and a registry Holding is `signatory admin, owner`
+    // -- the operator is not a stakeholder and cannot see it otherwise.
+    // Without this the settle fails CONTRACT_NOT_FOUND on the LP's own
+    // deposit. (pool.lpRegistrar already covers the LP-token leg via actAs.)
+    //
+    // The admin rather than the LP, for two reasons: it is a signatory of
+    // every holding it issued regardless of where the owner is hosted, and
+    // readAs also feeds the `parties=` filter of the post-commit
+    // transaction-tree read -- naming a party this token cannot read would
+    // fail that GET AFTER the settle had committed, which the caller cannot
+    // distinguish from the settle itself failing.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        readAs: input.recipient ? [input.recipient] : [],
+        readAs: [pool.admin],
         commandId: `lp-add-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,
@@ -876,13 +884,15 @@ export class PoolService {
     // pool.lpRegistrar — each carries its own registry choice context.
     // For the self-registry both contexts are empty.
     //
-    // readAs the holder for the same reason the add does: the settle fetches
-    // the LP-token holdings the burn-sender allocation locked, and those are
-    // contracts between the LP registrar and the holder.
+    // readAs the deposit admin, mirroring the add. The burn-sender leg locks
+    // LP-token holdings whose admin is pool.lpRegistrar, already in actAs, so
+    // this is defence-in-depth rather than load-bearing on today's shape --
+    // but the base/quote sides are the deposit admin's, and a future payout
+    // shape that locks them would need it.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        readAs: input.holder ? [input.holder] : [],
+        readAs: [pool.admin],
         commandId: `lp-remove-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,

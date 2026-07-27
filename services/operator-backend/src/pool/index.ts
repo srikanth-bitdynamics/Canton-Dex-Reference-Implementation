@@ -251,10 +251,13 @@ export class PoolService {
     allocationCids: string[],
     admin: Party,
     owner?: Party,
-  ): Promise<{ released: number; failed: string[] }> {
+  ): Promise<{
+    released: number;
+    failed: Array<{ contractId: string; error: string }>;
+  }> {
     if (allocationCids.length === 0) return { released: 0, failed: [] };
     const ctx = await this.choiceContext(admin);
-    const failed: string[] = [];
+    const failed: Array<{ contractId: string; error: string }> = [];
     for (const contractId of allocationCids) {
       try {
         await this.ledger.submit({
@@ -277,8 +280,16 @@ export class PoolService {
             },
           },
         });
-      } catch {
-        failed.push(contractId);
+      } catch (e) {
+        // Keep the reason. A bare catch here reduced every failure to a
+        // counter, which is the wrong trade for a compensating action: the
+        // difference between "already consumed by a settle that actually
+        // committed" and "the operator cannot see this allocation" decides
+        // whether anyone needs to intervene.
+        failed.push({
+          contractId,
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
     }
     return { released: allocationCids.length - failed.length, failed };

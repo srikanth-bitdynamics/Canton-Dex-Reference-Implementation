@@ -1009,7 +1009,21 @@ async function routeRequest(
       respondJson(res, 503, { error: "indexer disabled" });
       return;
     }
+    // Same reasoning as GET /v1/rfq above: the indexed history is the settled
+    // record of the same private negotiations, so the unfiltered sweep is
+    // gated on the admin token and everyone else names the trader they are
+    // asking about.
     const trader = url.searchParams.get("trader");
+    if (
+      !trader &&
+      (!adminToken || !bearerMatches(req.headers["authorization"], adminToken))
+    ) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "missing ?trader= query parameter; the unfiltered history requires the admin token",
+      );
+    }
     const limit = Math.min(
       parseInt(url.searchParams.get("limit") ?? "100", 10),
       500,
@@ -1051,9 +1065,46 @@ async function routeRequest(
 
   // === operator-driven writes ===========================================
 
+  // Per-party by default. This route reads the operator's ACS view, and the
+  // operator is an observer on every Rfq and every RfqQuote on this deployment
+  // -- so an unfiltered response hands any anonymous visitor the whole book:
+  // who is asking for a quote, on what, in what size, and at what price every
+  // dealer answered. The page's own copy promises the opposite ("no other party
+  // sees it"), and on-ledger that promise is real; it was only this endpoint
+  // that broke it.
+  //
+  // The filter reproduces the Daml stakeholder sets exactly, minus the
+  // operator: an Rfq is `signatory trader, observer operator :: whitelist`, so
+  // its trader and its whitelisted dealers may see it; an RfqQuote is
+  // `signatory dealer, observer trader, operator`, so its dealer and the RFQ's
+  // trader may see it -- and one dealer still cannot see another's price, which
+  // is the property that makes a competitive RFQ worth running.
+  //
+  // The operator's own global view is not removed, only gated: it is what an
+  // operator console needs, and the admin token is what it already carries. No
+  // party binding is invented here -- naming a party is a claim, not a proof --
+  // because everything this returns is already visible to that party on-ledger;
+  // the leak was serving it to callers who name someone ELSE.
   if (method === "GET" && path === "/v1/rfq") {
-    const result = await backend.rfq.list();
-    respondJson(res, 200, result);
+    const owner = url.searchParams.get("owner");
+    if (!owner) {
+      if (!adminToken || !bearerMatches(req.headers["authorization"], adminToken)) {
+        throw new HttpError(
+          400,
+          "bad_request",
+          "missing ?owner= query parameter; the unfiltered view requires the admin token",
+        );
+      }
+      respondJson(res, 200, await backend.rfq.list());
+      return;
+    }
+    const { rfqs, quotes } = await backend.rfq.list();
+    respondJson(res, 200, {
+      rfqs: rfqs.filter(
+        (r) => r.trader === owner || r.whitelist.includes(owner),
+      ),
+      quotes: quotes.filter((q) => q.trader === owner || q.dealer === owner),
+    });
     return;
   }
 

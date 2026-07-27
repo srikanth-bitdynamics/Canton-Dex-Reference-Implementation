@@ -82,10 +82,13 @@ async function api<T>(path: string, body?: unknown): Promise<T> {
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }
 
+// V2 Account is `{ owner : Optional Party, provider : Optional Party, id : Text }`
+// (HoldingV2.daml:26-45). `id` is NON-optional -- omit it and the participant
+// rejects the whole command with "Missing non-optional fields: Set(id)".
 const basicAccount = (owner: string) => ({
   owner,
-  custodian: null,
-  meta: { values: {} },
+  provider: null,
+  id: "",
 });
 
 interface Leg {

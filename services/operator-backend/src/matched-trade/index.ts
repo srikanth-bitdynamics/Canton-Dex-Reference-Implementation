@@ -15,7 +15,19 @@ export interface MatchedTradeRequestAllocationsInput {
 export interface MatchedTradeSettleInput {
   tradeCid: ContractId<"MatchedTrade">;
   batchesByAdmin: Map<Party, SettlementBatchV2>;
+  /**
+   * Trade allocation requests to consume. Normally EMPTY.
+   *
+   * MatchedTrade_Settle fetches and archives each of these as its first act,
+   * but a counterparty that authored its allocation via
+   * AllocationRequest_Accept has already archived its own request. Passing a
+   * consumed cid therefore aborts the choice before a single holding is read
+   * -- and fails looking exactly like a visibility error. Supply cids only for
+   * requests that are provably still active.
+   */
   allocationRequestCids: ContractId<"TradeAllocationRequest">[];
+  /** When set, fees accrue against the pair; null/omitted = no accrual. */
+  dexPairCid?: ContractId<"DexPair"> | null;
 }
 
 export interface MatchedTradeCancelInput {
@@ -102,18 +114,30 @@ export class MatchedTradeService {
           contractId: input.tradeCid,
           choice: "MatchedTrade_Settle",
           argument: {
-            batchesByAdmin: Object.fromEntries(
-              adminEntries.map((e) => [
-                e.admin,
-                {
-                  tag: "SettlementBatchV2",
-                  allocationCids: e.batch.allocationCids,
-                  factoryCid: e.factoryCid,
-                  extraArgs: e.extraArgs,
-                },
-              ]),
-            ),
+            // `batchesByAdmin : Map.Map Party SettlementBatchV2` is a Daml
+            // GenMap, whose JSON encoding is an ARRAY of [key, value] pairs.
+            // An object encodes a TextMap, which this is not -- that is why
+            // this choice had never once decoded. And SettlementBatchV2 is a
+            // plain record (MatchedTrade.daml:73-77), not the vendored
+            // upstream variant: no `tag`, and the field is `allocations` of
+            // V2.FinalizedAllocation, not `allocationCids`.
+            //
+            // The encoding below is the one proven against the live
+            // participant in scripts/testnet-v2registry-trade.ts.
+            batchesByAdmin: adminEntries.map((e) => [
+              e.admin,
+              {
+                allocations: e.batch.allocationCids.map((allocationCid) => ({
+                  allocationCid,
+                  extraTransferLegSides: [],
+                  nextIterationFunding: null,
+                })),
+                factoryCid: e.factoryCid,
+                extraArgs: e.extraArgs,
+              },
+            ]),
             allocationRequests: input.allocationRequestCids,
+            dexPairCid: input.dexPairCid ?? null,
           },
         },
       }),

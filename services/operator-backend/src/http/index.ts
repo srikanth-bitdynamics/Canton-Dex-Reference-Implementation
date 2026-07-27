@@ -1138,10 +1138,12 @@ async function routeRequest(
         { allocationCids: (batch.allocationCids ?? []) as never[] },
       ]),
     );
+    const dexPairCid = (body as Record<string, unknown>).dexPairCid;
     const result = await backend.matchedTrade.settle({
       tradeCid: tradeCid as never,
       batchesByAdmin,
       allocationRequestCids: allocationRequestCids as never[],
+      dexPairCid: (typeof dexPairCid === "string" ? dexPairCid : null) as never,
     });
     respondJson(res, 200, { result });
     return;

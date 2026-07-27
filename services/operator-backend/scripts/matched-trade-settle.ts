@@ -222,6 +222,7 @@ async function main(): Promise<void> {
       contractId: string;
       authorizer: { owner: string };
       settlement: unknown;
+      settlementDeadline: string | null;
       transferLegs: Leg[];
     }>({
       templateId: "CantonDex.Dex.MatchedTrade:TradeAllocationRequest",
@@ -285,13 +286,20 @@ async function main(): Promise<void> {
                 choice: "AllocationFactory_Allocate",
                 choiceArgument: {
                   settlement: req.settlement,
+                  // AllocationSpecification is admin / authorizer /
+                  // transferLegSides / settlementDeadline /
+                  // nextIterationFunding / committed / meta
+                  // (AllocationV2.daml:100-140). It carries NO `settlement` --
+                  // that is a sibling argument of the choice, not part of the
+                  // spec. The deadline comes from the request, so the spec the
+                  // authorizer signs matches the one the settle validates.
                   allocation: {
-                    settlement: req.settlement,
                     admin: ADMIN,
+                    authorizer: basicAccount(party),
                     transferLegSides: side,
+                    settlementDeadline: req.settlementDeadline,
                     nextIterationFunding: null,
                     committed: false,
-                    authorizer: basicAccount(party),
                     meta: { values: {} },
                   },
                   requestedAt: new Date().toISOString(),

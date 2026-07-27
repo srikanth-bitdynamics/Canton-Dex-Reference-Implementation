@@ -212,6 +212,13 @@ function selectCoveringPrefix(slices: PoolSlice[], target: bigint): ContractId<"
   return out;
 }
 
+/**
+ * The standard Allocation interface, for the compensating cancel
+ * `releaseAllocations` runs when a DvP settle fails.
+ */
+const ALLOCATION_INTERFACE_ID =
+  "#splice-api-token-allocation-v2:Splice.Api.Token.AllocationV2:Allocation";
+
 export class PoolService {
   constructor(
     private readonly ledger: LedgerSubmitter,
@@ -221,6 +228,51 @@ export class PoolService {
 
   private choiceContext(admin: Party): Promise<ChoiceContext> {
     return fetchChoiceContext(this.registry, admin);
+  }
+
+  /**
+   * Cancel allocations as their executor, releasing whatever they locked.
+   *
+   * The compensating action for a DvP whose settle failed after the
+   * counterparty's allocations committed. Those allocations lock whole
+   * holdings, and nothing else releases them: `Allocation_Cancel` is the
+   * executor's choice, not the owner's, so a party left holding a locked
+   * balance cannot free it themselves and every later action is refused for
+   * insufficient unlocked funds.
+   *
+   * One submission per allocation, and one failure does not stop the rest --
+   * the legs are independent, and releasing two of three still returns most of
+   * the balance. Returns the cids it could not release.
+   */
+  async releaseAllocations(
+    allocationCids: string[],
+    admin: Party,
+  ): Promise<{ released: number; failed: string[] }> {
+    if (allocationCids.length === 0) return { released: 0, failed: [] };
+    const ctx = await this.choiceContext(admin);
+    const failed: string[] = [];
+    for (const contractId of allocationCids) {
+      try {
+        await this.ledger.submit({
+          actAs: [this.operatorParty],
+          commandId: `alloc-release:${contractId}`,
+          disclosure: ctx.disclosure,
+          command: {
+            kind: "exercise",
+            templateId: ALLOCATION_INTERFACE_ID,
+            contractId,
+            choice: "Allocation_Cancel",
+            argument: {
+              actors: [this.operatorParty],
+              extraArgs: ctx.extraArgs,
+            },
+          },
+        });
+      } catch {
+        failed.push(contractId);
+      }
+    }
+    return { released: allocationCids.length - failed.length, failed };
   }
 
   private async rulesCid(): Promise<ContractId<"PoolRules">> {

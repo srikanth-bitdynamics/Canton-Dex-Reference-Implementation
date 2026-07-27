@@ -1413,7 +1413,7 @@ export class TestnetOnboardingService {
       // 3. Settle against the live request and the allocations the relay
       // actually produced -- never ones named by the caller. The LP floor is
       // the operator's own quote, so the add cannot mint less than quoted.
-      await this.operatorLiquidityStep("settle", () =>
+      await this.settleOrRelease(pool, relayed.allocationCids, target.admin, () =>
         pool.settleAddLiquidity({
           poolCid: input.poolCid as ContractId<"Pool">,
           requestCid: request.requestCid,
@@ -1507,7 +1507,7 @@ export class TestnetOnboardingService {
     const baseOut = sumDecimals(request.baseOuts);
     const quoteOut = sumDecimals(request.quoteOuts);
 
-    await this.operatorLiquidityStep("settle", () =>
+    await this.settleOrRelease(pool, relayed.allocationCids, target.admin, () =>
       pool.settleRemoveLiquidity({
         poolCid: input.poolCid as ContractId<"Pool">,
         requestCid: request.requestCid,
@@ -1626,6 +1626,56 @@ export class TestnetOnboardingService {
       });
     }
     return found;
+  }
+
+  /**
+   * Settle a liquidity DvP, and if the settle fails, CANCEL the allocations
+   * the party just authored so their funds come back unlocked.
+   *
+   * Without this the party is stranded. The three allocations lock whole
+   * holdings -- this path cannot split, so a 0.01 dBTC add locks the party's
+   * entire dBTC holding -- and if the settle then fails, those holdings stay
+   * locked with no way back: the UI offers no cancel, `Allocation_Cancel` is
+   * the executor's choice and not the owner's, and every later add, remove or
+   * swap is refused for insufficient UNLOCKED balance. One failed settle
+   * bricks the party for good.
+   *
+   * The operator is an executor on all three (that is what `settlement`
+   * names), so it can cancel them; `allocation_cancelImpl` releases each
+   * locked holding and archives the allocation. The cancel is best-effort:
+   * the caller still gets the settle's own error, because the settle failing
+   * is the thing that went wrong -- the release only decides whether the party
+   * can try again.
+   */
+  private async settleOrRelease<T>(
+    pool: PoolService,
+    allocationCids: string[],
+    admin: Party,
+    settle: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.operatorLiquidityStep("settle", settle);
+    } catch (settleError) {
+      try {
+        const outcome = await pool.releaseAllocations(allocationCids, admin);
+        log.info("testnet liquidity: released the party's allocations after a failed settle", {
+          ...outcome,
+          allocationCids,
+        });
+      } catch (releaseError) {
+        // Swallowed on purpose: the settle error is the one that describes
+        // what failed. Log the release failure so a stranded party is
+        // diagnosable from the server side.
+        log.error("testnet liquidity: could not release the party's allocations", {
+          allocationCids,
+          error:
+            releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError),
+        });
+      }
+      throw settleError;
+    }
   }
 
   /**

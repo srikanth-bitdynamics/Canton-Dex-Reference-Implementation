@@ -9,7 +9,12 @@
 // a new method here is an explicit, auditable extension; the React
 // components below this layer should never reach past it.
 
-import { OperatorApi, type TestnetSwapResult } from './operator-api';
+import {
+  OperatorApi,
+  type TestnetRfqAcceptResult,
+  type TestnetRfqResult,
+  type TestnetSwapResult,
+} from './operator-api';
 import { handToWallet } from '@/wallet/handoff';
 import { getProvider } from '@/wallet/registry';
 import { coSignsAdmin } from '@/wallet/capabilities';
@@ -488,6 +493,91 @@ async function executeTestnetHostedLiquidity(req: {
   } catch (e) {
     throw new Error(describeTestnetFlowError(e));
   }
+}
+
+/**
+ * Whole RFQ compose for a hosted testnet party, in one call.
+ *
+ * The page's normal path cannot run from a public browser for this provider:
+ * the Rfq and each dealer's quote are CREATEs, which the testnet relay refuses
+ * by design, and `/v1/rfq` is an operator write behind the operator token. The
+ * operator hosts this party and already signs for it, so it composes the
+ * request and every quote itself behind `/v1/testnet/rfq` — which is also why
+ * no whitelist travels from here: the dealer set is the operator's own.
+ */
+async function executeTestnetHostedRfq(params: {
+  pair: string;
+  side: 'RFQ_Buy' | 'RFQ_Sell';
+  size: number;
+  expiryMinutes: number;
+}): Promise<TestnetRfqResult> {
+  const party = connectedParty();
+  try {
+    return await operator.submitTestnetRfq({
+      party,
+      pair: params.pair,
+      side: params.side,
+      size: formatDecimal10(params.size),
+      expiryMinutes: params.expiryMinutes,
+    });
+  } catch (e) {
+    throw new Error(describeTestnetRfqError(e));
+  }
+}
+
+/**
+ * Whole RFQ accept + settle for a hosted testnet party, in one call. Resolves
+ * only once the trade has actually settled on-ledger, so the page's optimistic
+ * Settling → Settled transition is confirming something that happened rather
+ * than predicting it.
+ */
+async function executeTestnetHostedRfqAccept(params: {
+  rfqCid: string;
+  acceptedQuoteCid: string;
+}): Promise<TestnetRfqAcceptResult> {
+  const party = connectedParty();
+  try {
+    return await operator.submitTestnetRfqAccept({
+      party,
+      rfqCid: params.rfqCid,
+      acceptedQuoteCid: params.acceptedQuoteCid,
+    });
+  } catch (e) {
+    throw new Error(describeTestnetRfqError(e));
+  }
+}
+
+/**
+ * User-actionable copy for the two hosted RFQ routes, mirroring
+ * `describeTestnetSwapError`. The states a visitor can actually hit here are
+ * their own: a pair this deployment does not list, a deployment with no dealers
+ * registered yet, an RFQ that is not theirs to accept, a quote that lapsed
+ * while they were looking at it, and a counterparty that cannot cover its leg.
+ */
+function describeTestnetRfqError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (raw.startsWith('400') && /no whitelisted dealers/i.test(raw)) {
+    return 'This deployment has no dealers registered to quote an RFQ yet.';
+  }
+  if (raw.startsWith('400') && /pool|pair|list/i.test(raw)) {
+    return 'This deployment does not trade that pair.';
+  }
+  if (raw.startsWith('400') && /live quote|inactive RFQ/i.test(raw)) {
+    return 'That quote is no longer live. Refresh and pick another.';
+  }
+  if (raw.startsWith('400') && /cover|balance|insufficient/i.test(raw)) {
+    return 'A counterparty cannot cover its side of this trade at that size.';
+  }
+  if (raw.startsWith('403')) {
+    return 'This RFQ belongs to another party. Only its own trader can accept it.';
+  }
+  if (raw.startsWith('429')) {
+    return 'This deployment has reached its daily limit for testnet actions. Try again later.';
+  }
+  if (raw.startsWith('404') || raw.startsWith('501')) {
+    return 'The testnet RFQ endpoint is not enabled on this deployment.';
+  }
+  return raw;
 }
 
 /** Shared wording for the testnet routes, matching the swap copy. */
@@ -1019,6 +1109,20 @@ export const ledger = {
       method: 'POST',
     });
   },
+
+  /**
+   * Whether the connected wallet is a demo party this deployment hosts. The RFQ
+   * page branches on it: for a hosted party the whole round trip runs behind
+   * the two testnet routes, and for every other provider the token-gated
+   * operator path is unchanged.
+   */
+  isTestnetHostedWallet: () => activeWalletIsTestnetHosted(),
+
+  /** Compose an RFQ and collect the dealer book, for a hosted party only. */
+  composeTestnetRfq: executeTestnetHostedRfq,
+
+  /** Accept a quote and settle the trade, for a hosted party only. */
+  acceptTestnetRfq: executeTestnetHostedRfqAccept,
 
   // DvP add, two calls around one wallet submission:
   //   1. operator creates the LiquidityAllocationRequest (/request);

@@ -25,7 +25,11 @@ import { dealerByParty, useDealers } from '@/primitives/dealers';
 import { fmt, fmtUsd, fmtUsdK, formatExpiresIn } from '@/primitives/format';
 import { OperatorApi } from '@/services/operator-api';
 import { adaptRfqs } from '@/services/rfq-adapter';
-import { rankQuotes, whitelistedDealers } from '@/services/rfq-policy';
+import {
+  POLICY_VERSION,
+  rankQuotes,
+  whitelistedDealers,
+} from '@/services/rfq-policy';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import type {
@@ -51,9 +55,14 @@ export function RfqPage() {
     queryKey: ['context'],
     queryFn: ledger.getContext,
   });
+  // Scoped to the connected party. /v1/rfq is per-party now: it used to hand
+  // any caller every RFQ and every quote the operator could see, which is the
+  // opposite of what this page's own copy promises. With no wallet connected
+  // there is nobody to scope to, so the query simply does not run.
   const live = useQuery({
-    queryKey: ['rfqs'],
-    queryFn: () => operatorApi.listRfqs(),
+    queryKey: ['rfqs', party],
+    queryFn: () => operatorApi.listRfqs(party!),
+    enabled: !!party,
     refetchInterval: 10_000,
   });
   const liveRfqs = useMemo<Rfq[]>(
@@ -91,6 +100,7 @@ export function RfqPage() {
   const [composing, setComposing] = useState(false);
   const [policyOpenFor, setPolicyOpenFor] = useState<string | null>(null);
   const [receiptOpenFor, setReceiptOpenFor] = useState<string | null>(null);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
 
   // Default-expand the first RFQ once the first snapshot arrives.
   useEffect(() => {
@@ -122,22 +132,30 @@ export function RfqPage() {
             r.status !== 'RFQ_Settled',
         );
         if (toExpire.length) {
+          // Deduped by id. This sweeper runs at 1Hz off local state while the
+          // /v1/rfq refetch runs at 0.1Hz and is authoritative -- so a row this
+          // tick expires is re-inserted by the next snapshot (the server has
+          // not swept it yet) and expired again a second later, appending the
+          // same id over and over. React then renders duplicate keys and the
+          // Expired tab grows without bound.
           setExpired((cx) => [
-            ...toExpire.map<ExpiredRfq>((r) => ({
-              id: r.contractId,
-              pair: r.pair,
-              side: r.side,
-              size: r.size,
-              expiredAt: 'just now',
-              whitelist: r.whitelist,
-              quoteCount: r.quotes.length,
-              bestPrice: r.quotes.length
-                ? rankQuotes(r.side, r.quotes, 'price')[0]?.price ?? null
-                : null,
-              reason: r.quotes.length
-                ? 'No accept before window'
-                : 'No quotes received',
-            })),
+            ...toExpire
+              .filter((r) => !cx.some((e) => e.id === r.contractId))
+              .map<ExpiredRfq>((r) => ({
+                id: r.contractId,
+                pair: r.pair,
+                side: r.side,
+                size: r.size,
+                expiredAt: 'just now',
+                whitelist: r.whitelist,
+                quoteCount: r.quotes.length,
+                bestPrice: r.quotes.length
+                  ? rankQuotes(r.side, r.quotes, 'price')[0]?.price ?? null
+                  : null,
+                reason: r.quotes.length
+                  ? 'No accept before window'
+                  : 'No quotes received',
+              })),
             ...cx,
           ]);
         }
@@ -154,7 +172,9 @@ export function RfqPage() {
 
   const acceptQuote = useCallback(
     async (rfq: Rfq, quote: RfqQuote) => {
-      if (!context) {
+      setAcceptError(null);
+      const hosted = ledger.isTestnetHostedWallet();
+      if (!context && !hosted) {
         console.error('rfq.accept blocked: dApp context not loaded');
         return;
       }
@@ -175,13 +195,34 @@ export function RfqPage() {
       );
 
       try {
-        const result = await operatorApi.acceptRfq({
-          rfqCid: rfq.contractId,
-          acceptedQuoteCid: quote.contractId,
-          consideredQuoteCids: rfq.quotes.map((q) => q.contractId),
-          admin: context.admin,
-          now: new Date().toISOString(),
-        });
+        // A party this deployment hosts settles through the single testnet
+        // route: the accept is a joint trader+operator exercise and the two
+        // settlement halves are operator writes behind the operator token,
+        // which a browser must never hold. The route returns only once the
+        // trade has settled, so the optimistic transition above is confirmed
+        // rather than guessed. Every other provider takes the operator path.
+        //
+        // It reports the rank and considered count the LEDGER computed, which
+        // is what the receipt commits to; the client-side ranking above is only
+        // there to drive the optimistic row while the call is in flight.
+        const result = hosted
+          ? await ledger.acceptTestnetRfq({
+              rfqCid: rfq.contractId,
+              acceptedQuoteCid: quote.contractId,
+            })
+          : await operatorApi.acceptRfq({
+              rfqCid: rfq.contractId,
+              acceptedQuoteCid: quote.contractId,
+              consideredQuoteCids: rfq.quotes.map((q) => q.contractId),
+              admin: context!.admin,
+              now: new Date().toISOString(),
+            });
+        // Both routes hand back the same operator-signed receipt, so the rank
+        // and considered count shown from here on are the ones the LEDGER
+        // computed and committed. The client-side ranking above only drives the
+        // optimistic row while the call is in flight, and the two can legitimately
+        // differ — the server filters the considered set against the ledger's own
+        // clock.
         const settledTrade: SettledTrade = {
           id: result.tradeCid,
           pair: rfq.pair,
@@ -193,8 +234,8 @@ export function RfqPage() {
           tradeCid: result.tradeCid,
           policyVer: result.receipt.policyVersion,
           policyCid: result.receipt.policyHash.slice(0, 24),
-          rank,
-          considered: ranked.length,
+          rank: result.receipt.acceptedRank,
+          considered: result.receipt.consideredCount,
           receipt: result.receipt,
         };
         setRfqs((cur) =>
@@ -211,6 +252,10 @@ export function RfqPage() {
         }, 700);
       } catch (err) {
         console.error('rfq.accept failed', err);
+        // Surfaced, not just logged. An accept that fails rolls the row back to
+        // exactly how it looked before, so without this the button appears to
+        // do nothing at all and the trader retries into the same wall.
+        setAcceptError(err instanceof Error ? err.message : String(err));
         // Roll back the optimistic transition.
         setRfqs((cur) =>
           cur.map((r) =>
@@ -227,7 +272,7 @@ export function RfqPage() {
         );
       }
     },
-    [live],
+    [live, context],
   );
 
   const cancelRfq = useCallback(
@@ -251,6 +296,41 @@ export function RfqPage() {
       try {
         const nowMs = Date.now();
         const expiresAt = new Date(nowMs + rfq.expiresIn * 1000).toISOString();
+        // A party this deployment hosts composes through the single testnet
+        // route. The Rfq and every dealer quote are CREATEs, which the testnet
+        // relay refuses by design, and /v1/rfq is an operator write behind the
+        // operator token — so the operator, which already signs for this party,
+        // does all of it. The dealer set does NOT travel from here on that
+        // path: the backend uses its own whitelist, which is also what decides
+        // each quote's tier.
+        if (ledger.isTestnetHostedWallet()) {
+          const composed = await ledger.composeTestnetRfq({
+            pair: rfq.pair,
+            side: rfq.side,
+            size: rfq.size,
+            expiryMinutes: Math.round(rfq.expiresIn / 60),
+          });
+          // Rewritten with what the server actually created — the pair text it
+          // built from its own listing, the expiry it clamped to, and the cid.
+          // No local-only fallback: a phantom row would lie about the ledger.
+          setRfqs((cur) => [
+            {
+              ...rfq,
+              trader: party,
+              contractId: composed.rfqCid,
+              rfqId: composed.rfqId,
+              pair: composed.pair,
+              whitelist: composed.quotes.map((q) => q.dealer),
+              expiresIn: Math.max(
+                0,
+                Math.round((Date.parse(composed.expiresAt) - Date.now()) / 1000),
+              ),
+            },
+            ...cur,
+          ]);
+          setExpandedId(composed.rfqCid);
+          return;
+        }
         const created = await operatorApi.createRfq({
           // Trader identity is the connected wallet party, NOT the
           // dealer display string the form happens to show.
@@ -360,6 +440,27 @@ export function RfqPage() {
           <div className="stat-d">live, across whitelisted dealers</div>
         </div>
       </div>
+
+      {acceptError && (
+        <div
+          className="row"
+          style={{
+            justifyContent: 'space-between',
+            gap: 12,
+            marginBottom: 16,
+            padding: '10px 12px',
+            border: '1px solid var(--red)',
+            borderRadius: 8,
+            color: 'var(--red)',
+            fontSize: 12,
+          }}
+        >
+          <span>Could not accept that quote: {acceptError}</span>
+          <button className="btn" onClick={() => setAcceptError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div className="card">
         <div className="card-head">
@@ -903,7 +1004,7 @@ function RfqRow({
                   <span style={{ fontWeight: 600 }}>MatchedTrade in flight</span>
                 </div>
                 <span className="alloc-pill mono">
-                  PolicyV1.4 · rank {r.acceptedRank}/{r.acceptedConsidered}
+                  Policy {POLICY_VERSION} · rank {r.acceptedRank}/{r.acceptedConsidered}
                 </span>
               </div>
               <div style={{ color: 'var(--text-2)', lineHeight: 1.5 }}>
@@ -1103,7 +1204,6 @@ interface ComposeProps {
 
 function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) {
   const { data: dealers } = useDealers();
-  const [pair, setPair] = useState('BTC/USDC');
   const [side, setSide] = useState<RfqSide>('RFQ_Buy');
   const [size, setSize] = useState('');
   const [expiry, setExpiry] = useState(60);
@@ -1118,17 +1218,46 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
     }
   }, [dealers, seeded]);
 
-  // Live mid prices from the operator backend. Source order:
+  // The markets this deployment actually lists. The dropdown used to be a
+  // hardcoded BTC/USDC, ETH/USDC, BTC/ETH, CC/USDC — none of which exist on a
+  // deployment trading dBTC/dUSD, so every RFQ composed from the form named
+  // instruments with no registry config. Rfq_Accept splits the pair text
+  // literally into leg instrument ids, so that is not a display bug: it mints a
+  // trade whose legs can never be allocated.
+  const { data: pairs } = useQuery({
+    queryKey: ['pairs'],
+    queryFn: ledger.getPairs,
+    staleTime: 60_000,
+  });
+  const pairOptions = useMemo(
+    () =>
+      (pairs ?? [])
+        .filter((p) => p.active !== false)
+        .map((p) => `${p.baseInstrumentId}/${p.quoteInstrumentId}`),
+    [pairs],
+  );
+
+  const [pair, setPair] = useState('');
+  // Default to the first listed pair once the listing arrives, and never leave
+  // a selection that is no longer listed.
+  useEffect(() => {
+    if (pairOptions.length === 0) return;
+    if (!pair || !pairOptions.includes(pair)) setPair(pairOptions[0]!);
+  }, [pairOptions, pair]);
+
+  // Live mid prices from the operator backend, for whatever this deployment
+  // lists. Source order:
   //   1. /v1/prices (pool-derived first, then PRICES env, then external feed)
   //   2. zero if no source has the pair
   // No hardcoded fallbacks — if the backend can't price it, the notional
   // shows "—" rather than misleading the user.
   const { data: pricesByPair } = useQuery({
-    queryKey: ['prices', 'BTC/USDC,ETH/USDC,BTC/ETH,CC/USDC'],
+    queryKey: ['prices', pairOptions.join(',')],
+    enabled: pairOptions.length > 0,
     queryFn: async () => {
       const api = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
       const res = await fetch(
-        `${api}/v1/prices?pairs=BTC/USDC,ETH/USDC,BTC/ETH,CC/USDC`,
+        `${api}/v1/prices?pairs=${encodeURIComponent(pairOptions.join(','))}`,
       );
       if (!res.ok) return {} as Record<string, number>;
       const body = (await res.json()) as {
@@ -1154,7 +1283,9 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const submit = async () => {
-    if (!sz || !whitelist.length) return;
+    // `pair` is empty until the listing loads, and an RFQ with no pair would
+    // name instruments that do not exist.
+    if (!sz || !pair || !whitelist.length) return;
     setSubmitting(true);
     setSubmitError(null);
     // Local id is a placeholder; the backend assigns the real contract id
@@ -1196,12 +1327,14 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
               <select
                 className="input"
                 value={pair}
+                disabled={pairOptions.length === 0}
                 onChange={(e) => setPair(e.target.value)}
               >
-                <option>BTC/USDC</option>
-                <option>ETH/USDC</option>
-                <option>BTC/ETH</option>
-                <option>CC/USDC</option>
+                {pairOptions.length === 0 ? (
+                  <option value="">No pairs listed</option>
+                ) : (
+                  pairOptions.map((p) => <option key={p}>{p}</option>)
+                )}
               </select>
             </div>
             <div className="field">
@@ -1471,7 +1604,7 @@ function PolicyModal({ rfq, onClose }: { rfq: Rfq; onClose: () => void }) {
       <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 12 }}>
         Version{' '}
         <span className="mono" style={{ color: 'var(--text)' }}>
-          v1.4
+          {POLICY_VERSION}
         </span>{' '}
         · published by operator. Both trader and dealer can audit this against
         the on-chain config.

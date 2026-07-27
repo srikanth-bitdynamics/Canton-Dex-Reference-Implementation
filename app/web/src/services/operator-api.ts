@@ -151,6 +151,41 @@ export interface TestnetLiquidityResult {
   quoteAmount?: Decimal;
 }
 
+/**
+ * What the testnet RFQ route reports: the request it created and the book that
+ * answered it. Every field is the backend's own -- the caller supplies none of
+ * them.
+ */
+export interface TestnetRfqResult {
+  rfqId: string;
+  rfqCid: ContractId<"Rfq">;
+  /** The pair text the server built from its own listing. */
+  pair: string;
+  expiresAt: string;
+  quotes: Array<{
+    dealer: Party;
+    quoteCid: ContractId<"RfqQuote">;
+    price: Decimal;
+    tier: "TierTrusted" | "TierWhitelist";
+  }>;
+}
+
+/** What the testnet RFQ-accept route reports once the trade has settled. */
+export interface TestnetRfqAcceptResult {
+  tradeCid: ContractId<"MatchedTrade">;
+  acceptedDealer: Party;
+  acceptedRank: number;
+  consideredCount: number;
+  /**
+   * The same operator-signed attestation `acceptRfq` returns, committed onto
+   * the MatchedTrade by Rfq_Accept. It is the only way to read the ranking the
+   * ledger actually applied: the settle archives the trade in the same request.
+   */
+  receipt: PolicyReceipt;
+  /** Update id of the counterparties' allocation submission. */
+  updateId: string;
+}
+
 export class OperatorApi {
   constructor(private readonly baseUrl: string) {}
 
@@ -198,11 +233,18 @@ export class OperatorApi {
     return this.post("/v1/pools/swap", req);
   }
 
-  async listRfqs(): Promise<{
+  /**
+   * The RFQs and quotes `owner` can see, which is exactly what it can see
+   * on-ledger: its own requests, the requests it was whitelisted to quote, and
+   * the quotes it either posted or received. The backend requires the
+   * parameter -- an unfiltered read is the operator's own view and is gated on
+   * the admin token, which a browser must never hold.
+   */
+  async listRfqs(owner: Party): Promise<{
     rfqs: LedgerRfq[];
     quotes: LedgerRfqQuote[];
   }> {
-    return this.get("/v1/rfq");
+    return this.get(`/v1/rfq?owner=${encodeURIComponent(owner)}`);
   }
 
   async createRfq(req: {
@@ -335,6 +377,42 @@ export class OperatorApi {
     minOutputAmount?: Decimal;
   }): Promise<TestnetSwapResult> {
     return this.post("/v1/testnet/swap", req);
+  }
+
+  /**
+   * Compose an RFQ for a party this deployment hosts, and have every
+   * whitelisted dealer quote it.
+   *
+   * The body carries no dealer list, no prices and no rfqId: three of the six
+   * transactions an RFQ takes are CREATEs, which the testnet relay refuses by
+   * design, and the rest are operator writes behind the operator token. The
+   * backend therefore owns the whitelist (its own dealer table), the tiers, the
+   * quoted prices (its own pool mid) and the request id. `pair` is matched
+   * against this deployment's listed pairs and the on-ledger text is rebuilt
+   * from the listing that matched.
+   */
+  async submitTestnetRfq(req: {
+    party: Party;
+    pair: string;
+    side: "RFQ_Buy" | "RFQ_Sell";
+    size: Decimal;
+    expiryMinutes?: number;
+  }): Promise<TestnetRfqResult> {
+    return this.post("/v1/testnet/rfq", req);
+  }
+
+  /**
+   * Accept a quote on a hosted party's RFQ and settle the trade. The backend
+   * re-checks that the RFQ's own trader is this party -- it reads the RFQ from
+   * the ledger rather than trusting the cid -- then drives the accept, both
+   * counterparties' allocations and the settle.
+   */
+  async submitTestnetRfqAccept(req: {
+    party: Party;
+    rfqCid: ContractId<"Rfq">;
+    acceptedQuoteCid: ContractId<"RfqQuote">;
+  }): Promise<TestnetRfqAcceptResult> {
+    return this.post("/v1/testnet/rfq/accept", req);
   }
 
   // === admin =================================================================

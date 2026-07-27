@@ -32,20 +32,21 @@ class StubRegistry extends RegistryClient {
   }
 }
 
-function startServer(extra: Partial<HttpServerConfig>): {
+function startServer(extra: Partial<HttpServerConfig>): Promise<{
   url: string;
   close: () => Promise<void>;
-} {
+}> {
   const ledger = new InMemoryLedger();
   const backend = new OperatorBackend({
     ledger,
     registry: new StubRegistry(),
     operatorParty: "op" as never,
   });
-  const port = 19180 + Math.floor(Math.random() * 1000);
+  // Port 0: the OS picks a free one and startHttpServer reports it back on
+  // the handle, so parallel test files cannot land on the same port.
   return startHttpServer({
     backend,
-    port,
+    port: 0,
     host: "127.0.0.1",
     context: {
       operator: "op" as never,
@@ -121,8 +122,8 @@ describe("auth unit helpers", () => {
 describe("fail-closed (no token, no devOpen)", () => {
   let url: string;
   let close: () => Promise<void>;
-  before(() => {
-    ({ url, close } = startServer({}));
+  before(async () => {
+    ({ url, close } = await startServer({}));
   });
   after(async () => {
     await close();
@@ -153,8 +154,8 @@ describe("fail-closed (no token, no devOpen)", () => {
 describe("with operator token", () => {
   let url: string;
   let close: () => Promise<void>;
-  before(() => {
-    ({ url, close } = startServer({ operatorToken: "op-secret" }));
+  before(async () => {
+    ({ url, close } = await startServer({ operatorToken: "op-secret" }));
   });
   after(async () => {
     await close();
@@ -195,7 +196,7 @@ describe("with operator token", () => {
 
 describe("wallet relay + CORS", () => {
   it("wallet relay is 404 when the flag is OFF", async () => {
-    const { url, close } = startServer({
+    const { url, close } = await startServer({
       devOpen: true,
       ledgerUrl: "http://ledger.invalid",
       ledgerToken: "t",
@@ -211,7 +212,7 @@ describe("wallet relay + CORS", () => {
   it("wallet relay is operator-gated: 401 with a token set and no auth header (B-1)", async () => {
     // Token configured, no dev bypass: the relay must require the operator
     // token like every other write, even before its own relay flag is checked.
-    const { url, close } = startServer({
+    const { url, close } = await startServer({
       operatorToken: "op-secret",
       walletRelayEnabled: true,
       walletRelayParties: ["allowed-party"],
@@ -227,7 +228,7 @@ describe("wallet relay + CORS", () => {
   });
 
   it("wallet relay rejects non-allowlisted actAs with 403 when ON", async () => {
-    const { url, close } = startServer({
+    const { url, close } = await startServer({
       devOpen: true,
       walletRelayEnabled: true,
       walletRelayParties: ["allowed-party"],
@@ -243,7 +244,7 @@ describe("wallet relay + CORS", () => {
   });
 
   it("CORS default-denies (no Allow-Origin header) when ALLOWED_ORIGINS unset", async () => {
-    const { url, close } = startServer({ devOpen: true });
+    const { url, close } = await startServer({ devOpen: true });
     try {
       const res = await fetch(`${url}/v1/pools`, {
         headers: { Origin: "http://evil.example" },

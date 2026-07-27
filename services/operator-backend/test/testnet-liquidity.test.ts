@@ -354,18 +354,20 @@ async function startServer(
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
+  // Declared out here so the env restore below stays synchronous with the
+  // call that read it; the listen is awaited after the swap is undone.
+  let starting: ReturnType<typeof startHttpServer>;
   try {
     const backend = new OperatorBackend({
       ledger,
       registry: new StubRegistry(),
       operatorParty: OPERATOR as never,
     });
-    // A band of its own: the other suites' random ranges already overlap each
-    // other, and a collision here would fail an unrelated file's test.
-    const port = 20200 + Math.floor(Math.random() * 1000);
-    const server = startHttpServer({
+    // Port 0: the OS picks a free one and startHttpServer reports it back on
+    // the handle, so parallel test files cannot land on the same port.
+    starting = startHttpServer({
       backend,
-      port,
+      port: 0,
       host: "127.0.0.1",
       context: {
         operator: OPERATOR as never,
@@ -391,13 +393,14 @@ async function startServer(
         fetchImpl,
       }),
     });
-    return { url: server.url, close: server.close, ledger, submissions };
   } finally {
     for (const [k, v] of saved) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
   }
+  const server = await starting;
+  return { url: server.url, close: server.close, ledger, submissions };
 }
 
 const ON = {

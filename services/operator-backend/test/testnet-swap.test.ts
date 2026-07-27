@@ -312,6 +312,12 @@ async function startServer(
 ): Promise<StartedServer> {
   const ledger = new PoolLedger(opts.holdings ?? DEFAULT_HOLDINGS);
   const { fetchImpl, submissions } = participantStub(opts);
+  // Reads no env of its own, so it can be built before the swap below.
+  const backend = new OperatorBackend({
+    ledger,
+    registry: new StubRegistry(),
+    operatorParty: OPERATOR as never,
+  });
 
   const saved = new Map<string, string | undefined>();
   for (const [k, v] of Object.entries(env)) {
@@ -319,16 +325,15 @@ async function startServer(
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
+  // Declared out here so the env restore below stays synchronous with the
+  // call that read it; the listen is awaited after the swap is undone.
+  let starting: ReturnType<typeof startHttpServer>;
   try {
-    const backend = new OperatorBackend({
-      ledger,
-      registry: new StubRegistry(),
-      operatorParty: OPERATOR as never,
-    });
-    const port = 18700 + Math.floor(Math.random() * 1000);
-    const server = startHttpServer({
+    // Port 0: the OS picks a free one and startHttpServer reports it back on
+    // the handle, so parallel test files cannot land on the same port.
+    starting = startHttpServer({
       backend,
-      port,
+      port: 0,
       host: "127.0.0.1",
       context: {
         operator: OPERATOR as never,
@@ -358,13 +363,14 @@ async function startServer(
         fetchImpl,
       }),
     });
-    return { url: server.url, close: server.close, ledger, backend, submissions };
   } finally {
     for (const [k, v] of saved) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
   }
+  const server = await starting;
+  return { url: server.url, close: server.close, ledger, backend, submissions };
 }
 
 const ON = {

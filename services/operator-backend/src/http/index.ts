@@ -151,8 +151,24 @@ export interface DexStatus {
   serverTime: string;
 }
 
+export interface HttpServerHandle {
+  close: () => Promise<void>;
+  /**
+   * Base URL of the listening server, carrying the port actually bound — so a
+   * caller that asked for port 0 reads the OS-assigned one back from here.
+   */
+  url: string;
+  /** The port actually bound. Equals `cfg.port` unless that was 0. */
+  port: number;
+}
+
 export interface HttpServerConfig {
   backend: OperatorBackend;
+  /**
+   * TCP port to bind. 0 asks the OS for a free one; read the assigned port
+   * back from the resolved handle's `url` / `port`. Tests use 0 so that
+   * concurrently-running test files cannot collide on a port.
+   */
   port: number;
   host?: string;
   /** Static context payload returned at GET /v1/context. */
@@ -201,10 +217,16 @@ export interface HttpServerConfig {
   testnetTrustProxy?: boolean;
 }
 
-export function startHttpServer(cfg: HttpServerConfig): {
-  close: () => Promise<void>;
-  url: string;
-} {
+/**
+ * Bind the HTTP surface and resolve once the socket is actually listening.
+ *
+ * Resolving on `listening` rather than returning synchronously is what makes
+ * `port: 0` usable: the OS-assigned port is not readable from
+ * `server.address()` until then, so a synchronous return could only ever echo
+ * back the requested port. It also means a caller that awaits this can issue a
+ * request immediately without racing the bind.
+ */
+export function startHttpServer(cfg: HttpServerConfig): Promise<HttpServerHandle> {
   // Slot is the ledger's latest offset (ACS pruning watermark). We poll
   // the participant every 2s and cache the result. Falls back to a local
   // counter if the participant query fails so the UI's pill still moves.
@@ -297,16 +319,30 @@ export function startHttpServer(cfg: HttpServerConfig): {
       });
     }
   });
-  server.listen(cfg.port, cfg.host ?? "127.0.0.1");
-  return {
-    url: `http://${cfg.host ?? "127.0.0.1"}:${cfg.port}`,
-    close: () =>
-      new Promise<void>((resolve) =>
-        server.close(() => {
-          resolve();
-        }),
-      ),
-  };
+  const host = cfg.host ?? "127.0.0.1";
+  const close = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      clearInterval(slotTimer);
+      server.close(() => {
+        resolve();
+      });
+    });
+
+  return new Promise<HttpServerHandle>((resolve, reject) => {
+    // A failed bind (EADDRINUSE) is an 'error' event, which would otherwise be
+    // unhandled and take the process down; surface it as a rejection instead.
+    const onError = (e: Error): void => {
+      clearInterval(slotTimer);
+      reject(e);
+    };
+    server.once("error", onError);
+    server.listen(cfg.port, host, () => {
+      server.removeListener("error", onError);
+      const addr = server.address();
+      const boundPort = typeof addr === "object" && addr !== null ? addr.port : cfg.port;
+      resolve({ url: `http://${host}:${boundPort}`, port: boundPort, close });
+    });
+  });
 }
 
 async function routeRequest(

@@ -2116,10 +2116,18 @@ export class TestnetOnboardingService {
             { allocationCids: allocationCids as ContractId<"Allocation">[] },
           ],
         ]),
-        // Empty on purpose: every counterparty above authored its allocation
-        // directly, so its request is still active and the settle archives it
-        // itself. See MatchedTradeSettleInput.
-        allocationRequestCids: [],
+        // Passed, not empty. MatchedTrade_Settle fetches and archives each of
+        // these as its first act, and the usual reason to withhold them --
+        // a counterparty that used AllocationRequest_Accept has already
+        // archived its own -- does not apply here: every counterparty above
+        // authored its allocation DIRECTLY, so its request is provably still
+        // active. Withholding them settles just as well but leaves one orphan
+        // request per counterparty on the ledger for good, visible to that
+        // counterparty as a pending ask against a trade that has already
+        // settled.
+        allocationRequestCids: requests.map(
+          (r) => r.contractId as ContractId<"TradeAllocationRequest">,
+        ),
         dexPairCid: null,
       }),
     );

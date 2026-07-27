@@ -35,6 +35,23 @@ production build:
 | `POST /v1/testnet/party`, `GET /v1/testnet/hosting`, `POST /v1/testnet/submit` | `DEX_TESTNET_ONBOARDING=1` | routes are not registered at all when unset |
 | `testnet-hosted` wallet provider + hosting notice | `VITE_ENABLE_TESTNET_PARTY=1` | absent from the provider registry when unset |
 
+### Building the dApp for this deployment
+
+Vite bakes these in at build time, and every one of them silently falls back
+to a wrong-but-plausible default if omitted — a build missing
+`VITE_CANTON_NETWORK_ID` renders "Network: Canton devnet" on a testnet
+deployment. Build with all three, every time:
+
+```bash
+VITE_ENABLE_TESTNET_PARTY=1 \
+VITE_API_BASE=/api \
+VITE_CANTON_NETWORK_ID=canton:testnet \
+npm run build
+```
+
+Then sync `dist/` to `/opt/canton-dex/web/` (nginx serves it directly; there
+is nothing to restart).
+
 ## The faucet is a public write endpoint
 
 `POST /v1/testnet/party` allocates a party and grants ledger rights, unauthenticated,

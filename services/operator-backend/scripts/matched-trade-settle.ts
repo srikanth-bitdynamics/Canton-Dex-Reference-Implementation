@@ -24,15 +24,20 @@
 //
 // Usage, on the deployment host:
 //   set -a; . /etc/canton-dex/testnet.env; set +a
-//   node --import tsx scripts/testnet-matched-trade-settle.ts
+//   cd services/operator-backend
+//   node --import tsx scripts/matched-trade-settle.ts
+//
+// It lives inside the operator-backend workspace, not the repo-root scripts/
+// directory, because it imports the backend's own modules -- running it from
+// the root resolves @canton-dex/* against the wrong node_modules.
 
-import { JsonApiLedger } from "../services/operator-backend/src/ledger/json-api.js";
-import { FixedRegistry } from "../services/operator-backend/src/registry/fixed-registry.js";
-import { MatchedTradeService } from "../services/operator-backend/src/matched-trade/index.js";
-import { selectCoveringHoldings } from "../services/operator-backend/src/testnet-onboarding/swap.js";
-import * as dec from "../services/operator-backend/src/pool/decimal.js";
+import { JsonApiLedger } from "../src/ledger/json-api.js";
+import { FixedRegistry } from "../src/registry/fixed-registry.js";
+import { MatchedTradeService } from "../src/matched-trade/index.js";
+import { selectCoveringHoldings } from "../src/testnet-onboarding/swap.js";
+import * as dec from "../src/pool/decimal.js";
 import type { ContractId } from "@canton-dex/registry-client";
-import type { Party } from "../services/operator-backend/src/types.js";
+import type { Party } from "../src/types.js";
 
 const API = process.env.DEX_API ?? "http://127.0.0.1:3400";
 

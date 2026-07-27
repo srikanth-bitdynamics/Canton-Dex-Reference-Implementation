@@ -99,7 +99,20 @@ export class IdempotentLedger implements LedgerSubmitter {
       // Reject rather than serving a stale cached result or re-firing. (A
       // legacy row predating the argsHash column has argsHash === null; treat
       // it as unknown and let it proceed/overwrite.)
-      if (existing.argsHash !== null && existing.argsHash !== argsHash) {
+      //
+      // NOT for a row that recorded an error. That submission committed
+      // nothing, so there is no cached result to protect and no risk of
+      // double-firing — the guard would only ban the commandId forever. These
+      // ids are derived from the contract they act on (`order-cancel:<cid>`,
+      // `lp-add-settle:<cid>`), so a single failure followed by any change to
+      // the request — a re-resolved factory, a different disclosure set, a
+      // code change — would leave that order uncancellable and that
+      // settlement unsettleable for good. Retrying is what the row means.
+      if (
+        existing.status !== "error" &&
+        existing.argsHash !== null &&
+        existing.argsHash !== argsHash
+      ) {
         throw new Error(
           `idempotency: commandId ${req.commandId} replayed with different args`,
         );

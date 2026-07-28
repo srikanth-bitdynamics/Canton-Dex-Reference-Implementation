@@ -3,8 +3,20 @@
 All notable changes to this reference implementation are documented here.
 This project loosely follows [Keep a Changelog](https://keepachangelog.com)
 and versions the repository release independently of the on-ledger
-`canton-dex-trading` Daml package identity (which stays at `0.1.0` to
-preserve upgrade lineage).
+`canton-dex-trading` Daml package identity, which moves only when a choice
+body changes. Smart upgrading keeps the lineage: contracts created under an
+earlier version execute the newer choice, and contract ids are preserved.
+
+## Unreleased
+
+### Changed
+
+- `canton-dex-trading` 0.1.0 → 0.1.1. `AllocationFactory_Allocate` now locks
+  the allocation notional and returns the remainder through
+  `authorizerChangeCids` instead of locking each input holding whole. A party
+  funding a small allocation from one large holding keeps the difference
+  spendable. Participants must vet 0.1.1 before their users can co-sign
+  holdings created under it.
 
 ## [0.6.0] — 2026-07-21
 

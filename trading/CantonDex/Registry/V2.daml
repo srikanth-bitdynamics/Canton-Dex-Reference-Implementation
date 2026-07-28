@@ -599,18 +599,11 @@ template Registry with
                     sentByAuth
                 funding = optional TextMap.empty identity spec.nextIterationFunding
                 required = Utils.textMapUnionWith (+) sideRequired funding
-            -- Lock exactly what this allocation needs and hand the rest
-            -- straight back. AllocationInstructionV2 requires implementations
-            -- to return change and unused inputs via `authorizerChangeCids`;
-            -- locking a whole holding regardless of size means a party with
-            -- one large holding gets one live allocation and nothing else,
-            -- which makes quoting both sides of a book impossible.
-            --
-            -- `outstanding` threads how much of each instrument is still to
-            -- fund, so a holding is passed through untouched once its
-            -- instrument is covered. Batching wallets (the standard
-            -- `BatchingUtilityV2`) hand ALL of an account's holdings to every
-            -- call and rely on implementations to ignore the irrelevant ones.
+            -- Lock the notional and return the rest via `authorizerChangeCids`,
+            -- as AllocationInstructionV2 requires. `outstanding` threads what
+            -- is still to fund per instrument, so holdings are passed through
+            -- untouched once covered -- batching wallets hand over all of an
+            -- account's holdings and expect the irrelevant ones ignored.
             (lockedRev, changeRev, remaining) <-
               foldlA
                 (\(accLocked, accChange, outstanding) ifaceCid -> do
@@ -628,8 +621,7 @@ template Registry with
                       pure (accLocked, (h.instrumentId, ifaceCid) :: accChange, outstanding)
                     else if h.amount <= need
                       then do
-                        -- Fully consumed. Byte-identical to the old behaviour
-                        -- on an exact fit: no change contract is created.
+                        -- Fully consumed; no change contract on an exact fit.
                         archive cid
                         lockedCid <- create h with locked = True
                         pure
@@ -649,9 +641,7 @@ template Registry with
                           ))
                 ([], [], required)
                 arg.inputHoldingCids
-            -- Anything still outstanding means the inputs did not cover the
-            -- legs. Exact by construction now, rather than the old
-            -- `have >= needed` which let an over-lock pass silently.
+            -- Anything outstanding means the inputs did not cover the legs.
             forA_ (TextMap.toList remaining) $ \(iid, left) ->
               assertMsg
                 ("AllocationFactory: insufficient holdings for " <> iid <>

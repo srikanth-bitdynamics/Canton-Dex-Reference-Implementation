@@ -213,13 +213,6 @@ function selectCoveringPrefix(slices: PoolSlice[], target: bigint): ContractId<"
   return out;
 }
 
-/**
- * The standard Allocation interface, for the compensating cancel
- * `releaseAllocations` runs when a DvP settle fails.
- */
-const ALLOCATION_INTERFACE_ID =
-  "#splice-api-token-allocation-v2:Splice.Api.Token.AllocationV2:Allocation";
-
 /** Raw Daml `PS_*` constructor -> the spelling types.ts declares. Idempotent. */
 function normalizePoolStatus(raw: unknown): Pool["status"] {
   const s = String(raw);
@@ -235,71 +228,6 @@ export class PoolService {
 
   private choiceContext(admin: Party): Promise<ChoiceContext> {
     return fetchChoiceContext(this.registry, admin);
-  }
-
-  /**
-   * Cancel allocations as their executor, releasing whatever they locked.
-   *
-   * The compensating action for a DvP whose settle failed after the
-   * counterparty's allocations committed. Those allocations lock whole
-   * holdings, and nothing else releases them: `Allocation_Cancel` is the
-   * executor's choice, not the owner's, so a party left holding a locked
-   * balance cannot free it themselves and every later action is refused for
-   * insufficient unlocked funds.
-   *
-   * One submission per allocation, and one failure does not stop the rest --
-   * the legs are independent, and releasing two of three still returns most of
-   * the balance. Returns the cids it could not release.
-   *
-   * `owner` is the party whose holdings the allocations locked; pass it
-   * whenever there is one, or the cancel cannot see what it is releasing.
-   */
-  async releaseAllocations(
-    allocationCids: string[],
-    admin: Party,
-    owner?: Party,
-  ): Promise<{
-    released: number;
-    failed: Array<{ contractId: string; error: string }>;
-  }> {
-    if (allocationCids.length === 0) return { released: 0, failed: [] };
-    const ctx = await this.choiceContext(admin);
-    const failed: Array<{ contractId: string; error: string }> = [];
-    for (const contractId of allocationCids) {
-      try {
-        await this.ledger.submit({
-          actAs: [this.operatorParty],
-          // Cancelling unlocks the holdings the allocation locked, so the
-          // submission has to see them. The admin signs every one of them;
-          // `owner` is kept only as a fallback for a caller that has the
-          // owner but not a readable admin.
-          readAs: owner && owner !== admin ? [admin, owner] : [admin],
-          commandId: `alloc-release:${contractId}`,
-          disclosure: ctx.disclosure,
-          command: {
-            kind: "exercise",
-            templateId: ALLOCATION_INTERFACE_ID,
-            contractId,
-            choice: "Allocation_Cancel",
-            argument: {
-              actors: [this.operatorParty],
-              extraArgs: ctx.extraArgs,
-            },
-          },
-        });
-      } catch (e) {
-        // Keep the reason. A bare catch here reduced every failure to a
-        // counter, which is the wrong trade for a compensating action: the
-        // difference between "already consumed by a settle that actually
-        // committed" and "the operator cannot see this allocation" decides
-        // whether anyone needs to intervene.
-        failed.push({
-          contractId,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
-    return { released: allocationCids.length - failed.length, failed };
   }
 
   private async rulesCid(): Promise<ContractId<"PoolRules">> {
@@ -811,22 +739,16 @@ export class PoolService {
     // LP-mint batch under pool.lpRegistrar, so each carries its own registry
     // choice context. For the self-registry both contexts are empty.
     //
-    // readAs the deposit ADMIN: the settle fetches the holdings the LP's
-    // allocations locked, and a registry Holding is `signatory admin, owner`
-    // -- the operator is not a stakeholder and cannot see it otherwise.
-    // Without this the settle fails CONTRACT_NOT_FOUND on the LP's own
-    // deposit. (pool.lpRegistrar already covers the LP-token leg via actAs.)
-    //
-    // The admin rather than the LP, for two reasons: it is a signatory of
-    // every holding it issued regardless of where the owner is hosted, and
-    // readAs also feeds the `parties=` filter of the post-commit
-    // transaction-tree read -- naming a party this token cannot read would
-    // fail that GET AFTER the settle had committed, which the caller cannot
-    // distinguish from the settle itself failing.
+    // The operator is not a stakeholder of the LP's deposit holdings
+    // (`signatory admin, owner`), so it cannot see them. That visibility has
+    // to come from the deposit registry's choice context as disclosed
+    // contracts: `admin` is the registry admin of the deposited instrument,
+    // never necessarily a party this participant hosts, so it cannot be
+    // named in `readAs`. Until registry-client serves per-allocation cancel
+    // and settle contexts, this settle is limited to a co-hosted registry.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        readAs: [pool.admin],
         commandId: `lp-add-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,
@@ -980,15 +902,16 @@ export class PoolService {
     // pool.lpRegistrar — each carries its own registry choice context.
     // For the self-registry both contexts are empty.
     //
-    // readAs the deposit admin, mirroring the add. The burn-sender leg locks
-    // LP-token holdings whose admin is pool.lpRegistrar, already in actAs, so
-    // this is defence-in-depth rather than load-bearing on today's shape --
-    // but the base/quote sides are the deposit admin's, and a future payout
-    // shape that locks them would need it.
+    // The operator is not a stakeholder of the LP's deposit holdings
+    // (`signatory admin, owner`), so it cannot see them. That visibility has
+    // to come from the deposit registry's choice context as disclosed
+    // contracts: `admin` is the registry admin of the deposited instrument,
+    // never necessarily a party this participant hosts, so it cannot be
+    // named in `readAs`. Until registry-client serves per-allocation cancel
+    // and settle contexts, this settle is limited to a co-hosted registry.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        readAs: [pool.admin],
         commandId: `lp-remove-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,

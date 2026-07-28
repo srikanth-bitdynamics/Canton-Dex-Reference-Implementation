@@ -37,6 +37,21 @@ class CountingLedger implements LedgerSubmitter {
   }
 }
 
+/** An exercise on a consuming choice: a retry cannot act twice. */
+function exReq(commandId: string, amount: string): SubmitRequest {
+  return {
+    actAs: ["op" as never],
+    commandId,
+    command: {
+      kind: "exercise",
+      templateId: "Test:T",
+      contractId: "#1:0" as never,
+      choice: "T_Do",
+      argument: { amount },
+    },
+  };
+}
+
 function req(commandId: string, amount: string): SubmitRequest {
   return {
     actAs: ["op" as never],
@@ -103,21 +118,49 @@ describe("IdempotentLedger", () => {
     assert.equal(inner.calls, 2, "retried after the prior error");
   });
 
-  it("after an error, retries even when the args changed", async () => {
+  it("after an error, retries an EXERCISE even when the args changed", async () => {
     // The commandIds are derived from the contract acted on
     // (`order-cancel:<cid>`), so a retry that re-resolves a factory or picks
     // up a new disclosure set arrives with the same id and different args.
     // Refusing it would strand that contract for good; the failed submission
-    // committed nothing, so there is no cached result to protect.
+    // committed nothing, and the choice is consuming, so a retry that finds
+    // the contract archived fails rather than acting twice.
     inner.throwError = new Error("CONTRACT_NOT_FOUND");
     await assert.rejects(
-      () => ledger.submit(req("cmd-4", "5.0")),
+      () => ledger.submit(exReq("cmd-4", "5.0")),
       /CONTRACT_NOT_FOUND/,
     );
     inner.throwError = null;
-    const r = await ledger.submit(req("cmd-4", "7.0"));
+    const r = await ledger.submit(exReq("cmd-4", "7.0"));
     assert.deepEqual(r, { ok: true });
     assert.equal(inner.calls, 2, "the changed-arg retry reached the ledger");
+  });
+
+  it("does NOT retry a CREATE after an error when the args changed", async () => {
+    // `pool-create:<base>:<quote>` is keyed on names, and Pool declares no
+    // Daml contract key, so nothing on-ledger stops a duplicate. A create
+    // that committed but lost its response leaves an `error` row; letting a
+    // changed-arg retry through would make a second Pool for the same pair.
+    inner.throwError = new Error("connection reset");
+    await assert.rejects(
+      () => ledger.submit(req("pool-create:BTC:USDC", "5.0")),
+      /connection reset/,
+    );
+    inner.throwError = null;
+    await assert.rejects(
+      () => ledger.submit(req("pool-create:BTC:USDC", "7.0")),
+      /replayed with different args/,
+    );
+    assert.equal(inner.calls, 1, "the create was not re-fired");
+  });
+
+  it("still retries a CREATE after an error when the args are identical", async () => {
+    inner.throwError = new Error("connection reset");
+    await assert.rejects(() => ledger.submit(req("cmd-8", "5.0")), /reset/);
+    inner.throwError = null;
+    const r = await ledger.submit(req("cmd-8", "5.0"));
+    assert.deepEqual(r, { ok: true });
+    assert.equal(inner.calls, 2);
   });
 
   it("still rejects a changed-arg replay of a SUCCESSFUL submission", async () => {

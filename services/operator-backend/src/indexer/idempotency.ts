@@ -100,16 +100,25 @@ export class IdempotentLedger implements LedgerSubmitter {
       // legacy row predating the argsHash column has argsHash === null; treat
       // it as unknown and let it proceed/overwrite.)
       //
-      // NOT for a row that recorded an error. That submission committed
-      // nothing, so there is no cached result to protect and no risk of
-      // double-firing — the guard would only ban the commandId forever. These
-      // ids are derived from the contract they act on (`order-cancel:<cid>`,
-      // `lp-add-settle:<cid>`), so a single failure followed by any change to
-      // the request — a re-resolved factory, a different disclosure set, a
-      // code change — would leave that order uncancellable and that
-      // settlement unsettleable for good. Retrying is what the row means.
+      // Relaxed for an EXERCISE row that recorded an error. Those commandIds
+      // are derived from the contract acted on (`order-cancel:<cid>`,
+      // `lp-add-settle:<cid>`), so one failure followed by any change to the
+      // request — a re-resolved factory, a different disclosure set, a code
+      // change — would leave that order uncancellable and that settlement
+      // unsettleable for good. The choice is consuming, so a retry that finds
+      // the contract already archived fails rather than acting twice.
+      //
+      // NOT relaxed for a create. `pool-create:<base>:<quote>` and
+      // `pool-state-create:<poolId>` are keyed on names, and neither Pool nor
+      // PoolState declares a Daml contract key, so nothing on-ledger prevents
+      // a duplicate. A create that committed but lost its response leaves an
+      // `error` row; letting a changed-arg retry through would then produce a
+      // second Pool for the same pair. Here the guard is the only protection
+      // there is.
+      const retryableError =
+        existing.status === "error" && req.command.kind === "exercise";
       if (
-        existing.status !== "error" &&
+        !retryableError &&
         existing.argsHash !== null &&
         existing.argsHash !== argsHash
       ) {

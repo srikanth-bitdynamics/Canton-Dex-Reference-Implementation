@@ -51,7 +51,7 @@ This builds the `canton-dex-trading` DAR (against the committed canonical
 Token Standard DARs) and runs the suites. Or by hand:
 
 ```bash
-(cd trading              && dpm build)      # produces canton-dex-trading-0.1.0.dar
+(cd trading              && dpm build)      # produces canton-dex-trading-0.1.1.dar
 (cd trading-tests        && dpm test)       # expect: 72 scripts "ok"
 (cd examples/stable-pool && dpm test)       # expect: 3 "ok"  (reuse proof)
 ```

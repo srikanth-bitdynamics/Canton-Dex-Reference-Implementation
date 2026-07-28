@@ -52,8 +52,9 @@ export function RfqPage() {
     queryFn: ledger.getContext,
   });
   const live = useQuery({
-    queryKey: ['rfqs'],
-    queryFn: () => operatorApi.listRfqs(),
+    queryKey: ['rfqs', party],
+    queryFn: () => operatorApi.listRfqs(party!),
+    enabled: !!party,
     refetchInterval: 10_000,
   });
   const liveRfqs = useMemo<Rfq[]>(

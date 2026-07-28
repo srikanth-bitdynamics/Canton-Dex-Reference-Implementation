@@ -164,6 +164,22 @@ If a pair uses Amulet (CC) as an asset, note the Splice 0.6.11+ requirements:
   allocations. The DEX sidesteps this for its own flows by having one Daml
   choice author all allocations of a request in a single command.
 
+## Trying it without your own participant
+
+Everything above assumes you run a Canton participant. If you only want to
+exercise the DEX, the public testnet deployment offers a hosted-party flow: one
+call allocates a party on its validator and airdrops test instruments, after
+which swaps, liquidity, orders and RFQ all work from an ordinary HTTP client
+with no token and no participant of your own.
+
+Those routes live on the
+[`testnet-hosted-party-onboarding`](../../../../tree/testnet-hosted-party-onboarding)
+branch, not here — it is deployed but never merged, because it mints its own V2
+asset to stand in for a second one that testnet does not yet offer, and it is
+retired rather than merged once that changes. The endpoints are listed under
+[Testnet Hosted-Party Endpoints](../reference/http-api.md#testnet-hosted-party-endpoints);
+the branch's `TESTNET_DEPLOY.md` covers the security model and the rate limits.
+
 ## Wallet Boundary
 
 Operator-authority calls go through the backend. Trader-authority calls, such as

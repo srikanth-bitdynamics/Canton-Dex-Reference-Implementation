@@ -203,6 +203,49 @@ server only, `DEX_DEV_OPEN=1` is set. Read (GET) routes need no auth. Admin
 routes additionally require the `OPERATOR_ADMIN_TOKEN`. See
 [Local Setup → Exercising write paths](../getting-started.md#exercising-write-paths-in-demo-mode).
 
+## Testnet Hosted-Party Endpoints
+
+**Not on this branch.** These routes exist only on
+[`testnet-hosted-party-onboarding`](../../../../tree/testnet-hosted-party-onboarding),
+which is deployed to the public testnet and is deliberately never merged — see
+that branch's `TESTNET_DEPLOY.md` for why, and for the condition under which it
+is retired. They are documented here so the public testnet is reproducible
+without reading the deployed JavaScript bundle.
+
+They exist only when `DEX_TESTNET_ONBOARDING=1`, and are absent (404) otherwise.
+
+Unlike every other write route, these need **no** `DEX_OPERATOR_API_TOKEN`. The
+token exists to stop an anonymous caller acting with operator authority; these
+routes remove that freedom differently — the party must carry the faucet's
+server-generated prefix and be hosted on this participant, and the holdings,
+disclosures, prices and dealer set are all chosen server-side, never read from
+the request.
+
+| Route | Purpose |
+| --- | --- |
+| `POST /v1/testnet/party` | Allocate a demo party on this deployment's validator and airdrop test instruments. Returns `{ partyId, airdrops }`. |
+| `GET /v1/testnet/hosting?party=` | Whether a party is hosted here. |
+| `POST /v1/testnet/submit` | Relay allowlisted trader-authority commands for a faucet party. `ExerciseCommand` only, on a fixed set of `(interface, choice)` pairs; a `CreateCommand` is refused. |
+| `POST /v1/testnet/swap` | Drive a pool swap end to end for one faucet party. |
+| `POST /v1/testnet/liquidity` | Add or remove liquidity for one faucet party. |
+| `POST /v1/testnet/order` | Place and fund a resting order. |
+| `POST /v1/testnet/order/cancel` | Cancel that party's own order. |
+| `POST /v1/testnet/rfq` | Create an RFQ and collect quotes from the whitelisted dealers. |
+| `POST /v1/testnet/rfq/accept` | Accept a quote; settles the resulting `MatchedTrade`. |
+| `POST /v1/testnet/rfq/cancel` | Cancel that party's own RFQ. |
+
+Every one refuses a party it did not mint (**403**), and the order, RFQ and
+cancel routes additionally refuse a contract belonging to another party.
+
+### Rate limits
+
+Both the faucet and the relay are capped per IP and per deployment per UTC day;
+exceeding one returns **429** with `code: "too_many_requests"` and a `details`
+object naming the `scope` and `cap`. The party cap defaults to **3 per IP per
+day**, which a suite that provisions a fresh party per run will exhaust on its
+fourth run, and which everyone behind one NAT shares. The branch's
+`TESTNET_DEPLOY.md` lists all four caps and their env vars.
+
 ## Admin Endpoints
 
 ### `POST /v1/admin/pairs` → `{ pairCid }`

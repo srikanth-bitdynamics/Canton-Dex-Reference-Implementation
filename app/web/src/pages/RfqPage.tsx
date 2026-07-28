@@ -97,7 +97,6 @@ export function RfqPage() {
   const [composing, setComposing] = useState(false);
   const [policyOpenFor, setPolicyOpenFor] = useState<string | null>(null);
   const [receiptOpenFor, setReceiptOpenFor] = useState<string | null>(null);
-  const [acceptError, setAcceptError] = useState<string | null>(null);
 
   // Default-expand the first RFQ once the first snapshot arrives.
   useEffect(() => {
@@ -386,14 +385,6 @@ export function RfqPage() {
 
   return (
     <div className="page">
-      {acceptError && (
-        <div className="banner banner-error" role="alert">
-          <span>Accept failed: {acceptError}</span>
-          <button type="button" onClick={() => setAcceptError(null)}>
-            Dismiss
-          </button>
-        </div>
-      )}
       <div className="page-header">
         <div>
           <h2 className="page-title">RFQ</h2>
@@ -1338,7 +1329,6 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
               <select
                 className="input"
                 value={pair}
-                disabled={pairOptions.length === 0}
                 onChange={(e) => setPair(e.target.value)}
                 disabled={pairOptions.length === 0}
               >

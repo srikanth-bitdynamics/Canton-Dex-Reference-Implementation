@@ -277,6 +277,9 @@ export class JsonApiLedger implements LedgerSubmitter {
     return {
       ...(ev.createArgument ?? {}),
       contractId: ev.contractId,
+      // Distinct from any template's own `createdAt` field (Rfq has one), so
+      // stamping the event's create time never clobbers payload data.
+      ledgerCreatedAt: ev.createdAt,
     } as T;
   }
 

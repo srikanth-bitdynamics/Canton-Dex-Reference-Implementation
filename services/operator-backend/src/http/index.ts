@@ -618,9 +618,7 @@ async function routeRequest(
       1,
       Math.min(24 * 30, parseInt(url.searchParams.get("hours") ?? "24", 10)),
     );
-    // `ts` is stored in milliseconds (the indexer stamps Date.now()), so the
-    // window has to be too -- a seconds bound is ~1000x too small and silently
-    // admits every row ever recorded.
+    // `ts` is in milliseconds, so the bound must be too.
     const since = Date.now() - hours * 3600 * 1000;
     const rows = db
       .prepare(
@@ -653,7 +651,7 @@ async function routeRequest(
       respondJson(res, 400, { error: "missing ?pair=BASE/QUOTE" });
       return;
     }
-    // Milliseconds, matching the indexer's stamp -- see /v1/price-history.
+    // Milliseconds, matching the indexer's stamp.
     const since = Date.now() - 24 * 3600 * 1000;
     const rows = db
       .prepare(
@@ -667,10 +665,7 @@ async function routeRequest(
         baseDelta: string;
         kind: string;
       }>;
-    // Price is read from EVERY rotation: `priceAfter` is a true observation of
-    // the pool price whichever choice produced it, and a balanced LP add moves
-    // no price. Volume is read from swaps alone -- depositing liquidity is not
-    // trading.
+    // Price comes from every rotation; volume from swaps alone.
     const traded = rows.filter((r) => r.kind === "swap");
     const first = rows[0];
     const last = rows[rows.length - 1];
@@ -913,9 +908,8 @@ async function routeRequest(
     const where: string[] = [];
     const args: unknown[] = [];
     if (trader) {
-      // Either side. A party is `trader` on the trades it initiated and
-      // `counterparty` on the ones it was matched into; filtering on `trader`
-      // alone silently returned half of a party's fills.
+      // Either side: a party is `trader` on trades it initiated and
+      // `counterparty` on those it was matched into.
       where.push("(trader = ? OR counterparty = ?)");
       args.push(trader, trader);
     }
@@ -942,9 +936,7 @@ async function routeRequest(
       parseInt(url.searchParams.get("limit") ?? "50", 10),
       500,
     );
-    // Swaps only. A PoolState rotation is also emitted for LP add/remove and
-    // for pause/resume; those are not trades and must not appear in a trade
-    // feed with a fabricated direction.
+    // Swaps only: LP moves and pause/resume rotate the state too.
     const sql = pair
       ? `SELECT * FROM swaps WHERE kind = 'swap' AND pair = ? ORDER BY ts DESC LIMIT ${limit}`
       : `SELECT * FROM swaps WHERE kind = 'swap' ORDER BY ts DESC LIMIT ${limit}`;

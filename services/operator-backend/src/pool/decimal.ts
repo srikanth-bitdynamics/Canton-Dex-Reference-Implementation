@@ -84,3 +84,7 @@ export function sqrt(a: bigint): bigint {
 export function min(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
 }
+
+export function max(a: bigint, b: bigint): bigint {
+  return a > b ? a : b;
+}

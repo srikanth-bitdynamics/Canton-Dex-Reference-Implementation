@@ -156,6 +156,16 @@ function mkPool(
   } as unknown as Pool;
 }
 
+// mkPool derives the supply from a JS sqrt; ratio tests need reserves and a
+// supply that are exact to the last decimal place.
+function mkFundedPool(baseReserve: string, quoteReserve: string, totalLpSupply: string): Pool {
+  return {
+    ...mkPool(1, 1),
+    reserves: { baseAmount: baseReserve, quoteAmount: quoteReserve },
+    totalLpSupply,
+  } as unknown as Pool;
+}
+
 describe("PoolService.computeQuote", () => {
   const svc = new PoolService(
     new InMemoryLedger(),
@@ -259,6 +269,139 @@ describe("PoolService DvP liquidity", () => {
     // sqrt(10 * 200000) = sqrt(2_000_000) ≈ 1414.2135623..., floored to 10dp.
     assert.equal(out.lpAmount, "1414.2135623730");
     assert.equal(cmd.argument.lpAmount, "1414.2135623730", "floored quote is passed on-ledger");
+  });
+
+  it("off-ratio add quotes the matched share and the donated excess, and is not refused by default", async () => {
+    const pool = mkFundedPool("5.3317059088", "471735.6718858735", "1581.0163443902");
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    const out = await svc.requestAddLiquidity({
+      poolCid: pool.contractId,
+      recipient: "lp" as never,
+      baseAmount: "0.1",
+      quoteAmount: "10000.0",
+      requestedAt,
+    });
+
+    // LP is minted on the base leg: (0.1 * 1581.0163443902) / 5.3317059088.
+    assert.equal(out.lpAmount, "29.6531048680");
+    assert.equal(out.matchedBaseAmount, "0.1000000000");
+    // (29.6531048680 * 471735.6718858735) / 1581.0163443902
+    assert.equal(out.matchedQuoteAmount, "8847.7436669408");
+    assert.equal(out.donatedBaseAmount, "0.0000000000");
+    assert.equal(out.donatedQuoteAmount, "1152.2563330592");
+    assert.equal(out.donationBps, "1152.2563330592");
+
+    const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
+    assert.equal(cmd.argument.quoteAmount, "10000.0", "the whole quote leg still enters the pool");
+    assert.equal(cmd.argument.lpAmount, "29.6531048680");
+  });
+
+  it("at-ratio add matches both legs in full and donates nothing", async () => {
+    const pool = mkFundedPool("10.0", "200000.0", "1000.0");
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    const out = await svc.requestAddLiquidity({
+      poolCid: pool.contractId,
+      recipient: "lp" as never,
+      baseAmount: "1.0",
+      quoteAmount: "20000.0",
+      requestedAt,
+      maxDonationBps: 0,
+    });
+
+    assert.equal(out.lpAmount, "100.0000000000");
+    assert.equal(out.matchedBaseAmount, "1.0000000000");
+    assert.equal(out.matchedQuoteAmount, "20000.0000000000");
+    assert.equal(out.donatedBaseAmount, "0.0000000000");
+    assert.equal(out.donatedQuoteAmount, "0.0000000000");
+    assert.equal(out.donationBps, "0.0000000000");
+    assert.ok(ledger.lastSubmit, "a strict tolerance must not refuse an at-ratio add");
+  });
+
+  it("first funding matches both legs whatever the ratio", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    const out = await svc.requestAddLiquidity({
+      poolCid: pool.contractId,
+      recipient: "lp" as never,
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      requestedAt,
+      maxDonationBps: 0,
+    });
+
+    assert.equal(out.lpAmount, "1414.2135623730");
+    assert.equal(out.matchedBaseAmount, "10.0000000000");
+    assert.equal(out.matchedQuoteAmount, "200000.0000000000");
+    assert.equal(out.donationBps, "0.0000000000");
+  });
+
+  it("maxDonationBps refuses an off-ratio add before anything is submitted", async () => {
+    const pool = mkFundedPool("5.3317059088", "471735.6718858735", "1581.0163443902");
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    await assert.rejects(
+      () =>
+        svc.requestAddLiquidity({
+          poolCid: pool.contractId,
+          recipient: "lp" as never,
+          baseAmount: "0.1",
+          quoteAmount: "10000.0",
+          requestedAt,
+          maxDonationBps: 100,
+        }),
+      /1152.2563330592 bps off the pool ratio/,
+    );
+    assert.equal(ledger.lastSubmit, null, "no LiquidityAllocationRequest may be created");
+  });
+
+  it("maxDonationBps admits an add exactly at the limit and refuses one a hair over", async () => {
+    const pool = mkFundedPool("5.3317059088", "471735.6718858735", "1581.0163443902");
+    const svc = (ledger: CapturingLedger) =>
+      new PoolService(ledger, new StubRegistry(), "op" as never);
+    const add = (maxDonationBps: string) => ({
+      poolCid: pool.contractId,
+      recipient: "lp" as never,
+      baseAmount: "0.1",
+      quoteAmount: "10000.0",
+      requestedAt,
+      maxDonationBps,
+    });
+
+    const atLimit = new CapturingLedger(pool, mkLpPolicy());
+    await svc(atLimit).requestAddLiquidity(add("1152.2563330592"));
+    assert.ok(atLimit.lastSubmit);
+
+    const belowLimit = new CapturingLedger(pool, mkLpPolicy());
+    await assert.rejects(() => svc(belowLimit).requestAddLiquidity(add("1152.2563330591")));
+    assert.equal(belowLimit.lastSubmit, null);
+  });
+
+  it("maxDonationBps outside 0..10000, or not a number, is refused", async () => {
+    const pool = mkFundedPool("10.0", "200000.0", "1000.0");
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+    const add = (maxDonationBps: unknown) =>
+      svc.requestAddLiquidity({
+        poolCid: pool.contractId,
+        recipient: "lp" as never,
+        baseAmount: "1.0",
+        quoteAmount: "20000.0",
+        requestedAt,
+        maxDonationBps: maxDonationBps as number,
+      });
+
+    await assert.rejects(() => add(10001), /between 0 and 10000/);
+    await assert.rejects(() => add(-1), /between 0 and 10000/);
+    await assert.rejects(() => add(Number.NaN), /finite number/);
+    await assert.rejects(() => add("half a percent"), /Daml Decimal string/);
+    assert.equal(ledger.lastSubmit, null);
   });
 
   it("settleAddLiquidity is co-signed and threads requestCid + both registries' factories + per-admin contexts", async () => {

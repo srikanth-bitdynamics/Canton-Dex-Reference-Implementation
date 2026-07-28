@@ -77,6 +77,12 @@ export interface Order {
   status: OrderStatus;
   allocationCid: ContractId<"Allocation"> | null;
   settlementRef: V2Reference;
+  /**
+   * Ledger create time of this contract, stamped from the ACS event rather
+   * than the payload. Time priority in matching keys off it. Optional: a
+   * driver that cannot report one leaves it absent.
+   */
+  ledgerCreatedAt?: Time | null;
 }
 
 export type PoolStatus = "Unfunded" | "Active" | "Paused";

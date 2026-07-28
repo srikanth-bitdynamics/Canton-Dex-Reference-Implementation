@@ -383,9 +383,16 @@ export class Indexer {
     const liveIds = new Map(live.map((r) => [r.rfqId, r]));
     const seen = this.db
       .prepare(
-        "SELECT rfqId, MAX(ts) as maxTs, status FROM rfq_history GROUP BY rfqId",
+        `SELECT rfqId, MAX(ts) as maxTs, status, trader, pair
+         FROM rfq_history GROUP BY rfqId`,
       )
-      .all() as Array<{ rfqId: string; maxTs: number; status: string }>;
+      .all() as Array<{
+        rfqId: string;
+        maxTs: number;
+        status: string;
+        trader: string | null;
+        pair: string | null;
+      }>;
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO rfq_history
        (rfqId, ts, status, trader, pair, acceptedDealer, acceptedRank, policyVersion)
@@ -421,18 +428,22 @@ export class Indexer {
               }
             | undefined;
           if (trade?.acceptedRank != null) {
+            // Carry trader and pair forward from the open row. A non-admin
+            // caller can only query this table filtered by trader, so a
+            // terminal row written with a null trader is unreachable: the
+            // party sees their RFQ as "open" for ever.
             insert.run(
               s.rfqId,
               ts,
               "accepted",
-              null,
-              null,
+              s.trader,
+              s.pair,
               trade.dealer,
               trade.acceptedRank,
               trade.policyVersion,
             );
           } else {
-            insert.run(s.rfqId, ts, "closed", null, null, null, null, null);
+            insert.run(s.rfqId, ts, "closed", s.trader, s.pair, null, null, null);
           }
         }
       }

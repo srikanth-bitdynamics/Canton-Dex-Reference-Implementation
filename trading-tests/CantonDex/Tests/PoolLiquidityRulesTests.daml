@@ -52,7 +52,10 @@ data Fixture = Fixture with
 
 -- `lps` become Registry observers so they can exercise the factory.
 setup : [Party] -> Script Fixture
-setup lps = do
+setup = setupWithFee 30
+
+setupWithFee : Int -> [Party] -> Script Fixture
+setupWithFee feeBps lps = do
   operator <- allocateParty "operator"
   registry <- allocateParty "registry"   -- admin AND lpRegistrar
   reg <- submit registry $ createCmd RegV2.Registry with admin = registry; users = operator :: lps
@@ -63,7 +66,7 @@ setup lps = do
   poolCid <- submit operator $ createCmd Pool with
     poolId; operator; lpRegistrar = registry; admin = registry
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId
-    feeBps = 30
+    feeBps
   stateCid <- submit operator $ createCmd PS.PoolState with
     poolId; operator; lpRegistrar = registry
     status = PS_Unfunded

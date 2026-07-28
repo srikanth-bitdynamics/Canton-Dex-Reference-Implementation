@@ -449,11 +449,11 @@ template PoolLiquidityRules with
         assertMsg "knownTotalLpSupply must match recorded supply"
           (knownTotalLpSupply == state.totalLpSupply)
 
-        let share = lpTokensToRedeem / knownTotalLpSupply
-            -- Redemption rounds DOWN (floor to 10 dp): the pool never pays out
-            -- more than the exact pro-rata share, keeping x*y=k non-decreasing.
-            baseOut = PM.floorDecimal10 (state.reserves.baseAmount * share)
-            quoteOut = PM.floorDecimal10 (state.reserves.quoteAmount * share)
+        -- Both the share and the payout floor: the pool never pays out more
+        -- than the exact pro-rata share, keeping x*y=k non-decreasing.
+        let share = PM.floorDiv lpTokensToRedeem knownTotalLpSupply
+            baseOut = PM.floorMul state.reserves.baseAmount share
+            quoteOut = PM.floorMul state.reserves.quoteAmount share
         assertMsg "Base output below minimum" (baseOut >= minBaseOut)
         assertMsg "Quote output below minimum" (quoteOut >= minQuoteOut)
 

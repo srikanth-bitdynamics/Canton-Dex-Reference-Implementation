@@ -10,7 +10,7 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
-import CantonDex.Dex.Order (Order, Side (..))
+import CantonDex.Dex.Order (Order, OrderStatus (..), Side (..))
 import CantonDex.Trading.Utils qualified as Utils
 
 data MatchedOrderPair = MatchedOrderPair with
@@ -112,6 +112,22 @@ template OrderMatchExecution with
         assertMsg "sell order operator mismatch" (sellOrder.operator == operator)
         assertMsg "buy order must be a Bid" (buyOrder.side == Bid)
         assertMsg "sell order must be an Ask" (sellOrder.side == Ask)
+
+        -- A never-funded order has no collateral behind it, so a fill would be
+        -- recorded against nothing.
+        assertMsg "buy order is not funded"
+          (buyOrder.status == OS_Funded || buyOrder.status == OS_PartiallyFilled)
+        assertMsg "sell order is not funded"
+          (sellOrder.status == OS_Funded || sellOrder.status == OS_PartiallyFilled)
+
+        -- Without this the fill can spend the collateral of a DIFFERENT resting
+        -- order of the same trader: the batch still conserves, so nothing
+        -- downstream catches it, and that other order is left bound to an
+        -- archived allocation.
+        assertMsg "buyer allocation is not the bid order's allocation"
+          (buyOrder.allocationCid == Some buyerAllocationCid)
+        assertMsg "seller allocation is not the ask order's allocation"
+          (sellOrder.allocationCid == Some sellerAllocationCid)
 
         -- The match's accounts must be the orders' own traders, so the legs
         -- move the actual order owners' funds (not third parties').

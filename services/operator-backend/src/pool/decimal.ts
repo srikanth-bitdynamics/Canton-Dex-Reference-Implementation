@@ -4,8 +4,9 @@
 // digit, so we use scaled `BigInt` instead of IEEE-754 doubles.
 //
 // Representation: a value `v` is stored as the BigInt `round(v * 1e10)`.
-// All ops below preserve that scale and use round-half-even, the same mode
-// Daml `Decimal` mul/div use, so results match `*` / `/` on-ledger.
+// All ops below preserve that scale. `mul`/`div` use round-half-even, the same
+// mode Daml `Decimal` `*` / `/` use; `mulFloor`/`divFloor` mirror the floored
+// variants the pool computes payouts with.
 
 export const DECIMALS = 10;
 export const SCALE = 10n ** BigInt(DECIMALS);
@@ -57,6 +58,23 @@ export function div(a: bigint, b: bigint): bigint {
   return divRoundHalfEven(a * SCALE, b);
 }
 
+// Floor of `num / den` (den > 0), returning the integer quotient.
+function divFloorInt(num: bigint, den: bigint): bigint {
+  const q = num / den;
+  return num < 0n && q * den !== num ? q - 1n : q;
+}
+
+/** a * b at 10dp, floored (matches Daml `PM.floorMul`). */
+export function mulFloor(a: bigint, b: bigint): bigint {
+  return divFloorInt(a * b, SCALE);
+}
+
+/** a / b at 10dp, floored (matches Daml `PM.floorDiv`). */
+export function divFloor(a: bigint, b: bigint): bigint {
+  if (b === 0n) throw new Error("decimal div by zero");
+  return divFloorInt(a * SCALE, b);
+}
+
 // Integer square root (floor) of a non-negative BigInt, via Newton.
 function isqrt(n: bigint): bigint {
   if (n < 0n) throw new Error("isqrt of negative");
@@ -83,4 +101,8 @@ export function sqrt(a: bigint): bigint {
 
 export function min(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
+}
+
+export function max(a: bigint, b: bigint): bigint {
+  return a > b ? a : b;
 }

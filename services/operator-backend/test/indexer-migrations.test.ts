@@ -32,13 +32,13 @@ describe("indexer migrations", () => {
   });
 
   it("a database stopped at an earlier version still gets later columns", () => {
-    // The production shape: kind present, counterparty absent, user_version
-    // already at the value the amended migration would have set.
+    // The production shape: kind present, counterparty absent. Rewind to 0 and
+    // let every step replay rather than to `length - 1`, which silently
+    // retargets whenever a migration is appended.
     const p = join(dir, "partial.db");
     const seed = openDb(p);
-    const version = seed.pragma("user_version", { simple: true }) as number;
     seed.exec("ALTER TABLE trades DROP COLUMN counterparty");
-    seed.exec(`PRAGMA user_version = ${version - 1}`);
+    seed.exec("PRAGMA user_version = 0");
     seed.close();
 
     const db = openDb(p);

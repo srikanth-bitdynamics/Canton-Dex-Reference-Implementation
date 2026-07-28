@@ -205,13 +205,31 @@ incidental force-upgrade exposure is minimal. Where it could bite is
 manual replay tooling that caches a stale holding cid — the operator
 backend's command path does not cache cids across requests.
 
+## Known limitation: one registry admin per pair
+
+Both instruments of a pair share a single registry `admin`. `DexPair`,
+`Order`, `Pool` and `MatchedTrade` each declare one `admin : Party`, and
+`baseInstrumentId` / `quoteInstrumentId` are bare `Text` interpreted under it.
+
+This follows the standard: `TransferLeg.instrumentId` is `Text`, so a leg
+carries no admin of its own and one cannot be recovered from a settled trade.
+`MatchedTrade_RequestAllocations` emits one `AllocationSpecification` per
+authorizer under that one admin.
+
+`MatchedTrade_Settle` does take `batchesByAdmin : Map Party SettlementBatchV2`
+and is shaped for multiple admins, inherited from the upstream batching
+utility — but nothing in this repo constructs a two-admin trade to feed it.
+Note that `splitLegsByAuthorizer` splits by *authorizer*, not by admin.
+
+Pairing instruments from two different registries needs a second admin field
+on those four templates and one specification per `(authorizer, admin)`. That
+is a schema change, not a configuration option.
+
 ## What the DEX does NOT assume
 
-- It does not assume the registry is a single party. Multiple registrars
-  can coexist; the DEX groups settlement by admin (see
-  `splitLegsByAuthorizer` and `MatchedTrade_Settle.batchesByAdmin`).
-- It does not assume holding fungibility across admins. A trade with
-  legs spanning two admins requires two batches.
+- It does not assume any particular registry implementation. Any registry
+  implementing the V2 holding and allocation APIs works; nothing depends on
+  the reference `Registry.V2`.
 - It does not assume holding precision is uniform. Each registry may expose its
   own display scale or amount constraints; the DEX treats amounts as `Decimal`
   and lets the registry enforce its own limits.

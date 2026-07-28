@@ -92,6 +92,25 @@ implements the standard's off-ledger `metadata-v1` API.
 [ { "instrumentId": "BTC", "symbol": "BTC", "decimals": 8, "isin": null, "cusip": null, "description": null } ]
 ```
 
+### Historical rows and the exactness cutover
+
+The exactness and trade-labelling fixes are **forward-only**: rows written
+before them keep the values they were recorded with. A pre-cutover swap can
+differ from the ledger in the last decimal place, and a pre-cutover trade can
+carry `trader` and `dealer` inverted on a buy.
+
+`scripts/reindex-derived.ts` recomputes both in place, from data the indexer
+already stores — no ledger read:
+
+```bash
+node --import tsx scripts/reindex-derived.ts --db <indexer.db> --dry-run
+node --import tsx scripts/reindex-derived.ts --db <indexer.db>
+```
+
+It reports every row it would change before changing anything, and is
+idempotent. Run it once after upgrading, or expect the disagreement when
+backfilling history.
+
 ### `GET /v1/trades?trader=&pair=&limit=` → indexer rows
 
 Settled MatchedTrade history from the SQLite indexer. **503** if the

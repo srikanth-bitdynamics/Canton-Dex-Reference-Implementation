@@ -199,8 +199,9 @@ burn account, atomically.
 `/v1/admin/*`, but also the trader-facing writes (`/v1/pools/swap*`,
 `/v1/rfq`, `/v1/orders/*`). They return **401** unless `DEX_OPERATOR_API_TOKEN`
 is configured (send `Authorization: Bearer <token>`) or, on the in-memory dev
-server only, `DEX_DEV_OPEN=1` is set. Read (GET) routes need no auth. Admin
-routes additionally require the `OPERATOR_ADMIN_TOKEN`. See
+server only, `DEX_DEV_OPEN=1` is set. Read (GET) routes need no auth.
+`/v1/admin/*` writes use `OPERATOR_ADMIN_TOKEN` **instead** of the operator
+token, and the advisory `POST /v1/swaps/quote` needs neither. See
 [Local Setup → Exercising write paths](../getting-started.md#exercising-write-paths-in-demo-mode).
 
 ## Admin Endpoints
@@ -246,7 +247,7 @@ authority writes. Instead it hands intents to the active
 All examples assume the local backend on `http://localhost:8080`. Reads need no
 auth; **every** write does — see [Authentication](#authentication) above, and
 run the demo server with `DEX_DEV_OPEN=1` to exercise the write examples.
-`/v1/admin/*` additionally needs `Authorization: Bearer $OPERATOR_ADMIN_TOKEN`.
+`/v1/admin/*` uses `Authorization: Bearer $OPERATOR_ADMIN_TOKEN` instead.
 
 ```bash
 # Read: trading pairs, pools, and a trader's holdings

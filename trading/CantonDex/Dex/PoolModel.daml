@@ -14,11 +14,46 @@ import CantonDex.Dex.PoolSlice
 
 -- Math --------------------------------------------------------------------
 
--- | Floor a Decimal to 10 dp toward zero. Payouts sourced from the pool
--- (constant-product output, pro-rata redemption) round DOWN so the pool never
--- pays out more than the exact amount, keeping x*y=k non-decreasing.
-floorDecimal10 : Decimal -> Decimal
-floorDecimal10 x = intToDecimal (floor (x * 1e10)) / 1e10
+-- | One unit in the last place of `Decimal` (= `Numeric 10`).
+ulp : Decimal
+ulp = 0.0000000001
+
+-- | Integer and fractional parts; the fraction is always in [0.0, 1.0).
+splitInt : Decimal -> (Decimal, Decimal)
+splitInt v = let i = intToDecimal (floor v) in (i, v - i)
+
+-- | Orders the EXACT products `a * b` and `c * d`. Daml's `*` rounds its
+-- result to 10 dp, discarding precisely the sub-ulp margin the floors below
+-- turn on, so each product is compared as an exactly representable 10 dp part
+-- plus its scaled sub-unit remainder.
+compareProducts : Decimal -> Decimal -> Decimal -> Decimal -> Ordering
+compareProducts a b c d =
+  let (ai, af) = splitInt a
+      (bi, bf) = splitInt b
+      (ci, cf) = splitInt c
+      (di, df) = splitInt d
+      hi = (ai * bi + ai * bf + af * bi) - (ci * di + ci * df + cf * di)
+      loL = (af * 1e10) * (bf * 1e10) / 1e10
+      loR = (cf * 1e10) * (df * 1e10) / 1e10
+  in if hi >= 1.0 then GT
+     else if hi <= -1.0 then LT
+     else compare (hi * 1e10 + loL) loR
+
+-- | Largest `Decimal` not exceeding the exact product `x * y`. Payouts
+-- sourced from the pool (constant-product output, pro-rata redemption) round
+-- DOWN so the pool never pays out more than the exact amount, keeping x*y=k
+-- non-decreasing; `Decimal` is already scale 10, so the rounding has to be
+-- corrected here rather than by re-flooring the finished product.
+floorMul : Decimal -> Decimal -> Decimal
+floorMul x y =
+  let p = x * y
+  in if compareProducts x y p 1.0 == LT then p - ulp else p
+
+-- | Largest `Decimal` not exceeding the exact quotient `n / d`, for `d > 0.0`.
+floorDiv : Decimal -> Decimal -> Decimal
+floorDiv n d =
+  let q = n / d
+  in if compareProducts q d n 1.0 == GT then q - ulp else q
 
 newtonSqrt : Decimal -> Decimal -> Int -> Decimal
 newtonSqrt target guess iteration
@@ -33,9 +68,9 @@ sqrtDecimal x
 
 constantProductOut : Decimal -> Decimal -> Int -> Decimal -> Decimal
 constantProductOut reserveIn reserveOut feeBps inputAmount =
-  let feeMultiplier = (10000.0 - intToDecimal feeBps) / 10000.0
-      amountInAfterFee = inputAmount * feeMultiplier
-  in floorDecimal10 ((amountInAfterFee * reserveOut) / (reserveIn + amountInAfterFee))
+  let amountInAfterFee =
+        floorDiv (floorMul inputAmount (intToDecimal (10000 - feeBps))) 10000.0
+  in floorDiv (floorMul amountInAfterFee reserveOut) (reserveIn + amountInAfterFee)
 
 -- Helpers -----------------------------------------------------------------
 

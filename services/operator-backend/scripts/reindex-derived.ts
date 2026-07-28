@@ -1,20 +1,13 @@
 // Recompute the indexer's derived columns for rows written before the
-// exactness and labelling fixes.
+// exactness and labelling fixes, which were forward-only.
 //
-// Those fixes were forward-only: rows already in the database keep the values
-// they were written with. A swap recorded before the change can differ from
-// the ledger in the last decimal place, and a trade recorded before the
-// labelling fix has `trader` and `dealer` the wrong way round on buys.
+// No ledger read: pool_states is append-only and keeps exact reserve strings
+// keyed by contract id, every swaps row names the states it sits between, and
+// trades keeps the payload it was derived from.
 //
-// No ledger read is needed. `pool_states` is append-only and stores reserves
-// and supply as exact decimal strings keyed by contract id, and every `swaps`
-// row names both the old and new state; `trades` keeps the raw payload it was
-// derived from. Everything below is recomputed from those.
+//   node --import tsx scripts/reindex-derived.ts --db <path> [--dry-run]
 //
-//   node --import tsx scripts/reindex-derived.ts --db path/to/indexer.db
-//   node --import tsx scripts/reindex-derived.ts --db ... --dry-run
-//
-// Idempotent: running it twice changes nothing the second time.
+// Idempotent.
 
 import { openDb } from "../src/indexer/db.js";
 import * as dec from "../src/pool/decimal.js";
@@ -81,8 +74,7 @@ for (const s of swaps) {
     quoteDelta = dec.formatDecimal(nq - oq);
     priceAfter = nb > 0n ? dec.formatDecimal(dec.div(nq, nb)) : dec.formatDecimal(0n);
   } catch {
-    // An unparseable reserve is left alone rather than overwritten.
-    continue;
+    continue; // unparseable reserve: leave the row alone
   }
 
   if (
@@ -140,8 +132,7 @@ for (const t of trades) {
     ),
   ] as string[];
 
-  // Same derivation as the indexer: the venue-signed receipt names the dealer;
-  // the trader is the other party. Without a receipt there is no dealer role.
+  // Same derivation as the indexer.
   const acceptedDealer = parsed.policyReceipt?.acceptedDealer ?? null;
   const dealer = acceptedDealer;
   const trader = acceptedDealer

@@ -11,7 +11,7 @@ import {
 } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import * as dec from "../pool/decimal.js";
-import type { Order, Party, V2TransferLeg } from "../types.js";
+import type { Order, Party, V2Account, V2TransferLeg } from "../types.js";
 import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
 
 export type { Match, BookLevel };
@@ -278,20 +278,31 @@ export class OrderService {
         const quoteAmount = dec.formatDecimal(
           dec.mul(dec.parseDecimal(m.price), dec.parseDecimal(m.quantity)),
         );
-        const transferLegs = [
+        // Mirrors mkMatchTransferLegs in OrderMatchExecution.daml: base
+        // delivery first, then quote payment, each with a transferLegId and
+        // Account-shaped parties. Typed, so a bare Party or a missing id is a
+        // compile error rather than a rejected submission.
+        const acct = (owner: Party): V2Account => ({
+          owner,
+          provider: null,
+          id: "",
+        });
+        const transferLegs: V2TransferLeg[] = [
           {
-            sender: m.buy.trader,
-            receiver: m.sell.trader,
-            instrumentId: m.buy.quoteInstrumentId,
-            amount: quoteAmount,
-            meta: { values: {} },
-          },
-          {
-            sender: m.sell.trader,
-            receiver: m.buy.trader,
+            transferLegId: "base-delivery",
+            sender: acct(m.sell.trader),
+            receiver: acct(m.buy.trader),
             instrumentId: m.buy.baseInstrumentId,
             amount: m.quantity,
-            meta: { values: {} },
+            meta: { values: {} } as never,
+          },
+          {
+            transferLegId: "quote-payment",
+            sender: acct(m.buy.trader),
+            receiver: acct(m.sell.trader),
+            instrumentId: m.buy.quoteInstrumentId,
+            amount: quoteAmount,
+            meta: { values: {} } as never,
           },
         ];
         // Deterministic, replay-safe commandId: derived once from

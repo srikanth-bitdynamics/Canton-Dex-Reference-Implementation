@@ -672,7 +672,17 @@ async function routeRequest(
       venue: context.operator as Party,
       admin: context.admin as Party,
     });
-    respondJson(res, 200, { matches: results });
+    // runMatching catches per-match so one bad pair cannot stop the rest, but
+    // a 200 for a run where nothing settled reads as success. Report 207 when
+    // some failed and 502 when every one did.
+    const failed = results.filter((r) => r.error);
+    const status =
+      failed.length === 0 ? 200 : failed.length === results.length ? 502 : 207;
+    respondJson(res, status, {
+      matches: results,
+      settled: results.length - failed.length,
+      failed: failed.length,
+    });
     return;
   }
 

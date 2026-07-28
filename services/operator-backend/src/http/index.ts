@@ -618,7 +618,10 @@ async function routeRequest(
       1,
       Math.min(24 * 30, parseInt(url.searchParams.get("hours") ?? "24", 10)),
     );
-    const since = Math.floor(Date.now() / 1000) - hours * 3600;
+    // `ts` is stored in milliseconds (the indexer stamps Date.now()), so the
+    // window has to be too -- a seconds bound is ~1000x too small and silently
+    // admits every row ever recorded.
+    const since = Date.now() - hours * 3600 * 1000;
     const rows = db
       .prepare(
         `SELECT ts, priceAfter FROM swaps
@@ -650,11 +653,11 @@ async function routeRequest(
       respondJson(res, 400, { error: "missing ?pair=BASE/QUOTE" });
       return;
     }
-    const now = Math.floor(Date.now() / 1000);
-    const since = now - 24 * 3600;
+    // Milliseconds, matching the indexer's stamp -- see /v1/price-history.
+    const since = Date.now() - 24 * 3600 * 1000;
     const rows = db
       .prepare(
-        `SELECT ts, priceAfter, baseDelta FROM swaps
+        `SELECT ts, priceAfter, baseDelta, kind FROM swaps
          WHERE pair = ? AND ts >= ?
          ORDER BY ts ASC`,
       )
@@ -662,7 +665,13 @@ async function routeRequest(
         ts: number;
         priceAfter: string;
         baseDelta: string;
+        kind: string;
       }>;
+    // Price is read from EVERY rotation: `priceAfter` is a true observation of
+    // the pool price whichever choice produced it, and a balanced LP add moves
+    // no price. Volume is read from swaps alone -- depositing liquidity is not
+    // trading.
+    const traded = rows.filter((r) => r.kind === "swap");
     const first = rows[0];
     const last = rows[rows.length - 1];
     const priceChange =
@@ -670,15 +679,15 @@ async function routeRequest(
         ? (parseFloat(last.priceAfter) - parseFloat(first.priceAfter)) /
           parseFloat(first.priceAfter)
         : null;
-    const volume = rows.reduce(
+    const volume = traded.reduce(
       (s, r) => s + Math.abs(parseFloat(r.baseDelta)),
       0,
     );
     respondJson(res, 200, {
       pair,
       priceChange24h: priceChange,
-      volume24h: rows.length > 0 ? volume : null,
-      swapCount24h: rows.length,
+      volume24h: traded.length > 0 ? volume : null,
+      swapCount24h: traded.length,
     });
     return;
   }
@@ -930,9 +939,12 @@ async function routeRequest(
       parseInt(url.searchParams.get("limit") ?? "50", 10),
       500,
     );
+    // Swaps only. A PoolState rotation is also emitted for LP add/remove and
+    // for pause/resume; those are not trades and must not appear in a trade
+    // feed with a fabricated direction.
     const sql = pair
-      ? `SELECT * FROM swaps WHERE pair = ? ORDER BY ts DESC LIMIT ${limit}`
-      : `SELECT * FROM swaps ORDER BY ts DESC LIMIT ${limit}`;
+      ? `SELECT * FROM swaps WHERE kind = 'swap' AND pair = ? ORDER BY ts DESC LIMIT ${limit}`
+      : `SELECT * FROM swaps WHERE kind = 'swap' ORDER BY ts DESC LIMIT ${limit}`;
     const rows = (pair ? db.prepare(sql).all(pair) : db.prepare(sql).all()) as Array<{
       ts: number;
       pair: string;

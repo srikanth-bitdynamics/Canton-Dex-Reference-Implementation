@@ -11,6 +11,7 @@
 import type { Db } from "./db.js";
 import type { LedgerSubmitter } from "../ledger/index.js";
 import type { Party } from "../types.js";
+import * as dec from "../pool/decimal.js";
 
 type LedgerQuery = Pick<LedgerSubmitter, "query">;
 
@@ -140,8 +141,28 @@ export class Indexer {
       for (const t of rows) {
         if (known.has(t.contractId)) continue;
         const legs = t.transferLegs ?? [];
-        const trader = legs[0]?.sender?.owner ?? legs[0]?.receiver?.owner ?? null;
-        const dealer = legs[0]?.receiver?.owner ?? null;
+        // Who is the trader does NOT follow leg direction. legs[0] is the base
+        // leg, and its sender flips with the side: on a sell the trader sends
+        // base, on a buy the dealer does. Reading both parties off legs[0]
+        // therefore labelled every buy backwards -- silently, so a client
+        // reconciling on `trader == me` just missed all of its buys.
+        //
+        // The policy receipt names the dealer outright, and it is signed by
+        // the venue, so use it when present and take the trader to be the
+        // other party on the legs.
+        const legParties = Array.from(
+          new Set(
+            legs.flatMap((l) => [l.sender?.owner, l.receiver?.owner]).filter(Boolean),
+          ),
+        ) as Party[];
+        const acceptedDealer = t.policyReceipt?.acceptedDealer ?? null;
+        const dealer = acceptedDealer;
+        const trader = acceptedDealer
+          ? (legParties.find((x) => x !== acceptedDealer) ?? null)
+          : // No receipt (a non-RFQ matched trade): there is no dealer role to
+            // infer, so record the base-leg sender as the trader and leave the
+            // dealer unset rather than assert a direction we cannot know.
+            (legs[0]?.sender?.owner ?? null);
         const baseSym = legs[0]?.instrumentId ?? "";
         const quoteSym = legs[1]?.instrumentId ?? "";
         const pair = `${baseSym}/${quoteSym}`;
@@ -198,13 +219,14 @@ export class Indexer {
     const known = new Map(
       (this.db
         .prepare(
-          "SELECT poolCid, pairKey, baseReserve, quoteReserve FROM pool_states WHERE archived = 0",
+          "SELECT poolCid, pairKey, baseReserve, quoteReserve, totalLpSupply FROM pool_states WHERE archived = 0",
         )
         .all() as Array<{
         poolCid: string;
         pairKey: string;
         baseReserve: string;
         quoteReserve: string;
+        totalLpSupply: string;
       }>).map((r) => [r.poolCid, r]),
     );
     const liveCids = new Set(live.map((p) => p.contractId));
@@ -219,8 +241,8 @@ export class Indexer {
       "UPDATE pool_states SET archived = 1 WHERE poolCid = ?",
     );
     const insertSwap = this.db.prepare(
-      `INSERT INTO swaps (ts, oldPoolCid, newPoolCid, pair, baseDelta, quoteDelta, priceAfter)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO swaps (ts, oldPoolCid, newPoolCid, pair, baseDelta, quoteDelta, priceAfter, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const event = this.db.prepare(
       `INSERT INTO events (ts, kind, templateId, contractId, party, payload)
@@ -236,6 +258,7 @@ export class Indexer {
         pairKey: string;
         baseReserve: string;
         quoteReserve: string;
+        totalLpSupply: string;
       }> = [];
       for (const [cid, row] of known.entries()) {
         if (!liveCids.has(cid)) {
@@ -244,6 +267,7 @@ export class Indexer {
             pairKey: row.pairKey,
             baseReserve: row.baseReserve,
             quoteReserve: row.quoteReserve,
+            totalLpSupply: row.totalLpSupply,
           });
           markArchived.run(cid);
         }
@@ -269,21 +293,83 @@ export class Indexer {
           predecessor?.cid ?? null,
         );
         if (predecessor) {
-          const baseDelta = (
-            parseFloat(p.reserves.baseAmount) -
-            parseFloat(predecessor.baseReserve)
-          ).toFixed(10);
-          const quoteDelta = (
-            parseFloat(p.reserves.quoteAmount) -
-            parseFloat(predecessor.quoteReserve)
-          ).toFixed(10);
+          // Exact, scaled-integer arithmetic. Everything else on this API
+          // computes decimals exactly; this block used parseFloat and
+          // .toFixed(10), which drifts by 1 ulp at this deployment's real
+          // magnitudes -- and /v1/swaps is what a client reconciles fills
+          // against, so a feed that disagrees with the swap response by an
+          // ulp is worse than it looks. Subtraction on scaled BigInts is
+          // exact natively, which is why decimal.ts exposes only mul/div/sqrt.
+          //
+          // A malformed or absent reserve must not reach the DB: parseDecimal
+          // would throw inside the transaction and kill pool reconciliation
+          // for the whole tick, and the previous code wrote the literal
+          // string "NaN" into a NOT NULL column. Skip the row instead.
+          let newBase: bigint;
+          let newQuote: bigint;
+          let oldBase: bigint;
+          let oldQuote: bigint;
+          try {
+            newBase = dec.parseDecimal(p.reserves.baseAmount);
+            newQuote = dec.parseDecimal(p.reserves.quoteAmount);
+            oldBase = dec.parseDecimal(predecessor.baseReserve);
+            oldQuote = dec.parseDecimal(predecessor.quoteReserve);
+          } catch {
+            console.warn(
+              `[indexer] unparseable reserves on ${p.contractId}; skipping the rotation row`,
+            );
+            continue;
+          }
+          const baseDelta = dec.formatDecimal(newBase - oldBase);
+          const quoteDelta = dec.formatDecimal(newQuote - oldQuote);
+
+          // What this rotation actually was. Five Daml choices rotate a
+          // PoolState -- Swap, Pause, Resume, SettleAdd/RemoveLiquidity -- and
+          // the indexer only polls the ACS, so no choice name is available.
+          // `totalLpSupply` is the causal discriminator: an add mints shares,
+          // a remove burns them, and nothing else touches supply (swap fees
+          // accrue through the reserves without minting).
+          //
+          // Exact here too, and for a sharper reason than tidiness: float
+          // subtraction collapses to exactly 0 once totalLpSupply reaches
+          // ~2e6, which would misclassify a 1-ulp LP mint as a swap -- the
+          // very bug the `kind` column was added to eliminate.
+          //
+          // An unparseable supply must not fall through to `=== 0`, which it
+          // would fail along with both inequalities, routing every swap to
+          // "state_change" and emptying the feed. Fall back to the sign test:
+          // a swap's reserve deltas have opposite signs, a liquidity move's
+          // share one.
+          let lpDelta: bigint | null;
+          try {
+            lpDelta =
+              dec.parseDecimal(p.totalLpSupply) -
+              dec.parseDecimal(predecessor.totalLpSupply);
+          } catch {
+            lpDelta = null;
+          }
+          const bd = newBase - oldBase;
+          const qd = newQuote - oldQuote;
+          let kind: string;
+          if (lpDelta === null) {
+            kind = (bd > 0n) === (qd > 0n) && bd !== 0n ? "add_liquidity" : "swap";
+          } else if (lpDelta > 0n) {
+            kind = "add_liquidity";
+          } else if (lpDelta < 0n) {
+            kind = "remove_liquidity";
+          } else if (bd !== 0n || qd !== 0n) {
+            // Supply unchanged and reserves moved: a swap. Tested on either
+            // side alone, because constantProductOut floors to 10dp and a dust
+            // swap can round one side to exactly zero.
+            kind = "swap";
+          } else {
+            // Pause / resume: the state rotated, the numbers did not.
+            kind = "state_change";
+          }
           const price =
-            parseFloat(p.reserves.baseAmount) > 0
-              ? (
-                  parseFloat(p.reserves.quoteAmount) /
-                  parseFloat(p.reserves.baseAmount)
-                ).toFixed(10)
-              : "0";
+            newBase > 0n
+              ? dec.formatDecimal(dec.div(newQuote, newBase))
+              : dec.formatDecimal(0n);
           insertSwap.run(
             ts,
             predecessor.cid,
@@ -292,10 +378,11 @@ export class Indexer {
             baseDelta,
             quoteDelta,
             price,
+            kind,
           );
           event.run(
             ts,
-            "pool_swap",
+            kind,
             "CantonDex.Dex.PoolState:PoolState",
             p.contractId,
             this.cfg.observingParty,

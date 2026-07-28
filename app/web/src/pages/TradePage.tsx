@@ -305,7 +305,7 @@ export function TradePage() {
                     }}
                   >
                     <span className="mono" style={{ color: 'var(--text-2)' }}>
-                      {new Date(s.ts * 1000).toLocaleTimeString('en-US', {
+                      {new Date(s.ts).toLocaleTimeString('en-US', {
                         hour: '2-digit',
                         minute: '2-digit',
                         hour12: false,

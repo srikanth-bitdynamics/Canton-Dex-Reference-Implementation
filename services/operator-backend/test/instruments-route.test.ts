@@ -53,9 +53,9 @@ before(async () => {
     registry: new StubRegistry(),
     operatorParty: "op" as never,
   });
-  const handle = startHttpServer({
+  const handle = await startHttpServer({
     backend,
-    port: 22180 + Math.floor(Math.random() * 1000),
+    port: 0,
     host: "127.0.0.1",
     context: {
       operator: "op" as never,

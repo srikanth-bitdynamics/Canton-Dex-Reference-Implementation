@@ -9,6 +9,16 @@ earlier version execute the newer choice, and contract ids are preserved.
 
 ## Unreleased
 
+### Added
+
+- `POST /v1/pools/add-liquidity/request` reports what a deposit actually
+  buys: `matchedBaseAmount` / `matchedQuoteAmount` (the part of each leg the
+  minted LP tokens represent) and `donatedBaseAmount` / `donatedQuoteAmount` /
+  `donationBps` (the off-ratio excess, which enters the reserves but is not
+  redeemable by the depositor). An optional `maxDonationBps` refuses a request
+  above a caller-chosen ceiling before any contract is created; omitting it
+  keeps the previous unbounded behaviour.
+
 ### Fixed
 
 - `canton-dex-trading` 0.1.1 → 0.1.2. Pool payouts now really round down.

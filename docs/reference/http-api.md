@@ -58,6 +58,10 @@ Open orders for a specific trader. **400** if `trader` is missing.
 ### `GET /v1/orders/book?pair=BASE/QUOTE` → `{ bids, asks }`
 ### `GET /v1/orders/matches?pair=BASE/QUOTE` → `{ matches }`
 
+Each entry carries only the terms — `price`, `quantity`, `buyOrderCid`,
+`sellOrderCid`. The orders themselves name their traders and allocations and
+are not served here.
+
 Resting book and crossable pairs for one market. `?base=&quote=` is also
 accepted. **400** if neither form is supplied.
 
@@ -119,8 +123,9 @@ backfilling history.
 
 ### `GET /v1/trades?trader=&pair=&limit=` → indexer rows
 
-Settled MatchedTrade history from the SQLite indexer. **503** if the
-indexer is not configured.
+Settled MatchedTrade history for one trader. **400** without `?trader=`,
+unless the request carries the admin token — a row names both parties.
+**503** if the indexer is not configured.
 
 `?trader=` matches **either side** — a party appears as `trader` on the trades
 it initiated and as `counterparty` on those it was matched into. `dealer` is a
@@ -222,6 +227,51 @@ Operator opens the add-liquidity flow by creating a
 `LiquidityAllocationRequest`. The trader's wallet then authors the
 base-deposit, quote-deposit, and LP-receipt allocations via
 `AllocationFactory_Allocate`.
+
+```json
+// request
+{
+  "poolCid": "#2:0",
+  "recipient": "lp::1220ab...",
+  "baseAmount": "0.1",
+  "quoteAmount": "10000.0",
+  "requestedAt": "2026-07-01T00:00:00Z",
+  "maxDonationBps": "50"   // optional, see below
+}
+// response (the quote fields; the allocation specs, factories, choice
+// contexts and disclosures the wallet needs are returned alongside them)
+{
+  "requestCid": "...",
+  "lpAmount": "29.6531048680",
+  "matchedBaseAmount": "0.1000000000",
+  "matchedQuoteAmount": "8847.7436669408",
+  "donatedBaseAmount": "0.0000000000",
+  "donatedQuoteAmount": "1152.2563330592",
+  "donationBps": "1152.2563330592",
+  "knownTotalLpSupply": "1581.0163443902",
+  "baseAmount": "0.1",
+  "quoteAmount": "10000.0"
+}
+```
+
+**Deposits off the reserve ratio lose the excess.** LP tokens are minted
+against whichever leg is short relative to the pool's reserve ratio
+(`min((base·S)/rb, (quote·S)/rq)`), but *both* legs enter the reserves in
+full. `matchedBaseAmount` / `matchedQuoteAmount` are the parts of the deposit
+the minted LP tokens actually represent; `donatedBaseAmount` /
+`donatedQuoteAmount` are the remainder, which accrues to the existing holders
+and cannot be redeemed back. In the example above, 1152.26 dUSD — 11.5% of
+the quote leg — is donated. At the reserve ratio both donations are zero, and
+the first deposit into an unfunded pool sets the ratio, so nothing is donated
+there either.
+
+`maxDonationBps` (optional, `0`..`10000`, number or Decimal string) refuses
+the request with **400** when `donationBps` exceeds it, before any contract is
+created. Omitting it means no ceiling — the historical behaviour. Note that
+decimal rounding alone can leave a sub-bps donation on an otherwise on-ratio
+deposit, so `0` is stricter than it looks; `1` is the usual "on ratio" check.
+Compute the paired amount from `GET /v1/pools` reserves to stay on ratio, or
+send a tolerance and re-quote when it refuses.
 
 ### `POST /v1/pools/add-liquidity/settle`
 

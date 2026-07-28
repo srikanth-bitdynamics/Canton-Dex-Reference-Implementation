@@ -166,6 +166,21 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE trades ADD COLUMN counterparty TEXT;
   `,
+
+  // v8: terminal rfq_history rows written before the reconcile carried the
+  // trader forward. Non-admin reads are filtered by trader, so those rows are
+  // invisible to the party they belong to and the RFQ shows as open for ever.
+  // Recovered from the rfqId's own open row.
+  `
+  UPDATE rfq_history AS h
+     SET trader = (SELECT o.trader FROM rfq_history o
+                    WHERE o.rfqId = h.rfqId AND o.trader IS NOT NULL
+                    ORDER BY o.ts ASC LIMIT 1),
+         pair   = (SELECT o.pair   FROM rfq_history o
+                    WHERE o.rfqId = h.rfqId AND o.pair IS NOT NULL
+                    ORDER BY o.ts ASC LIMIT 1)
+   WHERE h.trader IS NULL;
+  `,
 ];
 
 export function openDb(path: string): Db {

@@ -587,7 +587,17 @@ async function routeRequest(
       baseInstrumentId: p.base,
       quoteInstrumentId: p.quote,
     });
-    respondJson(res, 200, { matches });
+    // A Match embeds both whole Orders -- trader, admin, allocationCid,
+    // settlementRef. Project down to the terms; the operator route that acts
+    // on a match is already behind the operator token.
+    respondJson(res, 200, {
+      matches: matches.map((m) => ({
+        price: m.price,
+        quantity: m.quantity,
+        buyOrderCid: m.buy.contractId,
+        sellOrderCid: m.sell.contractId,
+      })),
+    });
     return;
   }
 
@@ -662,7 +672,17 @@ async function routeRequest(
       venue: context.operator as Party,
       admin: context.admin as Party,
     });
-    respondJson(res, 200, { matches: results });
+    // runMatching catches per-match so one bad pair cannot stop the rest, but
+    // a 200 for a run where nothing settled reads as success. Report 207 when
+    // some failed and 502 when every one did.
+    const failed = results.filter((r) => r.error);
+    const status =
+      failed.length === 0 ? 200 : failed.length === results.length ? 502 : 207;
+    respondJson(res, status, {
+      matches: results,
+      settled: results.length - failed.length,
+      failed: failed.length,
+    });
     return;
   }
 
@@ -966,7 +986,16 @@ async function routeRequest(
       respondJson(res, 503, { error: "indexer disabled" });
       return;
     }
+    // Scoped like /v1/rfq and /v1/rfq/history: a row names both parties to a
+    // settled trade, so the unfiltered sweep is admin-only.
     const trader = url.searchParams.get("trader");
+    if (!trader && !(adminToken && bearerMatches(req.headers["authorization"], adminToken))) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "missing ?trader= query parameter; the unfiltered view requires the admin token",
+      );
+    }
     const pair = url.searchParams.get("pair");
     const limit = Math.min(
       parseInt(url.searchParams.get("limit") ?? "50", 10),

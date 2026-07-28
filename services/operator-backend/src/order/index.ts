@@ -11,7 +11,7 @@ import {
 } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import * as dec from "../pool/decimal.js";
-import type { Order, Party, V2TransferLeg } from "../types.js";
+import type { Order, Party, V2Account, V2TransferLeg } from "../types.js";
 import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
 
 export type { Match, BookLevel };
@@ -48,6 +48,18 @@ export interface OrderFundInput {
 export interface OrderCancelResult {
   /** Null when the driver cannot report one. */
   updateId: string | null;
+}
+
+export interface MatchRunResult {
+  buyCid: ContractId<"Order">;
+  sellCid: ContractId<"Order">;
+  quantity: string;
+  price: string;
+  matchedTradeCid?: ContractId<"MatchedTrade">;
+  /** Order the remainder rolled forward to; null when the side filled fully. */
+  buyRemainderCid?: ContractId<"Order"> | null;
+  sellRemainderCid?: ContractId<"Order"> | null;
+  error?: string;
 }
 
 export interface OrderMatchInput {
@@ -237,6 +249,33 @@ export class OrderService {
     return aggregateBook(forPair);
   }
 
+  /** Resolves to the remainder order's cid, or null on an exact full fill. */
+  private recordFill(input: {
+    orderCid: ContractId<"Order">;
+    allocationCid: ContractId<"Allocation"> | null;
+    filledQty: string;
+  }): Promise<ContractId<"Order"> | null> {
+    return retryOnContention(async () => {
+      const remainder = await this.ledger.submit<ContractId<"Order"> | null>({
+        actAs: [this.operatorParty],
+        commandId: `order-fill:${input.orderCid}:${input.filledQty}`,
+        command: {
+          kind: "exercise",
+          templateId: "CantonDex.Dex.Order:Order",
+          contractId: input.orderCid,
+          choice: "Order_RecordPartialFill",
+          argument: {
+            filledQty: input.filledQty,
+            // Carry the funding allocation onto the remainder; None would
+            // leave the rolled-forward order unbacked and unmatchable.
+            newAllocationCid: input.allocationCid,
+          },
+        },
+      });
+      return remainder ?? null;
+    });
+  }
+
   /**
    * Discover crossing orders for a pair and create a `MatchedTrade`
    * contract per match. This is the bridge from the pure matcher (which
@@ -253,24 +292,21 @@ export class OrderService {
     quoteInstrumentId: string;
     venue: Party;
     admin: Party;
-  }): Promise<Array<{
-    buyCid: ContractId<"Order">;
-    sellCid: ContractId<"Order">;
-    quantity: string;
-    price: string;
-    matchedTradeCid?: ContractId<"MatchedTrade">;
-    error?: string;
-  }>> {
+  }): Promise<MatchRunResult[]> {
     const matches = await this.findMatches(input);
-    const out: Array<{
-      buyCid: ContractId<"Order">;
-      sellCid: ContractId<"Order">;
-      quantity: string;
-      price: string;
-      matchedTradeCid?: ContractId<"MatchedTrade">;
-      error?: string;
-    }> = [];
+    const out: MatchRunResult[] = [];
+    // One order can fill against several counterparties in a single run, and
+    // each fill archives it. Track the cid its remainder rolled forward to so
+    // the next match exercises the live contract, not the archived one.
+    const liveCid = new Map<string, ContractId<"Order">>();
+    const cidOf = (o: Order): ContractId<"Order"> =>
+      liveCid.get(o.contractId) ?? o.contractId;
+    const setLive = (o: Order, remainder: ContractId<"Order"> | null): void => {
+      if (remainder) liveCid.set(o.contractId, remainder);
+      else liveCid.delete(o.contractId);
+    };
     for (const m of matches) {
+      let matchedTradeCid: ContractId<"MatchedTrade"> | undefined;
       try {
         // Quote-leg amount = price * quantity at 10dp, round-half-even, via
         // the BigInt decimal module so it agrees with the on-ledger Decimal
@@ -278,20 +314,31 @@ export class OrderService {
         const quoteAmount = dec.formatDecimal(
           dec.mul(dec.parseDecimal(m.price), dec.parseDecimal(m.quantity)),
         );
-        const transferLegs = [
+        // Mirrors mkMatchTransferLegs in OrderMatchExecution.daml: base
+        // delivery first, then quote payment, each with a transferLegId and
+        // Account-shaped parties. Typed, so a bare Party or a missing id is a
+        // compile error rather than a rejected submission.
+        const acct = (owner: Party): V2Account => ({
+          owner,
+          provider: null,
+          id: "",
+        });
+        const transferLegs: V2TransferLeg[] = [
           {
-            sender: m.buy.trader,
-            receiver: m.sell.trader,
-            instrumentId: m.buy.quoteInstrumentId,
-            amount: quoteAmount,
-            meta: { values: {} },
-          },
-          {
-            sender: m.sell.trader,
-            receiver: m.buy.trader,
+            transferLegId: "base-delivery",
+            sender: acct(m.sell.trader),
+            receiver: acct(m.buy.trader),
             instrumentId: m.buy.baseInstrumentId,
             amount: m.quantity,
-            meta: { values: {} },
+            meta: { values: {} } as never,
+          },
+          {
+            transferLegId: "quote-payment",
+            sender: acct(m.buy.trader),
+            receiver: acct(m.sell.trader),
+            instrumentId: m.buy.quoteInstrumentId,
+            amount: quoteAmount,
+            meta: { values: {} } as never,
           },
         ];
         // Deterministic, replay-safe commandId: derived once from
@@ -299,7 +346,7 @@ export class OrderService {
         // retry of the same match collapses onto the cached submission rather
         // than creating a duplicate MatchedTrade.
         const commandId = `match:${m.buy.contractId.slice(0, 12)}:${m.sell.contractId.slice(0, 12)}:${m.price}:${m.quantity}`;
-        const tradeCid = await retryOnContention(() =>
+        matchedTradeCid = await retryOnContention(() =>
           this.ledger.submit<ContractId<"MatchedTrade">>({
             actAs: [input.venue],
             commandId,
@@ -316,12 +363,28 @@ export class OrderService {
             },
           }),
         );
+        // After the trade, not before: a fill recorded against a trade that
+        // failed to create would shrink the order with nothing to settle it.
+        const buyRemainderCid = await this.recordFill({
+          orderCid: cidOf(m.buy),
+          allocationCid: m.buy.allocationCid,
+          filledQty: m.quantity,
+        });
+        setLive(m.buy, buyRemainderCid);
+        const sellRemainderCid = await this.recordFill({
+          orderCid: cidOf(m.sell),
+          allocationCid: m.sell.allocationCid,
+          filledQty: m.quantity,
+        });
+        setLive(m.sell, sellRemainderCid);
         out.push({
           buyCid: m.buy.contractId,
           sellCid: m.sell.contractId,
           quantity: m.quantity,
           price: m.price,
-          matchedTradeCid: tradeCid,
+          matchedTradeCid,
+          buyRemainderCid,
+          sellRemainderCid,
         });
       } catch (e) {
         out.push({
@@ -329,6 +392,7 @@ export class OrderService {
           sellCid: m.sell.contractId,
           quantity: m.quantity,
           price: m.price,
+          matchedTradeCid,
           error: e instanceof Error ? e.message : String(e),
         });
       }

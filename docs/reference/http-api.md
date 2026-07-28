@@ -123,9 +123,10 @@ backfilling history.
 
 ### `GET /v1/trades?trader=&pair=&limit=` → indexer rows
 
-Settled MatchedTrade history for one trader. **400** without `?trader=`,
-unless the request carries the admin token — a row names both parties.
-**503** if the indexer is not configured.
+Trade history for one trader: RFQ `MatchedTrade`s and the `SettledTrade` each
+order-book fill writes as it settles. **400** without `?trader=`, unless the
+request carries the admin token — a row names both parties. **503** if the
+indexer is not configured.
 
 `?trader=` matches **either side** — a party appears as `trader` on the trades
 it initiated and as `counterparty` on those it was matched into. `dealer` is a

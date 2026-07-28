@@ -11,6 +11,11 @@ earlier version execute the newer choice, and contract ids are preserved.
 
 ### Added
 
+- `SettledTrade`, written by `OrderMatchExecution_Execute` as the fill settles.
+  An order-book match settles inside one consuming choice, so nothing about it
+  reached the ACS the indexer reads and `GET /v1/trades` served RFQ trades only
+  — with a 200, so the loss was invisible. Unlike a `MatchedTrade`, which is a
+  pre-settlement proposal, a `SettledTrade` row is an already-settled fill.
 - `POST /v1/pools/add-liquidity/request` reports what a deposit actually
   buys: `matchedBaseAmount` / `matchedQuoteAmount` (the part of each leg the
   minted LP tokens represent) and `donatedBaseAmount` / `donatedQuoteAmount` /
@@ -35,6 +40,22 @@ earlier version execute the newer choice, and contract ids are preserved.
   so nothing downstream rejected it — leaving that order pointing at an
   archived allocation; without the status check a never-funded `OS_Pending`
   order could be recorded as filled.
+- A match is now one transaction. `OrderMatchExecution_Execute` archives both
+  filled orders and rolls each remainder onto the allocation its own settle
+  batch minted, instead of leaving that to a follow-up submission per order.
+  The settle archives both funding allocations, so an order the follow-up
+  never reached was left bound to an archived cid: `Order_Cancel` exercises
+  that cid unconditionally, so the trader could never cancel, and every later
+  match aborted inside `SettlementFactory_SettleBatch`. `Order_RecordPartialFill`
+  is removed — the roll-forward has no caller outside the settling choice.
+- A partial fill whose spend exhausts the side's committed budget now closes
+  the order out rather than rolling the residual quantity forward with no
+  allocation. Both the budget and the spend are 10dp round-half-even products
+  and can collide on a partial fill (1000 @ 0.000001 commits 0.0010000000;
+  filling 999.99996 of it spends the same 0.0010000000), which left a live,
+  matchable order with `allocationCid = None` that made every later matching
+  run throw. The residual quantity has no collateral behind it and no later
+  fill could back it.
 
 ### Changed
 

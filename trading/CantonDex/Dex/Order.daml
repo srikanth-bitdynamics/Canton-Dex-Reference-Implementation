@@ -162,29 +162,6 @@ template Order with
               cancelResult = Some result
               releasedHoldings = result.authorizerHoldingCids
 
-    -- Records a fill against the resting order. A partial fill (remainder > 0)
-    -- rolls a new order forward and returns its cid; an exact full fill
-    -- (remainder == 0) archives the order cleanly and returns None — the
-    -- template's `ensure remainingQty > 0.0` forbids carrying a zero-qty order.
-    -- Overfill (remainder < 0) is rejected.
-    choice Order_RecordPartialFill : Optional (ContractId Order)
-      with
-        filledQty : Decimal
-        newAllocationCid : Optional (ContractId V2.Allocation)
-      controller operator
-      do
-        assertMsg "Fill quantity must be positive" (filledQty > 0.0)
-        assertMsg "Fill quantity must not exceed remaining" (filledQty <= remainingQty)
-        let newRemaining = remainingQty - filledQty
-        if newRemaining == 0.0
-          then pure None  -- exact full fill: order archived (self consumed)
-          else do
-            cid <- create this with
-              remainingQty = newRemaining
-              status = OS_PartiallyFilled
-              allocationCid = newAllocationCid
-            pure (Some cid)
-
 -- | Trader-observed request issued by the operator to fund a specific Order.
 -- The trader accepts (AllocationRequest_Accept, archiving self) and composes
 -- AllocationFactory_Allocate in the same transaction; the resulting cid is

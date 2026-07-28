@@ -68,6 +68,9 @@ interface OrderMatchExecuteResult {
   /** Remainder allocation the settle rolled forward; null on a full fill. */
   buyerNextAllocationCid: ContractId<"Allocation"> | null;
   sellerNextAllocationCid: ContractId<"Allocation"> | null;
+  /** Order the side's remainder rolled forward to; null when it closed out. */
+  buyRemainderCid: ContractId<"Order"> | null;
+  sellRemainderCid: ContractId<"Order"> | null;
 }
 
 /** Where an order stands part-way through a matching run. */
@@ -266,40 +269,15 @@ export class OrderService {
     return aggregateBook(forPair);
   }
 
-  /** Resolves to the remainder order's cid, or null on an exact full fill. */
-  private recordFill(input: {
-    orderCid: ContractId<"Order">;
-    allocationCid: ContractId<"Allocation"> | null;
-    filledQty: string;
-  }): Promise<ContractId<"Order"> | null> {
-    return retryOnContention(async () => {
-      const remainder = await this.ledger.submit<ContractId<"Order"> | null>({
-        actAs: [this.operatorParty],
-        commandId: `order-fill:${input.orderCid}:${input.filledQty}`,
-        command: {
-          kind: "exercise",
-          templateId: "CantonDex.Dex.Order:Order",
-          contractId: input.orderCid,
-          choice: "Order_RecordPartialFill",
-          argument: {
-            filledQty: input.filledQty,
-            // Carry the funding allocation onto the remainder; None would
-            // leave the rolled-forward order unbacked and unmatchable.
-            newAllocationCid: input.allocationCid,
-          },
-        },
-      });
-      return remainder ?? null;
-    });
-  }
-
   /**
    * Discover crossing orders for a pair and settle each one atomically via
    * `OrderMatchExecution_Execute`: a single submission that re-checks the fill
-   * against both orders' own terms, builds the base/quote transfer legs, and
-   * runs the settle batch that consumes both funding allocations. The choice
-   * returns the remainder allocation each side rolls forward to, which the
-   * fill recording then binds onto the remainder order.
+   * against both orders' own terms, builds the base/quote transfer legs, runs
+   * the settle batch that consumes both funding allocations, rolls each order
+   * onto the allocation that batch minted, and records the settled trade.
+   *
+   * One submission per match, so there is no window in which the funds have
+   * moved but an order still points at the allocation the settle archived.
    *
    * Each match is settled independently; one failure doesn't abort the
    * rest of the run.
@@ -411,15 +389,10 @@ export class OrderService {
             },
           }),
         );
-        // The settle consumed both funding allocations, so the fill binds the
-        // remainder the batch minted. Binding the original cid here is what
-        // leaves a fully filled order's collateral locked with no release path.
+        // The choice rolled both orders forward onto the allocations its own
+        // settle minted, so the run only has to follow what it returned.
         const buyNext = executed.buyerNextAllocationCid ?? null;
-        const buyRemainderCid = await this.recordFill({
-          orderCid: buy.cid,
-          allocationCid: buyNext,
-          filledQty: m.quantity,
-        });
+        const buyRemainderCid = executed.buyRemainderCid ?? null;
         advance(
           m.buy,
           buyRemainderCid && {
@@ -430,11 +403,7 @@ export class OrderService {
           },
         );
         const sellNext = executed.sellerNextAllocationCid ?? null;
-        const sellRemainderCid = await this.recordFill({
-          orderCid: sell.cid,
-          allocationCid: sellNext,
-          filledQty: m.quantity,
-        });
+        const sellRemainderCid = executed.sellRemainderCid ?? null;
         advance(
           m.sell,
           sellRemainderCid && {

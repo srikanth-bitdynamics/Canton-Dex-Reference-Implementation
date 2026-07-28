@@ -2,14 +2,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { OrderService } from "../src/order/index.js";
-import type {
-  LedgerCommand,
-  LedgerSubmitter,
-  SubmitRequest,
-  SubscriptionFilter,
-  LedgerEvent,
-} from "../src/ledger/index.js";
+import type { LedgerSubmitter, SubmitRequest } from "../src/ledger/index.js";
 import type { Order } from "../src/types.js";
+import { MatchingLedger, type ExecuteArgument } from "./matching-ledger.js";
 import { RegistryClient } from "@canton-dex/registry-client";
 import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
 
@@ -49,114 +44,6 @@ function mkOrder(o: Record<string, any>): Order {
   } as unknown as Order;
 }
 
-interface ExecuteArgument {
-  match: { fillQty: string; fillPrice: string };
-  buyerAllocationCid: string;
-  sellerAllocationCid: string;
-  buyerCommittedFunding: Record<string, string>;
-  sellerCommittedFunding: Record<string, string>;
-}
-
-type ExerciseCommand = Extract<LedgerCommand, { kind: "exercise" }>;
-type CreateAndExerciseCommand = Extract<LedgerCommand, { kind: "createAndExercise" }>;
-
-// Serves an ACS of orders and models the two on-ledger effects the match flow
-// depends on: OrderMatchExecution_Execute settles a batch that consumes both
-// funding allocations and mints a next-iteration allocation only for a side
-// whose committed budget outlives its spend, and Order_RecordPartialFill rolls
-// a fresh cid forward on a partial fill or archives on a full one.
-class MatchingLedger implements LedgerSubmitter {
-  readonly submissions: SubmitRequest[] = [];
-  /** Allocation cids that are still active. */
-  readonly liveAllocations = new Set<string>();
-  private readonly remaining = new Map<string, number>();
-  private next = 1;
-
-  constructor(private readonly orders: Order[]) {
-    for (const o of orders) {
-      this.remaining.set(o.contractId, Number(o.remainingQty));
-      if (o.allocationCid) this.liveAllocations.add(o.allocationCid);
-    }
-  }
-
-  get commands(): LedgerCommand[] {
-    return this.submissions.map((s) => s.command);
-  }
-
-  get executes(): CreateAndExerciseCommand[] {
-    return this.commands.filter(
-      (c): c is CreateAndExerciseCommand => c.kind === "createAndExercise",
-    );
-  }
-
-  get fills(): ExerciseCommand[] {
-    return this.commands.filter(
-      (c): c is ExerciseCommand =>
-        c.kind === "exercise" && c.choice === "Order_RecordPartialFill",
-    );
-  }
-
-  async submit<R>(req: SubmitRequest): Promise<R> {
-    this.submissions.push(req);
-    const cmd = req.command;
-    if (cmd.kind === "createAndExercise") {
-      return this.settle(cmd.argument as ExecuteArgument) as R;
-    }
-    if (cmd.kind === "exercise") return this.recordFill(cmd) as R;
-    throw new Error(`unexpected ${cmd.kind}`);
-  }
-
-  private settle(arg: ExecuteArgument): {
-    buyerNextAllocationCid: string | null;
-    sellerNextAllocationCid: string | null;
-  } {
-    const consume = (cid: string): void => {
-      if (!this.liveAllocations.delete(cid)) {
-        throw new Error(`allocation is not live: ${cid}`);
-      }
-    };
-    consume(arg.buyerAllocationCid);
-    consume(arg.sellerAllocationCid);
-    const fillQty = Number(arg.match.fillQty);
-    const rollForward = (
-      funding: Record<string, string>,
-      spend: number,
-    ): string | null => {
-      const committed = Number(Object.values(funding)[0] ?? 0);
-      if (committed - spend <= 0) return null;
-      const cid = `#alloc:next:${this.next++}`;
-      this.liveAllocations.add(cid);
-      return cid;
-    };
-    return {
-      buyerNextAllocationCid: rollForward(
-        arg.buyerCommittedFunding,
-        Number(arg.match.fillPrice) * fillQty,
-      ),
-      sellerNextAllocationCid: rollForward(arg.sellerCommittedFunding, fillQty),
-    };
-  }
-
-  private recordFill(cmd: ExerciseCommand): string | null {
-    const rem = this.remaining.get(cmd.contractId);
-    if (rem === undefined) throw new Error(`archived: ${cmd.contractId}`);
-    const filled = Number((cmd.argument as { filledQty: string }).filledQty);
-    this.remaining.delete(cmd.contractId);
-    if (rem - filled <= 0) return null;
-    const cid = `#remainder:${this.next++}`;
-    this.remaining.set(cid, rem - filled);
-    return cid;
-  }
-
-  async *subscribe<T>(_f: SubscriptionFilter): AsyncIterable<LedgerEvent<T>> {
-    // no streaming in this stub
-  }
-
-  async query<T>(_f: SubscriptionFilter): Promise<T[]> {
-    return this.orders as unknown as T[];
-  }
-}
-
 function service(ledger: LedgerSubmitter): OrderService {
   return new OrderService(ledger, new StubRegistry(), "op" as never);
 }
@@ -192,16 +79,17 @@ const bid = (o: Record<string, unknown>): Order =>
   });
 
 describe("OrderService.runMatching settlement", () => {
-  it("settles the match in one submission of the atomic choice", async () => {
+  it("settles a match in exactly one submission", async () => {
     const ledger = new MatchingLedger([ask({}), bid({})]);
 
     const results = await service(ledger).runMatching(RUN);
 
     assert.equal(results.length, 1);
     assert.equal(results[0]!.error, undefined);
-    // One settlement, not a create-the-trade / request-allocations /
-    // settle-the-batch sequence.
-    assert.equal(ledger.executes.length, 1);
+    // The settle, both order roll-forwards and the trade record are one
+    // transaction. A follow-up submission could fail on its own, and by then
+    // the funds have moved and the allocations it named are archived.
+    assert.equal(ledger.submissions.length, 1);
     assert.equal(
       ledger.executes[0]!.templateId,
       "CantonDex.Dex.OrderMatchExecution:OrderMatchExecution",
@@ -212,13 +100,30 @@ describe("OrderService.runMatching settlement", () => {
       0,
       "the match must not create a MatchedTrade to be settled separately",
     );
-    // The settle comes first: a fill recorded against a settlement that never
-    // committed would shrink the order with nothing behind it.
-    assert.equal(ledger.commands[0]!.kind, "createAndExercise");
-    assert.deepEqual(
-      ledger.fills.map((c) => c.contractId),
-      ["#bid:1", "#ask:1"],
-    );
+  });
+
+  it("cannot leave an order bound to an allocation the settle archived", async () => {
+    const ledger = new MatchingLedger([ask({}), bid({ remainingQty: "3" })]);
+    // Everything after the first submission fails. retryOnContention rethrows
+    // every non-contention error, so a 503, a timeout or an expired token gets
+    // here. If the match needs a second submission, the settle has already
+    // moved the funds and the order is left pointing at an archived
+    // allocation: Order_Cancel exercises that cid, so the trader can never
+    // cancel, and every later match aborts inside the settle batch.
+    const flaky: LedgerSubmitter = {
+      submit: async <R>(req: SubmitRequest): Promise<R> => {
+        if (ledger.submissions.length > 0) throw new Error("ledger unavailable");
+        return ledger.submit<R>(req);
+      },
+      subscribe: ledger.subscribe.bind(ledger),
+      query: ledger.query.bind(ledger),
+    };
+
+    const results = await service(flaky).runMatching(RUN);
+
+    assert.deepEqual(ledger.orphanedOrders, []);
+    assert.equal(results[0]!.error, undefined);
+    assert.ok(ledger.liveOrders.has(results[0]!.buyRemainderCid!));
   });
 
   it("binds both orders' own allocations into the settle", async () => {
@@ -247,16 +152,7 @@ describe("OrderService.runMatching settlement", () => {
       [],
       "a fully filled order leaves an allocation with no release path",
     );
-    for (const fill of ledger.fills) {
-      const { newAllocationCid } = fill.argument as {
-        newAllocationCid: string | null;
-      };
-      assert.equal(
-        newAllocationCid,
-        null,
-        "a full fill archives the order; carrying an allocation onto it strands the collateral",
-      );
-    }
+    assert.deepEqual([...ledger.liveOrders.keys()], []);
   });
 
   it("carries the settle's remainder allocation, not the original", async () => {
@@ -264,20 +160,15 @@ describe("OrderService.runMatching settlement", () => {
 
     const results = await service(ledger).runMatching(RUN);
 
-    const bidFill = ledger.fills.find((c) => c.contractId === "#bid:1")!;
-    const arg = bidFill.argument as {
-      filledQty: string;
-      newAllocationCid: string | null;
-    };
-    assert.equal(arg.filledQty, "1.0000000000");
+    const remainderCid = results[0]!.buyRemainderCid!;
+    const remainder = ledger.liveOrders.get(remainderCid)!;
     assert.notEqual(
-      arg.newAllocationCid,
+      remainder.allocationCid,
       "#alloc:bid",
       "the original allocation is consumed by the settle",
     );
-    assert.ok(arg.newAllocationCid);
-    assert.ok(ledger.liveAllocations.has(arg.newAllocationCid));
-    assert.equal(results[0]!.buyRemainderCid, "#remainder:2");
+    assert.ok(ledger.liveAllocations.has(remainder.allocationCid!));
+    assert.equal(remainder.remainingQty, 2n * 10n ** 10n);
     assert.equal(results[0]!.sellRemainderCid, null);
   });
 
@@ -311,10 +202,7 @@ describe("OrderService.runMatching settlement", () => {
     assert.equal(results.length, 2);
     assert.equal(results[1]!.error, undefined);
     const second = ledger.executes[1]!.argument as ExecuteArgument;
-    assert.equal(
-      (ledger.executes[1]!.argument as { buyOrderCid: string }).buyOrderCid,
-      "#remainder:2",
-    );
+    assert.equal(second.buyOrderCid, results[0]!.buyRemainderCid);
     assert.notEqual(second.buyerAllocationCid, "#alloc:bid");
     assert.equal(second.sellerAllocationCid, "#alloc:ask2");
     // The buyer's residual budget carries the exact spend, not
@@ -322,14 +210,34 @@ describe("OrderService.runMatching settlement", () => {
     assert.equal(second.buyerCommittedFunding.USDC, "230.0000000000");
   });
 
-  it("records no fill when the settlement fails", async () => {
+  it("closes out a remainder whose budget the fill exhausted", async () => {
+    // Both the committed budget and the spend are 10dp round-half-even
+    // products and collide here on a PARTIAL fill: 1000 @ 0.000001 commits
+    // 0.0010000000, and filling 999.99996 of it spends 0.00099999996, which
+    // rounds back up to the same 0.0010000000. 0.00004 base is unfilled with
+    // no quote behind it, so nothing may roll forward — a remainder order
+    // carrying a null allocation is matchable and aborts every later run.
+    const ledger = new MatchingLedger([
+      ask({ limitPrice: "0.000001", remainingQty: "999.99996" }),
+      bid({ limitPrice: "0.000001", remainingQty: "1000" }),
+    ]);
+
+    const results = await service(ledger).runMatching(RUN);
+
+    assert.equal(results[0]!.error, undefined);
+    assert.equal(results[0]!.quantity, "999.9999600000");
+    const arg = ledger.executes[0]!.argument as ExecuteArgument;
+    assert.equal(arg.buyerCommittedFunding.USDC, "0.0010000000");
+    assert.equal(results[0]!.buyRemainderCid, null);
+    assert.deepEqual([...ledger.liveOrders.keys()], []);
+    assert.deepEqual([...ledger.liveAllocations], []);
+  });
+
+  it("moves nothing when the settlement fails", async () => {
     const ledger = new MatchingLedger([ask({}), bid({})]);
     const failing: LedgerSubmitter = {
-      submit: async <R>(req: SubmitRequest): Promise<R> => {
-        if (req.command.kind === "createAndExercise") {
-          throw new Error("settle rejected");
-        }
-        return ledger.submit<R>(req);
+      submit: async <R>(_req: SubmitRequest): Promise<R> => {
+        throw new Error("settle rejected");
       },
       subscribe: ledger.subscribe.bind(ledger),
       query: ledger.query.bind(ledger),
@@ -338,7 +246,7 @@ describe("OrderService.runMatching settlement", () => {
     const results = await service(failing).runMatching(RUN);
 
     assert.match(results[0]!.error!, /settle rejected/);
-    assert.equal(ledger.fills.length, 0);
     assert.deepEqual([...ledger.liveAllocations], ["#alloc:ask", "#alloc:bid"]);
+    assert.deepEqual([...ledger.liveOrders.keys()], ["#ask:1", "#bid:1"]);
   });
 });

@@ -44,6 +44,10 @@ Expected:
 - Parties allocated (or pre-existing).
 - `scripts/bootstrap-registry.ts` reports each instrument and LP
   config as "created" (or "already configured" on a re-run).
+- The same run reports `Registry.V2 created` (or "already present") and
+  one line per V2 instrument. Note the logged Registry.V2 cid: it is the
+  value for `CANTON_ALLOC_FACTORY_CID` / `CANTON_SETTLE_FACTORY_CID`.
+  Nothing can be minted until this step has run.
 
 ## Phase 1 — Backend boot
 

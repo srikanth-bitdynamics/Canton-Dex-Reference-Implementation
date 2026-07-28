@@ -71,12 +71,23 @@ export CANTON_LEDGER_URL=...
 export CANTON_LEDGER_TOKEN=...
 export CANTON_ADMIN=...
 export CANTON_LP_REGISTRAR=...
+export CANTON_OPERATOR=...
 node --import tsx scripts/bootstrap-registry.ts
 ```
 
 The script is idempotent — running it twice is a no-op. See
 [Registry Integration](registry-integration.md) for what
 contracts are created and why.
+
+Among them is the `Registry.V2` registry and one `InstrumentConfig` per
+instrument in `registryV2.instruments` (`scripts/bootstrap-registry.json`).
+`Registry_Mint` needs both, and registers neither itself, so nothing can be
+minted until this has run.
+
+The bootstrap logs the `Registry.V2` contract id when it creates one. That
+cid is also the value for `CANTON_ALLOC_FACTORY_CID` and
+`CANTON_SETTLE_FACTORY_CID`: the allocation, settlement and transfer
+factories are interface views of that one contract.
 
 ## Environment Variables
 

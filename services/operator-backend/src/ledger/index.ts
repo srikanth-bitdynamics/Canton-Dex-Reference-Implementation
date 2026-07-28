@@ -23,13 +23,7 @@ export interface LedgerSubmitter {
    * Optional: implementations that can't serve trees omit it.
    */
   treeCreatedEvents?(updateId: string, party: Party): Promise<CreatedEventRef[]>;
-  /**
-   * Submit and additionally report the committed transaction's `updateId`.
-   * Optional for the same reason as `treeCreatedEvents`: drivers that have no
-   * notion of an update (the in-memory ledger) omit it and callers fall back to
-   * `submit`. Used where an operator-authority write has to hand its caller a
-   * receipt they can correlate against the ledger.
-   */
+  /** Optional: drivers with no notion of an update omit it. */
   submitWithUpdateId?<R>(req: SubmitRequest): Promise<SubmitReceipt<R>>;
 }
 

@@ -59,12 +59,8 @@ export class IdempotentLedger implements LedgerSubmitter {
     return this.once(req, () => this.inner.submit<R>(req));
   }
 
-  /**
-   * Forward the updateId-reporting submission to the inner ledger under the
-   * same row lock as `submit`. Delegating it unguarded would quietly drop
-   * idempotency for whichever flows use it; falling back to `submit` when the
-   * inner driver has no updateId to report keeps the wrapper transparent.
-   */
+  /** Same row lock as `submit`; falls back to it when the driver has no
+   * updateId to report. */
   async submitWithUpdateId<R>(req: SubmitRequest): Promise<SubmitReceipt<R>> {
     const inner = this.inner.submitWithUpdateId;
     if (!inner) {
@@ -100,21 +96,11 @@ export class IdempotentLedger implements LedgerSubmitter {
       // legacy row predating the argsHash column has argsHash === null; treat
       // it as unknown and let it proceed/overwrite.)
       //
-      // Relaxed for an EXERCISE row that recorded an error. Those commandIds
-      // are derived from the contract acted on (`order-cancel:<cid>`,
-      // `lp-add-settle:<cid>`), so one failure followed by any change to the
-      // request — a re-resolved factory, a different disclosure set, a code
-      // change — would leave that order uncancellable and that settlement
-      // unsettleable for good. The choice is consuming, so a retry that finds
-      // the contract already archived fails rather than acting twice.
-      //
-      // NOT relaxed for a create. `pool-create:<base>:<quote>` and
-      // `pool-state-create:<poolId>` are keyed on names, and neither Pool nor
-      // PoolState declares a Daml contract key, so nothing on-ledger prevents
-      // a duplicate. A create that committed but lost its response leaves an
-      // `error` row; letting a changed-arg retry through would then produce a
-      // second Pool for the same pair. Here the guard is the only protection
-      // there is.
+      // Relaxed for an errored EXERCISE: its commandId derives from the
+      // contract acted on, so refusing a changed-arg retry would strand that
+      // contract, and the consuming choice cannot fire twice. Not relaxed for
+      // a create -- pool-create is keyed on names, Pool declares no contract
+      // key, and a retry would make a second Pool for the same pair.
       const retryableError =
         existing.status === "error" && req.command.kind === "exercise";
       if (

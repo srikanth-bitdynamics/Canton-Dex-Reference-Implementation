@@ -46,10 +46,7 @@ export interface OrderFundInput {
 }
 
 export interface OrderCancelResult {
-  /**
-   * Update id of the cancelling transaction, or null when the ledger driver
-   * cannot report one (the in-memory ledger has no updates).
-   */
+  /** Null when the driver cannot report one. */
   updateId: string | null;
 }
 
@@ -169,13 +166,10 @@ export class OrderService {
     ]);
     const req: SubmitRequest = {
       actAs: [this.operatorParty],
-      // Cancelling a FUNDED order releases the collateral its allocation
-      // locked, and a registry Holding is `signatory admin, owner` -- the
-      // operator is not a stakeholder and cannot see it. `order.admin` is the
-      // registry admin of the traded instrument, not this deployment's, so it
-      // cannot be named in `readAs`; the disclosure has to come from the
-      // registry's per-allocation choice context, which registry-client does
-      // not serve yet. An UNFUNDED order fetches nothing and is unaffected.
+      // A funded cancel releases holdings that are `signatory admin, owner`,
+      // which the operator cannot see. `order.admin` is the instrument's
+      // registry admin, so the disclosure has to come from that registry's
+      // choice context -- not yet served by registry-client.
       commandId: `order-cancel:${orderCid}`,
       disclosure: [...factories.disclosure, ...ctx.disclosure],
       command: {
@@ -186,10 +180,8 @@ export class OrderService {
         argument: { extraArgs: ctx.extraArgs },
       },
     };
-    // Order_Cancel's own result carries the released holdings, not an update
-    // id, so the updateId comes from the driver when it can report one (see
-    // LedgerSubmitter.submitWithUpdateId). Callers that only need the effect
-    // ignore it.
+    // The choice result carries holdings, not an update id, so it comes from
+    // the driver where one is available.
     return retryOnContention(async () => {
       const submitWithUpdateId = this.ledger.submitWithUpdateId;
       if (!submitWithUpdateId) {

@@ -298,16 +298,9 @@ export class PoolService {
         amount: s.amount,
         side: s.side,
       });
-      // A real participant returns the raw Daml constructor ("PS_Active"),
-      // while types.ts declares "Unfunded" | "Active" | "Paused" and the
-      // in-memory dev server already emits the short form. Normalise HERE, on
-      // the ledger read path, so every client sees the declared type -- a
-      // client written against the published type would otherwise see zero
-      // tradable pools, which is exactly what an external integrator hit.
-      //
-      // Read path only. admin/index.ts submits `status: "PS_Unfunded"` as a
-      // PoolState create argument; those are ledger-bound and must stay
-      // prefixed. Same shape as OrderService.listOpen's OS_ strip.
+      // A participant returns "PS_Active" where types.ts declares "Active",
+      // so a client written against the published type saw no tradable pools.
+      // Read path only: create arguments stay prefixed.
       const status = normalizePoolStatus(state.status);
       if (status === "Paused") continue;
       combined.push({
@@ -739,13 +732,9 @@ export class PoolService {
     // LP-mint batch under pool.lpRegistrar, so each carries its own registry
     // choice context. For the self-registry both contexts are empty.
     //
-    // The operator is not a stakeholder of the LP's deposit holdings
-    // (`signatory admin, owner`), so it cannot see them. That visibility has
-    // to come from the deposit registry's choice context as disclosed
-    // contracts: `admin` is the registry admin of the deposited instrument,
-    // never necessarily a party this participant hosts, so it cannot be
-    // named in `readAs`. Until registry-client serves per-allocation cancel
-    // and settle contexts, this settle is limited to a co-hosted registry.
+    // The LP's deposit holdings are `signatory admin, owner`, so the operator
+    // cannot see them; the disclosure has to come from the deposit registry's
+    // choice context. Limited to a co-hosted registry until then.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
@@ -902,13 +891,9 @@ export class PoolService {
     // pool.lpRegistrar — each carries its own registry choice context.
     // For the self-registry both contexts are empty.
     //
-    // The operator is not a stakeholder of the LP's deposit holdings
-    // (`signatory admin, owner`), so it cannot see them. That visibility has
-    // to come from the deposit registry's choice context as disclosed
-    // contracts: `admin` is the registry admin of the deposited instrument,
-    // never necessarily a party this participant hosts, so it cannot be
-    // named in `readAs`. Until registry-client serves per-allocation cancel
-    // and settle contexts, this settle is limited to a co-hosted registry.
+    // The LP's deposit holdings are `signatory admin, owner`, so the operator
+    // cannot see them; the disclosure has to come from the deposit registry's
+    // choice context. Limited to a co-hosted registry until then.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],

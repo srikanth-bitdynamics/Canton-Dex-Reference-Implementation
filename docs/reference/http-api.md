@@ -55,6 +55,12 @@ All trading pairs (whether or not they have pools).
 
 Open orders for a specific trader. **400** if `trader` is missing.
 
+### `GET /v1/orders/book?pair=BASE/QUOTE` → `{ bids, asks }`
+### `GET /v1/orders/matches?pair=BASE/QUOTE` → `{ matches }`
+
+Resting book and crossable pairs for one market. `?base=&quote=` is also
+accepted. **400** if neither form is supplied.
+
 ### `GET /v1/holdings?owner=:party` → `Holding[]`
 
 Holdings for the owner. **400** if `owner` is missing. Returns per-contract

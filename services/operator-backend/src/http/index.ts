@@ -174,6 +174,22 @@ function isZero(d: string): boolean {
   return /^-?0*\.?0*$/.test(d);
 }
 
+/**
+ * `?pair=BASE/QUOTE`, as every other pair-scoped read on this API takes.
+ * `?base=&quote=` still works.
+ */
+function pairParams(url: URL): { base: string; quote: string } | undefined {
+  const pair = url.searchParams.get("pair");
+  if (pair) {
+    const parts = pair.split("/");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
+    return { base: parts[0], quote: parts[1] };
+  }
+  const base = url.searchParams.get("base");
+  const quote = url.searchParams.get("quote");
+  return base && quote ? { base, quote } : undefined;
+}
+
 export function startHttpServer(cfg: HttpServerConfig): {
   close: () => Promise<void>;
   url: string;
@@ -521,15 +537,17 @@ async function routeRequest(
   }
 
   if (method === "GET" && path === "/v1/orders/book") {
-    const base = url.searchParams.get("base");
-    const quote = url.searchParams.get("quote");
-    if (!base || !quote) {
-      respondJson(res, 400, { error: "missing ?base= or ?quote=" });
-      return;
+    const p = pairParams(url);
+    if (!p) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "expected ?pair=BASE/QUOTE (or ?base=&quote=)",
+      );
     }
     const book = await backend.order.book({
-      baseInstrumentId: base,
-      quoteInstrumentId: quote,
+      baseInstrumentId: p.base,
+      quoteInstrumentId: p.quote,
     });
     respondJson(res, 200, book);
     return;
@@ -538,15 +556,17 @@ async function routeRequest(
   // Read-only match preview: discover crossing orders without settling.
   // The execute path is POST /v1/orders/match (runMatching), below.
   if (method === "GET" && path === "/v1/orders/matches") {
-    const base = url.searchParams.get("base");
-    const quote = url.searchParams.get("quote");
-    if (!base || !quote) {
-      respondJson(res, 400, { error: "missing ?base= or ?quote=" });
-      return;
+    const p = pairParams(url);
+    if (!p) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "expected ?pair=BASE/QUOTE (or ?base=&quote=)",
+      );
     }
     const matches = await backend.order.findMatches({
-      baseInstrumentId: base,
-      quoteInstrumentId: quote,
+      baseInstrumentId: p.base,
+      quoteInstrumentId: p.quote,
     });
     respondJson(res, 200, { matches });
     return;

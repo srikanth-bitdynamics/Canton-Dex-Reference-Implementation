@@ -36,11 +36,9 @@ before(async () => {
     registry: new StubRegistry(),
     operatorParty: "op" as never,
   });
-  // Fixed, not 0: startHttpServer builds its url from cfg.port. A different
-  // base from auth.test.ts, which runs concurrently.
-  const handle = startHttpServer({
+  const handle = await startHttpServer({
     backend,
-    port: 20180 + Math.floor(Math.random() * 1000),
+    port: 0,
     host: "127.0.0.1",
     context: {
       operator: "op" as never,

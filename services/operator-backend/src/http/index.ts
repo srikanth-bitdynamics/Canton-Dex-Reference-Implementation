@@ -190,10 +190,17 @@ function pairParams(url: URL): { base: string; quote: string } | undefined {
   return base && quote ? { base, quote } : undefined;
 }
 
-export function startHttpServer(cfg: HttpServerConfig): {
+export interface HttpServerHandle {
   close: () => Promise<void>;
+  /** Base URL carrying the port actually bound, so `port: 0` is usable. */
   url: string;
-} {
+  /** The bound port. Equals `cfg.port` unless that was 0. */
+  port: number;
+}
+
+export function startHttpServer(
+  cfg: HttpServerConfig,
+): Promise<HttpServerHandle> {
   // Slot is the ledger's latest offset (ACS pruning watermark). We poll
   // the participant every 2s and cache the result. Falls back to a local
   // counter if the participant query fails so the UI's pill still moves.
@@ -300,16 +307,28 @@ export function startHttpServer(cfg: HttpServerConfig): {
       });
     }
   });
-  server.listen(cfg.port, cfg.host ?? "127.0.0.1");
-  return {
-    url: `http://${cfg.host ?? "127.0.0.1"}:${cfg.port}`,
-    close: () =>
-      new Promise<void>((resolve) =>
-        server.close(() => {
-          resolve();
-        }),
-      ),
-  };
+  const host = cfg.host ?? "127.0.0.1";
+  const close = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      clearInterval(slotTimer);
+      server.close(() => resolve());
+    });
+
+  return new Promise<HttpServerHandle>((resolve, reject) => {
+    // A failed bind is an 'error' event; unhandled it takes the process down.
+    const onError = (e: Error): void => {
+      clearInterval(slotTimer);
+      reject(e);
+    };
+    server.once("error", onError);
+    server.listen(cfg.port, host, () => {
+      server.removeListener("error", onError);
+      const addr = server.address();
+      const port =
+        typeof addr === "object" && addr !== null ? addr.port : cfg.port;
+      resolve({ url: `http://${host}:${port}`, port, close });
+    });
+  });
 }
 
 async function routeRequest(

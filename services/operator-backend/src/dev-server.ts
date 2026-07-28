@@ -388,9 +388,9 @@ async function main(): Promise<void> {
   }
 
   const port = Number(process.env.PORT ?? 8080);
-  const { url } = startHttpServer({
+  const { url } = await startHttpServer({
     backend,
-    port,
+    port: 0,
     host: "127.0.0.1",
     context: {
       operator,

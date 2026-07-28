@@ -82,9 +82,34 @@ pools (so it is populated even before any config is registered — fields are
 `null` where no config exists). `symbol` is the instrument id. Optional
 `?ids=BTC,USDC` filters.
 
+Both config templates are `signatory admin`, so this reads as the configured
+`admin` and `lpRegistrar` rather than as the operator. Metadata is therefore
+available only for instruments issued by a registry this deployment hosts; a
+foreign registry's instrument reports `null` until `registry-client`
+implements the standard's off-ledger `metadata-v1` API.
+
 ```json
 [ { "instrumentId": "BTC", "symbol": "BTC", "decimals": 8, "isin": null, "cusip": null, "description": null } ]
 ```
+
+### Historical rows and the exactness cutover
+
+The exactness and trade-labelling fixes are **forward-only**: rows written
+before them keep the values they were recorded with. A pre-cutover swap can
+differ from the ledger in the last decimal place, and a pre-cutover trade can
+carry `trader` and `dealer` inverted on a buy.
+
+`scripts/reindex-derived.ts` recomputes both in place, from data the indexer
+already stores — no ledger read:
+
+```bash
+node --import tsx scripts/reindex-derived.ts --db <indexer.db> --dry-run
+node --import tsx scripts/reindex-derived.ts --db <indexer.db>
+```
+
+It reports every row it would change before changing anything, and is
+idempotent. Run it once after upgrading, or expect the disagreement when
+backfilling history.
 
 ### `GET /v1/trades?trader=&pair=&limit=` → indexer rows
 
@@ -97,6 +122,10 @@ role and is set only where a signed policy receipt names one, so it is null on
 order-book fills; `counterparty` is populated either way.
 
 ### `GET /v1/swaps?pair=&limit=` → indexer rows
+
+Amounts are **strings**, at the stored 10-decimal scale — `inputAmount` and
+`outputAmount` are derived from the signed deltas textually, never through a
+float.
 
 Pool swap history from the indexer. Swaps only: an LP add/remove and a
 pause/resume also rotate the pool state, and are recorded with a `kind` of

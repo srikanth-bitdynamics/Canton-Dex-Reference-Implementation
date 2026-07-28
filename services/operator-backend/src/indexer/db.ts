@@ -122,38 +122,38 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE command_submissions ADD COLUMN argsHash TEXT;
   `,
-  // v6: what a pool rotation actually WAS.
+  // v6: which choice produced a rotation. Five rotate a PoolState, so a
+  // `swaps` row is not necessarily a swap. `totalLpSupply` is the
+  // discriminator: only an add or a remove moves it.
   //
-  // The indexer emits a `swaps` row for every PoolState rotation, but five
-  // Daml choices rotate one -- Swap, Pause, Resume, SettleAddLiquidity and
-  // SettleRemoveLiquidity -- so LP moves and pause/resume were served to the
-  // UI as swaps with a fabricated direction and price. The indexer polls the
-  // ACS and never sees a choice name, so the discriminator has to come from
-  // the state itself: `totalLpSupply` changes on an add/remove and on nothing
-  // else (swap fees accrue to LPs through the reserves, minting no shares).
-  //
-  // Backfill from pool_states, which is append-only with a soft `archived`
-  // flag and has carried totalLpSupply since v1, so no ledger re-read is
-  // needed. poolCid is the PRIMARY KEY, so each correlated subquery yields at
-  // most one row; a row whose join misses falls through to the sign test,
-  // where a swap's reserve deltas have opposite signs and a liquidity move's
-  // share one.
+  // Backfilled from pool_states, which is append-only. Rows whose join misses
+  // fall through to the reserve signs: a swap moves them opposite ways, an add
+  // both up, a remove both down. The supply test requires exact string
+  // inequality before a REAL comparison picks the direction, so two distinct
+  // supplies cannot collapse to "unchanged" above 2^53.
   `
   ALTER TABLE swaps ADD COLUMN kind TEXT NOT NULL DEFAULT 'swap';
   CREATE INDEX IF NOT EXISTS swaps_kind_pair_ts ON swaps(kind, pair, ts);
   UPDATE swaps SET kind = CASE
-    WHEN (SELECT CAST(n.totalLpSupply AS REAL) FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
+    WHEN (SELECT n.totalLpSupply FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
+      <> (SELECT o.totalLpSupply FROM pool_states o WHERE o.poolCid = swaps.oldPoolCid)
+     AND (SELECT CAST(n.totalLpSupply AS REAL) FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
        > (SELECT CAST(o.totalLpSupply AS REAL) FROM pool_states o WHERE o.poolCid = swaps.oldPoolCid)
       THEN 'add_liquidity'
-    WHEN (SELECT CAST(n.totalLpSupply AS REAL) FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
+    WHEN (SELECT n.totalLpSupply FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
+      <> (SELECT o.totalLpSupply FROM pool_states o WHERE o.poolCid = swaps.oldPoolCid)
+     AND (SELECT CAST(n.totalLpSupply AS REAL) FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
        < (SELECT CAST(o.totalLpSupply AS REAL) FROM pool_states o WHERE o.poolCid = swaps.oldPoolCid)
       THEN 'remove_liquidity'
     WHEN CAST(baseDelta AS REAL) = 0 AND CAST(quoteDelta AS REAL) = 0
       THEN 'state_change'
-    WHEN CAST(baseDelta AS REAL) * CAST(quoteDelta AS REAL) > 0
+    WHEN CAST(baseDelta AS REAL) > 0 AND CAST(quoteDelta AS REAL) > 0
       THEN 'add_liquidity'
+    WHEN CAST(baseDelta AS REAL) < 0 AND CAST(quoteDelta AS REAL) < 0
+      THEN 'remove_liquidity'
     ELSE 'swap'
   END;
+  ALTER TABLE trades ADD COLUMN counterparty TEXT;
   UPDATE events SET kind = (
     SELECT s.kind FROM swaps s WHERE s.newPoolCid = events.contractId
   )

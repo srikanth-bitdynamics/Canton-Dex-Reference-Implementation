@@ -91,9 +91,16 @@ pools (so it is populated even before any config is registered — fields are
 Settled MatchedTrade history from the SQLite indexer. **503** if the
 indexer is not configured.
 
+`?trader=` matches **either side** — a party appears as `trader` on the trades
+it initiated and as `counterparty` on those it was matched into. `dealer` is a
+role and is set only where a signed policy receipt names one, so it is null on
+order-book fills; `counterparty` is populated either way.
+
 ### `GET /v1/swaps?pair=&limit=` → indexer rows
 
-Pool swap history from the indexer.
+Pool swap history from the indexer. Swaps only: an LP add/remove and a
+pause/resume also rotate the pool state, and are recorded with a `kind` of
+`add_liquidity` / `remove_liquidity` / `state_change` rather than served here.
 
 ### `GET /v1/rfq` → `{ rfqs: Rfq[], quotes: RfqQuote[] }`
 

@@ -6,14 +6,11 @@
 //   - CantonDex.Instrument.InstrumentConfiguration per tradable instrument
 //   - the same, under the lpRegistrar, per LP token
 //   - CantonDex.Instrument.Credentials:Credential for the holders that need one
-//   - CantonDex.Registry.V2:Registry -- the V2 registry, which IS the
-//     AllocationFactory / SettlementFactory / TransferFactory (they are
-//     interface views of the same contract, so its cid is the value for
-//     CANTON_ALLOC_FACTORY_CID and CANTON_SETTLE_FACTORY_CID)
-//   - CantonDex.Registry.V2:InstrumentConfig per V2 instrument, via
-//     Registry_RegisterInstrument. Nothing else creates these: Registry_Mint
-//     needs one, and the testnet party faucet (DEX_TESTNET_ONBOARDING=1)
-//     refuses to serve an instrument that has none.
+//   - CantonDex.Registry.V2:Registry under the lpRegistrar -- required for
+//     any liquidity move; the allocation, settlement and transfer factories
+//     are interface views of it
+//   - optionally, a second registry plus one InstrumentConfig per instrument
+//     in `registryV2`, for assets this deployment mints itself
 //
 // This script is idempotent: it checks whether each contract already
 // exists (by template + payload key) and only creates the missing ones.
@@ -91,16 +88,6 @@ const DEFAULT_CONFIG: BootstrapConfig = {
   ],
   lpInstruments: ["BTC-USDC-LP", "ETH-USDC-LP"],
   credentials: [],
-  registryV2: {
-    // dUSD is the testnet faucet's default airdrop instrument
-    // (DEX_TESTNET_AIRDROP); the rest are the tradable set.
-    instruments: [
-      { instrumentId: "dUSD" },
-      { instrumentId: "BTC" },
-      { instrumentId: "USDC" },
-      { instrumentId: "ETH" },
-    ],
-  },
 };
 
 const REGISTRY_TEMPLATE_ID = "CantonDex.Registry.V2:Registry";
@@ -185,27 +172,19 @@ async function ensureRegistry(
   if (dryRun) return undefined;
   const contractId = await ledger.submit<string>({
     actAs: [admin],
-    commandId: "bootstrap-registry-v2",
+    commandId: `bootstrap-registry-v2:${admin}`,
     command: {
       kind: "create",
       templateId: REGISTRY_TEMPLATE_ID,
       argument: { admin, users },
     },
   });
-  // The AllocationFactory / SettlementFactory / TransferFactory are interface
-  // views of this same contract, so this one cid is all three.
-  log.info(
-    "Registry.V2 created -- use this cid for CANTON_ALLOC_FACTORY_CID and CANTON_SETTLE_FACTORY_CID",
-    { contractId },
-  );
+  // One cid answers for all three factory interfaces, per admin.
+  log.info("Registry.V2 created", { admin, contractId });
   return contractId;
 }
 
-/**
- * Register one instrument on the V2 registry. This is what mints go through:
- * Registry_Mint takes the InstrumentConfig cid, and the testnet party faucet
- * fails its request rather than registering an instrument on demand.
- */
+/** Register one instrument on the V2 registry; required before any mint. */
 async function ensureV2Instrument(
   ledger: JsonApiLedger,
   admin: string,
@@ -297,7 +276,8 @@ async function main(): Promise<void> {
   const token = required("CANTON_LEDGER_TOKEN");
   const admin = required("CANTON_ADMIN");
   const lpRegistrar = required("CANTON_LP_REGISTRAR");
-  const operator = required("CANTON_OPERATOR");
+  // Lazy: only needed once there is a registry to create.
+  const operator = () => required("CANTON_OPERATOR");
   const userId = process.env.CANTON_USER_ID ?? "ledger-api-user";
   const dryRun = process.env.BOOTSTRAP_DRY_RUN === "1";
 
@@ -310,7 +290,6 @@ async function main(): Promise<void> {
     synchronizerId: process.env.CANTON_SYNCHRONIZER,
   });
 
-  const registryV2 = cfg.registryV2 ?? DEFAULT_CONFIG.registryV2!;
 
   log.info("bootstrap starting", {
     ledger: baseUrl,
@@ -319,7 +298,7 @@ async function main(): Promise<void> {
     instruments: cfg.instruments.length,
     lpInstruments: cfg.lpInstruments.length,
     credentials: cfg.credentials.length,
-    registryV2Instruments: registryV2.instruments.length,
+    registryV2Instruments: cfg.registryV2?.instruments.length ?? 0,
     dryRun,
   });
 
@@ -343,25 +322,34 @@ async function main(): Promise<void> {
     await ensureCredential(ledger, cred, dryRun);
   }
 
-  // 4. The V2 registry and its instruments. Every V2 holding -- including the
-  //    testnet party faucet's airdrop -- is minted through Registry_Mint,
-  //    which needs an InstrumentConfig for the instrument. Nothing creates one
-  //    lazily, so anything named in DEX_TESTNET_AIRDROP has to be listed in
-  //    registryV2.instruments (dUSD by default) or the faucet will 503.
-  const registryCid = await ensureRegistry(
-    ledger,
-    admin,
-    registryV2.users ?? [operator, lpRegistrar],
-    dryRun,
-  );
-  if (registryCid) {
+  // 4. The LP registry, not optional: Lp/Instrument.daml builds its specs with
+  //    admin = lpRegistrar and Registry.V2 asserts spec.admin == admin, so
+  //    without it no pool can allocate a liquidity move. No instruments are
+  //    registered on it -- the LP path never reads an InstrumentConfig.
+  await ensureRegistry(ledger, lpRegistrar, [operator(), admin], dryRun);
+
+  // 5. Optionally, a registry for instruments this deployment mints itself.
+  //    Opt-in: a deployment whose users bring their own assets needs none, and
+  //    Registry_Mint requires an InstrumentConfig it never creates lazily.
+  const registryV2 = cfg.registryV2;
+  if (!registryV2) {
+    log.info("no registryV2 block configured; skipping the minting registry");
+  } else if (admin === lpRegistrar) {
+    // One party, one registry -- the shape the repo's own fixtures use.
+    const cid = await ensureRegistry(ledger, admin, [operator()], dryRun);
     for (const inst of registryV2.instruments) {
-      await ensureV2Instrument(ledger, admin, registryCid, inst, dryRun);
+      if (cid) await ensureV2Instrument(ledger, admin, cid, inst, dryRun);
     }
   } else {
-    log.info("dry run: skipping V2 instrument registration", {
-      instruments: registryV2.instruments.map((i) => i.instrumentId),
-    });
+    const cid = await ensureRegistry(
+      ledger,
+      admin,
+      registryV2.users ?? [operator(), lpRegistrar],
+      dryRun,
+    );
+    for (const inst of registryV2.instruments) {
+      if (cid) await ensureV2Instrument(ledger, admin, cid, inst, dryRun);
+    }
   }
 
   log.info("bootstrap complete", { dryRun });

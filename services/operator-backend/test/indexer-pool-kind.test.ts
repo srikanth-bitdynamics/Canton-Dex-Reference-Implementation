@@ -1,17 +1,7 @@
-// What the indexer calls a PoolState rotation.
-//
-// Five Daml choices rotate a PoolState — Swap, Pause, Resume,
-// SettleAddLiquidity and SettleRemoveLiquidity — and the indexer only polls
-// the ACS, so it never sees which one ran. It used to record every rotation
-// as a swap, which put LP deposits and withdrawals in the trade feed with a
-// direction and a price that no trade ever had.
-//
-// `totalLpSupply` is the discriminator: an add mints shares, a remove burns
-// them, and nothing else moves supply — swap fees accrue to LPs through the
-// reserves without minting. These tests pin that, plus the two shapes that
-// broke the obvious implementations: a pause (reserves and supply both
-// unchanged, which must not read as a swap) and a dust swap whose output
-// rounds to zero on one side (which must still read as a swap).
+// What the indexer calls a PoolState rotation. Five Daml choices rotate one
+// and the indexer sees no choice name, so `totalLpSupply` is the
+// discriminator. Also pins the two shapes that break naive implementations:
+// a pause, and a dust swap that rounds to zero on one side.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -88,8 +78,7 @@ describe("indexer: classifying a PoolState rotation", () => {
   let ledger: StubLedger;
   let indexer: Indexer;
 
-  // reconcilePools is private; `start()` fires it on a timer we do not want in
-  // a test. Drive it directly so each rotation is one deterministic step.
+  // Drive the private reconcile directly: one rotation per step.
   const step = (ts: number) =>
     (indexer as unknown as {
       reconcilePools(ts: number): Promise<void>;
@@ -117,8 +106,7 @@ describe("indexer: classifying a PoolState rotation", () => {
 
   it("calls a reserve-crossing rotation at flat supply a swap", async () => {
     await step(1);
-    // 0.1 dBTC in, ~1974 dUSD out. Supply untouched: fees accrue to the
-    // reserves, no LP shares are minted.
+    // Supply untouched: fees accrue to the reserves, minting no shares.
     ledger.state = {
       contractId: "#state:1",
       base: "10.1",
@@ -145,8 +133,7 @@ describe("indexer: classifying a PoolState rotation", () => {
     const rows = kinds();
     assert.equal(rows.length, 1);
     assert.equal(rows[0]!.kind, "add_liquidity");
-    // Both reserves moved the SAME way — the shape that used to be served as
-    // a swap with a fabricated direction.
+    // Both reserves up: previously served as a swap.
     assert.ok(parseFloat(rows[0]!.baseDelta) > 0);
     assert.ok(parseFloat(rows[0]!.quoteDelta) > 0);
   });
@@ -166,10 +153,38 @@ describe("indexer: classifying a PoolState rotation", () => {
     assert.equal(rows[0]!.kind, "remove_liquidity");
   });
 
+  it("calls a removal a remove even when supply is unreadable", async () => {
+    // Fallback path. Testing only that the deltas agree in sign, without
+    // testing which sign, labelled every removal an add.
+    await step(1);
+    ledger.state = {
+      contractId: "#state:1",
+      base: "9.99",
+      quote: "199800.0",
+      lpSupply: "not-a-number",
+    };
+    await step(2);
+
+    const rows = kinds();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.kind, "remove_liquidity");
+  });
+
+  it("calls an add an add when supply is unreadable", async () => {
+    await step(1);
+    ledger.state = {
+      contractId: "#state:1",
+      base: "10.01",
+      quote: "200200.0",
+      lpSupply: "not-a-number",
+    };
+    await step(2);
+    assert.equal(kinds()[0]!.kind, "add_liquidity");
+  });
+
   it("calls a rotation that moved nothing a state change, not a swap", async () => {
     await step(1);
-    // Pause rotates the PoolState with identical reserves and supply. Recorded
-    // for the audit trail, but it is not a trade and must never reach a feed.
+    // Pause: reserves and supply unchanged. Not a trade.
     ledger.state = {
       contractId: "#state:1",
       base: "10.0",
@@ -185,10 +200,7 @@ describe("indexer: classifying a PoolState rotation", () => {
   });
 
   it("computes deltas exactly, not in floating point", async () => {
-    // Real magnitudes from the live deployment. In IEEE-754 this subtraction
-    // lands on ...4461; exact scaled-integer arithmetic gives ...4462. The
-    // swaps feed is what a client reconciles fills against, so a feed that
-    // disagrees with the swap response by an ulp is a reconciliation break.
+    // IEEE-754 lands this subtraction on ...4461; exact gives ...4462.
     ledger.state = {
       contractId: "#state:0",
       base: "16.6788007560",

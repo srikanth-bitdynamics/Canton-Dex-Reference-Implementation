@@ -61,11 +61,7 @@ export class JsonApiLedger implements LedgerSubmitter {
     return (await this.submitAndWait<R>(req)).result;
   }
 
-  /**
-   * Same submission as `submit`, with the committed transaction's `updateId`
-   * alongside the choice result. The participant already returns it on the
-   * submit-and-wait response; `submit` simply drops it.
-   */
+  /** As `submit`, keeping the updateId the participant already returns. */
   async submitWithUpdateId<R>(req: SubmitRequest): Promise<SubmitReceipt<R>> {
     return this.submitAndWait<R>(req);
   }

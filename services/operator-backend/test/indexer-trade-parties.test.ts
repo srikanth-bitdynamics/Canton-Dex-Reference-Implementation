@@ -69,8 +69,8 @@ describe("indexer: labelling the sides of a matched trade", () => {
     const ix = new Indexer(db, ledger, { intervalMs: 60_000, observingParty: VENUE });
     await (ix as unknown as { reconcileTrades(ts: number): Promise<void> })
       .reconcileTrades(1);
-    return db.prepare("SELECT trader, dealer FROM trades").get() as
-      { trader: string | null; dealer: string | null };
+    return db.prepare("SELECT trader, dealer, counterparty FROM trades").get() as
+      { trader: string | null; dealer: string | null; counterparty: string | null };
   };
 
   beforeEach(() => {
@@ -101,5 +101,21 @@ describe("indexer: labelling the sides of a matched trade", () => {
     // direction is what produced the inversion in the first place.
     const row = await run(ledgerWith(TRADER, DEALER, false));
     assert.equal(row.dealer, null);
+  });
+
+  it("still records the counterparty when there is no receipt", async () => {
+    // `dealer` is a role and a null is correct here -- but the other side of
+    // the trade must not vanish with it. /v1/trades does not serve the raw
+    // payload, so without this column an order-book fill's counterparty is
+    // unrecoverable from the API.
+    const row = await run(ledgerWith(TRADER, DEALER, false));
+    assert.equal(row.trader, TRADER);
+    assert.equal(row.counterparty, DEALER);
+  });
+
+  it("records the counterparty on a receipt-bearing trade too", async () => {
+    const row = await run(ledgerWith(TRADER, DEALER, true));
+    assert.equal(row.dealer, DEALER);
+    assert.equal(row.counterparty, DEALER);
   });
 });

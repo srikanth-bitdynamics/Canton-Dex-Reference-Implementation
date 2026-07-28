@@ -59,12 +59,8 @@ export class IdempotentLedger implements LedgerSubmitter {
     return this.once(req, () => this.inner.submit<R>(req));
   }
 
-  /**
-   * Forward the updateId-reporting submission to the inner ledger under the
-   * same row lock as `submit`. Delegating it unguarded would quietly drop
-   * idempotency for whichever flows use it; falling back to `submit` when the
-   * inner driver has no updateId to report keeps the wrapper transparent.
-   */
+  /** Same row lock as `submit`; falls back to it when the driver has no
+   * updateId to report. */
   async submitWithUpdateId<R>(req: SubmitRequest): Promise<SubmitReceipt<R>> {
     const inner = this.inner.submitWithUpdateId;
     if (!inner) {
@@ -100,16 +96,15 @@ export class IdempotentLedger implements LedgerSubmitter {
       // legacy row predating the argsHash column has argsHash === null; treat
       // it as unknown and let it proceed/overwrite.)
       //
-      // NOT for a row that recorded an error. That submission committed
-      // nothing, so there is no cached result to protect and no risk of
-      // double-firing — the guard would only ban the commandId forever. These
-      // ids are derived from the contract they act on (`order-cancel:<cid>`,
-      // `lp-add-settle:<cid>`), so a single failure followed by any change to
-      // the request — a re-resolved factory, a different disclosure set, a
-      // code change — would leave that order uncancellable and that
-      // settlement unsettleable for good. Retrying is what the row means.
+      // Relaxed for an errored EXERCISE: its commandId derives from the
+      // contract acted on, so refusing a changed-arg retry would strand that
+      // contract, and the consuming choice cannot fire twice. Not relaxed for
+      // a create -- pool-create is keyed on names, Pool declares no contract
+      // key, and a retry would make a second Pool for the same pair.
+      const retryableError =
+        existing.status === "error" && req.command.kind === "exercise";
       if (
-        existing.status !== "error" &&
+        !retryableError &&
         existing.argsHash !== null &&
         existing.argsHash !== argsHash
       ) {

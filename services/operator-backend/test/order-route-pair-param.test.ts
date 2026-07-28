@@ -40,10 +40,12 @@ before(async () => {
     operatorParty: "op" as never,
   });
   // A fixed port, not 0: startHttpServer is synchronous and builds its url
-  // from cfg.port, so it cannot report an OS-assigned one.
+  // from cfg.port, so it cannot report an OS-assigned one. A different base
+  // from auth.test.ts's 19180 -- the files run concurrently and `listen` has
+  // no 'error' handler, so a collision takes down the whole run.
   const handle = startHttpServer({
     backend,
-    port: 19180 + Math.floor(Math.random() * 1000),
+    port: 20180 + Math.floor(Math.random() * 1000),
     host: "127.0.0.1",
     context: {
       operator: "op" as never,

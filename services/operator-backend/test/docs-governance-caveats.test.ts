@@ -1,9 +1,6 @@
-// Disclosures a June 2026 review asked for, pinned so they cannot quietly go.
-//
-// The reviewer asked two questions the docs now answer honestly in the
-// negative: there is no rules contract governing pair creation, and the DEX
-// defines no Daml interfaces of its own. Both answers are easy to lose in a
-// rewrite, and losing them reads as the opposite claim.
+// Two disclosures the docs make in the negative: no rules contract governs
+// pair creation, and the DEX defines no Daml interfaces of its own. Both are
+// easy to lose in a rewrite, and losing them reads as the opposite claim.
 
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";

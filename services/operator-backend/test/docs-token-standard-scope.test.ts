@@ -1,13 +1,10 @@
 // What Token Standard V2 does and does not cover.
 //
-// A June 2026 reviewer found the docs presenting `InstrumentConfiguration` and
-// instrument lifecycle as part of the standard. They are not: the vendored
-// standard has no configuration or lifecycle package, and the only portable
-// way to read instrument properties is the off-ledger metadata-v1 API.
-//
-// The wording was corrected. These are ratchets on that correction — this is
-// the silent-regression case, because the claim is plausible enough to be
-// rewritten back in by anyone documenting the reference registry.
+// Instrument configuration and lifecycle are not part of it: the vendored
+// standard has no such package, and the portable way to read instrument
+// properties is the off-ledger metadata-v1 API. The claim is plausible enough
+// to be written back in by anyone documenting the reference registry, so these
+// are ratchets.
 
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
@@ -78,8 +75,7 @@ describe("token standard scope", () => {
   });
 
   it("metadata-v1 is offered as the portable alternative", () => {
-    // The reviewer's own suggestion, and the only registry-agnostic way to
-    // read instrument properties.
+    // The only registry-agnostic way to read instrument properties.
     const hits = findClaims(/metadata-v1/i, { negationAware: false });
     assert.ok(
       hits.length > 0,

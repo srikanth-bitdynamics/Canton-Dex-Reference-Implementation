@@ -1,15 +1,11 @@
 // A trading pair carries ONE registry admin, shared by base and quote.
 //
-// This pins that fact so the docs cannot drift back into promising more. In
-// June 2026 a reviewer asked for the pair section to say "any pair of
-// InstrumentIds whose registries implement the V2 APIs". The wording was
-// adopted; the schema was not changed to match, and the claim had in fact
-// already been false since the upstream TransferLeg.instrumentId was flattened
-// to bare Text -- a leg cannot carry its own admin, so two admins cannot be
-// recovered from a trade.
+// TransferLeg.instrumentId is bare Text, so a leg cannot name its own admin
+// and two cannot be recovered from a settled trade. Pinned here so the docs
+// cannot drift back into promising multi-registry pairs.
 //
-// Flip MULTI_ADMIN_PAIRS_SUPPORTED when the schema genuinely changes. Both
-// directions of drift then fail here rather than silently disagreeing.
+// Flip MULTI_ADMIN_PAIRS_SUPPORTED when the schema changes; both directions of
+// drift then fail here rather than silently disagreeing.
 
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";

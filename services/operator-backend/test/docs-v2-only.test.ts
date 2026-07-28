@@ -1,10 +1,7 @@
 // This implementation targets Token Standard V2 allocations only.
 //
-// A June 2026 reviewer noted that upstream's TradingAppV2 supports V1
-// allocations and shines with V2. That framing was adopted here as "V2
-// allocations as the preferred target surface" -- but "preferred" presupposes
-// an alternative, and there is none: no V1 allocation package has ever been a
-// dependency of trading/.
+// "Preferred" presupposes an alternative, and there is none: no V1 allocation
+// package has ever been a dependency of trading/.
 
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";

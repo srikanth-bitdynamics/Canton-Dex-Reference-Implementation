@@ -55,6 +55,34 @@ floorDiv n d =
   let q = n / d
   in if compareProducts q d n 1.0 == GT then q - ulp else q
 
+-- | Smallest `Decimal` not below the exact product `x * y`. The mirror of
+-- `floorMul`: amounts drawn INTO the pool round up.
+ceilMul : Decimal -> Decimal -> Decimal
+ceilMul x y =
+  let p = x * y
+  in if compareProducts x y p 1.0 == GT then p + ulp else p
+
+-- | Smallest `Decimal` not below the exact quotient `n / d`, for `d > 0.0`.
+ceilDiv : Decimal -> Decimal -> Decimal
+ceilDiv n d =
+  let q = n / d
+  in if compareProducts q d n 1.0 == LT then q + ulp else q
+
+-- | The portion of a two-sided deposit that matches the pool's current ratio,
+-- for a funded pool (both reserves > 0). The side that is short relative to
+-- the reserve ratio goes in whole; the other goes in only as far as that side
+-- backs, rounded up and capped at what was offered. The remainder buys no LP
+-- tokens, so the pool must not take it.
+ratioMatchedDeposit : PoolReserves -> Decimal -> Decimal -> (Decimal, Decimal)
+ratioMatchedDeposit reserves baseAmount quoteAmount =
+  let rb = reserves.baseAmount
+      rq = reserves.quoteAmount
+      -- What `amount` of the side reserving `resIn` pairs with on the other.
+      paired amount resIn resOut = ceilMul resOut (ceilDiv amount resIn)
+  in if compareProducts baseAmount rq quoteAmount rb == GT
+       then (min baseAmount (paired quoteAmount rq rb), quoteAmount)
+       else (baseAmount, min quoteAmount (paired baseAmount rb rq))
+
 newtonSqrt : Decimal -> Decimal -> Int -> Decimal
 newtonSqrt target guess iteration
   | iteration >= 50 = guess

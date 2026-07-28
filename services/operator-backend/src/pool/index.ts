@@ -61,8 +61,8 @@ function bpsOf(donated: bigint, supplied: bigint): bigint {
   return dec.div(dec.mul(donated, BPS_SCALE), supplied);
 }
 
-// A donation is unrecoverable once the add settles, so the ceiling is checked
-// before anything is submitted.
+// The settle refunds the off-ratio remainder, but a caller who meant to add at
+// the ratio would rather re-quote than have half its deposit handed back.
 function enforceDonationTolerance(
   match: LiquidityMatch,
   maxDonationBps: number | Decimal | null | undefined,
@@ -74,8 +74,8 @@ function enforceDonationTolerance(
       "validation",
       `add-liquidity is ${match.donationBps} bps off the pool ratio, over the ` +
         `${dec.formatDecimal(limit)} bps limit: only ${match.matchedBaseAmount} base and ` +
-        `${match.matchedQuoteAmount} quote back the LP tokens; the remaining ` +
-        `${match.donatedBaseAmount} base and ${match.donatedQuoteAmount} quote are donated`,
+        `${match.matchedQuoteAmount} quote would enter the pool; the remaining ` +
+        `${match.donatedBaseAmount} base and ${match.donatedQuoteAmount} quote would be refunded`,
       false,
     );
   }
@@ -153,17 +153,17 @@ export interface PoolRequestAddLiquidityInput {
 
 /**
  * What a deposit buys. LP is minted against the leg that is short relative to
- * the reserve ratio, but both legs enter the reserves in full, so whatever the
- * other leg supplies beyond its matched share accrues to the existing holders
- * and cannot be redeemed back.
+ * the reserve ratio; only that matched share enters the reserves, and the
+ * settle refunds the rest of the other leg to the depositor.
  */
 export interface LiquidityMatch {
   lpAmount: Decimal;
   matchedBaseAmount: Decimal;
   matchedQuoteAmount: Decimal;
+  /** The unmatched remainder of each leg, which comes back on settle. */
   donatedBaseAmount: Decimal;
   donatedQuoteAmount: Decimal;
-  /** The donated leg as a fraction of what that leg supplied, in bps. */
+  /** The unmatched leg as a fraction of what that leg supplied, in bps. */
   donationBps: Decimal;
 }
 

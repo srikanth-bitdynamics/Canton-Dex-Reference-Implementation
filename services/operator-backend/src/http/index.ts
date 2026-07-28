@@ -568,7 +568,7 @@ async function routeRequest(
       }
       return out;
     };
-    const cfgs = await q<{ instrumentId: string; decimals?: number }>(
+    const cfgs = await q<{ instrumentId: string; decimals?: number | string }>(
       "CantonDex.Registry.V2:InstrumentConfig",
     );
     const confs = await q<{
@@ -596,7 +596,10 @@ async function routeRequest(
     };
     for (const c of cfgs) {
       const e = put(c.instrumentId);
-      if (typeof c.decimals === "number") e.decimals = c.decimals;
+      // Daml Int64 is JSON-encoded as a string, so a `typeof === "number"`
+      // guard drops it silently.
+      const d = typeof c.decimals === "string" ? Number(c.decimals) : c.decimals;
+      if (typeof d === "number" && Number.isInteger(d)) e.decimals = d;
     }
     for (const c of confs) {
       const e = put(c.instrumentId);

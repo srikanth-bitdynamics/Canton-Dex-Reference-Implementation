@@ -4,7 +4,7 @@ import type { ContractId } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
-import { LedgerSubmitter } from "../ledger/index.js";
+import { LedgerSubmitter, type SubmitRequest } from "../ledger/index.js";
 import {
   recoverCreatedAllocations,
   recoverCreatedFundingRequest,
@@ -43,6 +43,11 @@ export interface OrderFundInput {
   // consumed when the order is funded (the wallet no longer accepts it), instead
   // of lingering as a stale funding request.
   allocationRequestCid?: ContractId<"OrderAllocationRequest"> | null;
+}
+
+export interface OrderCancelResult {
+  /** Null when the driver cannot report one. */
+  updateId: string | null;
 }
 
 export interface OrderMatchInput {
@@ -152,27 +157,40 @@ export class OrderService {
     );
   }
 
-  async cancel(orderCid: ContractId<"Order">): Promise<void> {
+  async cancel(orderCid: ContractId<"Order">): Promise<OrderCancelResult> {
     const order = (await this.listOpen()).find((o) => o.contractId === orderCid);
     if (!order) throw new Error(`Order ${orderCid} not found`);
     const [factories, ctx] = await Promise.all([
       this.registry.getFactories(order.admin),
       this.choiceContext(order.admin),
     ]);
-    await retryOnContention(() =>
-      this.ledger.submit<unknown>({
-        actAs: [this.operatorParty],
-        commandId: `order-cancel:${orderCid}`,
-        disclosure: [...factories.disclosure, ...ctx.disclosure],
-        command: {
-          kind: "exercise",
-          templateId: "CantonDex.Dex.Order:Order",
-          contractId: orderCid,
-          choice: "Order_Cancel",
-          argument: { extraArgs: ctx.extraArgs },
-        },
-      }),
-    );
+    const req: SubmitRequest = {
+      actAs: [this.operatorParty],
+      // A funded cancel releases holdings that are `signatory admin, owner`,
+      // which the operator cannot see. `order.admin` is the instrument's
+      // registry admin, so the disclosure has to come from that registry's
+      // choice context -- not yet served by registry-client.
+      commandId: `order-cancel:${orderCid}`,
+      disclosure: [...factories.disclosure, ...ctx.disclosure],
+      command: {
+        kind: "exercise",
+        templateId: "CantonDex.Dex.Order:Order",
+        contractId: orderCid,
+        choice: "Order_Cancel",
+        argument: { extraArgs: ctx.extraArgs },
+      },
+    };
+    // The choice result carries holdings, not an update id, so it comes from
+    // the driver where one is available.
+    return retryOnContention(async () => {
+      const submitWithUpdateId = this.ledger.submitWithUpdateId;
+      if (!submitWithUpdateId) {
+        await this.ledger.submit<unknown>(req);
+        return { updateId: null };
+      }
+      const { updateId } = await submitWithUpdateId.call(this.ledger, req);
+      return { updateId };
+    });
   }
 
   async listOpen(): Promise<Order[]> {

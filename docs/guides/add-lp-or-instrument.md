@@ -99,16 +99,18 @@ trader's wallet.
 For a security token or whitelisted-investor LP:
 
 ```ts
-// 1. Issuer signs a Credential template for the holder
+// 1. Issuer signs a Credential template. Registry_Mint checks
+//    `issuerRequirements` against the ISSUING party (the admin), so this is the
+//    credential the admin has to hold to be allowed to mint the instrument.
 const credCid = await ledger.submit({
   actAs: [credentialIssuer],
-  commandId: `cred-${alice}-accredited`,
+  commandId: `cred-${admin}-accredited`,
   command: {
     kind: 'create',
     templateId: 'CantonDex.Registry.V2:Credential',
     argument: {
       issuer: credentialIssuer,
-      holder: alice,
+      holder: admin,
       property: 'accredited-investor',
       value: 'true',
     },
@@ -135,7 +137,9 @@ const configCid = await ledger.submit({
   },
 });
 
-// 3. Mint, supplying the credential
+// 3. Mint, supplying the credential. `issuerClaims` takes Credential RECORDS,
+//    not contract ids: verifyCredentials matches on issuer/holder/property/
+//    value, so pass the same four fields the contract above carries.
 await ledger.submit({
   actAs: [admin, alice],
   command: {
@@ -147,14 +151,28 @@ await ledger.submit({
       configCid,
       owner: alice,
       amount: '100.0',
-      issuerClaims: [credCid],
+      issuerClaims: [
+        {
+          issuer: credentialIssuer,
+          holder: admin,
+          property: 'accredited-investor',
+          value: 'true',
+        },
+      ],
     },
   },
 });
 ```
 
-If alice's credential is missing or wrong-issuer, `verifyCredentials`
-in `Registry.V2` will reject the mint.
+If the claim is missing, wrong-issuer, or held by someone other than the
+minting admin, `verifyCredentials` in `Registry.V2` rejects the mint.
+`holderRequirements` is recorded on the config for downstream policy; the
+mint itself checks `issuerRequirements` only.
+
+Every mint consumes the `InstrumentConfig` it is given (`Registry_Mint`
+exercises the consuming `InstrumentConfig_BumpSupply`) and creates a
+replacement, so re-read the config cid before each mint rather than caching
+it.
 
 ## Case D. Vested LP (custom lifecycle)
 

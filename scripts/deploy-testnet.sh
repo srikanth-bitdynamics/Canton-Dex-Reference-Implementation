@@ -101,6 +101,8 @@ fi
 # 4. Registry bootstrap --------------------------------------------------
 
 echo "==> Running registry bootstrap"
+echo "    (instrument configs, LP configs, credentials, and the lpRegistrar's"
+echo "     Registry.V2 -- without which liquidity cannot be allocated)"
 (cd "$ROOT_DIR" && node --import tsx scripts/bootstrap-registry.ts)
 
 # 5. Seed initial pair/pool ---------------------------------------------

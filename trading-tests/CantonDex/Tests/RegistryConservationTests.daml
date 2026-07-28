@@ -304,3 +304,71 @@ testExpiredTransferFactoryRejected = do
       transfer
       actors = [fx.admin, fx.alice]
       extraArgs = emptyExtraArgs
+
+-- 8. Allocate locks the notional, not the whole holding --------------------
+--
+-- AllocationInstructionV2 requires implementations to return change and
+-- unused inputs via `authorizerChangeCids`. Locking a whole holding
+-- regardless of size leaves a party with one large holding unable to fund a
+-- second allocation at all -- so a market maker gets one live order per
+-- holding contract and has to pre-split its capital by hand.
+
+testAllocateLocksOnlyTheNotional : Script ()
+testAllocateLocksOnlyTheNotional = do
+  fx <- setup
+  -- One 10,000 holding funding a 9 leg: the shape that stranded a party.
+  hold <- mintHolding fx fx.alice "USD" 10000.0
+  let spec = Utils.mkPrefundedAllocationSpecification
+        fx.admin (Utils.basicAccount fx.alice) None
+        (TextMap.fromList [("USD", 9.0)])
+  _ <- mkAlloc fx fx.alice spec [hold]
+
+  locked <- lockedOf fx.alice "USD"
+  locked === [9.0]
+  -- The remainder comes straight back, spendable.
+  unlocked <- unlockedOf fx.alice "USD"
+  unlocked === [9991.0]
+
+testAllocateDrawsAcrossHoldingsAndSplitsOnlyTheLast : Script ()
+testAllocateDrawsAcrossHoldingsAndSplitsOnlyTheLast = do
+  fx <- setup
+  a <- mintHolding fx fx.alice "USD" 5.0
+  b <- mintHolding fx fx.alice "USD" 5.0
+  let spec = Utils.mkPrefundedAllocationSpecification
+        fx.admin (Utils.basicAccount fx.alice) None
+        (TextMap.fromList [("USD", 7.0)])
+  _ <- mkAlloc fx fx.alice spec [a, b]
+
+  -- First consumed whole, second split: 5 + 2 locked, 3 handed back.
+  locked <- lockedOf fx.alice "USD"
+  sum locked === 7.0
+  unlocked <- unlockedOf fx.alice "USD"
+  unlocked === [3.0]
+
+testAllocateLeavesAnExactFitUnsplit : Script ()
+testAllocateLeavesAnExactFitUnsplit = do
+  fx <- setup
+  hold <- mintHolding fx fx.alice "USD" 9.0
+  let spec = Utils.mkPrefundedAllocationSpecification
+        fx.admin (Utils.basicAccount fx.alice) None
+        (TextMap.fromList [("USD", 9.0)])
+  _ <- mkAlloc fx fx.alice spec [hold]
+
+  locked <- lockedOf fx.alice "USD"
+  locked === [9.0]
+  -- No zero-amount change contract on an exact fit.
+  unlocked <- unlockedOf fx.alice "USD"
+  unlocked === []
+
+testAllocateStillRejectsInsufficientHoldings : Script ()
+testAllocateStillRejectsInsufficientHoldings = do
+  fx <- setup
+  now <- getTime
+  hold <- mintHolding fx fx.alice "USD" 5.0
+  let spec = Utils.mkPrefundedAllocationSpecification
+        fx.admin (Utils.basicAccount fx.alice) None
+        (TextMap.fromList [("USD", 9.0)])
+  submitMustFail fx.alice $ exerciseCmd fx.factoryCid V2.AllocationFactory_Allocate with
+    settlement = fx.settlement; allocation = spec; requestedAt = now
+    inputHoldingCids = [toInterfaceContractId hold]
+    actors = [fx.alice]; extraArgs = emptyExtraArgs

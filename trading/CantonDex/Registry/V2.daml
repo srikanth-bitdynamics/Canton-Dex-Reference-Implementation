@@ -16,7 +16,7 @@
 -- sender/receiver balance across all legs of the batch.
 module CantonDex.Registry.V2 where
 
-import DA.Action (when, unless)
+import DA.Action (foldlA, when, unless)
 import DA.Foldable (forA_)
 import DA.Map qualified as Map
 import DA.Optional (fromOptional, isSome)
@@ -599,48 +599,62 @@ template Registry with
                     sentByAuth
                 funding = optional TextMap.empty identity spec.nextIterationFunding
                 required = Utils.textMapUnionWith (+) sideRequired funding
-            -- Lock only holdings of instruments this allocation actually
-            -- needs; leave the rest untouched and report them via
-            -- `authorizerChangeCids`. Batching wallets (e.g. the standard
-            -- `BatchingUtilityV2`) pass ALL of an account's holdings to each
-            -- call and rely on implementations to ignore irrelevant ones.
-            classified <- forA arg.inputHoldingCids $ \ifaceCid -> do
-              let cid : ContractId Holding = coerceContractId ifaceCid
-              h <- fetch cid
-              assertMsg "input holding owner must match authorizer"
-                (h.owner == authorizerOwner)
-              assertMsg "input holding admin must match registry"
-                (h.admin == admin)
-              if isSome (TextMap.lookup h.instrumentId required)
-                then do
-                  archive cid
-                  lockedCid <- create h with locked = True
-                  pure (Left lockedCid)
-                else pure (Right (h.instrumentId, ifaceCid))
-            let locked = [c | Left c <- classified]
+            -- Lock the notional and return the rest via `authorizerChangeCids`,
+            -- as AllocationInstructionV2 requires. `outstanding` threads what
+            -- is still to fund per instrument, so holdings are passed through
+            -- untouched once covered -- batching wallets hand over all of an
+            -- account's holdings and expect the irrelevant ones ignored.
+            (lockedRev, changeRev, remaining) <-
+              foldlA
+                (\(accLocked, accChange, outstanding) ifaceCid -> do
+                  let cid : ContractId Holding = coerceContractId ifaceCid
+                  h <- fetch cid
+                  assertMsg "input holding owner must match authorizer"
+                    (h.owner == authorizerOwner)
+                  assertMsg "input holding admin must match registry"
+                    (h.admin == admin)
+                  let need =
+                        optional 0.0 identity (TextMap.lookup h.instrumentId outstanding)
+                  if need <= 0.0
+                    then
+                      -- Not needed, or already fully funded: untouched.
+                      pure (accLocked, (h.instrumentId, ifaceCid) :: accChange, outstanding)
+                    else if h.amount <= need
+                      then do
+                        -- Fully consumed; no change contract on an exact fit.
+                        archive cid
+                        lockedCid <- create h with locked = True
+                        pure
+                          ( lockedCid :: accLocked
+                          , accChange
+                          , TextMap.insert h.instrumentId (need - h.amount) outstanding
+                          )
+                      else do
+                        -- Bigger than what is left to fund: split it.
+                        archive cid
+                        lockedCid <- create h with amount = need, locked = True
+                        changeCid <- create h with amount = h.amount - need, locked = False
+                        pure
+                          ( lockedCid :: accLocked
+                          , (h.instrumentId, toInterfaceContractId changeCid) :: accChange
+                          , TextMap.insert h.instrumentId 0.0 outstanding
+                          ))
+                ([], [], required)
+                arg.inputHoldingCids
+            -- Anything outstanding means the inputs did not cover the legs.
+            forA_ (TextMap.toList remaining) $ \(iid, left) ->
+              assertMsg
+                ("AllocationFactory: insufficient holdings for " <> iid <>
+                 " (short by " <> show left <> ")")
+                (left <= 0.0)
+            let locked = reverse lockedRev
                 change =
                   foldl
                     (\m (iid, cidI) ->
                       let cur = optional [] identity (TextMap.lookup iid m)
                       in TextMap.insert iid (cur ++ [cidI]) m)
                     TextMap.empty
-                    [p | Right p <- classified]
-            supplied <- do
-              pairs <- forA locked $ \cid -> do
-                h <- fetch cid
-                pure (h.instrumentId, h.amount)
-              pure $ foldl
-                (\m (iid, amt) ->
-                  let cur = optional 0.0 identity (TextMap.lookup iid m)
-                  in TextMap.insert iid (cur + amt) m)
-                TextMap.empty
-                pairs
-            forA_ (TextMap.toList required) $ \(iid, needed) -> do
-              let have = optional 0.0 identity (TextMap.lookup iid supplied)
-              assertMsg
-                ("AllocationFactory: insufficient holdings for " <> iid <>
-                 " (need " <> show needed <> ", have " <> show have <> ")")
-                (have >= needed)
+                    (reverse changeRev)
             pure (locked, change)
         now <- getTime
         allocationCid <- create Allocation with

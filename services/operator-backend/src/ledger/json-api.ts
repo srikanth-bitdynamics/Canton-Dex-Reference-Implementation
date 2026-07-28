@@ -25,6 +25,7 @@ import {
   LedgerError,
   LedgerEvent,
   LedgerSubmitter,
+  SubmitReceipt,
   SubmitRequest,
   SubscriptionFilter,
 } from "./index.js";
@@ -57,6 +58,15 @@ export class JsonApiLedger implements LedgerSubmitter {
   }
 
   async submit<R>(req: SubmitRequest): Promise<R> {
+    return (await this.submitAndWait<R>(req)).result;
+  }
+
+  /** As `submit`, keeping the updateId the participant already returns. */
+  async submitWithUpdateId<R>(req: SubmitRequest): Promise<SubmitReceipt<R>> {
+    return this.submitAndWait<R>(req);
+  }
+
+  private async submitAndWait<R>(req: SubmitRequest): Promise<SubmitReceipt<R>> {
     const envelope = this.toJsonApi(req);
     const res = await this.fetchImpl(
       new URL("/v2/commands/submit-and-wait", this.config.baseUrl).toString(),
@@ -74,7 +84,10 @@ export class JsonApiLedger implements LedgerSubmitter {
     // with the choice; we extract the result via the convention that
     // the operator backend always exercises a single root command and
     // expects its result back.
-    return this.extractResult<R>(body, req);
+    return {
+      result: await this.extractResult<R>(body, req),
+      updateId: body.updateId ?? null,
+    };
   }
 
   async query<T>(filter: SubscriptionFilter): Promise<T[]> {

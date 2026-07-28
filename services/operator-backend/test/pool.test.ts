@@ -549,8 +549,8 @@ describe("PoolService DvP liquidity", () => {
   });
 });
 
-// Integrator feedback: enriched quote (finding #6) — the output plus the
-// fields a trading client would otherwise recompute from reserves + feeBps.
+// The output plus the fields a trading client would otherwise recompute from
+// reserves + feeBps.
 describe("PoolService.computeQuoteDetailed", () => {
   const svc = new PoolService(
     new InMemoryLedger(),

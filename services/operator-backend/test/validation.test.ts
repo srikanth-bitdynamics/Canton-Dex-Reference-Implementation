@@ -188,9 +188,9 @@ describe("write-body validation", () => {
   });
 });
 
-// Integrator feedback: quote accepts poolCid OR poolId (finding #5). The
-// fixture seeds no pool, so a valid reference passes validation and 404s at
-// lookup — proving the anyOf rule accepted it (a validation failure is 400).
+// The fixture seeds no pool, so a valid reference passes validation and 404s
+// at lookup — which is what proves the anyOf rule accepted it, since a
+// validation failure would be a 400.
 describe("quote pool reference (poolCid or poolId)", () => {
   it("rejects a body with neither poolCid nor poolId → 400", async () => {
     const r = await postJson("/v1/swaps/quote", {
@@ -221,7 +221,6 @@ describe("quote pool reference (poolCid or poolId)", () => {
   });
 });
 
-// Integrator feedback: aggregated balances endpoint (finding #7).
 describe("GET /v1/balances", () => {
   it("requires ?owner= → 400", async () => {
     const r = await getJson("/v1/balances");
@@ -236,7 +235,6 @@ describe("GET /v1/balances", () => {
   });
 });
 
-// Integrator feedback: instrument metadata surface (finding #8).
 describe("GET /v1/instruments", () => {
   it("returns an array", async () => {
     const r = await getJson("/v1/instruments");

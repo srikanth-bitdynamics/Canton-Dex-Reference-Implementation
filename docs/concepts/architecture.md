@@ -78,10 +78,15 @@ reservation but also for long-lived pool inventory.
    - bids and asks are backed by allocations
    - pool inventory is represented by committed and iterated allocations
 
-4. Arbitrary `InstrumentId` pairs
-   - the DEX should support any pair of `InstrumentId`s whose registries
-     implement the V2 holding and allocation APIs, not just "cash vs asset"
-     flows
+4. Arbitrary instruments, one registry per pair
+   - any instrument whose registry implements the V2 holding and allocation
+     APIs can be traded, not just "cash vs asset" flows
+   - both legs of a pair share one registry `admin`. `DexPair`, `Order`,
+     `Pool` and `MatchedTrade` each carry a single `admin : Party`, and the
+     standard's `TransferLeg.instrumentId` is bare `Text`, so a leg cannot
+     name its own admin. Pairing instruments from two different registries is
+     therefore not expressible today — see
+     [Registry Integration](../guides/registry-integration.md#what-the-dex-does-not-assume)
 
 5. Instrument lifecycle stays outside DEX logic
    - bonds, options, escrow obligations, margin-like positions, and LP tokens
@@ -419,8 +424,8 @@ standard remains the settlement substrate.
 The reference architecture has a deliberate split:
 
 - OTC and RFQ flows follow the `TradingAppV2` allocation-request and
-  per-admin `SettlementFactory_SettleBatch` pattern, with V2 allocations as the
-  preferred target surface
+  per-admin `SettlementFactory_SettleBatch` pattern, against V2 allocations
+  only — this repo declares no V1 allocation dependency
 - pool-backed liquidity requires the V2 allocation extensions used by this
   repo: committed allocations, iterated settlement, extra leg sides, and
   next-iteration allocation results

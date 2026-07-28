@@ -224,7 +224,8 @@ On-ledger flow:
 
 Current governance boundary:
 
-- `DexPair` is directly operator-created in this reference.
+- `DexPair`, `Pool` and `PoolState` are all directly operator-created in
+  this reference.
 - There is no separate `DexRules` contract for pair admission yet.
 - A production fork can add a rules/governance layer if pair listing needs
   multi-party approval, package-level decoupling, or decentralized operation.

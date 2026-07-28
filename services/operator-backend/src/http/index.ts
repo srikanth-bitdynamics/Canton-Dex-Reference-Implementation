@@ -174,6 +174,22 @@ function isZero(d: string): boolean {
   return /^-?0*\.?0*$/.test(d);
 }
 
+/**
+ * `?pair=BASE/QUOTE`, as every other pair-scoped read on this API takes.
+ * `?base=&quote=` still works.
+ */
+function pairParams(url: URL): { base: string; quote: string } | undefined {
+  const pair = url.searchParams.get("pair");
+  if (pair) {
+    const parts = pair.split("/");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
+    return { base: parts[0], quote: parts[1] };
+  }
+  const base = url.searchParams.get("base");
+  const quote = url.searchParams.get("quote");
+  return base && quote ? { base, quote } : undefined;
+}
+
 export interface HttpServerHandle {
   close: () => Promise<void>;
   /** Base URL carrying the port actually bound, so `port: 0` is usable. */
@@ -540,15 +556,17 @@ async function routeRequest(
   }
 
   if (method === "GET" && path === "/v1/orders/book") {
-    const base = url.searchParams.get("base");
-    const quote = url.searchParams.get("quote");
-    if (!base || !quote) {
-      respondJson(res, 400, { error: "missing ?base= or ?quote=" });
-      return;
+    const p = pairParams(url);
+    if (!p) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "expected ?pair=BASE/QUOTE (or ?base=&quote=)",
+      );
     }
     const book = await backend.order.book({
-      baseInstrumentId: base,
-      quoteInstrumentId: quote,
+      baseInstrumentId: p.base,
+      quoteInstrumentId: p.quote,
     });
     respondJson(res, 200, book);
     return;
@@ -557,15 +575,17 @@ async function routeRequest(
   // Read-only match preview: discover crossing orders without settling.
   // The execute path is POST /v1/orders/match (runMatching), below.
   if (method === "GET" && path === "/v1/orders/matches") {
-    const base = url.searchParams.get("base");
-    const quote = url.searchParams.get("quote");
-    if (!base || !quote) {
-      respondJson(res, 400, { error: "missing ?base= or ?quote=" });
-      return;
+    const p = pairParams(url);
+    if (!p) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "expected ?pair=BASE/QUOTE (or ?base=&quote=)",
+      );
     }
     const matches = await backend.order.findMatches({
-      baseInstrumentId: base,
-      quoteInstrumentId: quote,
+      baseInstrumentId: p.base,
+      quoteInstrumentId: p.quote,
     });
     respondJson(res, 200, { matches });
     return;
@@ -1067,7 +1087,17 @@ async function routeRequest(
       respondJson(res, 503, { error: "indexer disabled" });
       return;
     }
+    // Scoped like /v1/rfq: a settled row names the trader, the pair, the
+    // winning dealer and that dealer's rank, so the unfiltered sweep is
+    // admin-only.
     const trader = url.searchParams.get("trader");
+    if (!trader && !(adminToken && bearerMatches(req.headers["authorization"], adminToken))) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "missing ?trader= query parameter; the unfiltered view requires the admin token",
+      );
+    }
     const limit = Math.min(
       parseInt(url.searchParams.get("limit") ?? "100", 10),
       500,
@@ -1118,8 +1148,27 @@ async function routeRequest(
   // === operator-driven writes ===========================================
 
   if (method === "GET" && path === "/v1/rfq") {
-    const result = await backend.rfq.list();
-    respondJson(res, 200, result);
+    // Scoped to one party. The operator observes every Rfq and RfqQuote, so an
+    // unscoped read exposes who is asking for a quote, on what, in what size,
+    // and the price every dealer answered. A trader sees the RFQs they raised
+    // or were whitelisted for; a dealer sees the quotes they posted.
+    const owner = url.searchParams.get("owner");
+    if (!owner) {
+      if (!adminToken || !bearerMatches(req.headers["authorization"], adminToken)) {
+        throw new HttpError(
+          400,
+          "bad_request",
+          "missing ?owner= query parameter; the unfiltered view requires the admin token",
+        );
+      }
+      respondJson(res, 200, await backend.rfq.list());
+      return;
+    }
+    const { rfqs, quotes } = await backend.rfq.list();
+    respondJson(res, 200, {
+      rfqs: rfqs.filter((r) => r.trader === owner || r.whitelist.includes(owner)),
+      quotes: quotes.filter((q) => q.trader === owner || q.dealer === owner),
+    });
     return;
   }
 

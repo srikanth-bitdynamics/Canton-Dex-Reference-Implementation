@@ -25,7 +25,7 @@ import { dealerByParty, useDealers } from '@/primitives/dealers';
 import { fmt, fmtUsd, fmtUsdK, formatExpiresIn } from '@/primitives/format';
 import { OperatorApi } from '@/services/operator-api';
 import { adaptRfqs } from '@/services/rfq-adapter';
-import { rankQuotes, whitelistedDealers } from '@/services/rfq-policy';
+import { POLICY_VERSION, rankQuotes, whitelistedDealers } from '@/services/rfq-policy';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import type {
@@ -52,8 +52,9 @@ export function RfqPage() {
     queryFn: ledger.getContext,
   });
   const live = useQuery({
-    queryKey: ['rfqs'],
-    queryFn: () => operatorApi.listRfqs(),
+    queryKey: ['rfqs', party],
+    queryFn: () => operatorApi.listRfqs(party!),
+    enabled: !!party,
     refetchInterval: 10_000,
   });
   const liveRfqs = useMemo<Rfq[]>(
@@ -65,6 +66,7 @@ export function RfqPage() {
   const [rfqs, setRfqs] = useState<Rfq[]>([]);
   const [settled, setSettled] = useState<SettledTrade[]>([]);
   const [expired, setExpired] = useState<ExpiredRfq[]>([]);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
 
   // Reconcile the live snapshot into local state. Local state holds
   // optimistic transitions (Settling/Settled flashes) that the server
@@ -123,7 +125,9 @@ export function RfqPage() {
         );
         if (toExpire.length) {
           setExpired((cx) => [
-            ...toExpire.map<ExpiredRfq>((r) => ({
+            ...toExpire
+              .filter((r) => !cx.some((e) => e.id === r.contractId))
+              .map<ExpiredRfq>((r) => ({
               id: r.contractId,
               pair: r.pair,
               side: r.side,
@@ -193,8 +197,11 @@ export function RfqPage() {
           tradeCid: result.tradeCid,
           policyVer: result.receipt.policyVersion,
           policyCid: result.receipt.policyHash.slice(0, 24),
-          rank,
-          considered: ranked.length,
+          // From the signed receipt, not the local ranking: the two use
+          // different sort chains, so the header could contradict the
+          // rankedDealers table rendered directly beneath it.
+          rank: result.receipt.acceptedRank,
+          considered: result.receipt.consideredCount,
           receipt: result.receipt,
         };
         setRfqs((cur) =>
@@ -210,6 +217,9 @@ export function RfqPage() {
           live.refetch();
         }, 700);
       } catch (err) {
+        // The optimistic rollback restores the row exactly, so without this a
+        // rejected accept looks identical to the button not registering.
+        setAcceptError(err instanceof Error ? err.message : String(err));
         console.error('rfq.accept failed', err);
         // Roll back the optimistic transition.
         setRfqs((cur) =>
@@ -303,6 +313,14 @@ export function RfqPage() {
 
   return (
     <div className="page">
+      {acceptError && (
+        <div className="banner banner-error" role="alert">
+          <span>Accept failed: {acceptError}</span>
+          <button type="button" onClick={() => setAcceptError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="page-header">
         <div>
           <h2 className="page-title">RFQ</h2>
@@ -903,7 +921,7 @@ function RfqRow({
                   <span style={{ fontWeight: 600 }}>MatchedTrade in flight</span>
                 </div>
                 <span className="alloc-pill mono">
-                  PolicyV1.4 · rank {r.acceptedRank}/{r.acceptedConsidered}
+                  Policy{POLICY_VERSION} · rank {r.acceptedRank}/{r.acceptedConsidered}
                 </span>
               </div>
               <div style={{ color: 'var(--text-2)', lineHeight: 1.5 }}>
@@ -1103,7 +1121,23 @@ interface ComposeProps {
 
 function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) {
   const { data: dealers } = useDealers();
-  const [pair, setPair] = useState('BTC/USDC');
+  // Rfq_Accept splits this text literally into the two leg instrument ids, so
+  // an unlisted pair mints a MatchedTrade that can never be allocated.
+  const { data: venuePairs } = useQuery({
+    queryKey: ['pairs'],
+    queryFn: ledger.getPairs,
+  });
+  const pairOptions = useMemo(
+    () =>
+      (venuePairs ?? [])
+        .filter((p) => p.active)
+        .map((p) => `${p.baseInstrumentId}/${p.quoteInstrumentId}`),
+    [venuePairs],
+  );
+  const [pair, setPair] = useState('');
+  useEffect(() => {
+    if (!pair && pairOptions.length) setPair(pairOptions[0]!);
+  }, [pair, pairOptions]);
   const [side, setSide] = useState<RfqSide>('RFQ_Buy');
   const [size, setSize] = useState('');
   const [expiry, setExpiry] = useState(60);
@@ -1124,11 +1158,12 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
   // No hardcoded fallbacks — if the backend can't price it, the notional
   // shows "—" rather than misleading the user.
   const { data: pricesByPair } = useQuery({
-    queryKey: ['prices', 'BTC/USDC,ETH/USDC,BTC/ETH,CC/USDC'],
+    queryKey: ['prices', pairOptions.join(',')],
+    enabled: pairOptions.length > 0,
     queryFn: async () => {
       const api = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
       const res = await fetch(
-        `${api}/v1/prices?pairs=BTC/USDC,ETH/USDC,BTC/ETH,CC/USDC`,
+        `${api}/v1/prices?pairs=${encodeURIComponent(pairOptions.join(','))}`,
       );
       if (!res.ok) return {} as Record<string, number>;
       const body = (await res.json()) as {
@@ -1197,11 +1232,13 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
                 className="input"
                 value={pair}
                 onChange={(e) => setPair(e.target.value)}
+                disabled={pairOptions.length === 0}
               >
-                <option>BTC/USDC</option>
-                <option>ETH/USDC</option>
-                <option>BTC/ETH</option>
-                <option>CC/USDC</option>
+                {pairOptions.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="field">
@@ -1471,7 +1508,7 @@ function PolicyModal({ rfq, onClose }: { rfq: Rfq; onClose: () => void }) {
       <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 12 }}>
         Version{' '}
         <span className="mono" style={{ color: 'var(--text)' }}>
-          v1.4
+          {POLICY_VERSION}
         </span>{' '}
         · published by operator. Both trader and dealer can audit this against
         the on-chain config.

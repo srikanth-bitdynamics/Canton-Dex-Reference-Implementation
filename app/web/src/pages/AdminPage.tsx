@@ -4,7 +4,7 @@ import { ledger } from '@/services/ledger';
 import { OperatorApi } from '@/services/operator-api';
 
 const operatorApi = new OperatorApi(
-  (import.meta.env.VITE_OPERATOR_API as string | undefined) ?? '',
+  (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:8080',
 );
 
 type TradingMode = 'TM_OrderBook' | 'TM_Pool' | 'TM_Both';

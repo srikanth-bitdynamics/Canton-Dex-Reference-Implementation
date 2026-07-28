@@ -137,11 +137,12 @@ export class OperatorApi {
     return this.post("/v1/pools/swap", req);
   }
 
-  async listRfqs(): Promise<{
+  /** Scoped to one party: the operator observes every RFQ and quote. */
+  async listRfqs(owner: Party): Promise<{
     rfqs: LedgerRfq[];
     quotes: LedgerRfqQuote[];
   }> {
-    return this.get("/v1/rfq");
+    return this.get(`/v1/rfq?owner=${encodeURIComponent(owner)}`);
   }
 
   async createRfq(req: {

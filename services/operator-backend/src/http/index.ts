@@ -169,6 +169,11 @@ export interface HttpServerConfig {
   ledgerToken?: string;
 }
 
+/** True for "0", "0.0000000000", "-0.0" etc, without parsing. */
+function isZero(d: string): boolean {
+  return /^-?0*\.?0*$/.test(d);
+}
+
 export function startHttpServer(cfg: HttpServerConfig): {
   close: () => Promise<void>;
   url: string;
@@ -437,15 +442,32 @@ async function routeRequest(
     const ids = idsParam
       ? idsParam.split(",").map((s) => s.trim()).filter(Boolean)
       : null;
+    // Both config templates are `signatory admin` with no observers, so the
+    // operator cannot see either. Querying as the operator returned nothing
+    // and every field fell back to null. Read as the parties that sign them,
+    // and merge -- the lpRegistrar signs the LP-token configs.
+    //
+    // This only reaches instruments issued by a registry this deployment
+    // hosts. Metadata for a foreign registry's instrument comes from that
+    // registry's off-ledger metadata-v1 API, which registry-client does not
+    // implement yet; those instruments still report null here.
     const q = async <T>(templateId: string): Promise<T[]> => {
-      try {
-        return await backend.ledger.query<T>({
-          templateId,
-          observingParty: backend.operatorParty,
-        });
-      } catch {
-        return [];
+      const parties = [
+        cfg.context.admin,
+        cfg.context.lpRegistrar,
+        backend.operatorParty,
+      ].filter((p, i, a) => p && a.indexOf(p) === i);
+      const out: T[] = [];
+      for (const observingParty of parties) {
+        try {
+          out.push(
+            ...(await backend.ledger.query<T>({ templateId, observingParty })),
+          );
+        } catch {
+          // A party this token cannot read is not an error here; try the next.
+        }
       }
+      return out;
     };
     const cfgs = await q<{ instrumentId: string; decimals?: number }>(
       "CantonDex.Registry.V2:InstrumentConfig",
@@ -630,7 +652,9 @@ async function routeRequest(
     respondJson(res, 200, {
       pair,
       hours,
-      points: rows.map((r) => ({ ts: r.ts, price: parseFloat(r.priceAfter) })),
+      // priceAfter is stored exactly; serve the string rather than a float,
+      // consistent with every other amount on this API.
+      points: rows.map((r) => ({ ts: r.ts, price: r.priceAfter })),
     });
     return;
   }
@@ -671,6 +695,7 @@ async function routeRequest(
     const last = rows[rows.length - 1];
     const priceChange =
       rows.length >= 2 && first && last
+        // A derived ratio, not an amount: a float is the honest type here.
         ? (parseFloat(last.priceAfter) - parseFloat(first.priceAfter)) /
           parseFloat(first.priceAfter)
         : null;
@@ -951,17 +976,21 @@ async function routeRequest(
     // Project them into the swapper-oriented shape the dApp renders: a positive
     // baseDelta means the pool GAINED base, i.e. the swapper SENT base and
     // received quote (and vice-versa).
+    // The deltas are stored exactly, as scaled decimal strings. Deriving the
+    // direction and magnitude textually keeps them that way: parseFloat +
+    // Math.abs round-tripped them through IEEE-754 and emitted JSON numbers,
+    // losing the trailing scale on a feed where every other amount is a
+    // string.
+    const magnitude = (d: string) => (d.startsWith("-") ? d.slice(1) : d);
     const mapped = rows.map((r) => {
       const [base, quote] = r.pair.split("/");
-      const bd = parseFloat(r.baseDelta);
-      const qd = parseFloat(r.quoteDelta);
-      const sentBase = bd > 0;
+      const sentBase = !r.baseDelta.startsWith("-") && !isZero(r.baseDelta);
       return {
         ...r,
         inputInstrumentId: sentBase ? base : quote,
         outputInstrumentId: sentBase ? quote : base,
-        inputAmount: Math.abs(sentBase ? bd : qd),
-        outputAmount: Math.abs(sentBase ? qd : bd),
+        inputAmount: magnitude(sentBase ? r.baseDelta : r.quoteDelta),
+        outputAmount: magnitude(sentBase ? r.quoteDelta : r.baseDelta),
         // The indexer does not currently capture the swapper party.
         trader: null,
       };

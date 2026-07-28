@@ -6,13 +6,11 @@
 //   - CantonDex.Instrument.InstrumentConfiguration per tradable instrument
 //   - the same, under the lpRegistrar, per LP token
 //   - CantonDex.Instrument.Credentials:Credential for the holders that need one
-//   - CantonDex.Registry.V2:Registry -- the V2 registry, which IS the
-//     AllocationFactory / SettlementFactory / TransferFactory (they are
-//     interface views of the same contract, so its cid is the value for
-//     CANTON_ALLOC_FACTORY_CID and CANTON_SETTLE_FACTORY_CID)
-//   - CantonDex.Registry.V2:InstrumentConfig per V2 instrument, via
-//     Registry_RegisterInstrument. Nothing else creates these: Registry_Mint
-//     needs one and never creates one lazily.
+//   - CantonDex.Registry.V2:Registry under the lpRegistrar -- required for
+//     any liquidity move; the allocation, settlement and transfer factories
+//     are interface views of it
+//   - optionally, a second registry plus one InstrumentConfig per instrument
+//     in `registryV2`, for assets this deployment mints itself
 //
 // This script is idempotent: it checks whether each contract already
 // exists (by template + payload key) and only creates the missing ones.
@@ -181,18 +179,12 @@ async function ensureRegistry(
       argument: { admin, users },
     },
   });
-  // The AllocationFactory / SettlementFactory / TransferFactory are interface
-  // views of this same contract, so this one cid answers for all three -- but
-  // only for THIS admin. Each registry admin has its own.
+  // One cid answers for all three factory interfaces, per admin.
   log.info("Registry.V2 created", { admin, contractId });
   return contractId;
 }
 
-/**
- * Register one instrument on the V2 registry. This is what mints go through:
- * Registry_Mint takes the InstrumentConfig cid and will not register an
- * instrument on demand, so every mintable instrument has to be listed here.
- */
+/** Register one instrument on the V2 registry; required before any mint. */
 async function ensureV2Instrument(
   ledger: JsonApiLedger,
   admin: string,
@@ -284,8 +276,7 @@ async function main(): Promise<void> {
   const token = required("CANTON_LEDGER_TOKEN");
   const admin = required("CANTON_ADMIN");
   const lpRegistrar = required("CANTON_LP_REGISTRAR");
-  // Read lazily: it names the registry's `users`, so it is only needed once
-  // there is a registry to create.
+  // Lazy: only needed once there is a registry to create.
   const operator = () => required("CANTON_OPERATOR");
   const userId = process.env.CANTON_USER_ID ?? "ledger-api-user";
   const dryRun = process.env.BOOTSTRAP_DRY_RUN === "1";
@@ -331,27 +322,15 @@ async function main(): Promise<void> {
     await ensureCredential(ledger, cred, dryRun);
   }
 
-  // 4. The LP registry. This one is not optional: the pool's LP token is
-  //    issued by THIS repo, and Lp/Instrument.daml builds its allocation
-  //    specs with `admin = lpRegistrar` (Lp/Instrument.daml:53), while
-  //    Registry.V2 asserts `spec.admin == admin` (Registry/V2.daml:564).
-  //    Without a Registry.V2 whose admin is the lpRegistrar, add- and
-  //    remove-liquidity cannot allocate at all -- whatever the pool trades,
-  //    including two instruments from a foreign registry.
-  //
-  //    No instruments are registered on it: the LP mint/burn path runs
-  //    through the allocation and settlement factories and never reads an
-  //    InstrumentConfig.
+  // 4. The LP registry, not optional: Lp/Instrument.daml builds its specs with
+  //    admin = lpRegistrar and Registry.V2 asserts spec.admin == admin, so
+  //    without it no pool can allocate a liquidity move. No instruments are
+  //    registered on it -- the LP path never reads an InstrumentConfig.
   await ensureRegistry(ledger, lpRegistrar, [operator(), admin], dryRun);
 
   // 5. Optionally, a registry for instruments this deployment mints itself.
-  //    Opt-in via a `registryV2` block in bootstrap-registry.json: a
-  //    deployment whose users bring their own Token Standard V2 assets does
-  //    not need one, and creating a mint-capable registry by default is not
-  //    something a bootstrap should do silently.
-  //
-  //    Registry_Mint needs an InstrumentConfig for the instrument and never
-  //    creates one lazily, so anything mintable has to be listed here.
+  //    Opt-in: a deployment whose users bring their own assets needs none, and
+  //    Registry_Mint requires an InstrumentConfig it never creates lazily.
   const registryV2 = cfg.registryV2;
   if (!registryV2) {
     log.info("no registryV2 block configured; skipping the minting registry");

@@ -71,12 +71,31 @@ export CANTON_LEDGER_URL=...
 export CANTON_LEDGER_TOKEN=...
 export CANTON_ADMIN=...
 export CANTON_LP_REGISTRAR=...
+export CANTON_OPERATOR=...
 node --import tsx scripts/bootstrap-registry.ts
 ```
 
 The script is idempotent — running it twice is a no-op. See
 [Registry Integration](registry-integration.md) for what
 contracts are created and why.
+
+Among them is a `Registry.V2` under the **lpRegistrar**. That one is not
+optional: the pool's LP token is issued by this repository, and its
+allocation specs name the lpRegistrar as admin, which `Registry.V2` asserts
+against its own. Without it, add- and remove-liquidity cannot allocate —
+whatever the pool trades.
+
+A second registry, under `CANTON_ADMIN`, is created only if you add a
+`registryV2` block to `scripts/bootstrap-registry.json`. That one is for
+instruments a deployment mints itself; a deployment whose users bring their
+own Token Standard V2 assets does not need it.
+
+`CANTON_ALLOC_FACTORY_CID` and `CANTON_SETTLE_FACTORY_CID` are a
+single-registry stopgap (see `FixedRegistry` in
+`services/operator-backend/src/testnet-server.ts`), standing in for the
+per-admin registry lookup the design calls for. In a deployment serving
+foreign tokens, each admin's factory cid comes from that admin's own
+registry API, not from these variables.
 
 ## Environment Variables
 

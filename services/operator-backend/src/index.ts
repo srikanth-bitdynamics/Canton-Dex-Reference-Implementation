@@ -83,7 +83,7 @@ export class OperatorBackend {
 }
 
 export * from "./types.js";
-export { POLICY_VERSION, verifyReceipt } from "./policy/index.js";
+export { POLICY_VERSION, POLICY_HASH, verifyReceipt } from "./policy/index.js";
 export type { LedgerSubmitter } from "./ledger/index.js";
 export { LedgerError } from "./ledger/index.js";
 export { InMemoryLedger } from "./ledger/in-memory.js";

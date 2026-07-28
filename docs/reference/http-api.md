@@ -140,7 +140,9 @@ so the unfiltered view is admin-only.
 
 ### `GET /v1/rfq/history?trader=&limit=` → indexer rows
 
-Historical RFQ acceptances.
+Settled RFQ acceptances for one trader. **400** without `?trader=`, unless the
+request carries the admin token — each row names the trader, the pair, the
+winning dealer and its rank.
 
 ### `GET /v1/admin/config` → `Record<string, string>`
 

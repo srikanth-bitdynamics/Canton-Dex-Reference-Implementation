@@ -121,6 +121,13 @@ describe("GET /v1/rfq scoping", () => {
     assert.equal(r.body.quotes.length, 2, "its own quotes on both");
   });
 
+  it("refuses an unscoped /v1/rfq/history without the admin token", async () => {
+    // Same exposure as /v1/rfq: each settled row names the trader, the pair,
+    // the winning dealer and its rank.
+    const r = await get("/v1/rfq/history");
+    assert.notEqual(r.status, 200, "the settled negotiation history must not be open");
+  });
+
   it("the admin token still gets the unfiltered view", async () => {
     const r = await get("/v1/rfq", ADMIN_TOKEN);
     assert.equal(r.status, 200);

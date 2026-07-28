@@ -1048,7 +1048,17 @@ async function routeRequest(
       respondJson(res, 503, { error: "indexer disabled" });
       return;
     }
+    // Scoped like /v1/rfq: a settled row names the trader, the pair, the
+    // winning dealer and that dealer's rank, so the unfiltered sweep is
+    // admin-only.
     const trader = url.searchParams.get("trader");
+    if (!trader && !(adminToken && bearerMatches(req.headers["authorization"], adminToken))) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "missing ?trader= query parameter; the unfiltered view requires the admin token",
+      );
+    }
     const limit = Math.min(
       parseInt(url.searchParams.get("limit") ?? "100", 10),
       500,

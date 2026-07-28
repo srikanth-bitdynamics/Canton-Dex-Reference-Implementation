@@ -13,6 +13,7 @@ import {
   OperatorBackend,
   verifyReceipt,
   POLICY_VERSION,
+  POLICY_HASH,
 } from "../src/index.ts";
 import type {
   ContractId,
@@ -88,17 +89,31 @@ function setupLedger(): InMemoryLedger {
       ctx.archive(cid as string);
     }
 
-    const valid = considered.filter(
-      (q) => Date.parse(q.expiresAt) > Date.parse(arg.currentTime),
-    );
+    // Rfq.daml:112-116 asserts EVERY considered quote is still unexpired,
+    // and the choice is consuming -- so a lapsed cid aborts after the Rfq and
+    // its quotes would have been archived.
+    for (const q of considered) {
+      if (Date.parse(q.expiresAt) <= Date.parse(arg.currentTime)) {
+        throw new Error("Rfq_Accept: considered quote has expired");
+      }
+    }
+    const valid = considered;
+    // Mirrors policyCmp in trading/CantonDex/Dex/Rfq.daml (v2.0): tier ->
+    // LATER expiresAt -> EARLIER postedAt -> dealer party text. This handler
+    // used to reproduce the old price-based v1.4 ordering, so the suite
+    // agreed with itself while disagreeing with the chain -- it structurally
+    // could not catch the divergence it existed to catch.
     const ranked = [...valid].sort((a, b) => {
       const tierA = a.tier === "TierTrusted" ? 0 : 1;
       const tierB = b.tier === "TierTrusted" ? 0 : 1;
       if (tierA !== tierB) return tierA - tierB;
-      const pa = parseFloat(a.price);
-      const pb = parseFloat(b.price);
-      if (pa !== pb) return rfq.side === "RFQ_Buy" ? pa - pb : pb - pa;
-      return Date.parse(a.postedAt) - Date.parse(b.postedAt);
+      const expA = Date.parse(a.expiresAt);
+      const expB = Date.parse(b.expiresAt);
+      if (expA !== expB) return expB - expA;
+      const pa = Date.parse(a.postedAt);
+      const pb = Date.parse(b.postedAt);
+      if (pa !== pb) return pa - pb;
+      return a.dealer < b.dealer ? -1 : a.dealer > b.dealer ? 1 : 0;
     });
     const rankedDealers = ranked.map((q, i) => ({
       party: q.dealer,
@@ -111,7 +126,7 @@ function setupLedger(): InMemoryLedger {
 
     const receipt: PolicyReceipt = {
       policyVersion: POLICY_VERSION,
-      policyHash: "sha256:rfq-policy-v1.4",
+      policyHash: POLICY_HASH,
       rfqId: rfq.rfqId,
       rankedDealers,
       acceptedDealer: accepted.dealer,
@@ -267,7 +282,7 @@ test("RFQ accept end-to-end through operator backend", async () => {
 });
 
 test("policy version is exported", () => {
-  assert.equal(POLICY_VERSION, "v1.4");
+  assert.equal(POLICY_VERSION, "v2.0");
 });
 
 test("RFQ list / create / cancel through operator backend", async () => {

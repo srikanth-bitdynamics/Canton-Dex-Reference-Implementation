@@ -272,7 +272,7 @@ describe("aggregateBook", () => {
       }),
     ];
     const book = aggregateBook(orders, NOW);
-    assert.equal(book.bids[0]!.size, "1");
+    assert.equal(book.bids[0]!.size, "1.0000000000");
     assert.equal(book.bids[0]!.count, 1);
   });
 });

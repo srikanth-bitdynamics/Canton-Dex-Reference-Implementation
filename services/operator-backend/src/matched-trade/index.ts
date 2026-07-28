@@ -16,14 +16,10 @@ export interface MatchedTradeSettleInput {
   tradeCid: ContractId<"MatchedTrade">;
   batchesByAdmin: Map<Party, SettlementBatchV2>;
   /**
-   * Trade allocation requests to consume. Normally EMPTY.
-   *
-   * MatchedTrade_Settle fetches and archives each of these as its first act,
-   * but a counterparty that authored its allocation via
-   * AllocationRequest_Accept has already archived its own request. Passing a
-   * consumed cid therefore aborts the choice before a single holding is read
-   * -- and fails looking exactly like a visibility error. Supply cids only for
-   * requests that are provably still active.
+   * Trade allocation requests to consume. Normally EMPTY: the settle archives
+   * each as its first act, and a counterparty that funded via
+   * AllocationRequest_Accept has already archived its own. Pass only cids that
+   * are provably still active.
    */
   allocationRequestCids: ContractId<"TradeAllocationRequest">[];
   /** When set, fees accrue against the pair; null/omitted = no accrual. */
@@ -97,18 +93,11 @@ export class MatchedTradeService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
-        // MatchedTrade_Settle reaches SettlementFactory_SettleBatch ->
-        // Allocation_Settle -> allocation_settleImpl, which fetches and
-        // archives the locked holdings behind each counterparty allocation.
-        // A registry Holding is `signatory admin, owner`, so the operator is
-        // not a stakeholder and cannot see them.
-        //
-        // The visibility has to come from the registry, not from `readAs`:
-        // `admin` here is the registry admin of the traded instrument (the DSO
-        // for Amulet), never a party this participant hosts. The standard's
-        // answer is the per-allocation choice context, whose `disclosedContracts`
-        // carry the backing holdings -- registry-client does not implement that
-        // surface yet, so this settle is still limited to a co-hosted registry.
+        // The settle archives holdings that are `signatory admin, owner`,
+        // which the operator cannot see. `admin` is the instrument's registry
+        // admin, so the disclosure has to come from that registry's
+        // per-allocation choice context, not from readAs. Until
+        // registry-client serves it, this needs a co-hosted registry.
         commandId: `mt-settle:${input.tradeCid}`,
         disclosure: adminEntries.flatMap((e) => e.disclosure as never),
         command: {
@@ -171,9 +160,7 @@ export class MatchedTradeService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
-        // Same visibility constraint as the settle: MatchedTrade_Cancel
-        // reaches allocation_cancelImpl, which fetches each locked holding,
-        // archives it and re-creates it unlocked.
+        // Same visibility constraint as the settle.
         commandId: `mt-cancel:${input.tradeCid}`,
         disclosure: adminEntries.flatMap((e) => e.disclosure as never),
         command: {

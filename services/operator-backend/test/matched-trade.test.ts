@@ -75,7 +75,12 @@ describe("MatchedTradeService", () => {
 
     await svc.settle({
       tradeCid: "#trade:0" as ContractId<"MatchedTrade">,
-      allocationRequestCids: ["#req:0" as ContractId<"TradeAllocationRequest">],
+      // Empty on purpose: the settle fetches and archives every cid passed
+      // here as its FIRST act, and a counterparty that authored via
+      // AllocationRequest_Accept has already archived its own request. The
+      // old fixture passed "#req:0" and asserted the broken shape around it,
+      // so this suite was green while the choice could not decode at all.
+      allocationRequestCids: [],
       batchesByAdmin: new Map<Party, { allocationCids: ContractId<"Allocation">[] }>([
         ["adminA" as Party, { allocationCids: ["#a:0" as ContractId<"Allocation">] }],
         ["adminB" as Party, { allocationCids: ["#b:0" as ContractId<"Allocation">] }],
@@ -87,16 +92,54 @@ describe("MatchedTradeService", () => {
     const cmd = submit.command as {
       choice: string;
       argument: {
-        batchesByAdmin: Record<string, { factoryCid: string; extraArgs: { context: { values: Record<string, unknown> } } }>;
+        // GenMap: an ARRAY of [key, value] pairs, not an object.
+        batchesByAdmin: Array<[string, {
+          allocations: Array<{
+            allocationCid: string;
+            extraTransferLegSides: unknown[];
+            nextIterationFunding: unknown;
+          }>;
+          factoryCid: string;
+          extraArgs: { context: { values: Record<string, unknown> } };
+        }]>;
+        allocationRequests: string[];
+        dexPairCid: string | null;
       };
     };
     assert.equal(cmd.choice, "MatchedTrade_Settle");
-    const adminABatch = cmd.argument.batchesByAdmin.adminA;
-    const adminBBatch = cmd.argument.batchesByAdmin.adminB;
+
+    assert.ok(
+      Array.isArray(cmd.argument.batchesByAdmin),
+      "batchesByAdmin is a GenMap, encoded as an array of pairs",
+    );
+    const byAdmin = new Map(cmd.argument.batchesByAdmin);
+    const adminABatch = byAdmin.get("adminA");
+    const adminBBatch = byAdmin.get("adminB");
     assert.ok(adminABatch, "adminA batch is present");
     assert.ok(adminBBatch, "adminB batch is present");
-    assert.deepEqual(adminABatch.extraArgs.context.values, { "ctx.adminA": true });
-    assert.deepEqual(adminBBatch.extraArgs.context.values, { "ctx.adminB": true });
+
+    // SettlementBatchV2 is a plain record of FinalizedAllocation, not the
+    // vendored upstream variant: no `tag`, and `allocations`, not
+    // `allocationCids`.
+    assert.equal(
+      (adminABatch as unknown as { tag?: string }).tag,
+      undefined,
+      "no variant tag -- SettlementBatchV2 is a record",
+    );
+    assert.deepEqual(adminABatch!.allocations, [
+      {
+        allocationCid: "#a:0",
+        extraTransferLegSides: [],
+        nextIterationFunding: null,
+      },
+    ]);
+
+    // Required field on the choice; omitting it is a decode failure.
+    assert.equal(cmd.argument.dexPairCid, null);
+    assert.deepEqual(cmd.argument.allocationRequests, []);
+
+    assert.deepEqual(adminABatch!.extraArgs.context.values, { "ctx.adminA": true });
+    assert.deepEqual(adminBBatch!.extraArgs.context.values, { "ctx.adminB": true });
     assert.deepEqual(
       submit.disclosure?.map((d) => d.createdEventBlob),
       ["factory-adminA", "context-adminA", "factory-adminB", "context-adminB"],

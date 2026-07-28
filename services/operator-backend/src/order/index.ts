@@ -55,11 +55,28 @@ export interface MatchRunResult {
   sellCid: ContractId<"Order">;
   quantity: string;
   price: string;
-  matchedTradeCid?: ContractId<"MatchedTrade">;
+  /** Settlement reference this match settled under. */
+  matchId: string;
   /** Order the remainder rolled forward to; null when the side filled fully. */
   buyRemainderCid?: ContractId<"Order"> | null;
   sellRemainderCid?: ContractId<"Order"> | null;
   error?: string;
+}
+
+/** Result of `OrderMatchExecution_Execute`. */
+interface OrderMatchExecuteResult {
+  /** Remainder allocation the settle rolled forward; null on a full fill. */
+  buyerNextAllocationCid: ContractId<"Allocation"> | null;
+  sellerNextAllocationCid: ContractId<"Allocation"> | null;
+}
+
+/** Where an order stands part-way through a matching run. */
+interface LiveOrder {
+  cid: ContractId<"Order">;
+  allocationCid: ContractId<"Allocation"> | null;
+  remainingQty: bigint;
+  /** Budget still locked behind the order, scaled. */
+  committed: bigint;
 }
 
 export interface OrderMatchInput {
@@ -277,112 +294,162 @@ export class OrderService {
   }
 
   /**
-   * Discover crossing orders for a pair and create a `MatchedTrade`
-   * contract per match. This is the bridge from the pure matcher (which
-   * returns abstract pairs) to the on-ledger TradingAppV2 settlement
-   * pattern. Each MatchedTrade then becomes a target for
-   * `MatchedTrade_RequestAllocations` → trader-side allocation accept →
-   * `MatchedTrade_Settle` via the MatchedTradeService.
+   * Discover crossing orders for a pair and settle each one atomically via
+   * `OrderMatchExecution_Execute`: a single submission that re-checks the fill
+   * against both orders' own terms, builds the base/quote transfer legs, and
+   * runs the settle batch that consumes both funding allocations. The choice
+   * returns the remainder allocation each side rolls forward to, which the
+   * fill recording then binds onto the remainder order.
    *
-   * Each match is created independently; one failure doesn't abort the
+   * Each match is settled independently; one failure doesn't abort the
    * rest of the run.
    */
   async runMatching(input: {
     baseInstrumentId: string;
     quoteInstrumentId: string;
-    venue: Party;
     admin: Party;
   }): Promise<MatchRunResult[]> {
     const matches = await this.findMatches(input);
+    if (matches.length === 0) return [];
+    const [factories, ctx] = await Promise.all([
+      this.registry.getFactories(input.admin),
+      this.choiceContext(input.admin),
+    ]);
     const out: MatchRunResult[] = [];
     // One order can fill against several counterparties in a single run, and
-    // each fill archives it. Track the cid its remainder rolled forward to so
-    // the next match exercises the live contract, not the archived one.
-    const liveCid = new Map<string, ContractId<"Order">>();
-    const cidOf = (o: Order): ContractId<"Order"> =>
-      liveCid.get(o.contractId) ?? o.contractId;
-    const setLive = (o: Order, remainder: ContractId<"Order"> | null): void => {
-      if (remainder) liveCid.set(o.contractId, remainder);
-      else liveCid.delete(o.contractId);
+    // each fill archives it and consumes its allocation. Track what the
+    // remainder rolled forward to so the next match targets the live contract
+    // and the live allocation, not the archived ones.
+    const live = new Map<string, LiveOrder>();
+    const stateOf = (o: Order): LiveOrder => {
+      const carried = live.get(o.contractId);
+      if (carried) return carried;
+      const qty = dec.parseDecimal(o.remainingQty);
+      return {
+        cid: o.contractId,
+        allocationCid: o.allocationCid,
+        remainingQty: qty,
+        // What placement locked: quote for a bid, base for an ask.
+        committed:
+          o.side === "Bid" ? dec.mul(qty, dec.parseDecimal(o.limitPrice)) : qty,
+      };
     };
+    const advance = (o: Order, next: LiveOrder | null): void => {
+      if (next) live.set(o.contractId, next);
+      else live.delete(o.contractId);
+    };
+
     for (const m of matches) {
-      let matchedTradeCid: ContractId<"MatchedTrade"> | undefined;
+      // Deterministic, replay-safe: derived from the matched order cids + the
+      // cleared price/qty, NOT Date.now(), so a retry of the same match
+      // collapses onto the cached submission rather than settling it twice.
+      const matchId = `${m.buy.contractId.slice(0, 12)}:${m.sell.contractId.slice(0, 12)}:${m.price}:${m.quantity}`;
       try {
-        // Quote-leg amount = price * quantity at 10dp, round-half-even, via
-        // the BigInt decimal module so it agrees with the on-ledger Decimal
-        // multiply to the last digit. Never IEEE-754 floats.
-        const quoteAmount = dec.formatDecimal(
-          dec.mul(dec.parseDecimal(m.price), dec.parseDecimal(m.quantity)),
-        );
-        // Mirrors mkMatchTransferLegs in OrderMatchExecution.daml: base
-        // delivery first, then quote payment, each with a transferLegId and
-        // Account-shaped parties. Typed, so a bare Party or a missing id is a
-        // compile error rather than a rejected submission.
+        const buy = stateOf(m.buy);
+        const sell = stateOf(m.sell);
+        if (!buy.allocationCid || !sell.allocationCid) {
+          throw new Error(`match ${matchId}: a matched order has no funding allocation`);
+        }
+        // Each side's spend out of its locked budget: the buyer pays
+        // price * quantity, the seller delivers quantity. Computed at 10dp
+        // round-half-even through the BigInt decimal module so it agrees with
+        // the on-ledger Decimal multiply to the last digit. Never IEEE-754.
+        const qty = dec.parseDecimal(m.quantity);
+        const quoteSpend = dec.mul(dec.parseDecimal(m.price), qty);
+        // The choice rolls forward `committed - spend`. A side that fills
+        // completely is about to archive, so it must roll nothing forward:
+        // hand it exactly this fill's spend so the settle releases the rest of
+        // its locked budget. A buyer filling below their limit has such a
+        // surplus, and behind an archived order it has no release path.
+        const buyBudget = qty >= buy.remainingQty ? quoteSpend : buy.committed;
+        const sellBudget = qty >= sell.remainingQty ? qty : sell.committed;
         const acct = (owner: Party): V2Account => ({
           owner,
           provider: null,
           id: "",
         });
-        const transferLegs: V2TransferLeg[] = [
-          {
-            transferLegId: "base-delivery",
-            sender: acct(m.sell.trader),
-            receiver: acct(m.buy.trader),
-            instrumentId: m.buy.baseInstrumentId,
-            amount: m.quantity,
-            meta: { values: {} } as never,
-          },
-          {
-            transferLegId: "quote-payment",
-            sender: acct(m.buy.trader),
-            receiver: acct(m.sell.trader),
-            instrumentId: m.buy.quoteInstrumentId,
-            amount: quoteAmount,
-            meta: { values: {} } as never,
-          },
-        ];
-        // Deterministic, replay-safe commandId: derived once from
-        // the matched order cids + the cleared price/qty, NOT Date.now(), so a
-        // retry of the same match collapses onto the cached submission rather
-        // than creating a duplicate MatchedTrade.
-        const commandId = `match:${m.buy.contractId.slice(0, 12)}:${m.sell.contractId.slice(0, 12)}:${m.price}:${m.quantity}`;
-        matchedTradeCid = await retryOnContention(() =>
-          this.ledger.submit<ContractId<"MatchedTrade">>({
-            actAs: [input.venue],
-            commandId,
+        const executed = await retryOnContention(() =>
+          this.ledger.submit<OrderMatchExecuteResult>({
+            actAs: [this.operatorParty],
+            commandId: `order-match:${matchId}`,
+            // The settle archives holdings that are `signatory admin, owner`,
+            // which the operator cannot see, so the disclosure has to come
+            // from the instrument registry's factories + choice context.
+            disclosure: [...factories.disclosure, ...ctx.disclosure],
             command: {
-              kind: "create",
-              templateId: "CantonDex.Dex.MatchedTrade:MatchedTrade",
+              kind: "createAndExercise",
+              templateId:
+                "CantonDex.Dex.OrderMatchExecution:OrderMatchExecution",
               argument: {
-                venue: input.venue,
-                admin: input.admin,
-                transferLegs,
-                settlementDeadline: null,
-                policyReceipt: null,
+                operator: this.operatorParty,
+                matchId,
+                match: {
+                  buyerAccount: acct(m.buy.trader),
+                  sellerAccount: acct(m.sell.trader),
+                  baseInstrumentId: m.buy.baseInstrumentId,
+                  quoteInstrumentId: m.buy.quoteInstrumentId,
+                  fillQty: m.quantity,
+                  fillPrice: m.price,
+                },
+                buyOrderCid: buy.cid,
+                sellOrderCid: sell.cid,
+                buyerAllocationCid: buy.allocationCid,
+                sellerAllocationCid: sell.allocationCid,
+                // Funding is a TextMap: instrument id -> locked amount.
+                buyerCommittedFunding: {
+                  [m.buy.quoteInstrumentId]: dec.formatDecimal(buyBudget),
+                },
+                sellerCommittedFunding: {
+                  [m.sell.baseInstrumentId]: dec.formatDecimal(sellBudget),
+                },
+              },
+              choice: "OrderMatchExecution_Execute",
+              choiceArgument: {
+                factoryCid: factories.settlementFactoryCid,
+                extraArgs: ctx.extraArgs,
               },
             },
           }),
         );
-        // After the trade, not before: a fill recorded against a trade that
-        // failed to create would shrink the order with nothing to settle it.
+        // The settle consumed both funding allocations, so the fill binds the
+        // remainder the batch minted. Binding the original cid here is what
+        // leaves a fully filled order's collateral locked with no release path.
+        const buyNext = executed.buyerNextAllocationCid ?? null;
         const buyRemainderCid = await this.recordFill({
-          orderCid: cidOf(m.buy),
-          allocationCid: m.buy.allocationCid,
+          orderCid: buy.cid,
+          allocationCid: buyNext,
           filledQty: m.quantity,
         });
-        setLive(m.buy, buyRemainderCid);
+        advance(
+          m.buy,
+          buyRemainderCid && {
+            cid: buyRemainderCid,
+            allocationCid: buyNext,
+            remainingQty: buy.remainingQty - qty,
+            committed: buy.committed - quoteSpend,
+          },
+        );
+        const sellNext = executed.sellerNextAllocationCid ?? null;
         const sellRemainderCid = await this.recordFill({
-          orderCid: cidOf(m.sell),
-          allocationCid: m.sell.allocationCid,
+          orderCid: sell.cid,
+          allocationCid: sellNext,
           filledQty: m.quantity,
         });
-        setLive(m.sell, sellRemainderCid);
+        advance(
+          m.sell,
+          sellRemainderCid && {
+            cid: sellRemainderCid,
+            allocationCid: sellNext,
+            remainingQty: sell.remainingQty - qty,
+            committed: sell.committed - qty,
+          },
+        );
         out.push({
           buyCid: m.buy.contractId,
           sellCid: m.sell.contractId,
           quantity: m.quantity,
           price: m.price,
-          matchedTradeCid,
+          matchId,
           buyRemainderCid,
           sellRemainderCid,
         });
@@ -392,7 +459,7 @@ export class OrderService {
           sellCid: m.sell.contractId,
           quantity: m.quantity,
           price: m.price,
-          matchedTradeCid,
+          matchId,
           error: e instanceof Error ? e.message : String(e),
         });
       }

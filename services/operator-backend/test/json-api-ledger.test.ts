@@ -94,4 +94,50 @@ describe("JsonApiLedger.submit", () => {
 
     assert.deepEqual(out, { ok: true, cid: "#x:1" });
   });
+
+  // A createAndExercise emits both a created and an exercised event. The
+  // caller wants the choice result; the created contract is normally already
+  // archived by the choice that consumed it.
+  it("returns the choice result, not the created cid, for createAndExercise", async () => {
+    const ledger = new JsonApiLedger({
+      baseUrl: "http://ledger.example",
+      token: "token",
+      applicationId: "app",
+      fetchImpl: (async () =>
+        jsonResponse({
+          updateId: "u3",
+          events: [
+            { created: { contractId: "#exec:1" } },
+            {
+              exercised: {
+                exerciseResult: {
+                  buyerNextAllocationCid: "#alloc:next",
+                  sellerNextAllocationCid: null,
+                },
+              },
+            },
+          ],
+        })) as typeof fetch,
+    });
+
+    const out = await ledger.submit<{
+      buyerNextAllocationCid: string | null;
+      sellerNextAllocationCid: string | null;
+    }>({
+      actAs: ["Alice" as never],
+      commandId: "match-1",
+      command: {
+        kind: "createAndExercise",
+        templateId: "CantonDex.Dex.OrderMatchExecution:OrderMatchExecution",
+        argument: {},
+        choice: "OrderMatchExecution_Execute",
+        choiceArgument: {},
+      },
+    });
+
+    assert.deepEqual(out, {
+      buyerNextAllocationCid: "#alloc:next",
+      sellerNextAllocationCid: null,
+    });
+  });
 });

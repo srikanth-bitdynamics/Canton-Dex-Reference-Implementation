@@ -98,14 +98,17 @@ export class MatchedTradeService {
       this.ledger.submit({
         actAs: [this.operatorParty],
         // MatchedTrade_Settle reaches SettlementFactory_SettleBatch ->
-        // Allocation_Settle -> allocation_settleImpl, which FETCHES and
-        // ARCHIVES the locked holdings behind each counterparty allocation. A
-        // registry Holding is `signatory admin, owner`, so the operator is not
-        // a stakeholder and cannot see them; without this the settle fails
-        // CONTRACT_NOT_FOUND on a counterparty's own collateral, exactly as
-        // the pool settles did. Read as each batch's admin -- a signatory of
-        // every holding it issued, wherever the owner is hosted.
-        readAs: Array.from(new Set(adminEntries.map((e) => e.admin))),
+        // Allocation_Settle -> allocation_settleImpl, which fetches and
+        // archives the locked holdings behind each counterparty allocation.
+        // A registry Holding is `signatory admin, owner`, so the operator is
+        // not a stakeholder and cannot see them.
+        //
+        // The visibility has to come from the registry, not from `readAs`:
+        // `admin` here is the registry admin of the traded instrument (the DSO
+        // for Amulet), never a party this participant hosts. The standard's
+        // answer is the per-allocation choice context, whose `disclosedContracts`
+        // carry the backing holdings -- registry-client does not implement that
+        // surface yet, so this settle is still limited to a co-hosted registry.
         commandId: `mt-settle:${input.tradeCid}`,
         disclosure: adminEntries.flatMap((e) => e.disclosure as never),
         command: {
@@ -168,10 +171,9 @@ export class MatchedTradeService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
-        // Same reason as the settle: MatchedTrade_Cancel reaches
-        // allocation_cancelImpl, which fetches each locked holding, archives
-        // it and re-creates it unlocked.
-        readAs: Array.from(new Set(input.allocationsByAdmin.keys())),
+        // Same visibility constraint as the settle: MatchedTrade_Cancel
+        // reaches allocation_cancelImpl, which fetches each locked holding,
+        // archives it and re-creates it unlocked.
         commandId: `mt-cancel:${input.tradeCid}`,
         disclosure: adminEntries.flatMap((e) => e.disclosure as never),
         command: {

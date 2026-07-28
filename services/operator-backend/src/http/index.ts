@@ -1099,8 +1099,27 @@ async function routeRequest(
   // === operator-driven writes ===========================================
 
   if (method === "GET" && path === "/v1/rfq") {
-    const result = await backend.rfq.list();
-    respondJson(res, 200, result);
+    // Scoped to one party. The operator observes every Rfq and RfqQuote, so an
+    // unscoped read exposes who is asking for a quote, on what, in what size,
+    // and the price every dealer answered. A trader sees the RFQs they raised
+    // or were whitelisted for; a dealer sees the quotes they posted.
+    const owner = url.searchParams.get("owner");
+    if (!owner) {
+      if (!adminToken || !bearerMatches(req.headers["authorization"], adminToken)) {
+        throw new HttpError(
+          400,
+          "bad_request",
+          "missing ?owner= query parameter; the unfiltered view requires the admin token",
+        );
+      }
+      respondJson(res, 200, await backend.rfq.list());
+      return;
+    }
+    const { rfqs, quotes } = await backend.rfq.list();
+    respondJson(res, 200, {
+      rfqs: rfqs.filter((r) => r.trader === owner || r.whitelist.includes(owner)),
+      quotes: quotes.filter((q) => q.trader === owner || q.dealer === owner),
+    });
     return;
   }
 

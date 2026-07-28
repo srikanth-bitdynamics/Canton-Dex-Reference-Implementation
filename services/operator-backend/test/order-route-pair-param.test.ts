@@ -1,9 +1,6 @@
-// The order book/matches routes accept `?pair=BASE/QUOTE`, matching every
-// other pair-scoped read on this API, and keep `?base=&quote=`.
-//
-// Driven over real HTTP rather than by inspecting the router source: the last
-// attempt at this change added the helper without rewiring the handlers, and a
-// source-text guard would have passed on it.
+// `?pair=BASE/QUOTE` on the order book and matches routes, over real HTTP: an
+// earlier attempt added the helper without rewiring the handlers, and a
+// source-text guard passed on it.
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -39,10 +36,8 @@ before(async () => {
     registry: new StubRegistry(),
     operatorParty: "op" as never,
   });
-  // A fixed port, not 0: startHttpServer is synchronous and builds its url
-  // from cfg.port, so it cannot report an OS-assigned one. A different base
-  // from auth.test.ts's 19180 -- the files run concurrently and `listen` has
-  // no 'error' handler, so a collision takes down the whole run.
+  // Fixed, not 0: startHttpServer builds its url from cfg.port. A different
+  // base from auth.test.ts, which runs concurrently.
   const handle = startHttpServer({
     backend,
     port: 20180 + Math.floor(Math.random() * 1000),
@@ -92,8 +87,6 @@ for (const [route, key] of [
     it("400s with the standard error envelope when neither is given", async () => {
       const r = await get(route);
       assert.equal(r.status, 400);
-      // Previously a bare `{ error }`, which the API reference does not
-      // document and which carries no requestId to correlate against.
       assert.equal(r.body.code, "bad_request");
       assert.ok(r.body.requestId, "error carries a requestId");
       assert.match(r.body.error, /pair=BASE\/QUOTE/);

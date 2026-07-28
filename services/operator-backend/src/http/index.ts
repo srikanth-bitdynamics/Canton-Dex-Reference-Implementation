@@ -170,13 +170,8 @@ export interface HttpServerConfig {
 }
 
 /**
- * The pair-scoped reads accept `?pair=BASE/QUOTE`. `?base=&quote=` is kept for
- * callers that already use it, so this is additive.
- *
- * Every other pair-scoped read on this API takes `?pair=` -- /v1/trades,
- * /v1/swaps, /v1/price-history, /v1/stats/24h -- and the two order routes were
- * the only ones that did not, which is a trap an integrator hits once per
- * route rather than once.
+ * `?pair=BASE/QUOTE`, as every other pair-scoped read on this API takes.
+ * `?base=&quote=` still works.
  */
 function pairParams(url: URL): { base: string; quote: string } | undefined {
   const pair = url.searchParams.get("pair");

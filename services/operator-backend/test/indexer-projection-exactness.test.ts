@@ -1,13 +1,9 @@
 // Amounts leave the API exactly as they were stored.
 //
-// The indexer computes and stores deltas as scaled decimal strings, but the
-// HTTP projection used to run parseFloat over them and emit inputAmount /
-// outputAmount as JSON numbers. The value usually survived, because JS prints
-// the shortest round-tripping form -- but the trailing scale did not, and it
-// was a number on a feed where every other amount is a string.
-//
-// Reported by an external integrator: `"baseDelta":"0.0100000000"` next to
-// `inputAmount: 0.01` in one row.
+// The deltas are stored as scaled decimal strings. Running parseFloat over
+// them on the way out kept the value -- JS prints the shortest round-tripping
+// form -- but dropped the trailing scale, and emitted a number on a feed where
+// every other amount is a string.
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";

@@ -15,7 +15,19 @@ export interface MatchedTradeRequestAllocationsInput {
 export interface MatchedTradeSettleInput {
   tradeCid: ContractId<"MatchedTrade">;
   batchesByAdmin: Map<Party, SettlementBatchV2>;
+  /**
+   * Trade allocation requests to consume. Normally EMPTY.
+   *
+   * MatchedTrade_Settle fetches and archives each of these as its first act,
+   * but a counterparty that authored its allocation via
+   * AllocationRequest_Accept has already archived its own request. Passing a
+   * consumed cid therefore aborts the choice before a single holding is read
+   * -- and fails looking exactly like a visibility error. Supply cids only for
+   * requests that are provably still active.
+   */
   allocationRequestCids: ContractId<"TradeAllocationRequest">[];
+  /** When set, fees accrue against the pair; null/omitted = no accrual. */
+  dexPairCid?: ContractId<"DexPair"> | null;
 }
 
 export interface MatchedTradeCancelInput {
@@ -85,6 +97,15 @@ export class MatchedTradeService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
+        // MatchedTrade_Settle reaches SettlementFactory_SettleBatch ->
+        // Allocation_Settle -> allocation_settleImpl, which FETCHES and
+        // ARCHIVES the locked holdings behind each counterparty allocation. A
+        // registry Holding is `signatory admin, owner`, so the operator is not
+        // a stakeholder and cannot see them; without this the settle fails
+        // CONTRACT_NOT_FOUND on a counterparty's own collateral, exactly as
+        // the pool settles did. Read as each batch's admin -- a signatory of
+        // every holding it issued, wherever the owner is hosted.
+        readAs: Array.from(new Set(adminEntries.map((e) => e.admin))),
         commandId: `mt-settle:${input.tradeCid}`,
         disclosure: adminEntries.flatMap((e) => e.disclosure as never),
         command: {
@@ -93,18 +114,30 @@ export class MatchedTradeService {
           contractId: input.tradeCid,
           choice: "MatchedTrade_Settle",
           argument: {
-            batchesByAdmin: Object.fromEntries(
-              adminEntries.map((e) => [
-                e.admin,
-                {
-                  tag: "SettlementBatchV2",
-                  allocationCids: e.batch.allocationCids,
-                  factoryCid: e.factoryCid,
-                  extraArgs: e.extraArgs,
-                },
-              ]),
-            ),
+            // `batchesByAdmin : Map.Map Party SettlementBatchV2` is a Daml
+            // GenMap, whose JSON encoding is an ARRAY of [key, value] pairs.
+            // An object encodes a TextMap, which this is not -- that is why
+            // this choice had never once decoded. And SettlementBatchV2 is a
+            // plain record (MatchedTrade.daml:73-77), not the vendored
+            // upstream variant: no `tag`, and the field is `allocations` of
+            // V2.FinalizedAllocation, not `allocationCids`.
+            //
+            // The encoding below is the one proven against the live
+            // participant in scripts/testnet-v2registry-trade.ts.
+            batchesByAdmin: adminEntries.map((e) => [
+              e.admin,
+              {
+                allocations: e.batch.allocationCids.map((allocationCid) => ({
+                  allocationCid,
+                  extraTransferLegSides: [],
+                  nextIterationFunding: null,
+                })),
+                factoryCid: e.factoryCid,
+                extraArgs: e.extraArgs,
+              },
+            ]),
             allocationRequests: input.allocationRequestCids,
+            dexPairCid: input.dexPairCid ?? null,
           },
         },
       }),
@@ -135,6 +168,10 @@ export class MatchedTradeService {
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
+        // Same reason as the settle: MatchedTrade_Cancel reaches
+        // allocation_cancelImpl, which fetches each locked holding, archives
+        // it and re-creates it unlocked.
+        readAs: Array.from(new Set(input.allocationsByAdmin.keys())),
         commandId: `mt-cancel:${input.tradeCid}`,
         disclosure: adminEntries.flatMap((e) => e.disclosure as never),
         command: {

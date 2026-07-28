@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import type { Db } from "./db.js";
 import type {
   LedgerSubmitter,
+  SubmitReceipt,
   SubmitRequest,
   SubscriptionFilter,
   LedgerEvent,
@@ -55,6 +56,24 @@ export class IdempotentLedger implements LedgerSubmitter {
   ) {}
 
   async submit<R>(req: SubmitRequest): Promise<R> {
+    return this.once(req, () => this.inner.submit<R>(req));
+  }
+
+  /** Same row lock as `submit`; falls back to it when the driver has no
+   * updateId to report. */
+  async submitWithUpdateId<R>(req: SubmitRequest): Promise<SubmitReceipt<R>> {
+    const inner = this.inner.submitWithUpdateId;
+    if (!inner) {
+      return { result: await this.submit<R>(req), updateId: null };
+    }
+    return this.once(req, () => inner.call(this.inner, req) as Promise<SubmitReceipt<R>>);
+  }
+
+  /**
+   * Run `exec` at most once per commandId: cached result on replay, refusal
+   * while one is in flight, retry after an error or a stale pending row.
+   */
+  private async once<T>(req: SubmitRequest, exec: () => Promise<T>): Promise<T> {
     const now = Date.now();
     const argsHash = hashSubmitRequest(req);
     const existing = this.db
@@ -76,13 +95,25 @@ export class IdempotentLedger implements LedgerSubmitter {
       // Reject rather than serving a stale cached result or re-firing. (A
       // legacy row predating the argsHash column has argsHash === null; treat
       // it as unknown and let it proceed/overwrite.)
-      if (existing.argsHash !== null && existing.argsHash !== argsHash) {
+      //
+      // Relaxed for an errored EXERCISE: its commandId derives from the
+      // contract acted on, so refusing a changed-arg retry would strand that
+      // contract, and the consuming choice cannot fire twice. Not relaxed for
+      // a create -- pool-create is keyed on names, Pool declares no contract
+      // key, and a retry would make a second Pool for the same pair.
+      const retryableError =
+        existing.status === "error" && req.command.kind === "exercise";
+      if (
+        !retryableError &&
+        existing.argsHash !== null &&
+        existing.argsHash !== argsHash
+      ) {
         throw new Error(
           `idempotency: commandId ${req.commandId} replayed with different args`,
         );
       }
       if (existing.status === "ok" && existing.resultJson) {
-        return JSON.parse(existing.resultJson) as R;
+        return JSON.parse(existing.resultJson) as T;
       }
       if (
         existing.status === "pending" &&
@@ -109,7 +140,7 @@ export class IdempotentLedger implements LedgerSubmitter {
       .run(req.commandId, now, argsHash);
 
     try {
-      const result = await this.inner.submit<R>(req);
+      const result = await exec();
       this.db
         .prepare(
           `UPDATE command_submissions

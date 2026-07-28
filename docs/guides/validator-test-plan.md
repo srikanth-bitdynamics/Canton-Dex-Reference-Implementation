@@ -44,6 +44,11 @@ Expected:
 - Parties allocated (or pre-existing).
 - `scripts/bootstrap-registry.ts` reports each instrument and LP
   config as "created" (or "already configured" on a re-run).
+- The same run reports `Registry.V2 created` (or "already present") for the
+  lpRegistrar. Liquidity cannot be allocated until this step has run.
+- If a `registryV2` block is configured, a second registry under
+  `CANTON_ADMIN` plus one line per instrument. Nothing can be minted
+  until that has run.
 
 ## Phase 1 — Backend boot
 

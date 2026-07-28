@@ -213,6 +213,12 @@ function selectCoveringPrefix(slices: PoolSlice[], target: bigint): ContractId<"
   return out;
 }
 
+/** Raw Daml `PS_*` constructor -> the spelling types.ts declares. Idempotent. */
+function normalizePoolStatus(raw: unknown): Pool["status"] {
+  const s = String(raw);
+  return (s.startsWith("PS_") ? s.slice(3) : s) as Pool["status"];
+}
+
 export class PoolService {
   constructor(
     private readonly ledger: LedgerSubmitter,
@@ -292,8 +298,11 @@ export class PoolService {
         amount: s.amount,
         side: s.side,
       });
-      const status = state.status as string;
-      if (status === "PS_Paused" || status === "Paused") continue;
+      // A participant returns "PS_Active" where types.ts declares "Active",
+      // so a client written against the published type saw no tradable pools.
+      // Read path only: create arguments stay prefixed.
+      const status = normalizePoolStatus(state.status);
+      if (status === "Paused") continue;
       combined.push({
         contractId: cfg.contractId,
         poolId: cfg.poolId,
@@ -307,7 +316,7 @@ export class PoolService {
         quoteInstrumentId: cfg.quoteInstrumentId,
         lpInstrumentId: cfg.lpInstrumentId,
         feeBps: cfg.feeBps,
-        status: state.status,
+        status,
         reserves: state.reserves,
         totalLpSupply: state.totalLpSupply,
         baseSlices: poolSlices.filter((s) => s.side === "BaseSide").map(toSlice),
@@ -722,6 +731,10 @@ export class PoolService {
     // Split-admin DvP: the base/quote batch settles under pool.admin and the
     // LP-mint batch under pool.lpRegistrar, so each carries its own registry
     // choice context. For the self-registry both contexts are empty.
+    //
+    // The LP's deposit holdings are `signatory admin, owner`, so the operator
+    // cannot see them; the disclosure has to come from the deposit registry's
+    // choice context. Limited to a co-hosted registry until then.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
@@ -877,6 +890,10 @@ export class PoolService {
     // Split-admin DvP: base/quote batch under pool.admin, LP-burn batch under
     // pool.lpRegistrar — each carries its own registry choice context.
     // For the self-registry both contexts are empty.
+    //
+    // The LP's deposit holdings are `signatory admin, owner`, so the operator
+    // cannot see them; the disclosure has to come from the deposit registry's
+    // choice context. Limited to a co-hosted registry until then.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],

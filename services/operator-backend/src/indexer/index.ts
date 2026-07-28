@@ -11,6 +11,7 @@
 import type { Db } from "./db.js";
 import type { LedgerSubmitter } from "../ledger/index.js";
 import type { Party } from "../types.js";
+import * as dec from "../pool/decimal.js";
 
 type LedgerQuery = Pick<LedgerSubmitter, "query">;
 
@@ -127,10 +128,10 @@ export class Indexer {
     );
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO trades
-       (tradeCid, ts, pair, trader, dealer, policyVersion,
+       (tradeCid, ts, pair, trader, dealer, counterparty, policyVersion,
         acceptedRank, consideredCount, payload)
-       VALUES (@tradeCid, @ts, @pair, @trader, @dealer, @policyVersion,
-        @acceptedRank, @consideredCount, @payload)`,
+       VALUES (@tradeCid, @ts, @pair, @trader, @dealer, @counterparty,
+        @policyVersion, @acceptedRank, @consideredCount, @payload)`,
     );
     const event = this.db.prepare(
       `INSERT INTO events (ts, kind, templateId, contractId, party, payload)
@@ -140,8 +141,25 @@ export class Indexer {
       for (const t of rows) {
         if (known.has(t.contractId)) continue;
         const legs = t.transferLegs ?? [];
-        const trader = legs[0]?.sender?.owner ?? legs[0]?.receiver?.owner ?? null;
-        const dealer = legs[0]?.receiver?.owner ?? null;
+        // The trader does not follow leg direction: legs[0]'s sender flips
+        // with the side, so reading both parties off it inverted every buy.
+        // The venue-signed receipt names the dealer; the trader is the other
+        // party. Leg order is not uniform -- an order-book match builds
+        // [quote, base] -- so base-first holds only where a receipt exists.
+        const legParties = Array.from(
+          new Set(
+            legs.flatMap((l) => [l.sender?.owner, l.receiver?.owner]).filter(Boolean),
+          ),
+        ) as Party[];
+        const acceptedDealer = t.policyReceipt?.acceptedDealer ?? null;
+        // `dealer` is a role only a receipt establishes; `counterparty` is
+        // the other party either way, since /v1/trades serves named columns.
+        const dealer = acceptedDealer;
+        const trader = acceptedDealer
+          ? (legParties.find((x) => x !== acceptedDealer) ?? null)
+          : (legs[0]?.sender?.owner ?? null);
+        const counterparty =
+          legParties.find((x) => x !== trader) ?? null;
         const baseSym = legs[0]?.instrumentId ?? "";
         const quoteSym = legs[1]?.instrumentId ?? "";
         const pair = `${baseSym}/${quoteSym}`;
@@ -151,6 +169,7 @@ export class Indexer {
           pair,
           trader,
           dealer,
+          counterparty,
           policyVersion: t.policyReceipt?.policyVersion ?? null,
           acceptedRank: t.policyReceipt?.acceptedRank ?? null,
           consideredCount: t.policyReceipt?.consideredCount ?? null,
@@ -198,13 +217,14 @@ export class Indexer {
     const known = new Map(
       (this.db
         .prepare(
-          "SELECT poolCid, pairKey, baseReserve, quoteReserve FROM pool_states WHERE archived = 0",
+          "SELECT poolCid, pairKey, baseReserve, quoteReserve, totalLpSupply FROM pool_states WHERE archived = 0",
         )
         .all() as Array<{
         poolCid: string;
         pairKey: string;
         baseReserve: string;
         quoteReserve: string;
+        totalLpSupply: string;
       }>).map((r) => [r.poolCid, r]),
     );
     const liveCids = new Set(live.map((p) => p.contractId));
@@ -219,8 +239,8 @@ export class Indexer {
       "UPDATE pool_states SET archived = 1 WHERE poolCid = ?",
     );
     const insertSwap = this.db.prepare(
-      `INSERT INTO swaps (ts, oldPoolCid, newPoolCid, pair, baseDelta, quoteDelta, priceAfter)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO swaps (ts, oldPoolCid, newPoolCid, pair, baseDelta, quoteDelta, priceAfter, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const event = this.db.prepare(
       `INSERT INTO events (ts, kind, templateId, contractId, party, payload)
@@ -236,6 +256,7 @@ export class Indexer {
         pairKey: string;
         baseReserve: string;
         quoteReserve: string;
+        totalLpSupply: string;
       }> = [];
       for (const [cid, row] of known.entries()) {
         if (!liveCids.has(cid)) {
@@ -244,6 +265,7 @@ export class Indexer {
             pairKey: row.pairKey,
             baseReserve: row.baseReserve,
             quoteReserve: row.quoteReserve,
+            totalLpSupply: row.totalLpSupply,
           });
           markArchived.run(cid);
         }
@@ -269,21 +291,66 @@ export class Indexer {
           predecessor?.cid ?? null,
         );
         if (predecessor) {
-          const baseDelta = (
-            parseFloat(p.reserves.baseAmount) -
-            parseFloat(predecessor.baseReserve)
-          ).toFixed(10);
-          const quoteDelta = (
-            parseFloat(p.reserves.quoteAmount) -
-            parseFloat(predecessor.quoteReserve)
-          ).toFixed(10);
+          // Exact, scaled-integer arithmetic: parseFloat drifts by an ulp at
+          // real magnitudes, and this feed is what clients reconcile against.
+          // An unparseable reserve skips the row rather than throwing inside
+          // the transaction or writing "NaN" into a NOT NULL column.
+          let newBase: bigint;
+          let newQuote: bigint;
+          let oldBase: bigint;
+          let oldQuote: bigint;
+          try {
+            newBase = dec.parseDecimal(p.reserves.baseAmount);
+            newQuote = dec.parseDecimal(p.reserves.quoteAmount);
+            oldBase = dec.parseDecimal(predecessor.baseReserve);
+            oldQuote = dec.parseDecimal(predecessor.quoteReserve);
+          } catch {
+            console.warn(
+              `[indexer] unparseable reserves on ${p.contractId}; skipping the rotation row`,
+            );
+            continue;
+          }
+          const baseDelta = dec.formatDecimal(newBase - oldBase);
+          const quoteDelta = dec.formatDecimal(newQuote - oldQuote);
+
+          // Which choice rotated the state. The indexer polls the ACS and
+          // sees no choice name, so `totalLpSupply` is the discriminator: only
+          // an add or a remove moves it. Exact, because float subtraction
+          // collapses to 0 above ~2e6 and would call an LP mint a swap. An
+          // unparseable supply falls back to the reserve signs rather than
+          // matching `=== 0` and routing everything to "state_change".
+          let lpDelta: bigint | null;
+          try {
+            lpDelta =
+              dec.parseDecimal(p.totalLpSupply) -
+              dec.parseDecimal(predecessor.totalLpSupply);
+          } catch {
+            lpDelta = null;
+          }
+          const bd = newBase - oldBase;
+          const qd = newQuote - oldQuote;
+          let kind: string;
+          if (lpDelta === null) {
+            // Supply unreadable: use the reserve directions. Both up is an
+            // add, both down a remove -- the sign matters, not just agreement.
+            if (bd > 0n && qd > 0n) kind = "add_liquidity";
+            else if (bd < 0n && qd < 0n) kind = "remove_liquidity";
+            else kind = "swap";
+          } else if (lpDelta > 0n) {
+            kind = "add_liquidity";
+          } else if (lpDelta < 0n) {
+            kind = "remove_liquidity";
+          } else if (bd !== 0n || qd !== 0n) {
+            // Either side alone: a dust swap can round one to zero.
+            kind = "swap";
+          } else {
+            // Pause / resume: the state rotated, the numbers did not.
+            kind = "state_change";
+          }
           const price =
-            parseFloat(p.reserves.baseAmount) > 0
-              ? (
-                  parseFloat(p.reserves.quoteAmount) /
-                  parseFloat(p.reserves.baseAmount)
-                ).toFixed(10)
-              : "0";
+            newBase > 0n
+              ? dec.formatDecimal(dec.div(newQuote, newBase))
+              : dec.formatDecimal(0n);
           insertSwap.run(
             ts,
             predecessor.cid,
@@ -292,10 +359,11 @@ export class Indexer {
             baseDelta,
             quoteDelta,
             price,
+            kind,
           );
           event.run(
             ts,
-            "pool_swap",
+            kind,
             "CantonDex.Dex.PoolState:PoolState",
             p.contractId,
             this.cfg.observingParty,

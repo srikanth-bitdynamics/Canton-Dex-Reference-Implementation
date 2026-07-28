@@ -1,12 +1,16 @@
 // Registry prerequisites bootstrap.
 //
-// The DEX assumes a set of reference-registry contracts exist on the ledger
-// before any trading can happen (see docs/guides/registry-integration.md):
-//   - InstrumentConfiguration per tradable instrument in the reference registry
-//   - TransferRule per registrar
-//   - Holder/issuer Credentials for the parties that need them
-//   - AllocationFactory and SettlementFactory
-//   - LP InstrumentConfiguration for each pool in the reference registry
+// The DEX assumes a set of registry contracts exist on the ledger before any
+// trading can happen (see docs/guides/registry-integration.md). This script
+// creates, under the asset admin unless noted:
+//   - CantonDex.Instrument.InstrumentConfiguration per tradable instrument
+//   - the same, under the lpRegistrar, per LP token
+//   - CantonDex.Instrument.Credentials:Credential for the holders that need one
+//   - CantonDex.Registry.V2:Registry under the lpRegistrar -- required for
+//     any liquidity move; the allocation, settlement and transfer factories
+//     are interface views of it
+//   - optionally, a second registry plus one InstrumentConfig per instrument
+//     in `registryV2`, for assets this deployment mints itself
 //
 // This script is idempotent: it checks whether each contract already
 // exists (by template + payload key) and only creates the missing ones.
@@ -29,14 +33,32 @@ import { rootLogger } from "../services/operator-backend/src/lib/logger.js";
 
 const log = rootLogger.child({ component: "bootstrap-registry" });
 
+interface CredentialRequirement {
+  issuer: string;
+  property: string;
+  value: string;
+}
+
+interface RegistryV2Instrument {
+  instrumentId: string;
+  // Daml Decimal is 10-scale; the registry accepts 0..18.
+  decimals?: number;
+  // Total issuable supply. Omit (or null) for uncapped.
+  supplyCap?: string | null;
+  holderRequirements?: CredentialRequirement[];
+  issuerRequirements?: CredentialRequirement[];
+  isin?: string | null;
+  cusip?: string | null;
+}
+
 interface BootstrapConfig {
   instruments: Array<{
     instrumentId: string;
     description: string;
     isin?: string;
     cusip?: string;
-    holderRequirements?: Array<{ issuer: string; property: string; value: string }>;
-    issuerRequirements?: Array<{ issuer: string; property: string; value: string }>;
+    holderRequirements?: CredentialRequirement[];
+    issuerRequirements?: CredentialRequirement[];
   }>;
   // LP instrument ids — one per pool that the operator plans to seed.
   lpInstruments: string[];
@@ -47,6 +69,15 @@ interface BootstrapConfig {
     property: string;
     value: string;
   }>;
+  // The V2 registry: the contract every V2 holding is minted through. Distinct
+  // from `instruments` above, which creates the legacy reference-registry
+  // InstrumentConfiguration.
+  registryV2?: {
+    // Parties allowed to exercise the factory choices. Defaults to the
+    // operator + lpRegistrar.
+    users?: string[];
+    instruments: RegistryV2Instrument[];
+  };
 }
 
 const DEFAULT_CONFIG: BootstrapConfig = {
@@ -58,6 +89,12 @@ const DEFAULT_CONFIG: BootstrapConfig = {
   lpInstruments: ["BTC-USDC-LP", "ETH-USDC-LP"],
   credentials: [],
 };
+
+const REGISTRY_TEMPLATE_ID = "CantonDex.Registry.V2:Registry";
+const INSTRUMENT_CONFIG_TEMPLATE_ID = "CantonDex.Registry.V2:InstrumentConfig";
+
+/** Daml Decimal scale, used when an instrument does not pick its own. */
+const DEFAULT_DECIMALS = 10;
 
 function required(name: string): string {
   const v = process.env[name];
@@ -112,6 +149,89 @@ async function ensureInstrument(
   });
 }
 
+/**
+ * Create the V2 Registry if the admin does not have one. Returns its cid, or
+ * undefined on a dry run where nothing was created.
+ */
+async function ensureRegistry(
+  ledger: JsonApiLedger,
+  admin: string,
+  users: string[],
+  dryRun: boolean,
+): Promise<string | undefined> {
+  const existing = await ledger.query<{ admin: string; contractId: string }>({
+    templateId: REGISTRY_TEMPLATE_ID,
+    observingParty: admin,
+  });
+  const found = existing.find((r) => r.admin === admin);
+  if (found) {
+    log.info("Registry.V2 already present", { contractId: found.contractId });
+    return found.contractId;
+  }
+  log.info("creating Registry.V2", { users, dryRun });
+  if (dryRun) return undefined;
+  const contractId = await ledger.submit<string>({
+    actAs: [admin],
+    commandId: `bootstrap-registry-v2:${admin}`,
+    command: {
+      kind: "create",
+      templateId: REGISTRY_TEMPLATE_ID,
+      argument: { admin, users },
+    },
+  });
+  // One cid answers for all three factory interfaces, per admin.
+  log.info("Registry.V2 created", { admin, contractId });
+  return contractId;
+}
+
+/** Register one instrument on the V2 registry; required before any mint. */
+async function ensureV2Instrument(
+  ledger: JsonApiLedger,
+  admin: string,
+  registryCid: string,
+  inst: RegistryV2Instrument,
+  dryRun: boolean,
+): Promise<void> {
+  // InstrumentConfig is `signatory admin` with no observers, so the admin is
+  // the only party that can see it.
+  const existing = await ledger.query<{ admin: string; instrumentId: string }>({
+    templateId: INSTRUMENT_CONFIG_TEMPLATE_ID,
+    observingParty: admin,
+  });
+  if (
+    existing.some((c) => c.admin === admin && c.instrumentId === inst.instrumentId)
+  ) {
+    log.info("V2 instrument already registered", {
+      instrumentId: inst.instrumentId,
+    });
+    return;
+  }
+  log.info("registering V2 instrument", {
+    instrumentId: inst.instrumentId,
+    dryRun,
+  });
+  if (dryRun) return;
+  await ledger.submit({
+    actAs: [admin],
+    commandId: `bootstrap-registry-v2-instrument-${inst.instrumentId}`,
+    command: {
+      kind: "exercise",
+      templateId: REGISTRY_TEMPLATE_ID,
+      contractId: registryCid,
+      choice: "Registry_RegisterInstrument",
+      argument: {
+        instrumentId: inst.instrumentId,
+        decimals: String(inst.decimals ?? DEFAULT_DECIMALS),
+        supplyCap: inst.supplyCap ?? null,
+        holderRequirements: inst.holderRequirements ?? [],
+        issuerRequirements: inst.issuerRequirements ?? [],
+        isin: inst.isin ?? null,
+        cusip: inst.cusip ?? null,
+      },
+    },
+  });
+}
+
 async function ensureCredential(
   ledger: JsonApiLedger,
   cred: BootstrapConfig["credentials"][number],
@@ -156,6 +276,8 @@ async function main(): Promise<void> {
   const token = required("CANTON_LEDGER_TOKEN");
   const admin = required("CANTON_ADMIN");
   const lpRegistrar = required("CANTON_LP_REGISTRAR");
+  // Lazy: only needed once there is a registry to create.
+  const operator = () => required("CANTON_OPERATOR");
   const userId = process.env.CANTON_USER_ID ?? "ledger-api-user";
   const dryRun = process.env.BOOTSTRAP_DRY_RUN === "1";
 
@@ -168,6 +290,7 @@ async function main(): Promise<void> {
     synchronizerId: process.env.CANTON_SYNCHRONIZER,
   });
 
+
   log.info("bootstrap starting", {
     ledger: baseUrl,
     admin,
@@ -175,6 +298,7 @@ async function main(): Promise<void> {
     instruments: cfg.instruments.length,
     lpInstruments: cfg.lpInstruments.length,
     credentials: cfg.credentials.length,
+    registryV2Instruments: cfg.registryV2?.instruments.length ?? 0,
     dryRun,
   });
 
@@ -196,6 +320,36 @@ async function main(): Promise<void> {
   // 3. Seed holder credentials.
   for (const cred of cfg.credentials) {
     await ensureCredential(ledger, cred, dryRun);
+  }
+
+  // 4. The LP registry, not optional: Lp/Instrument.daml builds its specs with
+  //    admin = lpRegistrar and Registry.V2 asserts spec.admin == admin, so
+  //    without it no pool can allocate a liquidity move. No instruments are
+  //    registered on it -- the LP path never reads an InstrumentConfig.
+  await ensureRegistry(ledger, lpRegistrar, [operator(), admin], dryRun);
+
+  // 5. Optionally, a registry for instruments this deployment mints itself.
+  //    Opt-in: a deployment whose users bring their own assets needs none, and
+  //    Registry_Mint requires an InstrumentConfig it never creates lazily.
+  const registryV2 = cfg.registryV2;
+  if (!registryV2) {
+    log.info("no registryV2 block configured; skipping the minting registry");
+  } else if (admin === lpRegistrar) {
+    // One party, one registry -- the shape the repo's own fixtures use.
+    const cid = await ensureRegistry(ledger, admin, [operator()], dryRun);
+    for (const inst of registryV2.instruments) {
+      if (cid) await ensureV2Instrument(ledger, admin, cid, inst, dryRun);
+    }
+  } else {
+    const cid = await ensureRegistry(
+      ledger,
+      admin,
+      registryV2.users ?? [operator(), lpRegistrar],
+      dryRun,
+    );
+    for (const inst of registryV2.instruments) {
+      if (cid) await ensureV2Instrument(ledger, admin, cid, inst, dryRun);
+    }
   }
 
   log.info("bootstrap complete", { dryRun });

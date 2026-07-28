@@ -155,7 +155,7 @@ async function main(): Promise<void> {
   const host = process.env.HOST ?? "127.0.0.1";
   const { url, close } = await startHttpServer({
     backend,
-    port,
+    port: 0,
     host,
     context: {
       operator,

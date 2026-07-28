@@ -7,7 +7,11 @@ import assert from "node:assert/strict";
 
 import { InMemoryLedger } from "../src/ledger/in-memory.js";
 import { OperatorBackend } from "../src/index.js";
-import { startHttpServer, type HttpServerConfig } from "../src/http/index.js";
+import {
+  startHttpServer,
+  type HttpServerConfig,
+  type HttpServerHandle,
+} from "../src/http/index.js";
 import {
   bearerMatches,
   isOperatorWrite,
@@ -32,18 +36,16 @@ class StubRegistry extends RegistryClient {
   }
 }
 
-function startServer(extra: Partial<HttpServerConfig>): Promise<{
-  url: string;
-  close: () => Promise<void>;
-}> {
+function startServer(
+  extra: Partial<HttpServerConfig>,
+): Promise<HttpServerHandle> {
   const ledger = new InMemoryLedger();
   const backend = new OperatorBackend({
     ledger,
     registry: new StubRegistry(),
     operatorParty: "op" as never,
   });
-  // Port 0: the OS picks a free one and startHttpServer reports it back on
-  // the handle, so parallel test files cannot land on the same port.
+  
   return startHttpServer({
     backend,
     port: 0,

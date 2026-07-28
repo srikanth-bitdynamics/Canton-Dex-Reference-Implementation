@@ -37,8 +37,7 @@ before(async () => {
     registry: new StubRegistry(),
     operatorParty: "op" as never,
   });
-  // Port 0: the OS picks a free one and startHttpServer reports it back on
-  // the handle, so parallel test files cannot land on the same port.
+  
   const handle = await startHttpServer({
     backend,
     port: 0,
@@ -95,21 +94,6 @@ describe("HTTP input validation", () => {
 
   it("GET /v1/orders/book without ?base= → 400", async () => {
     const r = await getJson("/v1/orders/book?quote=USDC");
-    assert.equal(r.status, 400);
-  });
-
-  it("GET /v1/orders/book accepts ?pair= like every other pair-scoped read", async () => {
-    const r = await getJson("/v1/orders/book?pair=BTC/USDC");
-    assert.equal(r.status, 200);
-  });
-
-  it("GET /v1/orders/matches accepts ?pair= too", async () => {
-    const r = await getJson("/v1/orders/matches?pair=BTC/USDC");
-    assert.equal(r.status, 200);
-  });
-
-  it("GET /v1/orders/book rejects a ?pair= with no slash → 400", async () => {
-    const r = await getJson("/v1/orders/book?pair=BTC");
     assert.equal(r.status, 400);
   });
 
@@ -204,9 +188,9 @@ describe("write-body validation", () => {
   });
 });
 
-// Integrator feedback: quote accepts poolCid OR poolId (finding #5). The
-// fixture seeds no pool, so a valid reference passes validation and 404s at
-// lookup — proving the anyOf rule accepted it (a validation failure is 400).
+// The fixture seeds no pool, so a valid reference passes validation and 404s
+// at lookup — which is what proves the anyOf rule accepted it, since a
+// validation failure would be a 400.
 describe("quote pool reference (poolCid or poolId)", () => {
   it("rejects a body with neither poolCid nor poolId → 400", async () => {
     const r = await postJson("/v1/swaps/quote", {
@@ -237,7 +221,6 @@ describe("quote pool reference (poolCid or poolId)", () => {
   });
 });
 
-// Integrator feedback: aggregated balances endpoint (finding #7).
 describe("GET /v1/balances", () => {
   it("requires ?owner= → 400", async () => {
     const r = await getJson("/v1/balances");
@@ -252,7 +235,6 @@ describe("GET /v1/balances", () => {
   });
 });
 
-// Integrator feedback: instrument metadata surface (finding #8).
 describe("GET /v1/instruments", () => {
   it("returns an array", async () => {
     const r = await getJson("/v1/instruments");

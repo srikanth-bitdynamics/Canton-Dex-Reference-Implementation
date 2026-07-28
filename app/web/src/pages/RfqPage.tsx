@@ -25,11 +25,7 @@ import { dealerByParty, useDealers } from '@/primitives/dealers';
 import { fmt, fmtUsd, fmtUsdK, formatExpiresIn } from '@/primitives/format';
 import { OperatorApi } from '@/services/operator-api';
 import { adaptRfqs } from '@/services/rfq-adapter';
-import {
-  POLICY_VERSION,
-  rankQuotes,
-  whitelistedDealers,
-} from '@/services/rfq-policy';
+import { POLICY_VERSION, rankQuotes, whitelistedDealers } from '@/services/rfq-policy';
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import type {
@@ -74,6 +70,7 @@ export function RfqPage() {
   const [rfqs, setRfqs] = useState<Rfq[]>([]);
   const [settled, setSettled] = useState<SettledTrade[]>([]);
   const [expired, setExpired] = useState<ExpiredRfq[]>([]);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
 
   // Reconcile the live snapshot into local state. Local state holds
   // optimistic transitions (Settling/Settled flashes) that the server
@@ -234,6 +231,9 @@ export function RfqPage() {
           tradeCid: result.tradeCid,
           policyVer: result.receipt.policyVersion,
           policyCid: result.receipt.policyHash.slice(0, 24),
+          // From the signed receipt, not the local ranking: the two use
+          // different sort chains, so the header could contradict the
+          // rankedDealers table rendered directly beneath it.
           rank: result.receipt.acceptedRank,
           considered: result.receipt.consideredCount,
           receipt: result.receipt,
@@ -251,6 +251,9 @@ export function RfqPage() {
           live.refetch();
         }, 700);
       } catch (err) {
+        // The optimistic rollback restores the row exactly, so without this a
+        // rejected accept looks identical to the button not registering.
+        setAcceptError(err instanceof Error ? err.message : String(err));
         console.error('rfq.accept failed', err);
         // Surfaced, not just logged. An accept that fails rolls the row back to
         // exactly how it looked before, so without this the button appears to
@@ -383,6 +386,14 @@ export function RfqPage() {
 
   return (
     <div className="page">
+      {acceptError && (
+        <div className="banner banner-error" role="alert">
+          <span>Accept failed: {acceptError}</span>
+          <button type="button" onClick={() => setAcceptError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="page-header">
         <div>
           <h2 className="page-title">RFQ</h2>
@@ -1004,7 +1015,7 @@ function RfqRow({
                   <span style={{ fontWeight: 600 }}>MatchedTrade in flight</span>
                 </div>
                 <span className="alloc-pill mono">
-                  Policy {POLICY_VERSION} · rank {r.acceptedRank}/{r.acceptedConsidered}
+                  Policy{POLICY_VERSION} · rank {r.acceptedRank}/{r.acceptedConsidered}
                 </span>
               </div>
               <div style={{ color: 'var(--text-2)', lineHeight: 1.5 }}>
@@ -1329,6 +1340,7 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
                 value={pair}
                 disabled={pairOptions.length === 0}
                 onChange={(e) => setPair(e.target.value)}
+                disabled={pairOptions.length === 0}
               >
                 {pairOptions.length === 0 ? (
                   <option value="">No pairs listed</option>

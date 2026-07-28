@@ -231,22 +231,8 @@ function isZero(d: string): boolean {
 }
 
 /**
- * Bind the HTTP surface and resolve once the socket is actually listening.
- *
- * Resolving on `listening` rather than returning synchronously is what makes
- * `port: 0` usable: the OS-assigned port is not readable from
- * `server.address()` until then, so a synchronous return could only ever echo
- * back the requested port. It also means a caller that awaits this can issue a
- * request immediately without racing the bind.
- */
-/**
- * The pair-scoped reads accept `?pair=BASE/QUOTE`. `?base=&quote=` is kept for
- * callers that already use it, so this is additive.
- *
- * Every other pair-scoped read on this API takes `?pair=` -- /v1/trades,
- * /v1/swaps, /v1/price-history, /v1/stats/24h -- and the two order routes were
- * the only ones that did not, which is a trap an integrator hits once per
- * route rather than once.
+ * `?pair=BASE/QUOTE`, as every other pair-scoped read on this API takes.
+ * `?base=&quote=` still works.
  */
 function pairParams(url: URL): { base: string; quote: string } | undefined {
   const pair = url.searchParams.get("pair");
@@ -371,14 +357,11 @@ export function startHttpServer(cfg: HttpServerConfig): Promise<HttpServerHandle
   const close = (): Promise<void> =>
     new Promise<void>((resolve) => {
       clearInterval(slotTimer);
-      server.close(() => {
-        resolve();
-      });
+      server.close(() => resolve());
     });
 
   return new Promise<HttpServerHandle>((resolve, reject) => {
-    // A failed bind (EADDRINUSE) is an 'error' event, which would otherwise be
-    // unhandled and take the process down; surface it as a rejection instead.
+    // A failed bind is an 'error' event; unhandled it takes the process down.
     const onError = (e: Error): void => {
       clearInterval(slotTimer);
       reject(e);
@@ -387,8 +370,9 @@ export function startHttpServer(cfg: HttpServerConfig): Promise<HttpServerHandle
     server.listen(cfg.port, host, () => {
       server.removeListener("error", onError);
       const addr = server.address();
-      const boundPort = typeof addr === "object" && addr !== null ? addr.port : cfg.port;
-      resolve({ url: `http://${host}:${boundPort}`, port: boundPort, close });
+      const port =
+        typeof addr === "object" && addr !== null ? addr.port : cfg.port;
+      resolve({ url: `http://${host}:${port}`, port, close });
     });
   });
 }
@@ -1151,19 +1135,15 @@ async function routeRequest(
       respondJson(res, 503, { error: "indexer disabled" });
       return;
     }
-    // Same reasoning as GET /v1/rfq above: the indexed history is the settled
-    // record of the same private negotiations, so the unfiltered sweep is
-    // gated on the admin token and everyone else names the trader they are
-    // asking about.
+    // Scoped like /v1/rfq: a settled row names the trader, the pair, the
+    // winning dealer and that dealer's rank, so the unfiltered sweep is
+    // admin-only.
     const trader = url.searchParams.get("trader");
-    if (
-      !trader &&
-      (!adminToken || !bearerMatches(req.headers["authorization"], adminToken))
-    ) {
+    if (!trader && !(adminToken && bearerMatches(req.headers["authorization"], adminToken))) {
       throw new HttpError(
         400,
         "bad_request",
-        "missing ?trader= query parameter; the unfiltered history requires the admin token",
+        "missing ?trader= query parameter; the unfiltered view requires the admin token",
       );
     }
     const limit = Math.min(
@@ -1236,6 +1216,10 @@ async function routeRequest(
   // because everything this returns is already visible to that party on-ledger;
   // the leak was serving it to callers who name someone ELSE.
   if (method === "GET" && path === "/v1/rfq") {
+    // Scoped to one party. The operator observes every Rfq and RfqQuote, so an
+    // unscoped read exposes who is asking for a quote, on what, in what size,
+    // and the price every dealer answered. A trader sees the RFQs they raised
+    // or were whitelisted for; a dealer sees the quotes they posted.
     const owner = url.searchParams.get("owner");
     if (!owner) {
       if (!adminToken || !bearerMatches(req.headers["authorization"], adminToken)) {
@@ -1250,9 +1234,7 @@ async function routeRequest(
     }
     const { rfqs, quotes } = await backend.rfq.list();
     respondJson(res, 200, {
-      rfqs: rfqs.filter(
-        (r) => r.trader === owner || r.whitelist.includes(owner),
-      ),
+      rfqs: rfqs.filter((r) => r.trader === owner || r.whitelist.includes(owner)),
       quotes: quotes.filter((q) => q.trader === owner || q.dealer === owner),
     });
     return;

@@ -55,6 +55,12 @@ All trading pairs (whether or not they have pools).
 
 Open orders for a specific trader. **400** if `trader` is missing.
 
+### `GET /v1/orders/book?pair=BASE/QUOTE` → `{ bids, asks }`
+### `GET /v1/orders/matches?pair=BASE/QUOTE` → `{ matches }`
+
+Resting book and crossable pairs for one market. `?base=&quote=` is also
+accepted. **400** if neither form is supplied.
+
 ### `GET /v1/holdings?owner=:party` → `Holding[]`
 
 Holdings for the owner. **400** if `owner` is missing. Returns per-contract
@@ -131,13 +137,18 @@ Pool swap history from the indexer. Swaps only: an LP add/remove and a
 pause/resume also rotate the pool state, and are recorded with a `kind` of
 `add_liquidity` / `remove_liquidity` / `state_change` rather than served here.
 
-### `GET /v1/rfq` → `{ rfqs: Rfq[], quotes: RfqQuote[] }`
+### `GET /v1/rfq?owner=:party` → `{ rfqs: Rfq[], quotes: RfqQuote[] }`
 
-All active RFQs and their quotes visible to the operator.
+RFQs and quotes for one party: the RFQs they raised or were whitelisted for,
+and the quotes they posted or received. **400** without `?owner=`, unless the
+request carries the admin token — the operator observes every RFQ and quote,
+so the unfiltered view is admin-only.
 
 ### `GET /v1/rfq/history?trader=&limit=` → indexer rows
 
-Historical RFQ acceptances.
+Settled RFQ acceptances for one trader. **400** without `?trader=`, unless the
+request carries the admin token — each row names the trader, the pair, the
+winning dealer and its rank.
 
 ### `GET /v1/admin/config` → `Record<string, string>`
 

@@ -14,11 +14,8 @@ import type {
   Time,
 } from "../types.js";
 
-// Must name the ordering `policyCmp` in trading/CantonDex/Dex/Rfq.daml
-// actually implements. The receipt this module signs is committed on-ledger
-// and replayed against that ordering, so a version that ranks differently
-// does not merely mislabel the receipt -- it makes every receipt this
-// deployment produces fail verifyReceipt.
+// Must name the ordering policyCmp implements in Rfq.daml: the receipt is
+// replayed against it on-ledger, so a mismatch fails every verifyReceipt.
 export const POLICY_VERSION = "v2.0";
 export const POLICY_HASH = "sha256:rfq-policy-v2.0";
 

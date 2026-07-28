@@ -4,7 +4,7 @@ import type { ContractId } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
-import { LedgerSubmitter } from "../ledger/index.js";
+import { LedgerSubmitter, type SubmitRequest } from "../ledger/index.js";
 import {
   recoverCreatedAllocations,
   recoverCreatedFundingRequest,
@@ -43,6 +43,14 @@ export interface OrderFundInput {
   // consumed when the order is funded (the wallet no longer accepts it), instead
   // of lingering as a stale funding request.
   allocationRequestCid?: ContractId<"OrderAllocationRequest"> | null;
+}
+
+export interface OrderCancelResult {
+  /**
+   * Update id of the cancelling transaction, or null when the ledger driver
+   * cannot report one (the in-memory ledger has no updates).
+   */
+  updateId: string | null;
 }
 
 export interface OrderMatchInput {
@@ -152,27 +160,54 @@ export class OrderService {
     );
   }
 
-  async cancel(orderCid: ContractId<"Order">): Promise<void> {
+  async cancel(orderCid: ContractId<"Order">): Promise<OrderCancelResult> {
     const order = (await this.listOpen()).find((o) => o.contractId === orderCid);
     if (!order) throw new Error(`Order ${orderCid} not found`);
     const [factories, ctx] = await Promise.all([
       this.registry.getFactories(order.admin),
       this.choiceContext(order.admin),
     ]);
-    await retryOnContention(() =>
-      this.ledger.submit<unknown>({
-        actAs: [this.operatorParty],
-        commandId: `order-cancel:${orderCid}`,
-        disclosure: [...factories.disclosure, ...ctx.disclosure],
-        command: {
-          kind: "exercise",
-          templateId: "CantonDex.Dex.Order:Order",
-          contractId: orderCid,
-          choice: "Order_Cancel",
-          argument: { extraArgs: ctx.extraArgs },
-        },
-      }),
-    );
+    const req: SubmitRequest = {
+      actAs: [this.operatorParty],
+      // Cancelling a FUNDED order releases the collateral holdings its
+      // allocation locked, and a registry Holding is `signatory admin, owner`
+      // -- the operator is not a stakeholder and cannot see it.
+      //
+      // Read as the ADMIN, not the trader: the admin is a signatory of every
+      // holding it issued no matter where the owner is hosted, and the
+      // backend's own token already reads the ACS as it.
+      //
+      // Conditional, because an UNFUNDED order has `allocationCid = None` and
+      // Order_Cancel then fetches nothing at all. Attaching readAs there is
+      // not merely useless -- `/v1/orders/:cid/cancel` is an unbound operator
+      // route, so naming a party the token cannot read turns a cancel that
+      // needs no visibility into a PERMISSION_DENIED. It also folds into the
+      // `parties=` filter of the post-commit transaction-tree read
+      // (json-api.ts), which would fail AFTER the cancel had committed.
+      readAs: order.allocationCid ? [order.admin] : [],
+      commandId: `order-cancel:${orderCid}`,
+      disclosure: [...factories.disclosure, ...ctx.disclosure],
+      command: {
+        kind: "exercise",
+        templateId: "CantonDex.Dex.Order:Order",
+        contractId: orderCid,
+        choice: "Order_Cancel",
+        argument: { extraArgs: ctx.extraArgs },
+      },
+    };
+    // Order_Cancel's own result carries the released holdings, not an update
+    // id, so the updateId comes from the driver when it can report one (see
+    // LedgerSubmitter.submitWithUpdateId). Callers that only need the effect
+    // ignore it.
+    return retryOnContention(async () => {
+      const submitWithUpdateId = this.ledger.submitWithUpdateId;
+      if (!submitWithUpdateId) {
+        await this.ledger.submit<unknown>(req);
+        return { updateId: null };
+      }
+      const { updateId } = await submitWithUpdateId.call(this.ledger, req);
+      return { updateId };
+    });
   }
 
   async listOpen(): Promise<Order[]> {

@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import type { Db } from "./db.js";
 import type {
   LedgerSubmitter,
+  SubmitReceipt,
   SubmitRequest,
   SubscriptionFilter,
   LedgerEvent,
@@ -55,6 +56,28 @@ export class IdempotentLedger implements LedgerSubmitter {
   ) {}
 
   async submit<R>(req: SubmitRequest): Promise<R> {
+    return this.once(req, () => this.inner.submit<R>(req));
+  }
+
+  /**
+   * Forward the updateId-reporting submission to the inner ledger under the
+   * same row lock as `submit`. Delegating it unguarded would quietly drop
+   * idempotency for whichever flows use it; falling back to `submit` when the
+   * inner driver has no updateId to report keeps the wrapper transparent.
+   */
+  async submitWithUpdateId<R>(req: SubmitRequest): Promise<SubmitReceipt<R>> {
+    const inner = this.inner.submitWithUpdateId;
+    if (!inner) {
+      return { result: await this.submit<R>(req), updateId: null };
+    }
+    return this.once(req, () => inner.call(this.inner, req) as Promise<SubmitReceipt<R>>);
+  }
+
+  /**
+   * Run `exec` at most once per commandId: cached result on replay, refusal
+   * while one is in flight, retry after an error or a stale pending row.
+   */
+  private async once<T>(req: SubmitRequest, exec: () => Promise<T>): Promise<T> {
     const now = Date.now();
     const argsHash = hashSubmitRequest(req);
     const existing = this.db
@@ -76,13 +99,26 @@ export class IdempotentLedger implements LedgerSubmitter {
       // Reject rather than serving a stale cached result or re-firing. (A
       // legacy row predating the argsHash column has argsHash === null; treat
       // it as unknown and let it proceed/overwrite.)
-      if (existing.argsHash !== null && existing.argsHash !== argsHash) {
+      //
+      // NOT for a row that recorded an error. That submission committed
+      // nothing, so there is no cached result to protect and no risk of
+      // double-firing — the guard would only ban the commandId forever. These
+      // ids are derived from the contract they act on (`order-cancel:<cid>`,
+      // `lp-add-settle:<cid>`), so a single failure followed by any change to
+      // the request — a re-resolved factory, a different disclosure set, a
+      // code change — would leave that order uncancellable and that
+      // settlement unsettleable for good. Retrying is what the row means.
+      if (
+        existing.status !== "error" &&
+        existing.argsHash !== null &&
+        existing.argsHash !== argsHash
+      ) {
         throw new Error(
           `idempotency: commandId ${req.commandId} replayed with different args`,
         );
       }
       if (existing.status === "ok" && existing.resultJson) {
-        return JSON.parse(existing.resultJson) as R;
+        return JSON.parse(existing.resultJson) as T;
       }
       if (
         existing.status === "pending" &&
@@ -109,7 +145,7 @@ export class IdempotentLedger implements LedgerSubmitter {
       .run(req.commandId, now, argsHash);
 
     try {
-      const result = await this.inner.submit<R>(req);
+      const result = await exec();
       this.db
         .prepare(
           `UPDATE command_submissions

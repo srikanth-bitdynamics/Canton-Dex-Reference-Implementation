@@ -213,6 +213,19 @@ function selectCoveringPrefix(slices: PoolSlice[], target: bigint): ContractId<"
   return out;
 }
 
+/**
+ * The standard Allocation interface, for the compensating cancel
+ * `releaseAllocations` runs when a DvP settle fails.
+ */
+const ALLOCATION_INTERFACE_ID =
+  "#splice-api-token-allocation-v2:Splice.Api.Token.AllocationV2:Allocation";
+
+/** Raw Daml `PS_*` constructor -> the spelling types.ts declares. Idempotent. */
+function normalizePoolStatus(raw: unknown): Pool["status"] {
+  const s = String(raw);
+  return (s.startsWith("PS_") ? s.slice(3) : s) as Pool["status"];
+}
+
 export class PoolService {
   constructor(
     private readonly ledger: LedgerSubmitter,
@@ -222,6 +235,71 @@ export class PoolService {
 
   private choiceContext(admin: Party): Promise<ChoiceContext> {
     return fetchChoiceContext(this.registry, admin);
+  }
+
+  /**
+   * Cancel allocations as their executor, releasing whatever they locked.
+   *
+   * The compensating action for a DvP whose settle failed after the
+   * counterparty's allocations committed. Those allocations lock whole
+   * holdings, and nothing else releases them: `Allocation_Cancel` is the
+   * executor's choice, not the owner's, so a party left holding a locked
+   * balance cannot free it themselves and every later action is refused for
+   * insufficient unlocked funds.
+   *
+   * One submission per allocation, and one failure does not stop the rest --
+   * the legs are independent, and releasing two of three still returns most of
+   * the balance. Returns the cids it could not release.
+   *
+   * `owner` is the party whose holdings the allocations locked; pass it
+   * whenever there is one, or the cancel cannot see what it is releasing.
+   */
+  async releaseAllocations(
+    allocationCids: string[],
+    admin: Party,
+    owner?: Party,
+  ): Promise<{
+    released: number;
+    failed: Array<{ contractId: string; error: string }>;
+  }> {
+    if (allocationCids.length === 0) return { released: 0, failed: [] };
+    const ctx = await this.choiceContext(admin);
+    const failed: Array<{ contractId: string; error: string }> = [];
+    for (const contractId of allocationCids) {
+      try {
+        await this.ledger.submit({
+          actAs: [this.operatorParty],
+          // Cancelling unlocks the holdings the allocation locked, so the
+          // submission has to see them. The admin signs every one of them;
+          // `owner` is kept only as a fallback for a caller that has the
+          // owner but not a readable admin.
+          readAs: owner && owner !== admin ? [admin, owner] : [admin],
+          commandId: `alloc-release:${contractId}`,
+          disclosure: ctx.disclosure,
+          command: {
+            kind: "exercise",
+            templateId: ALLOCATION_INTERFACE_ID,
+            contractId,
+            choice: "Allocation_Cancel",
+            argument: {
+              actors: [this.operatorParty],
+              extraArgs: ctx.extraArgs,
+            },
+          },
+        });
+      } catch (e) {
+        // Keep the reason. A bare catch here reduced every failure to a
+        // counter, which is the wrong trade for a compensating action: the
+        // difference between "already consumed by a settle that actually
+        // committed" and "the operator cannot see this allocation" decides
+        // whether anyone needs to intervene.
+        failed.push({
+          contractId,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    return { released: allocationCids.length - failed.length, failed };
   }
 
   private async rulesCid(): Promise<ContractId<"PoolRules">> {
@@ -292,8 +370,18 @@ export class PoolService {
         amount: s.amount,
         side: s.side,
       });
-      const status = state.status as string;
-      if (status === "PS_Paused" || status === "Paused") continue;
+      // A real participant returns the raw Daml constructor ("PS_Active"),
+      // while types.ts declares "Unfunded" | "Active" | "Paused" and the
+      // in-memory dev server already emits the short form. Normalise HERE, on
+      // the ledger read path, so every client sees the declared type -- a
+      // client written against the published type would otherwise see zero
+      // tradable pools, which is exactly what an external integrator hit.
+      //
+      // Read path only. admin/index.ts submits `status: "PS_Unfunded"` as a
+      // PoolState create argument; those are ledger-bound and must stay
+      // prefixed. Same shape as OrderService.listOpen's OS_ strip.
+      const status = normalizePoolStatus(state.status);
+      if (status === "Paused") continue;
       combined.push({
         contractId: cfg.contractId,
         poolId: cfg.poolId,
@@ -307,7 +395,7 @@ export class PoolService {
         quoteInstrumentId: cfg.quoteInstrumentId,
         lpInstrumentId: cfg.lpInstrumentId,
         feeBps: cfg.feeBps,
-        status: state.status,
+        status,
         reserves: state.reserves,
         totalLpSupply: state.totalLpSupply,
         baseSlices: poolSlices.filter((s) => s.side === "BaseSide").map(toSlice),
@@ -722,9 +810,23 @@ export class PoolService {
     // Split-admin DvP: the base/quote batch settles under pool.admin and the
     // LP-mint batch under pool.lpRegistrar, so each carries its own registry
     // choice context. For the self-registry both contexts are empty.
+    //
+    // readAs the deposit ADMIN: the settle fetches the holdings the LP's
+    // allocations locked, and a registry Holding is `signatory admin, owner`
+    // -- the operator is not a stakeholder and cannot see it otherwise.
+    // Without this the settle fails CONTRACT_NOT_FOUND on the LP's own
+    // deposit. (pool.lpRegistrar already covers the LP-token leg via actAs.)
+    //
+    // The admin rather than the LP, for two reasons: it is a signatory of
+    // every holding it issued regardless of where the owner is hosted, and
+    // readAs also feeds the `parties=` filter of the post-commit
+    // transaction-tree read -- naming a party this token cannot read would
+    // fail that GET AFTER the settle had committed, which the caller cannot
+    // distinguish from the settle itself failing.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
+        readAs: [pool.admin],
         commandId: `lp-add-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,
@@ -877,9 +979,16 @@ export class PoolService {
     // Split-admin DvP: base/quote batch under pool.admin, LP-burn batch under
     // pool.lpRegistrar — each carries its own registry choice context.
     // For the self-registry both contexts are empty.
+    //
+    // readAs the deposit admin, mirroring the add. The burn-sender leg locks
+    // LP-token holdings whose admin is pool.lpRegistrar, already in actAs, so
+    // this is defence-in-depth rather than load-bearing on today's shape --
+    // but the base/quote sides are the deposit admin's, and a future payout
+    // shape that locks them would need it.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
+        readAs: [pool.admin],
         commandId: `lp-remove-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
         disclosure: [
           ...depositFactories.disclosure,

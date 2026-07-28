@@ -161,7 +161,7 @@ Backend API base is `VITE_API_BASE` (default `http://localhost:8080`).
 |---|---|
 | `run-local-daml-tests.sh` | build the DAR + run the Daml test suites |
 | `e2e-smoke.sh` | quick end-to-end smoke across the stack |
-| `bootstrap-registry.ts` | create reference-registry `InstrumentConfiguration` for BTC/USDC/ETH and LP instruments, plus the `Registry.V2` registry and its `InstrumentConfig`s (required before any mint) |
+| `bootstrap-registry.ts` | create reference-registry `InstrumentConfiguration` for BTC/USDC/ETH and LP instruments, plus the lpRegistrar's `Registry.V2` (required before any liquidity move) and, if configured, a minting registry |
 | `localnet-dvp-e2e.ts` | LP add / swap / remove DvP round-trip on a LocalNet (`npm run localnet:dvp-e2e` from the backend) |
 | `testnet-v2registry-trade.ts` | drive a V2 registry trade against a testnet participant |
 | `build-vendored-token-standard.sh` | (re)build the vendored TSv2 DARs |

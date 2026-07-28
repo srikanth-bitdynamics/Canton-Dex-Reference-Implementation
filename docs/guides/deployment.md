@@ -79,15 +79,23 @@ The script is idempotent — running it twice is a no-op. See
 [Registry Integration](registry-integration.md) for what
 contracts are created and why.
 
-Among them is the `Registry.V2` registry and one `InstrumentConfig` per
-instrument in `registryV2.instruments` (`scripts/bootstrap-registry.json`).
-`Registry_Mint` needs both, and registers neither itself, so nothing can be
-minted until this has run.
+Among them is a `Registry.V2` under the **lpRegistrar**. That one is not
+optional: the pool's LP token is issued by this repository, and its
+allocation specs name the lpRegistrar as admin, which `Registry.V2` asserts
+against its own. Without it, add- and remove-liquidity cannot allocate —
+whatever the pool trades.
 
-The bootstrap logs the `Registry.V2` contract id when it creates one. That
-cid is also the value for `CANTON_ALLOC_FACTORY_CID` and
-`CANTON_SETTLE_FACTORY_CID`: the allocation, settlement and transfer
-factories are interface views of that one contract.
+A second registry, under `CANTON_ADMIN`, is created only if you add a
+`registryV2` block to `scripts/bootstrap-registry.json`. That one is for
+instruments a deployment mints itself; a deployment whose users bring their
+own Token Standard V2 assets does not need it.
+
+`CANTON_ALLOC_FACTORY_CID` and `CANTON_SETTLE_FACTORY_CID` are a
+single-registry stopgap (see `FixedRegistry` in
+`services/operator-backend/src/testnet-server.ts`), standing in for the
+per-admin registry lookup the design calls for. In a deployment serving
+foreign tokens, each admin's factory cid comes from that admin's own
+registry API, not from these variables.
 
 ## Environment Variables
 

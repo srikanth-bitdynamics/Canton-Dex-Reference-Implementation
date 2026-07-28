@@ -101,10 +101,8 @@ fi
 # 4. Registry bootstrap --------------------------------------------------
 
 echo "==> Running registry bootstrap"
-echo "    (instrument configs, LP configs, credentials, and the Registry.V2"
-echo "     registry + its instruments -- what Registry_Mint needs; note the"
-echo "     Registry.V2 cid it logs, it is the value for"
-echo "     CANTON_ALLOC_FACTORY_CID / CANTON_SETTLE_FACTORY_CID)"
+echo "    (instrument configs, LP configs, credentials, and the lpRegistrar's"
+echo "     Registry.V2 -- without which liquidity cannot be allocated)"
 (cd "$ROOT_DIR" && node --import tsx scripts/bootstrap-registry.ts)
 
 # 5. Seed initial pair/pool ---------------------------------------------

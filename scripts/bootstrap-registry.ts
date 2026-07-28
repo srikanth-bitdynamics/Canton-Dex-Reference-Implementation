@@ -90,16 +90,6 @@ const DEFAULT_CONFIG: BootstrapConfig = {
   ],
   lpInstruments: ["BTC-USDC-LP", "ETH-USDC-LP"],
   credentials: [],
-  registryV2: {
-    // Mirrors `instruments` above: the V1 reference registry and the V2
-    // registry are separate contracts, and an instrument tradable on one is
-    // not automatically registered on the other.
-    instruments: [
-      { instrumentId: "BTC", decimals: 8 },
-      { instrumentId: "USDC" },
-      { instrumentId: "ETH" },
-    ],
-  },
 };
 
 const REGISTRY_TEMPLATE_ID = "CantonDex.Registry.V2:Registry";
@@ -184,7 +174,7 @@ async function ensureRegistry(
   if (dryRun) return undefined;
   const contractId = await ledger.submit<string>({
     actAs: [admin],
-    commandId: "bootstrap-registry-v2",
+    commandId: `bootstrap-registry-v2:${admin}`,
     command: {
       kind: "create",
       templateId: REGISTRY_TEMPLATE_ID,
@@ -192,11 +182,9 @@ async function ensureRegistry(
     },
   });
   // The AllocationFactory / SettlementFactory / TransferFactory are interface
-  // views of this same contract, so this one cid is all three.
-  log.info(
-    "Registry.V2 created -- use this cid for CANTON_ALLOC_FACTORY_CID and CANTON_SETTLE_FACTORY_CID",
-    { contractId },
-  );
+  // views of this same contract, so this one cid answers for all three -- but
+  // only for THIS admin. Each registry admin has its own.
+  log.info("Registry.V2 created", { admin, contractId });
   return contractId;
 }
 
@@ -296,7 +284,9 @@ async function main(): Promise<void> {
   const token = required("CANTON_LEDGER_TOKEN");
   const admin = required("CANTON_ADMIN");
   const lpRegistrar = required("CANTON_LP_REGISTRAR");
-  const operator = required("CANTON_OPERATOR");
+  // Read lazily: it names the registry's `users`, so it is only needed once
+  // there is a registry to create.
+  const operator = () => required("CANTON_OPERATOR");
   const userId = process.env.CANTON_USER_ID ?? "ledger-api-user";
   const dryRun = process.env.BOOTSTRAP_DRY_RUN === "1";
 
@@ -309,7 +299,6 @@ async function main(): Promise<void> {
     synchronizerId: process.env.CANTON_SYNCHRONIZER,
   });
 
-  const registryV2 = cfg.registryV2 ?? DEFAULT_CONFIG.registryV2!;
 
   log.info("bootstrap starting", {
     ledger: baseUrl,
@@ -318,7 +307,7 @@ async function main(): Promise<void> {
     instruments: cfg.instruments.length,
     lpInstruments: cfg.lpInstruments.length,
     credentials: cfg.credentials.length,
-    registryV2Instruments: registryV2.instruments.length,
+    registryV2Instruments: cfg.registryV2?.instruments.length ?? 0,
     dryRun,
   });
 
@@ -342,24 +331,46 @@ async function main(): Promise<void> {
     await ensureCredential(ledger, cred, dryRun);
   }
 
-  // 4. The V2 registry and its instruments. Every V2 holding is minted
-  //    through Registry_Mint, which needs an InstrumentConfig for the
-  //    instrument and never creates one lazily, so anything that will be
-  //    minted has to be listed in registryV2.instruments.
-  const registryCid = await ensureRegistry(
-    ledger,
-    admin,
-    registryV2.users ?? [operator, lpRegistrar],
-    dryRun,
-  );
-  if (registryCid) {
+  // 4. The LP registry. This one is not optional: the pool's LP token is
+  //    issued by THIS repo, and Lp/Instrument.daml builds its allocation
+  //    specs with `admin = lpRegistrar` (Lp/Instrument.daml:53), while
+  //    Registry.V2 asserts `spec.admin == admin` (Registry/V2.daml:564).
+  //    Without a Registry.V2 whose admin is the lpRegistrar, add- and
+  //    remove-liquidity cannot allocate at all -- whatever the pool trades,
+  //    including two instruments from a foreign registry.
+  //
+  //    No instruments are registered on it: the LP mint/burn path runs
+  //    through the allocation and settlement factories and never reads an
+  //    InstrumentConfig.
+  await ensureRegistry(ledger, lpRegistrar, [operator(), admin], dryRun);
+
+  // 5. Optionally, a registry for instruments this deployment mints itself.
+  //    Opt-in via a `registryV2` block in bootstrap-registry.json: a
+  //    deployment whose users bring their own Token Standard V2 assets does
+  //    not need one, and creating a mint-capable registry by default is not
+  //    something a bootstrap should do silently.
+  //
+  //    Registry_Mint needs an InstrumentConfig for the instrument and never
+  //    creates one lazily, so anything mintable has to be listed here.
+  const registryV2 = cfg.registryV2;
+  if (!registryV2) {
+    log.info("no registryV2 block configured; skipping the minting registry");
+  } else if (admin === lpRegistrar) {
+    // One party, one registry -- the shape the repo's own fixtures use.
+    const cid = await ensureRegistry(ledger, admin, [operator()], dryRun);
     for (const inst of registryV2.instruments) {
-      await ensureV2Instrument(ledger, admin, registryCid, inst, dryRun);
+      if (cid) await ensureV2Instrument(ledger, admin, cid, inst, dryRun);
     }
   } else {
-    log.info("dry run: skipping V2 instrument registration", {
-      instruments: registryV2.instruments.map((i) => i.instrumentId),
-    });
+    const cid = await ensureRegistry(
+      ledger,
+      admin,
+      registryV2.users ?? [operator(), lpRegistrar],
+      dryRun,
+    );
+    for (const inst of registryV2.instruments) {
+      if (cid) await ensureV2Instrument(ledger, admin, cid, inst, dryRun);
+    }
   }
 
   log.info("bootstrap complete", { dryRun });

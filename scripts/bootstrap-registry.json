@@ -5,12 +5,5 @@
     { "instrumentId": "ETH", "description": "Demo Ether" }
   ],
   "lpInstruments": ["BTC-USDC-LP", "ETH-USDC-LP"],
-  "credentials": [],
-  "registryV2": {
-    "instruments": [
-      { "instrumentId": "BTC", "decimals": 8 },
-      { "instrumentId": "USDC" },
-      { "instrumentId": "ETH" }
-    ]
-  }
+  "credentials": []
 }

@@ -2010,6 +2010,60 @@ export class TestnetOnboardingService {
    * after the archives) and why the dealers are stocked on both sides before
    * any of this can be reached.
    */
+  /**
+   * Cancel a hosted party's own RFQ.
+   *
+   * Without this a hosted party can create and accept but can only get OUT by
+   * waiting for expiry: `/v1/rfq/:cid/cancel` is operator-token gated and this
+   * deployment sets no token. Same guards as accept, and the ownership check
+   * is the load-bearing one -- `RfqService.cancel` takes `requireTrader`, so
+   * the RFQ's own trader must be the calling party.
+   */
+  async rfqCancelForParty(input: {
+    party: string;
+    rfqCid: string;
+    clientIp: string;
+  }): Promise<{ rfqId: string }> {
+    const deps = this.cfg.rfq;
+    if (!deps) {
+      throw new TestnetSubmitUnavailableError(
+        "this deployment has no participant to cancel testnet RFQs on",
+      );
+    }
+
+    this.assertFaucetParty(input.party);
+
+    if (!isCidString(input.rfqCid)) {
+      throw new TestnetRfqRejectedError("rfqCid must be a contract id", {
+        field: "rfqCid",
+      });
+    }
+
+    this.submitQuota.charge(input.clientIp);
+
+    await this.assertHostedHere(input.party);
+
+    const { rfqs } = await deps.service.list();
+    const rfq = rfqs.find((r) => r.contractId === input.rfqCid);
+    if (!rfq) {
+      throw new TestnetRfqRejectedError("unknown or inactive RFQ", {
+        field: "rfqCid",
+      });
+    }
+    if (rfq.trader !== input.party) {
+      throw new TestnetPartyIneligibleError(
+        "this RFQ was created by another party",
+        { field: "rfqCid" },
+      );
+    }
+
+    await deps.service.cancel({
+      rfqCid: input.rfqCid as ContractId<"Rfq">,
+      requireTrader: input.party as Party,
+    });
+    return { rfqId: rfq.rfqId };
+  }
+
   async rfqAcceptForParty(
     input: RfqAcceptForPartyInput,
   ): Promise<TestnetRfqAcceptReceipt> {

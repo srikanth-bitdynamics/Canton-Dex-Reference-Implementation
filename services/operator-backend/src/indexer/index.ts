@@ -141,8 +141,28 @@ export class Indexer {
       for (const t of rows) {
         if (known.has(t.contractId)) continue;
         const legs = t.transferLegs ?? [];
-        const trader = legs[0]?.sender?.owner ?? legs[0]?.receiver?.owner ?? null;
-        const dealer = legs[0]?.receiver?.owner ?? null;
+        // Who is the trader does NOT follow leg direction. legs[0] is the base
+        // leg, and its sender flips with the side: on a sell the trader sends
+        // base, on a buy the dealer does. Reading both parties off legs[0]
+        // therefore labelled every buy backwards -- silently, so a client
+        // reconciling on `trader == me` just missed all of its buys.
+        //
+        // The policy receipt names the dealer outright, and it is signed by
+        // the venue, so use it when present and take the trader to be the
+        // other party on the legs.
+        const legParties = Array.from(
+          new Set(
+            legs.flatMap((l) => [l.sender?.owner, l.receiver?.owner]).filter(Boolean),
+          ),
+        ) as Party[];
+        const acceptedDealer = t.policyReceipt?.acceptedDealer ?? null;
+        const dealer = acceptedDealer;
+        const trader = acceptedDealer
+          ? (legParties.find((x) => x !== acceptedDealer) ?? null)
+          : // No receipt (a non-RFQ matched trade): there is no dealer role to
+            // infer, so record the base-leg sender as the trader and leave the
+            // dealer unset rather than assert a direction we cannot know.
+            (legs[0]?.sender?.owner ?? null);
         const baseSym = legs[0]?.instrumentId ?? "";
         const quoteSym = legs[1]?.instrumentId ?? "";
         const pair = `${baseSym}/${quoteSym}`;

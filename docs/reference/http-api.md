@@ -237,6 +237,7 @@ authority writes. Instead it hands intents to the active
 | `bad_request` | 400 | malformed JSON, missing fields, invalid types |
 | `unauthorized` | 401 | missing or invalid admin token |
 | `not_found` | 404 | route or resource not found |
+| `too_many_requests` | 429 | a per-IP or per-deployment daily cap was reached; `details` carries `scope` and `cap` |
 | `payload_too_large` | 413 | body > 1 MiB |
 | `internal_error` | 500 | unexpected server error |
 

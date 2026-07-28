@@ -40,6 +40,7 @@
 //     POST /v1/testnet/order/cancel     -> { updateId }
 //     POST /v1/testnet/rfq              -> { rfqId, rfqCid, pair, expiresAt, quotes }
 //     POST /v1/testnet/rfq/accept       -> { tradeCid, acceptedDealer, ... }
+//     POST /v1/testnet/rfq/cancel       -> { rfqId }
 //
 // The dApp polls the ledger event stream directly for live state; the
 // HTTP API is for one-shot orchestration calls only. Trader-authority
@@ -1874,6 +1875,25 @@ async function routeRequest(
         clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
       });
       respondJson(res, 200, receipt);
+    } catch (e) {
+      throw testnetRfqHttpError(e);
+    }
+    return;
+  }
+
+  if (onboarding && method === "POST" && path === "/v1/testnet/rfq/cancel") {
+    const body = await readValidatedJson<{ party: string; rfqCid: string }>(
+      req,
+      "POST /v1/testnet/rfq/cancel",
+      callerAuth,
+    );
+    try {
+      const result = await onboarding.rfqCancelForParty({
+        party: expectString(body, "party"),
+        rfqCid: expectString(body, "rfqCid"),
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+      });
+      respondJson(res, 200, result);
     } catch (e) {
       throw testnetRfqHttpError(e);
     }

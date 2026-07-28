@@ -52,6 +52,31 @@ npm run build
 Then sync `dist/` to `/opt/canton-dex/web/` (nginx serves it directly; there
 is nothing to restart).
 
+## Rate limits a caller will actually hit
+
+The faucet and the relay are public, so both are capped. The caps are the
+first thing an integrator meets that is not in any error they can plan for,
+so state them up front:
+
+| Limit | Default | Env |
+| --- | --- | --- |
+| New parties per IP per UTC day | 3 | `DEX_TESTNET_PARTY_IP_DAILY_CAP` |
+| New parties per deployment per UTC day | 200 | `DEX_TESTNET_PARTY_DAILY_CAP` |
+| Relayed submissions per IP per UTC day | 200 | `DEX_TESTNET_SUBMIT_IP_DAILY_CAP` |
+| Relayed submissions per deployment per UTC day | 2000 | `DEX_TESTNET_SUBMIT_DAILY_CAP` |
+
+Exceeding one returns **429** with `code: "too_many_requests"` and a `details`
+object naming the `scope` and `cap`.
+
+Two consequences worth planning for rather than discovering:
+
+- a test suite that provisions a fresh party per run exhausts the party cap on
+  its fourth run of the day, and
+- the cap is per IP, so everyone behind one office NAT shares it.
+
+Reuse a party across runs where you can; the wallet stores one in
+`localStorage` and reconnects to it rather than allocating another.
+
 ## The faucet is a public write endpoint
 
 `POST /v1/testnet/party` allocates a party and grants ledger rights, unauthenticated,

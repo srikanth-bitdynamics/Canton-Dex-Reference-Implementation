@@ -913,15 +913,18 @@ async function routeRequest(
     const where: string[] = [];
     const args: unknown[] = [];
     if (trader) {
-      where.push("trader = ?");
-      args.push(trader);
+      // Either side. A party is `trader` on the trades it initiated and
+      // `counterparty` on the ones it was matched into; filtering on `trader`
+      // alone silently returned half of a party's fills.
+      where.push("(trader = ? OR counterparty = ?)");
+      args.push(trader, trader);
     }
     if (pair) {
       where.push("pair = ?");
       args.push(pair);
     }
     const sql =
-      "SELECT tradeCid, ts, pair, trader, dealer, policyVersion, " +
+      "SELECT tradeCid, ts, pair, trader, dealer, counterparty, policyVersion, " +
       "acceptedRank, consideredCount FROM trades " +
       (where.length ? `WHERE ${where.join(" AND ")} ` : "") +
       `ORDER BY ts DESC LIMIT ${limit}`;

@@ -136,24 +136,37 @@ const MIGRATIONS: string[] = [
   // flag and has carried totalLpSupply since v1, so no ledger re-read is
   // needed. poolCid is the PRIMARY KEY, so each correlated subquery yields at
   // most one row; a row whose join misses falls through to the sign test,
-  // where a swap's reserve deltas have opposite signs and a liquidity move's
-  // share one.
+  // where a swap's reserve deltas have opposite signs while an add moves both
+  // up and a remove moves both down.
+  //
+  // The supply comparison gates on exact string inequality before letting a
+  // REAL comparison pick the direction, so two distinct supplies can never
+  // collapse to "unchanged" the way a bare CAST would above ~2^53. Two
+  // distinct strings that do compare equal as REAL fall through to the sign
+  // test rather than being mislabelled.
   `
   ALTER TABLE swaps ADD COLUMN kind TEXT NOT NULL DEFAULT 'swap';
   CREATE INDEX IF NOT EXISTS swaps_kind_pair_ts ON swaps(kind, pair, ts);
   UPDATE swaps SET kind = CASE
-    WHEN (SELECT CAST(n.totalLpSupply AS REAL) FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
+    WHEN (SELECT n.totalLpSupply FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
+      <> (SELECT o.totalLpSupply FROM pool_states o WHERE o.poolCid = swaps.oldPoolCid)
+     AND (SELECT CAST(n.totalLpSupply AS REAL) FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
        > (SELECT CAST(o.totalLpSupply AS REAL) FROM pool_states o WHERE o.poolCid = swaps.oldPoolCid)
       THEN 'add_liquidity'
-    WHEN (SELECT CAST(n.totalLpSupply AS REAL) FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
+    WHEN (SELECT n.totalLpSupply FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
+      <> (SELECT o.totalLpSupply FROM pool_states o WHERE o.poolCid = swaps.oldPoolCid)
+     AND (SELECT CAST(n.totalLpSupply AS REAL) FROM pool_states n WHERE n.poolCid = swaps.newPoolCid)
        < (SELECT CAST(o.totalLpSupply AS REAL) FROM pool_states o WHERE o.poolCid = swaps.oldPoolCid)
       THEN 'remove_liquidity'
     WHEN CAST(baseDelta AS REAL) = 0 AND CAST(quoteDelta AS REAL) = 0
       THEN 'state_change'
-    WHEN CAST(baseDelta AS REAL) * CAST(quoteDelta AS REAL) > 0
+    WHEN CAST(baseDelta AS REAL) > 0 AND CAST(quoteDelta AS REAL) > 0
       THEN 'add_liquidity'
+    WHEN CAST(baseDelta AS REAL) < 0 AND CAST(quoteDelta AS REAL) < 0
+      THEN 'remove_liquidity'
     ELSE 'swap'
   END;
+  ALTER TABLE trades ADD COLUMN counterparty TEXT;
   UPDATE events SET kind = (
     SELECT s.kind FROM swaps s WHERE s.newPoolCid = events.contractId
   )

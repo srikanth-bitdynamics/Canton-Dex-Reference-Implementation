@@ -166,6 +166,37 @@ describe("indexer: classifying a PoolState rotation", () => {
     assert.equal(rows[0]!.kind, "remove_liquidity");
   });
 
+  it("calls a removal a remove even when supply is unreadable", async () => {
+    // The fallback path, used when totalLpSupply will not parse. A swap moves
+    // the reserves in OPPOSITE directions; an add moves both up and a remove
+    // moves both DOWN. Testing only whether the two deltas agree in sign --
+    // without testing which sign -- labelled every removal an add.
+    await step(1);
+    ledger.state = {
+      contractId: "#state:1",
+      base: "9.99",
+      quote: "199800.0",
+      lpSupply: "not-a-number",
+    };
+    await step(2);
+
+    const rows = kinds();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.kind, "remove_liquidity");
+  });
+
+  it("calls an add an add when supply is unreadable", async () => {
+    await step(1);
+    ledger.state = {
+      contractId: "#state:1",
+      base: "10.01",
+      quote: "200200.0",
+      lpSupply: "not-a-number",
+    };
+    await step(2);
+    assert.equal(kinds()[0]!.kind, "add_liquidity");
+  });
+
   it("calls a rotation that moved nothing a state change, not a swap", async () => {
     await step(1);
     // Pause rotates the PoolState with identical reserves and supply. Recorded

@@ -94,7 +94,9 @@ describe("aggregateBook", () => {
     ];
     const book = aggregateBook(orders);
     assert.equal(book.bids.length, 1);
-    assert.equal(book.bids[0]!.size, "3");
+    // Ledger scale, not the float form: price is served at 10dp and size must
+    // match it.
+    assert.equal(book.bids[0]!.size, "3.0000000000");
     assert.equal(book.bids[0]!.count, 2);
     assert.equal(book.asks.length, 1);
     assert.equal(book.asks[0]!.price, "110");

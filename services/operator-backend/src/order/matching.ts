@@ -10,6 +10,7 @@
 // without a ledger. The service module wires it to actual ledger writes.
 
 import type { Order } from "../types.js";
+import * as dec from "../pool/decimal.js";
 
 export interface Match {
   buy: Order;
@@ -115,18 +116,21 @@ export function aggregateBook(orders: Order[]): {
   asks: BookLevel[];
 } {
   const accum = (rows: Order[]): BookLevel[] => {
-    const byPrice = new Map<string, { size: number; count: number }>();
+    // Exact: float accumulation renders 0.1 + 0.2 as 0.30000000000000004 and a
+    // 10dp dust order as 1e-10, which no fixed-point parser accepts. `price`
+    // already keeps ledger scale; `size` must too.
+    const byPrice = new Map<string, { size: bigint; count: number }>();
     for (const o of rows) {
       if (o.status !== "Funded" && o.status !== "PartiallyFilled") continue;
       const k = o.limitPrice;
-      const cur = byPrice.get(k) ?? { size: 0, count: 0 };
-      cur.size += num(o.remainingQty);
+      const cur = byPrice.get(k) ?? { size: 0n, count: 0 };
+      cur.size += dec.parseDecimal(o.remainingQty);
       cur.count += 1;
       byPrice.set(k, cur);
     }
     return Array.from(byPrice.entries()).map(([price, v]) => ({
       price,
-      size: v.size.toString(),
+      size: dec.formatDecimal(v.size),
       count: v.count,
     }));
   };

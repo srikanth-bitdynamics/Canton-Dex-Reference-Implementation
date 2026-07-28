@@ -58,6 +58,10 @@ Open orders for a specific trader. **400** if `trader` is missing.
 ### `GET /v1/orders/book?pair=BASE/QUOTE` → `{ bids, asks }`
 ### `GET /v1/orders/matches?pair=BASE/QUOTE` → `{ matches }`
 
+Each entry carries only the terms — `price`, `quantity`, `buyOrderCid`,
+`sellOrderCid`. The orders themselves name their traders and allocations and
+are not served here.
+
 Resting book and crossable pairs for one market. `?base=&quote=` is also
 accepted. **400** if neither form is supplied.
 
@@ -119,8 +123,9 @@ backfilling history.
 
 ### `GET /v1/trades?trader=&pair=&limit=` → indexer rows
 
-Settled MatchedTrade history from the SQLite indexer. **503** if the
-indexer is not configured.
+Settled MatchedTrade history for one trader. **400** without `?trader=`,
+unless the request carries the admin token — a row names both parties.
+**503** if the indexer is not configured.
 
 `?trader=` matches **either side** — a party appears as `trader` on the trades
 it initiated and as `counterparty` on those it was matched into. `dealer` is a

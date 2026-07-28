@@ -42,6 +42,35 @@ describe("quote-leg amount via decimal module", () => {
   });
 });
 
+describe("floored decimal ops mirror the pool's payout rounding", () => {
+  const d = (s: string) => dec.parseDecimal(s);
+
+  it("steps a rounded-up product down to the exact floor", () => {
+    // 0.0000000002 * 0.75 = 0.00000000015 exactly; `mul` rounds it up.
+    assert.equal(dec.formatDecimal(dec.mul(d("0.0000000002"), d("0.75"))), "0.0000000002");
+    assert.equal(
+      dec.formatDecimal(dec.mulFloor(d("0.0000000002"), d("0.75"))),
+      "0.0000000001",
+    );
+  });
+
+  it("steps a rounded-up quotient down to the exact floor", () => {
+    // 7000 / 1007 = 6.95134061569016…
+    assert.equal(dec.formatDecimal(dec.div(d("7000"), d("1007"))), "6.9513406157");
+    assert.equal(dec.formatDecimal(dec.divFloor(d("7000"), d("1007"))), "6.9513406156");
+  });
+
+  it("leaves exactly representable results alone", () => {
+    assert.equal(dec.formatDecimal(dec.mulFloor(d("2.5"), d("4"))), "10.0000000000");
+    assert.equal(dec.formatDecimal(dec.divFloor(d("7000"), d("1000"))), "7.0000000000");
+    // The unit share a full LP redemption computes must stay exact.
+    assert.equal(
+      dec.formatDecimal(dec.divFloor(d("1414.2135623731"), d("1414.2135623731"))),
+      "1.0000000000",
+    );
+  });
+});
+
 describe("compareDecimal is exact", () => {
   it("orders by decimal value, not float", () => {
     assert.equal(compareDecimal("60510.00", "60530.00"), -1);

@@ -399,7 +399,7 @@ export class PoolService {
 
   /**
    * Off-chain quote computation for the constant-product pool, in exact
-   * fixed-point decimal (10dp, round-half-even) so it agrees with the
+   * fixed-point decimal (10dp, floored at each step) so it agrees with the
    * on-ledger PoolRules_Swap computation to the last digit. This
    * is advisory; the on-chain choice re-validates.
    */
@@ -417,8 +417,11 @@ export class PoolService {
     // feeMul = (10000 - feeBps) / 10000, as a scaled decimal.
     const feeNum = dec.parseDecimal(String(10000 - pool.feeBps));
     const feeDen = dec.parseDecimal("10000");
-    const dx = dec.div(dec.mul(dec.parseDecimal(inputAmount), feeNum), feeDen);
-    const out = dec.div(dec.mul(rOut, dx), rIn + dx);
+    const dx = dec.divFloor(
+      dec.mulFloor(dec.parseDecimal(inputAmount), feeNum),
+      feeDen,
+    );
+    const out = dec.divFloor(dec.mulFloor(rOut, dx), rIn + dx);
     return dec.formatDecimal(out);
   }
 
@@ -875,9 +878,12 @@ export class PoolService {
     lpTokensToRedeem: Decimal,
     knownTotalLpSupply: Decimal,
   ): RemovePlan {
-    const share = dec.div(dec.parseDecimal(lpTokensToRedeem), dec.parseDecimal(knownTotalLpSupply));
-    const baseOut = dec.mul(dec.parseDecimal(pool.reserves.baseAmount), share);
-    const quoteOut = dec.mul(dec.parseDecimal(pool.reserves.quoteAmount), share);
+    const share = dec.divFloor(
+      dec.parseDecimal(lpTokensToRedeem),
+      dec.parseDecimal(knownTotalLpSupply),
+    );
+    const baseOut = dec.mulFloor(dec.parseDecimal(pool.reserves.baseAmount), share);
+    const quoteOut = dec.mulFloor(dec.parseDecimal(pool.reserves.quoteAmount), share);
     const side = (slices: PoolSlice[], target: bigint): RemoveSidePlan => {
       const sliceCids: ContractId<"PoolSlice">[] = [];
       const outs: Decimal[] = [];

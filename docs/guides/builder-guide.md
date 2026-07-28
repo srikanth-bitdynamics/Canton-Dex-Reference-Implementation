@@ -103,7 +103,7 @@ PolicyReceipt               on-chain record of operator ranking policy at accept
 Registry.V2.*               reference registry implementing Token Standard V2 interfaces
 ```
 
-The Daml package is `canton-dex-trading` (current version `v0.1.1`).
+The Daml package is `canton-dex-trading` (current version `v0.1.2`).
 
 ## Off-chain layout
 

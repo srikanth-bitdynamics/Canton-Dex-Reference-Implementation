@@ -19,6 +19,23 @@ earlier version execute the newer choice, and contract ids are preserved.
   above a caller-chosen ceiling before any contract is created; omitting it
   keeps the previous unbounded behaviour.
 
+### Fixed
+
+- `canton-dex-trading` 0.1.1 → 0.1.2. Pool payouts now really round down.
+  `floorDecimal10` was the identity function — `Decimal` is `Numeric 10`, so
+  its round trip through `1e10` returned its argument unchanged — which left
+  the constant-product output and the pro-rata redemption on the half-even
+  rounding of `*` and `/`. A swap could therefore pay out more than the exact
+  quotient and lower `x*y`. `PM.floorMul` / `PM.floorDiv` replace it and floor
+  at each step; the operator's advisory quote floors identically.
+- `OrderMatchExecution_Execute` now asserts that the supplied allocation cids
+  are the ones the fetched orders are bound to, and that both orders are
+  funded. Without the binding check a fill could consume the collateral of a
+  different resting order of the same trader — batch conservation still holds,
+  so nothing downstream rejected it — leaving that order pointing at an
+  archived allocation; without the status check a never-funded `OS_Pending`
+  order could be recorded as filled.
+
 ### Changed
 
 - `canton-dex-trading` 0.1.0 → 0.1.1. `AllocationFactory_Allocate` now locks

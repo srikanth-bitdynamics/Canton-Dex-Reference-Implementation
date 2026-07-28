@@ -202,6 +202,13 @@ describe("PoolService.computeQuote", () => {
     assert.ok(out > 0.049 && out < 0.0499, `expected ~0.0496, got ${out}`);
   });
 
+  it("floors the output the way the on-ledger swap does", () => {
+    // 7 USDC into a zero-fee 1000/1000 pool prices at 7000/1007; half-even
+    // rounding lands on ...57, one ulp above the exact quotient, which would
+    // quote an output the ledger refuses to pay.
+    assert.equal(svc.computeQuote(mkPool(1000, 1000, 0), "USDC", "7"), "6.9513406156");
+  });
+
   it("price impact grows with size", () => {
     const pool = mkPool(10, 200_000, 30);
     const tinyOut = parseFloat(svc.computeQuote(pool, "BTC", "0.01"));
@@ -703,7 +710,7 @@ describe("PoolService.computeQuoteDetailed", () => {
 
   it("returns exact fee, spot/execution price, and impact", () => {
     const q = svc.computeQuoteDetailed(mkPool(10, 200_000, 30), "BTC", "0.5");
-    assert.equal(q.outputAmount, "9496.5947516312");
+    assert.equal(q.outputAmount, "9496.5947516311");
     assert.equal(q.inputInstrumentId, "BTC");
     assert.equal(q.outputInstrumentId, "USDC");
     assert.equal(q.feeBps, 30);

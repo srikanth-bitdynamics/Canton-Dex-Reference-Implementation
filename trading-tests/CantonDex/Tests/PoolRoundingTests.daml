@@ -1,0 +1,88 @@
+-- | Pool payouts round DOWN, so the constant product never falls. `Decimal` is
+-- `Numeric 10`, so a payout cannot be floored once computed — the flooring has
+-- to happen at the multiplication and division that produce it.
+module CantonDex.Tests.PoolRoundingTests where
+
+import DA.Assert
+import DA.Optional (fromSome)
+import Daml.Script
+
+import Splice.Testing.Utils (emptyExtraArgs)
+
+import CantonDex.Dex.PoolModel qualified as PM
+import CantonDex.Dex.PoolRules qualified as PRules
+import CantonDex.Dex.PoolState qualified as PS
+import CantonDex.Tests.PoolLiquidityRulesTests qualified as PLT
+import CantonDex.Trading.Utils qualified as Utils
+
+testFloorDivStaysBelowExactQuotient : Script ()
+testFloorDivStaysBelowExactQuotient = do
+  -- 7000 / 1007 = 6.95134061569016…, which `/` rounds UP.
+  let numerator = 7000.0 : Decimal
+  numerator / 1007.0 === 6.9513406157
+  PM.floorDiv 7000.0 1007.0 === 6.9513406156
+  -- Exactly representable quotients are not stepped down.
+  PM.floorDiv 7000.0 1000.0 === 7.0
+  PM.floorDiv 1.0 8.0 === 0.125
+  pure ()
+
+testFloorMulStaysBelowExactProduct : Script ()
+testFloorMulStaysBelowExactProduct = do
+  -- 0.0000000002 * 0.75 = 0.00000000015 exactly, which `*` rounds UP.
+  let tiny = 0.0000000002 : Decimal
+  tiny * 0.75 === 0.0000000002
+  PM.floorMul 0.0000000002 0.75 === 0.0000000001
+  -- Exactly representable products are not stepped down.
+  PM.floorMul 1234.5678901234 1.0 === 1234.5678901234
+  PM.floorMul 2.5 4.0 === 10.0
+  pure ()
+
+-- A full redemption still drains the pool exactly rather than stranding an ulp.
+testFullRedemptionShareIsExact : Script ()
+testFullRedemptionShareIsExact = do
+  let supply = 1414.2135623731
+      share = PM.floorDiv supply supply
+  share === 1.0
+  PM.floorMul 993.0486593843 share === 993.0486593843
+  pure ()
+
+-- A zero-fee pool has no fee slack to absorb a rounding error. 7 USDC into a
+-- 1000/1000 pool prices at 7000/1007, whose rounded quotient sits above the
+-- exact one — paying that out drops base*quote below k.
+testSwapOutputRoundsDownToKeepConstantProduct : Script ()
+testSwapOutputRoundsDownToKeepConstantProduct = do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  fx <- PLT.setupWithFee 0 [alice, bob]
+  rulesCid <- submit fx.operator $ createCmd PRules.PoolRules with operator = fx.operator
+  now <- getTime
+
+  addRes <- PLT.dvpAdd fx fx.stateCid fx.policyCid alice 1000.0 1000.0 0.0 0.0 0.0 now
+  let kBefore = 1000.0 * 1000.0
+
+  reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+    poolCid = fx.poolCid; swapper = bob
+    inputInstrumentId = "USDC"; inputAmount = 7.0
+  usdcHold <- PLT.mintHolding fx.registry bob "USDC" 7.0
+  swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
+    [toInterfaceContractId usdcHold] now
+  swapRes <- submit (actAs [fx.operator] <> readAs [fx.registry]) $
+    exerciseCmd rulesCid PRules.PoolRules_Swap with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid
+      swapperAccount = Utils.basicAccount bob
+      inputInstrumentId = "USDC"; inputAmount = 7.0; minOutputAmount = 0.0
+      swapperAllocationCid = swapAlloc
+      inputSliceCid = addRes.quoteSliceCid
+      outputSliceCids = [addRes.baseSliceCid]
+      factoryCid = fx.settleCid
+      extraArgs = emptyExtraArgs
+
+  state <- fromSome <$> queryContractId @PS.PoolState fx.operator swapRes.poolStateCid
+  assertMsg "swap must not lower the constant product"
+    (state.reserves.baseAmount * state.reserves.quoteAmount >= kBefore)
+
+  swapRes.amountOut === 6.9513406156
+  state.reserves.baseAmount === 993.0486593844
+  state.reserves.quoteAmount === 1007.0
+  pure ()

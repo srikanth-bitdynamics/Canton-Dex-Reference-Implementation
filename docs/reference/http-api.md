@@ -236,7 +236,7 @@ base-deposit, quote-deposit, and LP-receipt allocations via
   "baseAmount": "0.1",
   "quoteAmount": "10000.0",
   "requestedAt": "2026-07-01T00:00:00Z",
-  "maxDonationBps": "50"   // optional, see below
+  "maxOffRatioBps": "50"   // optional, see below
 }
 // response (the quote fields; the allocation specs, factories, choice
 // contexts and disclosures the wallet needs are returned alongside them)
@@ -245,9 +245,9 @@ base-deposit, quote-deposit, and LP-receipt allocations via
   "lpAmount": "29.6531048680",
   "matchedBaseAmount": "0.1000000000",
   "matchedQuoteAmount": "8847.7436669408",
-  "donatedBaseAmount": "0.0000000000",
-  "donatedQuoteAmount": "1152.2563330592",
-  "donationBps": "1152.2563330592",
+  "refundedBaseAmount": "0.0000000000",
+  "refundedQuoteAmount": "1152.2563330592",
+  "offRatioBps": "1152.2563330592",
   "knownTotalLpSupply": "1581.0163443902",
   "baseAmount": "0.1",
   "quoteAmount": "10000.0"
@@ -259,7 +259,7 @@ against whichever leg is short relative to the pool's reserve ratio
 (`min((base·S)/rb, (quote·S)/rq)`), and the settle takes only the matching part
 of the other leg into the reserves. `matchedBaseAmount` / `matchedQuoteAmount`
 are the parts of the deposit the minted LP tokens represent and that reach the
-pool; `donatedBaseAmount` / `donatedQuoteAmount` are the remainder, which
+pool; `refundedBaseAmount` / `refundedQuoteAmount` are the remainder, which
 `PoolLiquidityRules_SettleAddLiquidity` refunds to the depositor in the same
 transaction (the settle result reports what it took as `baseAdded` /
 `quoteAdded`). In the example above, 1152.26 dUSD — 11.5% of the quote leg —
@@ -267,8 +267,8 @@ comes back. At the reserve ratio both remainders are zero, and the first
 deposit into an unfunded pool sets the ratio, so nothing is left over there
 either.
 
-`maxDonationBps` (optional, `0`..`10000`, number or Decimal string) refuses
-the request with **400** when `donationBps` exceeds it, before any contract is
+`maxOffRatioBps` (optional, `0`..`10000`, number or Decimal string) refuses
+the request with **400** when `offRatioBps` exceeds it, before any contract is
 created. Omitting it means no ceiling — the historical behaviour. Use it when
 a partly-filled add is not what you want: the excess is refunded rather than
 lost, but the position you get is smaller than the amounts you sent. Note that

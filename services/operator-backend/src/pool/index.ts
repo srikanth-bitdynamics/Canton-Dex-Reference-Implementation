@@ -55,27 +55,27 @@ export interface PoolSwapInput {
 
 const BPS_SCALE = dec.parseDecimal("10000");
 
-// `donated` as a fraction of `supplied`, in basis points.
-function bpsOf(donated: bigint, supplied: bigint): bigint {
+// `refunded` as a fraction of `supplied`, in basis points.
+function bpsOf(refunded: bigint, supplied: bigint): bigint {
   if (supplied === 0n) return 0n;
-  return dec.div(dec.mul(donated, BPS_SCALE), supplied);
+  return dec.div(dec.mul(refunded, BPS_SCALE), supplied);
 }
 
 // The settle refunds the off-ratio remainder, but a caller who meant to add at
 // the ratio would rather re-quote than have half its deposit handed back.
-function enforceDonationTolerance(
+function enforceOffRatioTolerance(
   match: LiquidityMatch,
-  maxDonationBps: number | Decimal | null | undefined,
+  maxOffRatioBps: number | Decimal | null | undefined,
 ): void {
-  if (maxDonationBps === undefined || maxDonationBps === null) return;
-  const limit = parseBpsLimit(maxDonationBps);
-  if (dec.parseDecimal(match.donationBps) > limit) {
+  if (maxOffRatioBps === undefined || maxOffRatioBps === null) return;
+  const limit = parseBpsLimit(maxOffRatioBps);
+  if (dec.parseDecimal(match.offRatioBps) > limit) {
     throw new LedgerError(
       "validation",
-      `add-liquidity is ${match.donationBps} bps off the pool ratio, over the ` +
+      `add-liquidity is ${match.offRatioBps} bps off the pool ratio, over the ` +
         `${dec.formatDecimal(limit)} bps limit: only ${match.matchedBaseAmount} base and ` +
         `${match.matchedQuoteAmount} quote would enter the pool; the remaining ` +
-        `${match.donatedBaseAmount} base and ${match.donatedQuoteAmount} quote would be refunded`,
+        `${match.refundedBaseAmount} base and ${match.refundedQuoteAmount} quote would be refunded`,
       false,
     );
   }
@@ -85,7 +85,7 @@ function parseBpsLimit(v: number | Decimal): bigint {
   let scaled: bigint;
   if (typeof v === "number") {
     if (!Number.isFinite(v)) {
-      throw new LedgerError("validation", "maxDonationBps must be a finite number", false);
+      throw new LedgerError("validation", "maxOffRatioBps must be a finite number", false);
     }
     scaled = dec.parseDecimal(v.toFixed(dec.DECIMALS));
   } else if (typeof v === "string" && /^\d+(\.\d{1,10})?$/.test(v.trim())) {
@@ -93,13 +93,13 @@ function parseBpsLimit(v: number | Decimal): bigint {
   } else {
     throw new LedgerError(
       "validation",
-      "maxDonationBps must be a number or a Daml Decimal string",
+      "maxOffRatioBps must be a number or a Daml Decimal string",
       false,
     );
   }
-  // 10000 bps is a whole leg donated, the most a deposit can lose.
+  // 10000 bps is a whole leg unmatched, the most of a leg that can come back.
   if (scaled < 0n || scaled > BPS_SCALE) {
-    throw new LedgerError("validation", "maxDonationBps must be between 0 and 10000", false);
+    throw new LedgerError("validation", "maxOffRatioBps must be between 0 and 10000", false);
   }
   return scaled;
 }
@@ -145,10 +145,10 @@ export interface PoolRequestAddLiquidityInput {
   requestedAt: Time;
   settleAt?: Time | null;
   /**
-   * Ceiling on `donationBps`, 0..10000. Omitted means no ceiling, which is
+   * Ceiling on `offRatioBps`, 0..10000. Omitted means no ceiling, which is
    * what every existing caller relies on.
    */
-  maxDonationBps?: number | Decimal | null;
+  maxOffRatioBps?: number | Decimal | null;
 }
 
 /**
@@ -161,10 +161,10 @@ export interface LiquidityMatch {
   matchedBaseAmount: Decimal;
   matchedQuoteAmount: Decimal;
   /** The unmatched remainder of each leg, which comes back on settle. */
-  donatedBaseAmount: Decimal;
-  donatedQuoteAmount: Decimal;
+  refundedBaseAmount: Decimal;
+  refundedQuoteAmount: Decimal;
   /** The unmatched leg as a fraction of what that leg supplied, in bps. */
-  donationBps: Decimal;
+  offRatioBps: Decimal;
 }
 
 export interface PoolRequestAddLiquidityResult extends LiquidityMatch {
@@ -722,9 +722,9 @@ export class PoolService {
         lpAmount: dec.formatDecimal(dec.sqrt(dec.mul(b, q))),
         matchedBaseAmount: dec.formatDecimal(b),
         matchedQuoteAmount: dec.formatDecimal(q),
-        donatedBaseAmount: dec.formatDecimal(0n),
-        donatedQuoteAmount: dec.formatDecimal(0n),
-        donationBps: dec.formatDecimal(0n),
+        refundedBaseAmount: dec.formatDecimal(0n),
+        refundedQuoteAmount: dec.formatDecimal(0n),
+        offRatioBps: dec.formatDecimal(0n),
       };
     }
     const rb = dec.parseDecimal(pool.reserves.baseAmount);
@@ -742,9 +742,9 @@ export class PoolService {
       lpAmount: dec.formatDecimal(lp),
       matchedBaseAmount: dec.formatDecimal(matchedBase),
       matchedQuoteAmount: dec.formatDecimal(matchedQuote),
-      donatedBaseAmount: dec.formatDecimal(b - matchedBase),
-      donatedQuoteAmount: dec.formatDecimal(q - matchedQuote),
-      donationBps: dec.formatDecimal(
+      refundedBaseAmount: dec.formatDecimal(b - matchedBase),
+      refundedQuoteAmount: dec.formatDecimal(q - matchedQuote),
+      offRatioBps: dec.formatDecimal(
         dec.max(bpsOf(b - matchedBase, b), bpsOf(q - matchedQuote, q)),
       ),
     };
@@ -756,7 +756,7 @@ export class PoolService {
   ): Promise<PoolRequestAddLiquidityResult> {
     const { pool, liquidityRulesCid } = await this.fetchLiquidityPool(input.poolCid);
     const match = this.matchLiquidity(pool, input.baseAmount, input.quoteAmount);
-    enforceDonationTolerance(match, input.maxDonationBps);
+    enforceOffRatioTolerance(match, input.maxOffRatioBps);
     const requestCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"LiquidityAllocationRequest">>({
         actAs: [this.operatorParty],

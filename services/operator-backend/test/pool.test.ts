@@ -278,7 +278,7 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.lpAmount, "1414.2135623730", "floored quote is passed on-ledger");
   });
 
-  it("off-ratio add quotes the matched share and the donated excess, and is not refused by default", async () => {
+  it("off-ratio add quotes the matched share and the refunded excess, and is not refused by default", async () => {
     const pool = mkFundedPool("5.3317059088", "471735.6718858735", "1581.0163443902");
     const ledger = new CapturingLedger(pool, mkLpPolicy());
     const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
@@ -298,9 +298,9 @@ describe("PoolService DvP liquidity", () => {
     // Routing this through the LP amount instead rounds twice and lands
     // 22e-10 low, quoting a refund the ledger does not pay.
     assert.equal(out.matchedQuoteAmount, "8847.7436669430");
-    assert.equal(out.donatedBaseAmount, "0.0000000000");
-    assert.equal(out.donatedQuoteAmount, "1152.2563330570");
-    assert.equal(out.donationBps, "1152.2563330570");
+    assert.equal(out.refundedBaseAmount, "0.0000000000");
+    assert.equal(out.refundedQuoteAmount, "1152.2563330570");
+    assert.equal(out.offRatioBps, "1152.2563330570");
 
     const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
     assert.equal(cmd.argument.quoteAmount, "10000.0", "the whole quote leg still enters the pool");
@@ -326,11 +326,11 @@ describe("PoolService DvP liquidity", () => {
     // PM.ratioMatchedDeposit: 1e-10 base pairs with 1e-10 * 1e10 / 1000 quote.
     assert.equal(out.matchedBaseAmount, "0.0000000001");
     assert.equal(out.matchedQuoteAmount, "0.0010000000");
-    assert.equal(out.donatedBaseAmount, "0.0000000000");
-    assert.equal(out.donatedQuoteAmount, "0.9990000000");
+    assert.equal(out.refundedBaseAmount, "0.0000000000");
+    assert.equal(out.refundedQuoteAmount, "0.9990000000");
   });
 
-  it("at-ratio add matches both legs in full and donates nothing", async () => {
+  it("at-ratio add matches both legs in full and refunds nothing", async () => {
     const pool = mkFundedPool("10.0", "200000.0", "1000.0");
     const ledger = new CapturingLedger(pool, mkLpPolicy());
     const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
@@ -341,15 +341,15 @@ describe("PoolService DvP liquidity", () => {
       baseAmount: "1.0",
       quoteAmount: "20000.0",
       requestedAt,
-      maxDonationBps: 0,
+      maxOffRatioBps: 0,
     });
 
     assert.equal(out.lpAmount, "100.0000000000");
     assert.equal(out.matchedBaseAmount, "1.0000000000");
     assert.equal(out.matchedQuoteAmount, "20000.0000000000");
-    assert.equal(out.donatedBaseAmount, "0.0000000000");
-    assert.equal(out.donatedQuoteAmount, "0.0000000000");
-    assert.equal(out.donationBps, "0.0000000000");
+    assert.equal(out.refundedBaseAmount, "0.0000000000");
+    assert.equal(out.refundedQuoteAmount, "0.0000000000");
+    assert.equal(out.offRatioBps, "0.0000000000");
     assert.ok(ledger.lastSubmit, "a strict tolerance must not refuse an at-ratio add");
   });
 
@@ -364,16 +364,16 @@ describe("PoolService DvP liquidity", () => {
       baseAmount: "10.0",
       quoteAmount: "200000.0",
       requestedAt,
-      maxDonationBps: 0,
+      maxOffRatioBps: 0,
     });
 
     assert.equal(out.lpAmount, "1414.2135623730");
     assert.equal(out.matchedBaseAmount, "10.0000000000");
     assert.equal(out.matchedQuoteAmount, "200000.0000000000");
-    assert.equal(out.donationBps, "0.0000000000");
+    assert.equal(out.offRatioBps, "0.0000000000");
   });
 
-  it("maxDonationBps refuses an off-ratio add before anything is submitted", async () => {
+  it("maxOffRatioBps refuses an off-ratio add before anything is submitted", async () => {
     const pool = mkFundedPool("5.3317059088", "471735.6718858735", "1581.0163443902");
     const ledger = new CapturingLedger(pool, mkLpPolicy());
     const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
@@ -386,24 +386,24 @@ describe("PoolService DvP liquidity", () => {
           baseAmount: "0.1",
           quoteAmount: "10000.0",
           requestedAt,
-          maxDonationBps: 100,
+          maxOffRatioBps: 100,
         }),
       /1152.2563330570 bps off the pool ratio/,
     );
     assert.equal(ledger.lastSubmit, null, "no LiquidityAllocationRequest may be created");
   });
 
-  it("maxDonationBps admits an add exactly at the limit and refuses one a hair over", async () => {
+  it("maxOffRatioBps admits an add exactly at the limit and refuses one a hair over", async () => {
     const pool = mkFundedPool("5.3317059088", "471735.6718858735", "1581.0163443902");
     const svc = (ledger: CapturingLedger) =>
       new PoolService(ledger, new StubRegistry(), "op" as never);
-    const add = (maxDonationBps: string) => ({
+    const add = (maxOffRatioBps: string) => ({
       poolCid: pool.contractId,
       recipient: "lp" as never,
       baseAmount: "0.1",
       quoteAmount: "10000.0",
       requestedAt,
-      maxDonationBps,
+      maxOffRatioBps,
     });
 
     const atLimit = new CapturingLedger(pool, mkLpPolicy());
@@ -415,18 +415,18 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(belowLimit.lastSubmit, null);
   });
 
-  it("maxDonationBps outside 0..10000, or not a number, is refused", async () => {
+  it("maxOffRatioBps outside 0..10000, or not a number, is refused", async () => {
     const pool = mkFundedPool("10.0", "200000.0", "1000.0");
     const ledger = new CapturingLedger(pool, mkLpPolicy());
     const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
-    const add = (maxDonationBps: unknown) =>
+    const add = (maxOffRatioBps: unknown) =>
       svc.requestAddLiquidity({
         poolCid: pool.contractId,
         recipient: "lp" as never,
         baseAmount: "1.0",
         quoteAmount: "20000.0",
         requestedAt,
-        maxDonationBps: maxDonationBps as number,
+        maxOffRatioBps: maxOffRatioBps as number,
       });
 
     await assert.rejects(() => add(10001), /between 0 and 10000/);

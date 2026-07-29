@@ -294,15 +294,40 @@ describe("PoolService DvP liquidity", () => {
     // LP is minted on the base leg: (0.1 * 1581.0163443902) / 5.3317059088.
     assert.equal(out.lpAmount, "29.6531048680");
     assert.equal(out.matchedBaseAmount, "0.1000000000");
-    // (29.6531048680 * 471735.6718858735) / 1581.0163443902
-    assert.equal(out.matchedQuoteAmount, "8847.7436669408");
+    // What the settle draws: ceil(0.1 * 471735.6718858735 / 5.3317059088).
+    // Routing this through the LP amount instead rounds twice and lands
+    // 22e-10 low, quoting a refund the ledger does not pay.
+    assert.equal(out.matchedQuoteAmount, "8847.7436669430");
     assert.equal(out.donatedBaseAmount, "0.0000000000");
-    assert.equal(out.donatedQuoteAmount, "1152.2563330592");
-    assert.equal(out.donationBps, "1152.2563330592");
+    assert.equal(out.donatedQuoteAmount, "1152.2563330570");
+    assert.equal(out.donationBps, "1152.2563330570");
 
     const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
     assert.equal(cmd.argument.quoteAmount, "10000.0", "the whole quote leg still enters the pool");
     assert.equal(cmd.argument.lpAmount, "29.6531048680");
+  });
+
+  it("quotes the ledger's matched share when a reserve is large", async () => {
+    // Deriving the matched leg from the LP amount rounds twice, and the slack
+    // scales with the far reserve: here it returns the whole 1.0 quote, so the
+    // caller is told nothing is refundable while the settle refunds 0.999.
+    const pool = mkFundedPool("1000.0", "10000000000.0", "3162277.6601683794");
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    const out = await svc.requestAddLiquidity({
+      poolCid: pool.contractId,
+      recipient: "lp" as never,
+      baseAmount: "0.0000000001",
+      quoteAmount: "1.0",
+      requestedAt,
+    });
+
+    // PM.ratioMatchedDeposit: 1e-10 base pairs with 1e-10 * 1e10 / 1000 quote.
+    assert.equal(out.matchedBaseAmount, "0.0000000001");
+    assert.equal(out.matchedQuoteAmount, "0.0010000000");
+    assert.equal(out.donatedBaseAmount, "0.0000000000");
+    assert.equal(out.donatedQuoteAmount, "0.9990000000");
   });
 
   it("at-ratio add matches both legs in full and donates nothing", async () => {
@@ -363,7 +388,7 @@ describe("PoolService DvP liquidity", () => {
           requestedAt,
           maxDonationBps: 100,
         }),
-      /1152.2563330592 bps off the pool ratio/,
+      /1152.2563330570 bps off the pool ratio/,
     );
     assert.equal(ledger.lastSubmit, null, "no LiquidityAllocationRequest may be created");
   });
@@ -382,11 +407,11 @@ describe("PoolService DvP liquidity", () => {
     });
 
     const atLimit = new CapturingLedger(pool, mkLpPolicy());
-    await svc(atLimit).requestAddLiquidity(add("1152.2563330592"));
+    await svc(atLimit).requestAddLiquidity(add("1152.2563330570"));
     assert.ok(atLimit.lastSubmit);
 
     const belowLimit = new CapturingLedger(pool, mkLpPolicy());
-    await assert.rejects(() => svc(belowLimit).requestAddLiquidity(add("1152.2563330591")));
+    await assert.rejects(() => svc(belowLimit).requestAddLiquidity(add("1152.2563330569")));
     assert.equal(belowLimit.lastSubmit, null);
   });
 

@@ -730,10 +730,14 @@ export class PoolService {
     const rb = dec.parseDecimal(pool.reserves.baseAmount);
     const rq = dec.parseDecimal(pool.reserves.quoteAmount);
     const lp = dec.min(dec.div(dec.mul(b, supply), rb), dec.div(dec.mul(q, supply), rq));
-    // The cap matters on the limiting leg, where the two roundings can land a
-    // dust unit above what was actually supplied.
-    const matchedBase = dec.min(dec.div(dec.mul(lp, rb), supply), b);
-    const matchedQuote = dec.min(dec.div(dec.mul(lp, rq), supply), q);
+    // Mirrors PM.ratioMatchedDeposit, which is what the settle draws on: the
+    // side short of the reserve ratio goes in whole, the other only as far as
+    // it pairs. Deriving these from `lp` instead rounds twice and disagrees
+    // with the ledger, so the quoted refund would not be the settled one.
+    const [matchedBase, matchedQuote] =
+      b * rq > q * rb
+        ? [dec.min(b, dec.ceilMulDiv(q, rb, rq)), q]
+        : [b, dec.min(q, dec.ceilMulDiv(b, rq, rb))];
     return {
       lpAmount: dec.formatDecimal(lp),
       matchedBaseAmount: dec.formatDecimal(matchedBase),

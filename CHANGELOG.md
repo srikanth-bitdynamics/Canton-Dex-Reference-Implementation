@@ -13,9 +13,9 @@ earlier version execute the newer choice, and contract ids are preserved.
 
 - `POST /v1/pools/add-liquidity/request` reports what a deposit actually
   buys: `matchedBaseAmount` / `matchedQuoteAmount` (the part of each leg the
-  minted LP tokens represent) and `donatedBaseAmount` / `donatedQuoteAmount` /
-  `donationBps` (the off-ratio excess, which the settle refunds instead of
-  taking into the reserves). An optional `maxDonationBps` refuses a request
+  minted LP tokens represent) and `refundedBaseAmount` / `refundedQuoteAmount` /
+  `offRatioBps` (the off-ratio excess, which the settle refunds instead of
+  taking into the reserves). An optional `maxOffRatioBps` refuses a request
   above a caller-chosen ceiling before any contract is created; omitting it
   keeps the previous unbounded behaviour.
 

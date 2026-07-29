@@ -305,9 +305,11 @@ export class JsonApiLedger implements LedgerSubmitter {
   ): Promise<R> {
     // For exercise commands, JSON API returns the choice result under
     // `events[0].exercised.exerciseResult` (Daml-LF JSON form). For
-    // create commands, returns the cid.
+    // create commands, returns the cid. A createAndExercise emits both a
+    // created and an exercised event; the caller wants the choice result,
+    // and the created cid is usually already archived by the choice.
     const cmd = req.command;
-    if (cmd.kind === "create" || cmd.kind === "createAndExercise") {
+    if (cmd.kind === "create") {
       const created = body.events?.find(
         (e: { created?: unknown }) => e.created !== undefined,
       ) as { created?: { contractId: string } } | undefined;

@@ -15,17 +15,22 @@ import * as dec from "../pool/decimal.js";
 
 type LedgerQuery = Pick<LedgerSubmitter, "query">;
 
+const MATCHED_TRADE = "CantonDex.Dex.MatchedTrade:MatchedTrade";
+const SETTLED_TRADE = "CantonDex.Dex.MatchedTrade:SettledTrade";
+
+interface TransferLegRow {
+  transferLegId: string;
+  sender: { owner: Party };
+  receiver: { owner: Party };
+  amount: string;
+  instrumentId: string;
+}
+
 interface MatchedTradeContract {
   contractId: string;
   venue: Party;
   admin: Party;
-  transferLegs?: Array<{
-    transferLegId: string;
-    sender: { owner: Party };
-    receiver: { owner: Party };
-    amount: string;
-    instrumentId: string;
-  }>;
+  transferLegs?: TransferLegRow[];
   settlementDeadline?: string | null;
   policyReceipt?: {
     policyVersion: string;
@@ -37,6 +42,32 @@ interface MatchedTradeContract {
     signedBy: Party;
     signedAt: string;
   } | null;
+}
+
+// An order-book fill settles inside OrderMatchExecution_Execute, which archives
+// the execution contract in the same transaction. SettledTrade is the record it
+// leaves behind, and it carries the same legs a MatchedTrade does.
+interface SettledTradeContract {
+  contractId: string;
+  operator: Party;
+  admin: Party;
+  matchId: string;
+  settledAt: string;
+  transferLegs?: TransferLegRow[];
+}
+
+type TradeRow = MatchedTradeContract & { templateId: string };
+
+function settledAsTrade(s: SettledTradeContract): TradeRow {
+  return {
+    contractId: s.contractId,
+    venue: s.operator,
+    admin: s.admin,
+    transferLegs: s.transferLegs,
+    settlementDeadline: null,
+    policyReceipt: null,
+    templateId: SETTLED_TRADE,
+  };
 }
 
 // PoolState rotates on every pool op. We track its transitions for swap
@@ -117,10 +148,20 @@ export class Indexer {
   }
 
   private async reconcileTrades(ts: number): Promise<void> {
-    const live = await this.ledger.query<MatchedTradeContract>({
-      templateId: "CantonDex.Dex.MatchedTrade:MatchedTrade",
-      observingParty: this.cfg.observingParty,
-    });
+    const [matched, settled] = await Promise.all([
+      this.ledger.query<MatchedTradeContract>({
+        templateId: MATCHED_TRADE,
+        observingParty: this.cfg.observingParty,
+      }),
+      this.ledger.query<SettledTradeContract>({
+        templateId: SETTLED_TRADE,
+        observingParty: this.cfg.observingParty,
+      }),
+    ]);
+    const live: TradeRow[] = [
+      ...matched.map((t) => ({ ...t, templateId: MATCHED_TRADE })),
+      ...settled.map(settledAsTrade),
+    ];
     const known = new Set(
       (this.db.prepare("SELECT tradeCid FROM trades").all() as Array<{
         tradeCid: string;
@@ -137,15 +178,15 @@ export class Indexer {
       `INSERT INTO events (ts, kind, templateId, contractId, party, payload)
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    const tx = this.db.transaction((rows: MatchedTradeContract[]) => {
+    const tx = this.db.transaction((rows: TradeRow[]) => {
       for (const t of rows) {
         if (known.has(t.contractId)) continue;
         const legs = t.transferLegs ?? [];
         // The trader does not follow leg direction: legs[0]'s sender flips
         // with the side, so reading both parties off it inverted every buy.
         // The venue-signed receipt names the dealer; the trader is the other
-        // party. Leg order is not uniform -- an order-book match builds
-        // [quote, base] -- so base-first holds only where a receipt exists.
+        // party. Both writers put the base leg first, so the pair reads off
+        // leg order, but the roles never do.
         const legParties = Array.from(
           new Set(
             legs.flatMap((l) => [l.sender?.owner, l.receiver?.owner]).filter(Boolean),
@@ -178,7 +219,7 @@ export class Indexer {
         event.run(
           ts,
           "matched_trade",
-          "CantonDex.Dex.MatchedTrade:MatchedTrade",
+          t.templateId,
           t.contractId,
           trader,
           JSON.stringify({ pair, trader, dealer }),

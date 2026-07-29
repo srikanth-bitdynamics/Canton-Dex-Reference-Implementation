@@ -7,6 +7,17 @@ on:
     branches: [main]
 
 jobs:
+  commit-hygiene:
+    name: Commit messages
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commit messages
+        run: scripts/check-commit-hygiene.sh "origin/${{ github.base_ref }}"
+
   daml:
     name: Daml (build + upgrade compatibility)
     runs-on: ubuntu-latest

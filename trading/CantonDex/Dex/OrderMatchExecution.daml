@@ -57,6 +57,13 @@ mkMatchTransferLegs match =
           meta = emptyMetadata
       ]
 
+-- | The budget an allocation reserved for its next iteration, as the
+-- allocation itself records it. This is the amount the registry actually
+-- locked, so a remainder derived from it can never exceed the backing.
+allocationFunding : V2.Allocation -> Utils.Funding
+allocationFunding allocation =
+  optional TextMap.empty identity (view allocation).allocation.nextIterationFunding
+
 -- | Remainder funding for one side: the committed budget the side's
 -- allocation locked, minus what this fill spends out of it (the side's
 -- sender-side outflows). Non-positive entries are dropped. `None` (no
@@ -121,13 +128,6 @@ template OrderMatchExecution with
       -- ^ The resting ask being filled.
     buyerAllocationCid : ContractId V2.Allocation
     sellerAllocationCid : ContractId V2.Allocation
-    buyerCommittedFunding : Utils.Funding
-      -- ^ The committed next-iteration budget the buyer's allocation locked
-      --   (e.g. quote = remainingQty * limitPrice). The remainder rolled
-      --   forward after this fill is this minus the buyer's spend.
-    sellerCommittedFunding : Utils.Funding
-      -- ^ The committed budget the seller's allocation locked (e.g. base =
-      --   remainingQty). Remainder = this minus the seller's spend.
   where
     signatory operator
 
@@ -212,12 +212,24 @@ template OrderMatchExecution with
               cid = None
               meta = emptyMetadata
 
+        buyerAllocation <- fetch buyerAllocationCid
+        sellerAllocation <- fetch sellerAllocationCid
+
         -- Each side authorizes both legs; legsToSides projects each account's
-        -- own sides. The next-iteration funding the registry rolls forward is
-        -- the explicit remainder = committed budget minus this fill's spend.
-        -- `None` (empty remainder) means the side fully settles.
-        let buyerFunding = remainderFunding match.buyerAccount buyerCommittedFunding transferLegs
-            sellerFunding = remainderFunding match.sellerAccount sellerCommittedFunding transferLegs
+        -- own sides. The budget the remainder comes out of is the allocation's
+        -- own, never a caller-supplied one: a budget recomputed from the
+        -- order's face terms can round an ulp above the residual the previous
+        -- fill rolled forward, and every later settle of that allocation then
+        -- aborts on the registry's coverage check. A side the fill closes out
+        -- rolls nothing forward, so its surplus is released rather than locked
+        -- behind an order that is gone.
+        let sideFunding : Order -> V2.Allocation -> V2.Account -> Optional Utils.Funding
+            sideFunding order allocation account
+              | match.fillQty >= order.remainingQty = None
+              | otherwise =
+                  remainderFunding account (allocationFunding allocation) transferLegs
+            buyerFunding = sideFunding buyOrder buyerAllocation match.buyerAccount
+            sellerFunding = sideFunding sellOrder sellerAllocation match.sellerAccount
             buyerFinalized = Utils.mkFinalizedAllocation
               buyerAllocationCid
               (Utils.legsToSides match.buyerAccount transferLegs)

@@ -26,6 +26,8 @@ jobs:
         run: |
           curl -sSL https://get.digitalasset.com/install/install.sh | sh
           echo "$HOME/.dpm/bin" >> "$GITHUB_PATH"
+      - name: Install the SDK pinned by trading/daml.yaml
+        run: dpm install "$(awk '/^sdk-version:/ {print $2; exit}' trading/daml.yaml)"
       - name: Upgrade compatibility with the deployed version
         run: scripts/check-upgrade-compat.sh
 

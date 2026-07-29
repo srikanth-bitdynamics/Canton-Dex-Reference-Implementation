@@ -266,8 +266,8 @@ testDvpAddOffRatioRefundsExcess = do
   -- limiting side: 5 BTC matches 100000 USDC, leaving 50000 USDC unmatched.
   res <- dvpAdd fx addRes.poolStateCid addRes.lpPolicyCid bob 5.0 150000.0 supply 10.0 200000.0 now
 
-  res.baseAdded === 5.0
-  res.quoteAdded === 100000.0
+  res.baseAdded === Some 5.0
+  res.quoteAdded === Some 100000.0
   -- Minted against the limiting side only; the excess quote bought nothing.
   res.lpTokensMinted === (5.0 * supply) / 10.0
   assertMsg "excess quote must not buy LP tokens"
@@ -293,8 +293,8 @@ testDvpAddOffRatioRefundsExcess = do
   -- 15 : 300000 pool, so 2.5 of her 10 BTC come back.
   let supply2 = state.totalLpSupply
   res2 <- dvpAdd fx res.poolStateCid res.lpPolicyCid carol 10.0 150000.0 supply2 15.0 300000.0 now
-  res2.baseAdded === 7.5
-  res2.quoteAdded === 150000.0
+  res2.baseAdded === Some 7.5
+  res2.quoteAdded === Some 150000.0
   res2.lpTokensMinted === (150000.0 * supply2) / 300000.0
   Some state2 <- queryContractId fx.operator res2.poolStateCid
   state2.reserves.baseAmount === 22.5

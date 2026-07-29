@@ -38,9 +38,9 @@ export interface ExecuteArgument {
   sellOrderCid: string;
   buyerAllocationCid: string;
   sellerAllocationCid: string;
-  /** Only present while the caller still declares the budget itself. */
-  buyerCommittedFunding?: Record<string, string>;
-  sellerCommittedFunding?: Record<string, string>;
+  /** Ignored, as on-ledger: the budget comes from the allocation. */
+  buyerCommittedFunding: Record<string, string>;
+  sellerCommittedFunding: Record<string, string>;
 }
 
 export type CreateAndExerciseCommand = Extract<
@@ -80,7 +80,7 @@ interface ExecuteResult {
   sellerNextAllocationCid: string | null;
   buyRemainderCid: string | null;
   sellRemainderCid: string | null;
-  settledTradeCid: string;
+  settledTradeCid: string | null;
 }
 
 const SETTLED_AT = "2026-01-01T12:00:00Z";
@@ -176,12 +176,10 @@ export class MatchingLedger implements LedgerSubmitter {
     const quoteAmount = dec.mul(qty, dec.parseDecimal(arg.match.fillPrice));
 
     const buyerNext = this.remainder(
-      arg.buyerAllocationCid, quote, quoteAmount,
-      qty >= buy.remainingQty, arg.buyerCommittedFunding,
+      arg.buyerAllocationCid, quote, quoteAmount, qty >= buy.remainingQty,
     );
     const sellerNext = this.remainder(
-      arg.sellerAllocationCid, base, qty,
-      qty >= sell.remainingQty, arg.sellerCommittedFunding,
+      arg.sellerAllocationCid, base, qty, qty >= sell.remainingQty,
     );
     const buyerNextAllocationCid = this.settle(
       arg.buyerAllocationCid, one(quote, quoteAmount), one(base, qty), buyerNext,
@@ -234,22 +232,18 @@ export class MatchingLedger implements LedgerSubmitter {
 
   /**
    * The next-iteration funding one side finalizes: the budget its allocation
-   * reserved, less this fill's spend. A caller that still declares the budget
-   * gets what it declared, right or wrong — the coverage check in `settle` is
-   * what rejects a declaration above the backing. A side the fill closes out
-   * reserves nothing, so its surplus is released.
+   * reserved, less this fill's spend. The committed-funding fields on the
+   * command play no part, as on-ledger. A side the fill closes out reserves
+   * nothing, so its surplus is released.
    */
   private remainder(
     allocationCid: string,
     instrumentId: string,
     spend: bigint,
     closesOut: boolean,
-    declared: Record<string, string> | undefined,
   ): Funding | null {
     if (closesOut) return null;
-    const budget = declared
-      ? dec.parseDecimal(declared[instrumentId] ?? "0")
-      : (this.lockedBacking.get(allocationCid)?.get(instrumentId) ?? 0n);
+    const budget = this.lockedBacking.get(allocationCid)?.get(instrumentId) ?? 0n;
     const left = budget - spend;
     return left > 0n ? one(instrumentId, left) : null;
   }

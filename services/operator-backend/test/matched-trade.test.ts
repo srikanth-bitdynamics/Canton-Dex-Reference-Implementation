@@ -11,6 +11,9 @@ import type {
 } from "@canton-dex/registry-client";
 
 import { MatchedTradeService } from "../src/matched-trade/index.js";
+import type { SettlementBatchV2 } from "../src/matched-trade/index.js";
+import { groupLegsByAdmin } from "../src/settlement/index.js";
+import type { V2TransferLeg } from "../src/types.js";
 import type {
   LedgerEvent,
   LedgerSubmitter,
@@ -64,13 +67,31 @@ class ContextRegistry extends RegistryClient {
   }
 }
 
+function leg(id: string, instrumentId: string): V2TransferLeg {
+  return {
+    transferLegId: id,
+    sender: { owner: "alice" as Party, provider: null, id: "" },
+    receiver: { owner: "bob" as Party, provider: null, id: "" },
+    amount: "1.0",
+    instrumentId,
+    meta: {},
+  };
+}
+
 describe("MatchedTradeService", () => {
-  it("settle threads per-admin choice context into each SettlementBatchV2", async () => {
+  it("settle threads per-admin choice context and legs into each SettlementBatchV2", async () => {
     const ledger = new CapturingLedger();
     const svc = new MatchedTradeService(
       ledger,
       new ContextRegistry(),
       "operator" as Party,
+    );
+
+    // A trade spanning two registries: one leg per admin.
+    const legA = leg("leg-a", "BTC");
+    const legB = leg("leg-b", "LP");
+    const legsByAdmin = groupLegsByAdmin([legA, legB], (l) =>
+      (l.instrumentId === "BTC" ? "adminA" : "adminB") as Party,
     );
 
     await svc.settle({
@@ -81,9 +102,21 @@ describe("MatchedTradeService", () => {
       // old fixture passed "#req:0" and asserted the broken shape around it,
       // so this suite was green while the choice could not decode at all.
       allocationRequestCids: [],
-      batchesByAdmin: new Map<Party, { allocationCids: ContractId<"Allocation">[] }>([
-        ["adminA" as Party, { allocationCids: ["#a:0" as ContractId<"Allocation">] }],
-        ["adminB" as Party, { allocationCids: ["#b:0" as ContractId<"Allocation">] }],
+      batchesByAdmin: new Map<Party, SettlementBatchV2>([
+        [
+          "adminA" as Party,
+          {
+            allocationCids: ["#a:0" as ContractId<"Allocation">],
+            transferLegs: legsByAdmin.get("adminA" as Party)!,
+          },
+        ],
+        [
+          "adminB" as Party,
+          {
+            allocationCids: ["#b:0" as ContractId<"Allocation">],
+            transferLegs: legsByAdmin.get("adminB" as Party)!,
+          },
+        ],
       ]),
     });
 
@@ -94,6 +127,7 @@ describe("MatchedTradeService", () => {
       argument: {
         // GenMap: an ARRAY of [key, value] pairs, not an object.
         batchesByAdmin: Array<[string, {
+          transferLegs: V2TransferLeg[];
           allocations: Array<{
             allocationCid: string;
             extraTransferLegSides: unknown[];
@@ -133,6 +167,12 @@ describe("MatchedTradeService", () => {
         nextIterationFunding: null,
       },
     ]);
+
+    // Each batch carries only its own admin's legs. Handing a batch the whole
+    // trade makes its allocations short of the other admin's legs, and the
+    // registry rejects the settle on the coverage check.
+    assert.deepEqual(adminABatch!.transferLegs, [legA]);
+    assert.deepEqual(adminBBatch!.transferLegs, [legB]);
 
     // Required field on the choice; omitting it is a decode failure.
     assert.equal(cmd.argument.dexPairCid, null);

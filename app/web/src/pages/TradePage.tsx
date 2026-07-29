@@ -45,8 +45,9 @@ export function TradePage() {
           ts: number;
           pair: string;
           inputInstrumentId: string;
-          inputAmount: number;
-          outputAmount: number;
+          // Decimal strings, exactly as the ledger holds them.
+          inputAmount: string;
+          outputAmount: string;
           trader: string;
         }>;
       } catch {
@@ -281,11 +282,13 @@ export function TradePage() {
                 const dir = inIsBase
                   ? `${pool.baseInstrumentId}→${pool.quoteInstrumentId}`
                   : `${pool.quoteInstrumentId}→${pool.baseInstrumentId}`;
+                const paid = Number(s.inputAmount);
+                const received = Number(s.outputAmount);
                 const rate =
-                  s.inputAmount > 0
+                  paid > 0
                     ? inIsBase
-                      ? s.outputAmount / s.inputAmount
-                      : s.inputAmount / s.outputAmount
+                      ? received / paid
+                      : paid / received
                     : 0;
                 return (
                   <div
@@ -316,7 +319,7 @@ export function TradePage() {
                       className="mono num"
                       style={{ textAlign: 'right' }}
                     >
-                      {fmt(s.inputAmount, 4)} {s.inputInstrumentId}
+                      {fmt(paid, 4)} {s.inputInstrumentId}
                     </span>
                     <span
                       className="mono num"

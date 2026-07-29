@@ -6,7 +6,7 @@ import { RegistryClient } from "@canton-dex/registry-client";
 import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
-import type { Party } from "../types.js";
+import type { Party, V2TransferLeg } from "../types.js";
 
 export interface MatchedTradeRequestAllocationsInput {
   tradeCid: ContractId<"MatchedTrade">;
@@ -34,6 +34,13 @@ export interface MatchedTradeCancelInput {
 
 export interface SettlementBatchV2 {
   allocationCids: ContractId<"Allocation">[];
+  /**
+   * The legs administered by this batch's admin. The Token Standard requires a
+   * batch's allocations to cover exactly the legs it is handed, so a trade
+   * spanning two registries must give each batch only its own admin's legs —
+   * see `groupLegsByAdmin`.
+   */
+  transferLegs: V2TransferLeg[];
 }
 
 export class MatchedTradeService {
@@ -119,6 +126,7 @@ export class MatchedTradeService {
             batchesByAdmin: adminEntries.map((e) => [
               e.admin,
               {
+                transferLegs: e.batch.transferLegs,
                 allocations: e.batch.allocationCids.map((allocationCid) => ({
                   allocationCid,
                   extraTransferLegSides: [],

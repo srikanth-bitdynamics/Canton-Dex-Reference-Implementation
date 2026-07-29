@@ -342,6 +342,7 @@ async function main() {
               [
                 cfg.admin,
                 {
+                  transferLegs: [leg],
                   allocations: [
                     { allocationCid: aliceAllocCid, extraTransferLegSides: [], nextIterationFunding: null },
                     { allocationCid: bobAllocCid, extraTransferLegSides: [], nextIterationFunding: null },

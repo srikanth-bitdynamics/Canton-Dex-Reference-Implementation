@@ -693,6 +693,7 @@ testMatchedTradeFullSettle = do
   settleResult <- submit operator $ exerciseCmd tradeCid MT.MatchedTrade_Settle with
     batchesByAdmin = Map.fromList
       [ (admin, MT.SettlementBatchV2 with
+          transferLegs = legs
           allocations =
             [ Utils.finalAllocation aliceAllocCid
             , Utils.finalAllocation bobAllocCid

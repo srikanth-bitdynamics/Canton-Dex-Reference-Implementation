@@ -102,7 +102,11 @@ const CROSSING_BOOK: StubOrder[] = [
 class MatchLedger implements LedgerSubmitter {
   readonly submits: SubmitRequest[] = [];
 
-  constructor(readonly orders: StubOrder[] = CROSSING_BOOK) {}
+  constructor(
+    readonly orders: StubOrder[] = CROSSING_BOOK,
+    /** When set, the match settlement throws with this raw ledger text. */
+    readonly settleError: string | null = null,
+  ) {}
 
   async submit<R>(req: SubmitRequest): Promise<R> {
     return (await this.submitWithUpdateId<R>(req)).result;
@@ -111,6 +115,7 @@ class MatchLedger implements LedgerSubmitter {
   async submitWithUpdateId<R>(req: SubmitRequest): Promise<SubmitReceipt<R>> {
     this.submits.push(req);
     if (req.command.kind === "createAndExercise") {
+      if (this.settleError) throw new Error(this.settleError);
       return {
         result: {
           buyerNextAllocationCid: null,
@@ -164,9 +169,12 @@ interface StartedServer {
 
 async function startServer(
   env: Record<string, string | undefined>,
-  opts: { orders?: StubOrder[]; order?: boolean } = {},
+  opts: { orders?: StubOrder[]; order?: boolean; settleError?: string } = {},
 ): Promise<StartedServer> {
-  const ledger = new MatchLedger(opts.orders ?? CROSSING_BOOK);
+  const ledger = new MatchLedger(
+    opts.orders ?? CROSSING_BOOK,
+    opts.settleError ?? null,
+  );
 
   const saved = new Map<string, string | undefined>();
   for (const [k, v] of Object.entries(env)) {
@@ -251,7 +259,7 @@ async function postJson(
 
 async function withServer(
   env: Record<string, string | undefined>,
-  opts: { orders?: StubOrder[]; order?: boolean },
+  opts: { orders?: StubOrder[]; order?: boolean; settleError?: string },
   run: (s: StartedServer) => Promise<void>,
 ): Promise<void> {
   const server = await startServer(env, opts);
@@ -321,6 +329,33 @@ describe("testnet match: happy path", () => {
       const arg = (execute!.command as { argument: Record<string, unknown> })
         .argument;
       assert.equal(arg.operator, OPERATOR);
+    });
+  });
+
+  it("reduces a failed match to a Canton code and never leaks the raw ledger text", async () => {
+    // The raw participant error names the resting owners' parties and their
+    // allocation cids. On this public route only the code token may survive.
+    const SECRET_PARTY = "dex-tester-victim::1220deadbeef";
+    const SECRET_ALLOC = "00allocation-secret-cafef00d";
+    const raw =
+      `ledger: interpretation: 404: CONTRACT_NOT_FOUND: ` +
+      `allocation ${SECRET_ALLOC} of party ${SECRET_PARTY} was archived`;
+    await withServer(ON, { settleError: raw }, async (s) => {
+      const r = await postJson(s.url, "/v1/testnet/match", {
+        base: BASE,
+        quote: QUOTE,
+      });
+      // Every discovered match failed to settle -> 502.
+      assert.equal(r.status, 502);
+      assert.equal(r.body.settled, 0);
+      assert.equal(r.body.failed, 1);
+      const matches = r.body.matches as Array<Record<string, unknown>>;
+      assert.equal(matches[0]!.errorCode, "CONTRACT_NOT_FOUND");
+      assert.equal(matches[0]!.error, undefined);
+      const wire = JSON.stringify(r.body);
+      assert.ok(!wire.includes(SECRET_PARTY), "party id leaked in the receipt");
+      assert.ok(!wire.includes(SECRET_ALLOC), "allocation cid leaked");
+      assert.ok(!wire.includes("archived"), "raw ledger prose leaked");
     });
   });
 

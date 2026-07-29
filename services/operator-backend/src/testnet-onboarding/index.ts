@@ -641,13 +641,27 @@ export interface MatchPairInput {
   clientIp: string;
 }
 
+/** One match outcome as the public route exposes it. The raw ledger error is
+ *  never surfaced -- it can quote the submitted command back (resting owners'
+ *  party ids, allocation cids) -- only its Canton error-code token. */
+export interface TestnetMatchOutcome {
+  buyCid: string;
+  sellCid: string;
+  quantity: string;
+  price: string;
+  matchId: string;
+  buyRemainderCid: string | null;
+  sellRemainderCid: string | null;
+  errorCode?: string;
+}
+
 /** Response body of POST /v1/testnet/match. Mirrors POST /v1/orders/match. */
 export interface TestnetMatchReceipt {
   /** Per-match outcomes, in the order they were settled. */
-  matches: MatchRunResult[];
+  matches: TestnetMatchOutcome[];
   /** Matches that settled. */
   settled: number;
-  /** Matches that failed (each carries its own error in `matches`). */
+  /** Matches that failed (each carries an error-code token in `matches`). */
   failed: number;
 }
 
@@ -1289,15 +1303,30 @@ export class TestnetOnboardingService {
         admin: this.cfg.admin,
       }),
     );
-    const failed = matches.filter((m) => m.error).length;
+    // The raw per-match error can quote the submitted command back -- resting
+    // owners' party ids, allocation cids -- and this route is public, so it is
+    // reduced to the Canton error-code token like every other hosted write.
+    const outcomes: TestnetMatchOutcome[] = matches.map((m) => ({
+      buyCid: m.buyCid,
+      sellCid: m.sellCid,
+      quantity: m.quantity,
+      price: m.price,
+      matchId: m.matchId,
+      buyRemainderCid: m.buyRemainderCid ?? null,
+      sellRemainderCid: m.sellRemainderCid ?? null,
+      ...(m.error
+        ? { errorCode: ledgerErrorCode(m.error) ?? "SETTLEMENT_FAILED" }
+        : {}),
+    }));
+    const failed = outcomes.filter((m) => m.errorCode).length;
 
     log.info("ran a testnet order match", {
       baseInstrumentId: input.baseInstrumentId,
       quoteInstrumentId: input.quoteInstrumentId,
-      settled: matches.length - failed,
+      settled: outcomes.length - failed,
       failed,
     });
-    return { matches, settled: matches.length - failed, failed };
+    return { matches: outcomes, settled: outcomes.length - failed, failed };
   }
 
   /**

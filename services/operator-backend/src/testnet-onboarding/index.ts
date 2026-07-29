@@ -57,7 +57,7 @@ import { fetchChoiceContext } from "../ledger/choice-context.js";
 import type { LedgerSubmitter } from "../ledger/index.js";
 import { isCidString, isDecimalString } from "../http/validate.js";
 import type { MatchedTradeService } from "../matched-trade/index.js";
-import type { OrderService } from "../order/index.js";
+import type { MatchRunResult, OrderService } from "../order/index.js";
 import * as dec from "../pool/decimal.js";
 import type { PoolService } from "../pool/index.js";
 import type { RfqService } from "../rfq/index.js";
@@ -625,6 +625,29 @@ export interface CancelOrderForPartyInput {
   orderCid: string;
   /** Client address the request is charged to. */
   clientIp: string;
+}
+
+/**
+ * Everything POST /v1/testnet/match accepts. Notably absent: any party, any
+ * order cid, any price or quantity. Matching clears whatever crosses on the
+ * book from orders their owners already placed and funded; the caller supplies
+ * only the listed pair to run the operator's own matcher over.
+ */
+export interface MatchPairInput {
+  baseInstrumentId: string;
+  quoteInstrumentId: string;
+  /** Client address the request is charged to. */
+  clientIp: string;
+}
+
+/** Response body of POST /v1/testnet/match. Mirrors POST /v1/orders/match. */
+export interface TestnetMatchReceipt {
+  /** Per-match outcomes, in the order they were settled. */
+  matches: MatchRunResult[];
+  /** Matches that settled. */
+  settled: number;
+  /** Matches that failed (each carries its own error in `matches`). */
+  failed: number;
 }
 
 /**
@@ -1229,6 +1252,73 @@ export class TestnetOnboardingService {
       updateId,
     });
     return { updateId };
+  }
+
+  /**
+   * Run the operator's atomic order matcher over a listed pair, settling every
+   * crossing pair on the book in one transaction each. This grants no authority
+   * the operator did not already hold: it can only clear orders their owners
+   * already placed and funded, on a pair this deployment lists, under the
+   * operator's own admin. It takes no party, no order cid and no price/quantity,
+   * so it cannot inject an order, choose the clearing price, or redirect funds.
+   * The only abuse vector is submission spam, which the submit caps bound; once
+   * the book is cleared, repeat calls settle nothing.
+   */
+  async matchPair(input: MatchPairInput): Promise<TestnetMatchReceipt> {
+    const deps = this.cfg.order;
+    if (!deps) {
+      throw new TestnetSubmitUnavailableError(
+        "this deployment has no participant to match testnet orders on",
+      );
+    }
+
+    // Matching is a write; cap it per client and per day like every other
+    // hosted write, before the operator submissions it drives.
+    this.submitQuota.charge(input.clientIp);
+
+    // The pair bounds the instruments: matching runs only on a market this
+    // deployment lists, under its own asset admin -- the same listing check the
+    // order route makes, and it rejects an unlisted pair the same way.
+    await this.orderPair(input.baseInstrumentId, input.quoteInstrumentId);
+
+    const matches = await this.matchStep(() =>
+      deps.service.runMatching({
+        baseInstrumentId: input.baseInstrumentId,
+        quoteInstrumentId: input.quoteInstrumentId,
+        admin: this.cfg.admin,
+      }),
+    );
+    const failed = matches.filter((m) => m.error).length;
+
+    log.info("ran a testnet order match", {
+      baseInstrumentId: input.baseInstrumentId,
+      quoteInstrumentId: input.quoteInstrumentId,
+      settled: matches.length - failed,
+      failed,
+    });
+    return { matches, settled: matches.length - failed, failed };
+  }
+
+  /**
+   * Run the matcher and summarize a whole-run failure, for the same reason
+   * `orderStep` does: the raw text can quote the submitted payload back and this
+   * endpoint is public. Per-match failures are caught inside runMatching and
+   * reported in the receipt rather than raised here.
+   */
+  private async matchStep(
+    run: () => Promise<MatchRunResult[]>,
+  ): Promise<MatchRunResult[]> {
+    try {
+      return await run();
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      log.warn("testnet match: the run failed", { error: detail });
+      throw new TestnetLedgerError(
+        "ledger_rejected",
+        "the ledger rejected the order match run",
+        { ledgerErrorCode: ledgerErrorCode(detail) },
+      );
+    }
   }
 
   /** A required order amount, or a 400-shaped refusal. */

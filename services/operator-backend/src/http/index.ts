@@ -1837,6 +1837,43 @@ async function routeRequest(
     return;
   }
 
+  // Faucet-callable trigger for the operator's atomic order matcher. It grants
+  // no authority the operator did not already hold: it runs the operator's OWN
+  // matcher (POST /v1/orders/match, listed in ./auth.ts) on a pair this
+  // deployment lists, and can inject no order, choose no clearing price or
+  // quantity, and redirect no funds -- every leg moves the resting orders'
+  // owners' own funds per those orders' terms. It takes no party, no cid and no
+  // amount. The only abuse vector is submission spam, which the testnet caps
+  // bound; once the book is cleared, repeat calls settle nothing. The deliberate
+  // absence of the operator token is noted in ./auth.ts.
+  if (onboarding && method === "POST" && path === "/v1/testnet/match") {
+    const body = await readValidatedJson<{ base: string; quote: string }>(
+      req,
+      "POST /v1/testnet/match",
+      callerAuth,
+    );
+    try {
+      const receipt = await onboarding.matchPair({
+        baseInstrumentId: expectString(body, "base"),
+        quoteInstrumentId: expectString(body, "quote"),
+        clientIp: clientAddress(req, cfg.testnetTrustProxy ?? false),
+      });
+      // Mirror POST /v1/orders/match: 200 when every discovered match settled,
+      // 207 when some failed, 502 when they all did. An empty book is a clean
+      // 200 -- nothing to settle is success.
+      const status =
+        receipt.failed === 0
+          ? 200
+          : receipt.settled === 0
+            ? 502
+            : 207;
+      respondJson(res, status, receipt);
+    } catch (e) {
+      throw testnetOrderHttpError(e);
+    }
+    return;
+  }
+
   // Public, unauthenticated, and the route that drives the most authorities of
   // any of them. An RFQ round trip is the trader's Rfq (a CREATE), one
   // dealer-signed RfqQuote per dealer (also CREATEs), the joint trader+operator

@@ -284,6 +284,13 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
     anyOf: ["poolCid", "poolId"],
     decimals: ["inputAmount"],
   },
+  // Testnet order-match trigger. `base`/`quote` are the instrument ids of a pair
+  // this deployment lists, resolved against its own listings by the service.
+  // Nothing else is read: matching takes no party, no order cid and no amount --
+  // it only clears orders their owners already placed and funded.
+  "POST /v1/testnet/match": {
+    required: ["base", "quote"],
+  },
 };
 
 /**

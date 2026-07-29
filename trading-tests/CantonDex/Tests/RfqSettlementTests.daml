@@ -209,7 +209,7 @@ settleTrade fx tradeCid legs allocationCids reqs =
   exerciseCmd tradeCid MT.MatchedTrade_Settle with
     batchesByAdmin = Map.fromList
       [ (fx.admin, MT.SettlementBatchV2 with
-          transferLegs = legs
+          transferLegs = Some legs
           allocations =
             [ V2.FinalizedAllocation with
                 allocationCid; extraTransferLegSides = []; nextIterationFunding = None

@@ -122,7 +122,7 @@ testMatchedTradeViaTokenStandardRegistry = do
     getSettlementFactory registry settleBatchArg
 
   let batch = MT.SettlementBatchV2 with
-        transferLegs = [leg]
+        transferLegs = Some [leg]
         allocations
         factoryCid = settleFactoryCid
         extraArgs = emptyExtraArgs

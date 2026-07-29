@@ -526,7 +526,7 @@ setupTwoAdminTrade alice bob = do
 
 -- The venue's settle, parameterized on what each batch is told to settle.
 mkTwoAdminSettle
-  : TwoAdminTrade -> [V2.TransferLeg] -> [V2.TransferLeg]
+  : TwoAdminTrade -> Optional [V2.TransferLeg] -> Optional [V2.TransferLeg]
   -> Commands MT.MatchedTrade_SettleResult
 mkTwoAdminSettle t ttLegs lpLegs =
   exerciseCmd t.tradeCid MT.MatchedTrade_Settle with
@@ -552,16 +552,17 @@ twoAdminSubmitOptions t =
   actAs t.fx.operator <> readAs [t.fx.lpRegistrar] <> discloseMany' t.settleDisclosures
 
 -- Handed the whole trade, a batch carries legs its own allocations do not
--- authorize and the registry rejects it; handed its own admin's legs, each
--- batch covers them exactly and the trade settles across both registries in
--- one transaction. The rejected attempt commits nothing, so the same
--- allocations settle in the second half.
+-- authorize and the registry rejects it; handed no legs at all, the settle
+-- refuses rather than falling back to the trade's full list; handed its own
+-- admin's legs, each batch covers them exactly and the trade settles across
+-- both registries in one transaction. The rejected attempts commit nothing, so
+-- the same allocations settle in the last phase.
 testMatchedTradeSettlesPerAdminLegSubsets : Script ()
 testMatchedTradeSettlesPerAdminLegSubsets = do
   alice <- allocateParty "alice"
   bob <- allocateParty "bob"
   t <- setupTwoAdminTrade alice bob
-  let allLegs = [t.xLeg, t.lpLeg]
+  let allLegs = Some [t.xLeg, t.lpLeg]
   rejected <- trySubmit (twoAdminSubmitOptions t) $ mkTwoAdminSettle t allLegs allLegs
   case rejected of
     Right _ -> abort "a batch given the full leg list must be rejected"
@@ -569,7 +570,15 @@ testMatchedTradeSettlesPerAdminLegSubsets = do
       assertMsg ("expected missing authorizations, got: " <> show e)
         (T.isInfixOf "authorizations" (show e))
 
-  res <- submit (twoAdminSubmitOptions t) $ mkTwoAdminSettle t [t.xLeg] [t.lpLeg]
+  omitted <- trySubmit (twoAdminSubmitOptions t) $ mkTwoAdminSettle t None None
+  case omitted of
+    Right _ -> abort "a batch with no transfer legs must be rejected"
+    Left e ->
+      assertMsg ("expected a required-legs abort, got: " <> show e)
+        (T.isInfixOf "per-admin transfer legs are required" (show e))
+
+  res <- submit (twoAdminSubmitOptions t) $
+    mkTwoAdminSettle t (Some [t.xLeg]) (Some [t.lpLeg])
   Map.size res.resultsByAdmin === 2
   bobX <- holdingCidsFor bob "X"
   assertMsg "bob received the X leg" (not (null bobX))

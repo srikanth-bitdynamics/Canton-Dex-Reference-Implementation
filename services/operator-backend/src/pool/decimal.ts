@@ -75,6 +75,18 @@ export function divFloor(a: bigint, b: bigint): bigint {
   return divFloorInt(a * SCALE, b);
 }
 
+/**
+ * Smallest 10dp value not below the exact `a * b / d` (matches Daml
+ * `PM.ceilMulDiv`). Rounding once off the exact product is the point: chaining
+ * a rounded multiply onto a rounded divide returns the divisor's slack
+ * multiplied by `b`.
+ */
+export function ceilMulDiv(a: bigint, b: bigint, d: bigint): bigint {
+  if (a <= 0n || b <= 0n) return 0n;
+  if (d <= 0n) throw new Error("decimal ceilMulDiv by non-positive divisor");
+  return (a * b + d - 1n) / d;
+}
+
 // Integer square root (floor) of a non-negative BigInt, via Newton.
 function isqrt(n: bigint): bigint {
   if (n < 0n) throw new Error("isqrt of negative");

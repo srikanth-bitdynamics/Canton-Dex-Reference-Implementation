@@ -18,13 +18,24 @@ earlier version execute the newer choice, and contract ids are preserved.
   pre-settlement proposal, a `SettledTrade` row is an already-settled fill.
 - `POST /v1/pools/add-liquidity/request` reports what a deposit actually
   buys: `matchedBaseAmount` / `matchedQuoteAmount` (the part of each leg the
-  minted LP tokens represent) and `donatedBaseAmount` / `donatedQuoteAmount` /
-  `donationBps` (the off-ratio excess, which enters the reserves but is not
-  redeemable by the depositor). An optional `maxDonationBps` refuses a request
+  minted LP tokens represent) and `refundedBaseAmount` / `refundedQuoteAmount` /
+  `offRatioBps` (the off-ratio excess, which the settle refunds instead of
+  taking into the reserves). An optional `maxOffRatioBps` refuses a request
   above a caller-chosen ceiling before any contract is created; omitting it
   keeps the previous unbounded behaviour.
 
 ### Fixed
+
+- `canton-dex-trading` 0.1.2 → 0.1.3. An off-ratio add-liquidity deposit no
+  longer donates its excess to the pool. LP tokens are minted against the
+  limiting side, but both legs used to enter the reserves in full, so the
+  unmatched remainder accrued to the existing holders and was unrecoverable —
+  and refusing the deposit off-ledger left every other caller of the choice
+  exposed. `PoolLiquidityRules_SettleAddLiquidity` now takes only the
+  ratio-matched amount into the slices and refunds the rest to the provider in
+  the same batch, and reports what it took as `baseAdded` / `quoteAdded`. The
+  deposit allocations the request asks the provider to author are
+  iterated-enabled, which is what lets the settle add the refund side.
 
 - `canton-dex-trading` 0.1.1 → 0.1.2. Pool payouts now really round down.
   `floorDecimal10` was the identity function — `Decimal` is `Numeric 10`, so

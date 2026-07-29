@@ -9,6 +9,7 @@ import Daml.Script
 
 import Splice.Testing.Utils (emptyExtraArgs)
 
+import CantonDex.Dex.Pool (PoolReserves(..))
 import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolRules qualified as PRules
 import CantonDex.Dex.PoolState qualified as PS
@@ -35,6 +36,28 @@ testFloorMulStaysBelowExactProduct = do
   -- Exactly representable products are not stepped down.
   PM.floorMul 1234.5678901234 1.0 === 1234.5678901234
   PM.floorMul 2.5 4.0 === 10.0
+  pure ()
+
+-- Deposits draw the ratio-matched share, which must be rounded off the exact
+-- product. Ceiling the quotient and then the product hands back the divisor's
+-- ulp multiplied by the far reserve, so the unmatched excess is absorbed
+-- unrefunded — the donation the refund path exists to prevent.
+testRatioMatchedDepositRoundsOnce : Script ()
+testRatioMatchedDepositRoundsOnce = do
+  let big = PoolReserves with baseAmount = 1000.0; quoteAmount = 10000000000.0
+  -- 1e-10 base pairs with 1e-10 * 1e10 / 1000 = 0.001 quote, not the whole leg.
+  PM.ratioMatchedDeposit big 0.0000000001 1.0 === (0.0000000001, 0.001)
+  PM.ratioMatchedDeposit big 0.0000000001 5.0 === (0.0000000001, 0.001)
+
+  -- Whole units are at stake once a reserve is large: 1e-10 quote pairs with
+  -- 1e-10 base, leaving 49.9999999999 base to come back.
+  let huge = PoolReserves with baseAmount = 1000000000000.0; quoteAmount = 1000000000000.0
+  PM.ratioMatchedDeposit huge 50.0 0.0000000001 === (0.0000000001, 0.0000000001)
+
+  -- Ordinary adds are untouched, and an on-ratio one draws both legs whole.
+  let pool = PoolReserves with baseAmount = 10.0; quoteAmount = 200000.0
+  PM.ratioMatchedDeposit pool 5.0 150000.0 === (5.0, 100000.0)
+  PM.ratioMatchedDeposit pool 5.0 100000.0 === (5.0, 100000.0)
   pure ()
 
 -- A full redemption still drains the pool exactly rather than stranding an ulp.

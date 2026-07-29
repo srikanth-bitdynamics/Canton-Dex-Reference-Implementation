@@ -113,6 +113,12 @@ mkSpecDeadline : Party -> V2.Account -> [V2.TransferLeg] -> Bool -> Time -> V2.A
 mkSpecDeadline admin authorizer legs committed deadline =
   (mkSpec admin authorizer legs committed) with settlementDeadline = Some deadline
 
+-- The add flow's deposit specs are iterated-enabled, so the settle can attach
+-- the off-ratio refund leg.
+depositSpec : Party -> V2.Account -> V2.TransferLeg -> V2.AllocationSpecification
+depositSpec admin authorizer leg =
+  (mkSpec admin authorizer [leg] True) with nextIterationFunding = Some TextMap.empty
+
 -- Operator creates the directional LiquidityAllocationRequest the LP/holder
 -- accepts; `Settle*` is bound to it (3b.0). The choice builds the canonical
 -- specs on-ledger from these scalars; the tests author matching allocations
@@ -157,8 +163,8 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
         else min ((baseAmount * knownSupply) / reserveBase)
                  ((quoteAmount * knownSupply) / reserveQuote)
       lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
-      baseSpec = mkSpec fx.registry lpAcct [baseDepositLeg] True
-      quoteSpec = mkSpec fx.registry lpAcct [quoteDepositLeg] True
+      baseSpec = depositSpec fx.registry lpAcct baseDepositLeg
+      quoteSpec = depositSpec fx.registry lpAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry lp "BTC" baseAmount
   quoteHold <- mintHolding fx.registry lp "USDC" quoteAmount
@@ -195,8 +201,8 @@ dvpAddWithLp fx stateCid policyCid lp baseAmount quoteAmount lpAmount now = do
         transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
         amount = quoteAmount; instrumentId = "USDC"; meta = emptyMetadata
       lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
-      baseSpec = mkSpec fx.registry lpAcct [baseDepositLeg] True
-      quoteSpec = mkSpec fx.registry lpAcct [quoteDepositLeg] True
+      baseSpec = depositSpec fx.registry lpAcct baseDepositLeg
+      quoteSpec = depositSpec fx.registry lpAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry lp "BTC" baseAmount
   quoteHold <- mintHolding fx.registry lp "USDC" quoteAmount
@@ -242,6 +248,62 @@ testDvpAddLiquidity = do
   let lpHoldings = filter (\(_, h) -> h.instrumentId == lpId && h.owner == alice && not h.locked) aliceHoldings
   length lpHoldings === 1
   (snd (head lpHoldings)).amount === expectedLp
+  pure ()
+
+-- Off-ratio add: LP tokens are minted against the limiting side, so the
+-- unmatched remainder of the other leg must NOT reach the reserves — it is
+-- refunded to the provider in the same settlement.
+testDvpAddOffRatioRefundsExcess : Script ()
+testDvpAddOffRatioRefundsExcess = do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  carol <- allocateParty "carol"
+  fx <- setup [alice, bob, carol]
+  now <- getTime
+  addRes <- dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  let supply = PM.sqrtDecimal 2000000.0
+  -- Bob deposits 5 BTC + 150000 USDC into a 10 : 200000 pool. Base is the
+  -- limiting side: 5 BTC matches 100000 USDC, leaving 50000 USDC unmatched.
+  res <- dvpAdd fx addRes.poolStateCid addRes.lpPolicyCid bob 5.0 150000.0 supply 10.0 200000.0 now
+
+  res.baseAdded === 5.0
+  res.quoteAdded === 100000.0
+  -- Minted against the limiting side only; the excess quote bought nothing.
+  res.lpTokensMinted === (5.0 * supply) / 10.0
+  assertMsg "excess quote must not buy LP tokens"
+    (res.lpTokensMinted < (150000.0 * supply) / 200000.0)
+
+  Some state <- queryContractId fx.operator res.poolStateCid
+  state.reserves.baseAmount === 15.0
+  state.reserves.quoteAmount === 300000.0
+  state.totalLpSupply === supply + res.lpTokensMinted
+  Some baseSlice <- queryContractId fx.operator res.baseSliceCid
+  Some quoteSlice <- queryContractId fx.operator res.quoteSliceCid
+  baseSlice.amount === 5.0
+  quoteSlice.amount === 100000.0
+
+  -- Bob holds the unmatched quote, unlocked; his base went in whole.
+  bobHoldings <- query @RegV2.Holding bob
+  let bobUnlocked instrumentId =
+        [ h.amount | (_, h) <- bobHoldings, h.instrumentId == instrumentId, not h.locked ]
+  bobUnlocked "USDC" === [50000.0]
+  bobUnlocked "BTC" === []
+
+  -- The same holds with the sides swapped: carol is long base against the
+  -- 15 : 300000 pool, so 2.5 of her 10 BTC come back.
+  let supply2 = state.totalLpSupply
+  res2 <- dvpAdd fx res.poolStateCid res.lpPolicyCid carol 10.0 150000.0 supply2 15.0 300000.0 now
+  res2.baseAdded === 7.5
+  res2.quoteAdded === 150000.0
+  res2.lpTokensMinted === (150000.0 * supply2) / 300000.0
+  Some state2 <- queryContractId fx.operator res2.poolStateCid
+  state2.reserves.baseAmount === 22.5
+  state2.reserves.quoteAmount === 450000.0
+  carolHoldings <- query @RegV2.Holding carol
+  let carolUnlocked instrumentId =
+        [ h.amount | (_, h) <- carolHoldings, h.instrumentId == instrumentId, not h.locked ]
+  carolUnlocked "BTC" === [2.5]
+  carolUnlocked "USDC" === []
   pure ()
 
 -- Remove (full redemption): base+quote are delivered to the HOLDER and the
@@ -331,8 +393,8 @@ testStaleQuoteRejected = do
         transferLegId = "lp-quote-deposit"; sender = bobAcct; receiver = opAcct
         amount = 20000.0; instrumentId = "USDC"; meta = emptyMetadata
       lpMintLeg = Lp.lpMintLeg fx.registry bobAcct lpId 100.0
-      bBaseSpec = mkSpec fx.registry bobAcct [baseDepositLeg] True
-      bQuoteSpec = mkSpec fx.registry bobAcct [quoteDepositLeg] True
+      bBaseSpec = depositSpec fx.registry bobAcct baseDepositLeg
+      bQuoteSpec = depositSpec fx.registry bobAcct quoteDepositLeg
       bRcptSpec = mkSpec fx.registry bobAcct [lpMintLeg] False
   bBtc <- mintHolding fx.registry bob "BTC" 1.0
   bUsdc <- mintHolding fx.registry bob "USDC" 20000.0
@@ -495,8 +557,9 @@ testExpiredAddRejected = do
   -- The QUOTE-deposit allocation carries an already-expired deadline; the
   -- base deposit is fresh. The settle must still abort, proving every
   -- LP-authored allocation is deadline-checked, not just the base leg.
-  let baseSpec = mkSpec fx.registry aliceAcct [baseDepositLeg] True
-      quoteSpec = mkSpecDeadline fx.registry aliceAcct [quoteDepositLeg] True pastDeadline
+  let baseSpec = depositSpec fx.registry aliceAcct baseDepositLeg
+      quoteSpec = (depositSpec fx.registry aliceAcct quoteDepositLeg) with
+        settlementDeadline = Some pastDeadline
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
   reqCid <- requestAdd fx alice 10.0 200000.0 (PM.sqrtDecimal 2000000.0) None now
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
@@ -583,11 +646,11 @@ testSettleRejectsForeignAllocation = do
         transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
       lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId (PM.sqrtDecimal 2000000.0)
-      baseSpec = mkSpec fx.registry aliceAcct [baseDepositLeg] True
-      quoteSpec = mkSpec fx.registry aliceAcct [quoteDepositLeg] True
+      baseSpec = depositSpec fx.registry aliceAcct baseDepositLeg
+      quoteSpec = depositSpec fx.registry aliceAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
       forgedBaseLeg = baseDepositLeg with amount = 999.0
-      forgedSpec = mkSpec fx.registry aliceAcct [forgedBaseLeg] True
+      forgedSpec = depositSpec fx.registry aliceAcct forgedBaseLeg
   baseHold <- mintHolding fx.registry alice "BTC" 999.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
   reqCid <- requestAdd fx alice 10.0 200000.0 (PM.sqrtDecimal 2000000.0) None now
@@ -627,8 +690,8 @@ testSettleRejectsExpiredRequest = do
         transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
       lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId (PM.sqrtDecimal 2000000.0)
-      baseSpec = mkSpec fx.registry aliceAcct [baseDepositLeg] True
-      quoteSpec = mkSpec fx.registry aliceAcct [quoteDepositLeg] True
+      baseSpec = depositSpec fx.registry aliceAcct baseDepositLeg
+      quoteSpec = depositSpec fx.registry aliceAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry alice "BTC" 10.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
@@ -670,8 +733,8 @@ testAddRejectsOverMint = do
         transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
       lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId overLp
-      baseSpec = mkSpec fx.registry aliceAcct [baseDepositLeg] True
-      quoteSpec = mkSpec fx.registry aliceAcct [quoteDepositLeg] True
+      baseSpec = depositSpec fx.registry aliceAcct baseDepositLeg
+      quoteSpec = depositSpec fx.registry aliceAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry alice "BTC" 10.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
@@ -751,8 +814,8 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
         transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
       lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
-      baseSpec = mkSpec fx.registry lpAcct [baseDepositLeg] True
-      quoteSpec = mkSpec fx.registry lpAcct [quoteDepositLeg] True
+      baseSpec = depositSpec fx.registry lpAcct baseDepositLeg
+      quoteSpec = depositSpec fx.registry lpAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry alice "BTC" 10.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
@@ -846,8 +909,8 @@ testBatchedUtilityAddLiquidity = do
         transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
       lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
-      baseSpec = mkSpec fx.registry lpAcct [baseDepositLeg] True
-      quoteSpec = mkSpec fx.registry lpAcct [quoteDepositLeg] True
+      baseSpec = depositSpec fx.registry lpAcct baseDepositLeg
+      quoteSpec = depositSpec fx.registry lpAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
   baseHold <- mintHolding fx.registry alice "BTC" 10.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0

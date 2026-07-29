@@ -38,7 +38,7 @@ boot.
 daml sandbox \
   --port 6865 \
   --json-api-port 7575 \
-  --dar trading/.daml/dist/canton-dex-trading-0.1.2.dar \
+  --dar trading/.daml/dist/canton-dex-trading-0.1.3.dar \
   --dar trading/.daml/dist/splice-api-token-allocation-v2-current.dar \
   --dar trading/.daml/dist/splice-api-token-allocation-instruction-v2-current.dar \
   --dar trading/.daml/dist/splice-api-token-allocation-request-v2-current.dar \

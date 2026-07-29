@@ -17,7 +17,7 @@ different DEX without forking the core templates.
    Swap a different invariant in and the rest of the stack works.
 
 2. **DAR consumption.** `daml.yaml` lists
-   `canton-dex-trading-0.1.2.dar` as a data-dependency. The example
+   `canton-dex-trading-0.1.3.dar` as a data-dependency. The example
    compiles against that binary artefact; it does not edit any of
    the base templates.
 
@@ -40,7 +40,7 @@ fork would copy that wiring (10–15 lines) into its stable-pool swap choice.
 From the repo root:
 
 ```bash
-# Make sure canton-dex-trading-0.1.2.dar exists first
+# Make sure canton-dex-trading-0.1.3.dar exists first
 bash scripts/build-trading-surface.sh
 
 # Then build + test the example

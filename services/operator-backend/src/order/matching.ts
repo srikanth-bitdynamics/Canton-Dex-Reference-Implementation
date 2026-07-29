@@ -138,6 +138,15 @@ export function matchOrdersForPair(
     const buy = bids[bi]!;
     const sell = asks[ai]!;
     if (priceOf(buy) < priceOf(sell)) break;
+    // Self-trade prevention: a party's own bid and ask must not match. The
+    // settle would build a transfer leg whose sender and receiver are the same
+    // party and abort, so this cross can never settle. Move to the next ask;
+    // a legitimate cross with a different maker is picked up here or on a
+    // later run.
+    if (buy.trader === sell.trader) {
+      ai += 1;
+      continue;
+    }
     const buyRem = remaining.get(buy.contractId) ?? 0n;
     const sellRem = remaining.get(sell.contractId) ?? 0n;
     const qty = dec.min(buyRem, sellRem);

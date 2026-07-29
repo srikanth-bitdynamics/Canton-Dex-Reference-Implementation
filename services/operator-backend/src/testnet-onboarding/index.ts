@@ -71,6 +71,7 @@ import type {
   Time,
   V2AllocationSpecification,
   V2SettlementInfo,
+  V2TransferLeg,
 } from "../types.js";
 import { rootLogger } from "../lib/logger.js";
 import { REGISTRY_HOLDING_TEMPLATE_ID, RegistryMinter } from "./registry-mint.js";
@@ -2144,7 +2145,21 @@ export class TestnetOnboardingService {
       ...choiceContext.disclosure,
     ]);
 
-    const allocationCids: string[] = [];
+    // Grouped by the request's own admin: a batch's allocations must cover
+    // exactly its admin's legs. Legs repeat across a pair's two requests, so
+    // they are deduplicated by id.
+    const batches = new Map<
+      Party,
+      { allocationCids: string[]; transferLegs: V2TransferLeg[] }
+    >();
+    const batchFor = (admin: Party) => {
+      const existing = batches.get(admin);
+      if (existing) return existing;
+      const fresh = { allocationCids: [], transferLegs: [] };
+      batches.set(admin, fresh);
+      return fresh;
+    };
+
     let updateId = "";
     for (const request of requests) {
       // Deliberately NOT AllocationRequest_Accept: it archives the request, and
@@ -2157,19 +2172,28 @@ export class TestnetOnboardingService {
         disclosure,
         input.clientIp,
       );
-      allocationCids.push(cid.allocationCid);
+      const batch = batchFor(request.admin);
+      batch.allocationCids.push(cid.allocationCid);
+      for (const leg of request.transferLegs) {
+        if (!batch.transferLegs.some((l) => l.transferLegId === leg.transferLegId)) {
+          batch.transferLegs.push(leg);
+        }
+      }
       updateId = cid.updateId;
     }
 
     await this.rfqStep("settle", () =>
       deps.matchedTrade.settle({
         tradeCid: accepted.tradeCid,
-        batchesByAdmin: new Map([
-          [
-            this.cfg.admin,
-            { allocationCids: allocationCids as ContractId<"Allocation">[] },
-          ],
-        ]),
+        batchesByAdmin: new Map(
+          [...batches].map(([admin, batch]) => [
+            admin,
+            {
+              allocationCids: batch.allocationCids as ContractId<"Allocation">[],
+              transferLegs: batch.transferLegs,
+            },
+          ]),
+        ),
         // Passed, not empty. MatchedTrade_Settle fetches and archives each of
         // these as its first act, and the usual reason to withhold them --
         // a counterparty that used AllocationRequest_Accept has already
@@ -2192,7 +2216,10 @@ export class TestnetOnboardingService {
       tradeCid: accepted.tradeCid,
       acceptedDealer: accepted.receipt.acceptedDealer,
       acceptedRank: accepted.receipt.acceptedRank,
-      allocations: allocationCids.length,
+      allocations: [...batches.values()].reduce(
+        (n, b) => n + b.allocationCids.length,
+        0,
+      ),
       updateId,
     });
     return {

@@ -334,10 +334,16 @@ export class OrderService {
         const executed = await retryOnContention(() =>
           this.ledger.submit<OrderMatchExecuteResult>({
             actAs: [this.operatorParty],
+            // The settle fetches each order's funding allocation and the
+            // holdings it locked -- `signatory admin, owner`, which the
+            // operator is not a stakeholder of. readAs the instrument admin so
+            // it can see them; without it the settle fails CONTRACT_NOT_FOUND
+            // on the funding it is trying to move. Both orders share an admin
+            // (asserted by the choice), so one entry covers both sides.
+            readAs: [input.admin],
             commandId: `order-match:${matchId}`,
-            // The settle archives holdings that are `signatory admin, owner`,
-            // which the operator cannot see, so the disclosure has to come
-            // from the instrument registry's factories + choice context.
+            // Factory + choice-context disclosure for the registry's own
+            // contracts.
             disclosure: [...factories.disclosure, ...ctx.disclosure],
             command: {
               kind: "createAndExercise",

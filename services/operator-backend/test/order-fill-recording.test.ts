@@ -95,6 +95,13 @@ describe("OrderService.runMatching settlement", () => {
       "CantonDex.Dex.OrderMatchExecution:OrderMatchExecution",
     );
     assert.equal(ledger.executes[0]!.choice, "OrderMatchExecution_Execute");
+    // The funding allocations and their holdings are signatory admin+owner;
+    // without readAs the admin the operator cannot see them and the settle
+    // fails CONTRACT_NOT_FOUND on a real ledger.
+    assert.ok(
+      (ledger.submissions[0]!.readAs ?? []).includes(RUN.admin),
+      "the settle must readAs the instrument admin",
+    );
     assert.equal(
       ledger.commands.filter((c) => c.kind === "create").length,
       0,

@@ -172,16 +172,25 @@ describe("OrderService.runMatching settlement", () => {
     assert.equal(results[0]!.sellRemainderCid, null);
   });
 
-  it("hands each side its locked budget as a funding TextMap", async () => {
+  it("rolls forward the residual of the allocation's own budget", async () => {
     const ledger = new MatchingLedger([ask({}), bid({ remainingQty: "3" })]);
 
-    await service(ledger).runMatching(RUN);
+    const results = await service(ledger).runMatching(RUN);
 
     const arg = ledger.executes[0]!.argument as ExecuteArgument;
-    // The resting bid keeps the 3 @ 110 of quote placement locked; the ask
-    // fills out entirely, so its budget is exactly the base it delivers.
-    assert.equal(arg.buyerCommittedFunding.USDC, "330.0000000000");
-    assert.equal(arg.sellerCommittedFunding.BTC, "1.0000000000");
+    // Nothing in the command declares a budget. The choice reads it off the
+    // allocation, so no operator-side arithmetic can declare more than the
+    // settle actually holds.
+    assert.equal(arg.buyerCommittedFunding, undefined);
+    assert.equal(arg.sellerCommittedFunding, undefined);
+    // The bid's placement locked 3 @ 110; this fill cleared at 100, so 230 of
+    // quote rolls on behind the remainder.
+    const remainder = ledger.liveOrders.get(results[0]!.buyRemainderCid!)!;
+    assert.deepEqual(ledger.backing(remainder.allocationCid!), {
+      USDC: "230.0000000000",
+    });
+    // The ask filled out entirely: its whole base budget went into the leg.
+    assert.equal(results[0]!.sellRemainderCid, null);
   });
 
   it("settles the rolled-forward order and allocation, not the archived ones", async () => {
@@ -205,9 +214,13 @@ describe("OrderService.runMatching settlement", () => {
     assert.equal(second.buyOrderCid, results[0]!.buyRemainderCid);
     assert.notEqual(second.buyerAllocationCid, "#alloc:bid");
     assert.equal(second.sellerAllocationCid, "#alloc:ask2");
-    // The buyer's residual budget carries the exact spend, not
-    // remainingQty * limitPrice: the first fill cleared at 100, not 110.
-    assert.equal(second.buyerCommittedFunding.USDC, "230.0000000000");
+    // Budgets follow the fills, not the face terms: 330 locked, less 100 at
+    // the first fill's price and 101 at the second's, leaves 129 — where
+    // remainingQty * limitPrice would claim 110.
+    const remainder = ledger.liveOrders.get(results[1]!.buyRemainderCid!)!;
+    assert.deepEqual(ledger.backing(remainder.allocationCid!), {
+      USDC: "129.0000000000",
+    });
   });
 
   it("closes out a remainder whose budget the fill exhausted", async () => {
@@ -222,15 +235,112 @@ describe("OrderService.runMatching settlement", () => {
       bid({ limitPrice: "0.000001", remainingQty: "1000" }),
     ]);
 
+    assert.deepEqual(ledger.backing("#alloc:bid"), { USDC: "0.0010000000" });
+
     const results = await service(ledger).runMatching(RUN);
 
     assert.equal(results[0]!.error, undefined);
     assert.equal(results[0]!.quantity, "999.9999600000");
-    const arg = ledger.executes[0]!.argument as ExecuteArgument;
-    assert.equal(arg.buyerCommittedFunding.USDC, "0.0010000000");
     assert.equal(results[0]!.buyRemainderCid, null);
     assert.deepEqual([...ledger.liveOrders.keys()], []);
     assert.deepEqual([...ledger.liveAllocations], []);
+  });
+
+  it("keeps filling a bid a previous run partially filled", async () => {
+    // Placement locks round(10.5993913768 * 8.4875456707) = 89.9628183922 of
+    // quote. A first fill of 4.2004910968 at the bid's own limit spends
+    // 35.6518600235, so 54.3109583687 rolls forward — while
+    // round(6.3989002800 * 8.4875456707) is 54.3109583688, one ulp MORE than
+    // the settle holds. Both are 10dp round-half-even products of the same
+    // terms, and they do not have to agree. A budget recomputed from the
+    // order's face terms therefore claims more than the allocation locks, the
+    // registry's coverage check rejects it, and the bid stops trading for
+    // good: every later run pairs it and every one of those settles aborts.
+    const limitPrice = "8.4875456707";
+    const ledger = new MatchingLedger([
+      bid({
+        limitPrice,
+        remainingQty: "10.5993913768",
+        ledgerCreatedAt: "2026-01-01T09:00:00Z",
+      }),
+      ask({
+        limitPrice,
+        remainingQty: "4.2004910968",
+        ledgerCreatedAt: "2026-01-01T10:00:00Z",
+      }),
+    ]);
+    const svc = service(ledger);
+
+    const first = await svc.runMatching(RUN);
+
+    // The bid rests first, so the fill clears at the bid's own limit — where
+    // the two roundings can part company.
+    assert.equal(first[0]!.error, undefined);
+    assert.equal(first[0]!.price, limitPrice);
+    const remainderCid = first[0]!.buyRemainderCid!;
+    const remainder = ledger.liveOrders.get(remainderCid)!;
+    assert.equal(remainder.order.remainingQty, "6.3989002800");
+    assert.deepEqual(ledger.backing(remainder.allocationCid!), {
+      USDC: "54.3109583687",
+    });
+
+    // Next poll: a fresh ask crosses the remainder.
+    ledger.rest(
+      ask({
+        contractId: "#ask:2",
+        limitPrice,
+        remainingQty: "1",
+        allocationCid: "#alloc:ask2",
+        ledgerCreatedAt: "2026-01-01T13:00:00Z",
+      }),
+    );
+
+    const second = await svc.runMatching(RUN);
+
+    assert.equal(second.length, 1);
+    assert.equal(second[0]!.error, undefined);
+    assert.equal(second[0]!.buyCid, remainderCid);
+    assert.equal(second[0]!.price, limitPrice);
+    // 54.3109583687 locked, less the 8.4875456707 this fill spends.
+    const next = ledger.liveOrders.get(second[0]!.buyRemainderCid!)!;
+    assert.deepEqual(ledger.backing(next.allocationCid!), {
+      USDC: "45.8234126980",
+    });
+    assert.deepEqual(ledger.orphanedOrders, []);
+  });
+
+  it("skips a match against an order an earlier fill closed out", async () => {
+    // The first fill spends the bid's whole budget with 0.00004 base still
+    // unfilled, so the bid closes out. The match list was built from the book
+    // as it stood at the start of the run and still pairs that bid with the
+    // next ask; submitting it would name the contract id the fill archived.
+    const ledger = new MatchingLedger([
+      ask({
+        limitPrice: "0.000001",
+        remainingQty: "999.99996",
+        allocationCid: "#alloc:ask1",
+      }),
+      ask({
+        contractId: "#ask:2",
+        limitPrice: "0.000001",
+        remainingQty: "0.00004",
+        allocationCid: "#alloc:ask2",
+        ledgerCreatedAt: "2026-01-01T10:30:00Z",
+      }),
+      bid({ limitPrice: "0.000001", remainingQty: "1000" }),
+    ]);
+
+    const results = await service(ledger).runMatching(RUN);
+
+    assert.equal(results[0]!.buyRemainderCid, null, "the bid did not close out");
+    assert.equal(results.length, 1);
+    assert.equal(ledger.submissions.length, 1);
+    assert.deepEqual(
+      ledger.executes.map((e) => (e.argument as ExecuteArgument).buyOrderCid),
+      ["#bid:1"],
+    );
+    // The unmatched ask is untouched and still on the book for the next poll.
+    assert.deepEqual([...ledger.liveOrders.keys()], ["#ask:2"]);
   });
 
   it("moves nothing when the settlement fails", async () => {

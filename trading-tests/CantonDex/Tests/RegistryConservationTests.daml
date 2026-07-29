@@ -10,10 +10,13 @@
 --     it fails;
 --   * surplus backing returns to the authorizer as an unlocked holding;
 --   * the SettlementFactory batch rejects per-instrument sender/receiver
---     imbalance (an unbacked receiver leg with no matching sender).
+--     imbalance (an unbacked receiver leg with no matching sender);
+--   * an order-book fill stays inside that backing across iterations, where
+--     the face notional of the unfilled quantity does not.
 module CantonDex.Tests.RegistryConservationTests where
 
 import DA.Assert
+import DA.Optional (fromSome)
 import DA.Time (addRelTime, hours)
 import DA.TextMap qualified as TextMap
 import Daml.Script
@@ -25,6 +28,9 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.TransferInstructionV2 qualified as V2
 import Splice.Testing.Utils (emptyExtraArgs)
 
+import CantonDex.Dex.Order qualified as Order
+import CantonDex.Dex.OrderFundingRequest qualified as OFR
+import CantonDex.Dex.OrderMatchExecution qualified as OME
 import CantonDex.Registry.V2 qualified as RegV2
 import CantonDex.Trading.Utils qualified as Utils
 
@@ -372,3 +378,120 @@ testAllocateStillRejectsInsufficientHoldings = do
     settlement = fx.settlement; allocation = spec; requestedAt = now
     inputHoldingCids = [toInterfaceContractId hold]
     actors = [fx.alice]; extraArgs = emptyExtraArgs
+
+-- 9. An order-book fill stays inside the backing across iterations ----------
+--
+-- Placement locks the bid's face notional, round(qty * limit). A partial fill
+-- at the bid's own limit spends round(fill * limit) and the settle re-locks
+-- the difference — which can be one ulp BELOW round(remaining * limit), since
+-- both are independent 10dp roundings of the same terms. A budget recomputed
+-- from the order's face terms then exceeds the backing, the coverage check
+-- rejects it, and the order can never trade again. OrderMatchExecution takes
+-- the budget from the allocation, so the later fill settles.
+
+-- Place a funded resting order through the real placement path, so the locked
+-- backing is exactly the amount OrderFundingRequest_Bind asks the trader for.
+restOrder
+  : Party -> Party -> Party -> ContractId V2.AllocationFactory
+  -> Order.Side -> Decimal -> Decimal -> Text
+  -> Script (ContractId Order.Order, ContractId V2.Allocation)
+restOrder operator admin trader factoryCid side limitPrice quantity ref = do
+  now <- getTime
+  reqCid <- submit trader $ createCmd OFR.OrderFundingRequest with
+    operator; trader; admin
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    side; limitPrice; quantity; expiry = None
+  bound <- submit operator $ exerciseCmd reqCid OFR.OrderFundingRequest_Bind with
+    settlementRef = ref
+  Some allocReq <- queryContractId operator bound.allocationRequestCid
+  hold <- submit (actAs [admin, trader]) $ createCmd RegV2.Holding with
+    admin; owner = trader
+    instrumentId = allocReq.lockInstrumentId
+    amount = allocReq.lockAmount
+    locked = False
+  let spec = Utils.mkPrefundedAllocationSpecification
+        admin (Utils.basicAccount trader) None
+        (TextMap.fromList [(allocReq.lockInstrumentId, allocReq.lockAmount)])
+      settlement = V2.SettlementInfo with
+        executors = [operator]
+        id = allocReq.orderRef.id
+        cid = allocReq.orderRef.cid
+        meta = emptyMetadata
+  res <- submit trader $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+    settlement; allocation = spec; requestedAt = now
+    inputHoldingCids = [toInterfaceContractId hold]
+    actors = [trader]; extraArgs = emptyExtraArgs
+  allocCid <- case res.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "allocation must complete"
+  funded <- submit operator $ exerciseCmd bound.orderCid Order.Order_Fund with
+    allocationCid = allocCid
+    allocationRequestCid = Some bound.allocationRequestCid
+  pure (funded.orderCid, allocCid)
+
+-- The settle archives holdings the operator cannot see; production supplies
+-- them as disclosures from the registry's choice context, a script as readAs.
+execMatch
+  : Party -> Party -> ContractId V2.SettlementFactory -> Text -> Party -> Party
+  -> ContractId Order.Order -> ContractId Order.Order
+  -> ContractId V2.Allocation -> ContractId V2.Allocation
+  -> Decimal -> Decimal -> Script OME.OrderMatch_ExecuteResult
+execMatch operator admin settleCid matchId buyer seller
+          buyOrderCid sellOrderCid buyerAllocationCid sellerAllocationCid
+          fillQty fillPrice = do
+  execCid <- submit operator $ createCmd OME.OrderMatchExecution with
+    operator; matchId
+    match = OME.MatchedOrderPair with
+      buyerAccount = Utils.basicAccount buyer
+      sellerAccount = Utils.basicAccount seller
+      baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+      fillQty; fillPrice
+    buyOrderCid; sellOrderCid
+    buyerAllocationCid; sellerAllocationCid
+  submit (actAs [operator] <> readAs [admin]) $
+    exerciseCmd execCid OME.OrderMatchExecution_Execute with
+      factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+testPartiallyFilledOrderStillFills : Script ()
+testPartiallyFilledOrderStillFills = do
+  operator <- allocateParty "match-operator"
+  admin <- allocateParty "match-admin"
+  buyer <- allocateParty "match-buyer"
+  seller <- allocateParty "match-seller"
+  reg <- submit admin $ createCmd RegV2.Registry with
+    admin; users = [operator, buyer, seller]
+  let factoryCid : ContractId V2.AllocationFactory = toInterfaceContractId reg
+      settleCid : ContractId V2.SettlementFactory = toInterfaceContractId reg
+      limitPrice = 8.4875456707
+      bidQty = 10.5993913768
+      firstFill = 4.2004910968
+
+  (bidCid, bidAllocCid) <- restOrder operator admin buyer factoryCid
+    Order.Bid limitPrice bidQty "bid-1"
+  (ask1Cid, ask1AllocCid) <- restOrder operator admin seller factoryCid
+    Order.Ask limitPrice firstFill "ask-1"
+
+  bidQty * limitPrice === 89.9628183922
+  firstFill * limitPrice === 35.6518600235
+
+  res1 <- execMatch operator admin settleCid "m1" buyer seller
+    bidCid ask1Cid bidAllocCid ask1AllocCid firstFill limitPrice
+  let bid2Cid = fromSome res1.buyRemainderCid
+      bid2AllocCid = fromSome res1.buyerNextAllocationCid
+  Some bid2 <- queryContractId operator bid2Cid
+  bid2.remainingQty === 6.3989002800
+
+  -- What the settle actually re-locked, one ulp below the face notional of
+  -- the quantity that is left.
+  lockedQuote <- lockedOf buyer "USDC"
+  lockedQuote === [54.3109583687]
+  bid2.remainingQty * limitPrice === 54.3109583688
+
+  (ask2Cid, ask2AllocCid) <- restOrder operator admin seller factoryCid
+    Order.Ask limitPrice 1.0 "ask-2"
+  res2 <- execMatch operator admin settleCid "m2" buyer seller
+    bid2Cid ask2Cid bid2AllocCid ask2AllocCid 1.0 limitPrice
+  Some bid3 <- queryContractId operator (fromSome res2.buyRemainderCid)
+  bid3.remainingQty === 5.3989002800
+  stillLocked <- lockedOf buyer "USDC"
+  stillLocked === [45.8234126980]

@@ -12,7 +12,7 @@
 module CantonDex.Tests.EndToEndTests where
 
 import DA.Assert
-import DA.List (head, tail)
+import DA.List (head, sort, tail)
 import DA.Map qualified as Map
 import DA.Optional (isSome, isNone, fromSome)
 import DA.TextMap qualified as TextMap
@@ -802,8 +802,6 @@ omeExec operator buyerAcct sellerAcct buyOrderCid sellOrderCid
       fillQty = 4.0; fillPrice
     buyOrderCid; sellOrderCid
     buyerAllocationCid; sellerAllocationCid
-    buyerCommittedFunding = TextMap.fromList [("USDC", 400.0)]
-    sellerCommittedFunding = TextMap.fromList [("BTC", 10.0)]
 
 testOrderMatchEnforcesLimitPrice : Script ()
 testOrderMatchEnforcesLimitPrice = do
@@ -977,11 +975,15 @@ testOrderMatchRollsOrdersForwardAtomically = do
   isSome res.buyRemainderCid === True
   isSome res.sellRemainderCid === True
   liveOrders <- query @Order.Order operator
-  map fst liveOrders === [fromSome res.buyRemainderCid, fromSome res.sellRemainderCid]
-  [ o.allocationCid | (_, o) <- liveOrders ]
-    === [res.buyerNextAllocationCid, res.sellerNextAllocationCid]
-  [ o.remainingQty | (_, o) <- liveOrders ] === [6.0, 6.0]
-  [ o.status | (_, o) <- liveOrders ]
+  -- The ACS comes back ordered by contract id, so compare as a set.
+  sort (map fst liveOrders)
+    === sort [fromSome res.buyRemainderCid, fromSome res.sellRemainderCid]
+  Some buyRemainder <- queryContractId operator (fromSome res.buyRemainderCid)
+  Some sellRemainder <- queryContractId operator (fromSome res.sellRemainderCid)
+  buyRemainder.allocationCid === res.buyerNextAllocationCid
+  sellRemainder.allocationCid === res.sellerNextAllocationCid
+  [buyRemainder.remainingQty, sellRemainder.remainingQty] === [6.0, 6.0]
+  [buyRemainder.status, sellRemainder.status]
     === [Order.OS_PartiallyFilled, Order.OS_PartiallyFilled]
 
   -- The fill is durable trade history: OrderMatchExecution is consumed by the
@@ -1050,8 +1052,6 @@ testOrderMatchClosesUnbackedRemainder = do
       fillQty; fillPrice = price
     buyOrderCid; sellOrderCid
     buyerAllocationCid; sellerAllocationCid
-    buyerCommittedFunding = TextMap.fromList [("USDC", committedQuote)]
-    sellerCommittedFunding = TextMap.fromList [("BTC", fillQty)]
   res <- submit operator $ exerciseCmd execCid OME.OrderMatchExecution_Execute with
     factoryCid = settleCid; extraArgs = emptyExtraArgs
 

@@ -1,8 +1,13 @@
 // Ledger stub modelling what OrderMatchExecution_Execute does on-ledger: the
 // settle consumes both funding allocations and mints a next-iteration
-// allocation only for a side whose committed budget outlives its spend, both
+// allocation only for a side whose reserved budget outlives its spend, both
 // orders are archived and rolled onto those allocations in the SAME
 // transaction, and a SettledTrade records the fill.
+//
+// The allocations carry their locked backing, so the registry's per-instrument
+// coverage rule (`sent + next <= locked + received`, Registry/V2
+// allocation_settleImpl) is enforced here too: a next-iteration funding above
+// what the allocation holds aborts the whole execute, exactly as on-ledger.
 //
 // Amounts go through the project's 10dp round-half-even decimal module, never
 // IEEE-754: the quote amount is a rounded Daml `Decimal`, and a double
@@ -33,8 +38,9 @@ export interface ExecuteArgument {
   sellOrderCid: string;
   buyerAllocationCid: string;
   sellerAllocationCid: string;
-  buyerCommittedFunding: Record<string, string>;
-  sellerCommittedFunding: Record<string, string>;
+  /** Only present while the caller still declares the budget itself. */
+  buyerCommittedFunding?: Record<string, string>;
+  sellerCommittedFunding?: Record<string, string>;
 }
 
 export type CreateAndExerciseCommand = Extract<
@@ -42,8 +48,12 @@ export type CreateAndExerciseCommand = Extract<
   { kind: "createAndExercise" }
 >;
 
+/** Instrument id -> scaled amount. */
+type Funding = Map<string, bigint>;
+
 interface LiveOrderRow {
-  admin: Party;
+  /** Current template payload, as the ACS would serve it. */
+  order: Order;
   remainingQty: bigint;
   allocationCid: string | null;
 }
@@ -73,12 +83,10 @@ interface ExecuteResult {
   settledTradeCid: string;
 }
 
-/** What is left of a committed budget after a spend; null once exhausted. */
-function residual(funding: Record<string, string>, spend: bigint): bigint | null {
-  const committed = dec.parseDecimal(Object.values(funding)[0] ?? "0");
-  const left = committed - spend;
-  if (left < 0n) throw new Error("legs exceed locked backing");
-  return left > 0n ? left : null;
+const SETTLED_AT = "2026-01-01T12:00:00Z";
+
+function one(instrumentId: string, amount: bigint): Funding {
+  return new Map([[instrumentId, amount]]);
 }
 
 export class MatchingLedger implements LedgerSubmitter {
@@ -86,18 +94,43 @@ export class MatchingLedger implements LedgerSubmitter {
   readonly liveAllocations = new Set<string>();
   readonly liveOrders = new Map<string, LiveOrderRow>();
   readonly settledTrades: SettledTradeRow[] = [];
+  /** Backing each live allocation locks, per instrument. */
+  private readonly lockedBacking = new Map<string, Funding>();
   private nextAllocation = 1;
   private nextOrder = 1;
 
-  constructor(private readonly orders: Order[]) {
-    for (const o of orders) {
-      this.liveOrders.set(o.contractId, {
-        admin: o.admin,
-        remainingQty: dec.parseDecimal(o.remainingQty),
-        allocationCid: o.allocationCid ?? null,
-      });
-      if (o.allocationCid) this.liveAllocations.add(o.allocationCid);
-    }
+  constructor(orders: Order[]) {
+    for (const o of orders) this.rest(o);
+  }
+
+  /**
+   * Rest a funded order on the book, backed by the allocation its placement
+   * locks: quote = remainingQty * limitPrice for a bid, base = remainingQty
+   * for an ask (OrderFundingRequest_Bind's lock amount).
+   */
+  rest(o: Order): void {
+    const qty = dec.parseDecimal(o.remainingQty);
+    this.liveOrders.set(o.contractId, {
+      order: o,
+      remainingQty: qty,
+      allocationCid: o.allocationCid ?? null,
+    });
+    if (!o.allocationCid) return;
+    this.liveAllocations.add(o.allocationCid);
+    this.lockedBacking.set(
+      o.allocationCid,
+      o.side === "Bid"
+        ? one(o.quoteInstrumentId, dec.mul(qty, dec.parseDecimal(o.limitPrice)))
+        : one(o.baseInstrumentId, qty),
+    );
+  }
+
+  /** What an allocation locks, per instrument, as decimal strings. */
+  backing(allocationCid: string): Record<string, string> {
+    const funding = this.lockedBacking.get(allocationCid) ?? new Map<string, bigint>();
+    return Object.fromEntries(
+      [...funding].map(([iid, amount]) => [iid, dec.formatDecimal(amount)]),
+    );
   }
 
   get commands(): LedgerCommand[] {
@@ -137,30 +170,40 @@ export class MatchingLedger implements LedgerSubmitter {
     if (sell.allocationCid !== arg.sellerAllocationCid) {
       throw new Error("seller allocation is not the ask order's allocation");
     }
-    this.consume(arg.buyerAllocationCid);
-    this.consume(arg.sellerAllocationCid);
 
+    const { baseInstrumentId: base, quoteInstrumentId: quote } = arg.match;
     const qty = dec.parseDecimal(arg.match.fillQty);
     const quoteAmount = dec.mul(qty, dec.parseDecimal(arg.match.fillPrice));
-    const buyerResidual = residual(arg.buyerCommittedFunding, quoteAmount);
-    const sellerResidual = residual(arg.sellerCommittedFunding, qty);
-    const buyerNextAllocationCid = buyerResidual === null ? null : this.mint();
-    const sellerNextAllocationCid = sellerResidual === null ? null : this.mint();
+
+    const buyerNext = this.remainder(
+      arg.buyerAllocationCid, quote, quoteAmount,
+      qty >= buy.remainingQty, arg.buyerCommittedFunding,
+    );
+    const sellerNext = this.remainder(
+      arg.sellerAllocationCid, base, qty,
+      qty >= sell.remainingQty, arg.sellerCommittedFunding,
+    );
+    const buyerNextAllocationCid = this.settle(
+      arg.buyerAllocationCid, one(quote, quoteAmount), one(base, qty), buyerNext,
+    );
+    const sellerNextAllocationCid = this.settle(
+      arg.sellerAllocationCid, one(base, qty), one(quote, quoteAmount), sellerNext,
+    );
 
     const buyRemainderCid = this.roll(
-      arg.buyOrderCid, buy, qty, buyerResidual, buyerNextAllocationCid,
+      arg.buyOrderCid, buy, qty, buyerNextAllocationCid,
     );
     const sellRemainderCid = this.roll(
-      arg.sellOrderCid, sell, qty, sellerResidual, sellerNextAllocationCid,
+      arg.sellOrderCid, sell, qty, sellerNextAllocationCid,
     );
 
     const settledTradeCid = `#settled:${this.settledTrades.length + 1}`;
     this.settledTrades.push({
       contractId: settledTradeCid,
       operator: arg.operator,
-      admin: buy.admin,
+      admin: buy.order.admin,
       matchId: arg.matchId,
-      settledAt: "2026-01-01T12:00:00Z",
+      settledAt: SETTLED_AT,
       // Mirrors mkMatchTransferLegs: base delivery first, then quote payment.
       transferLegs: [
         {
@@ -168,14 +211,14 @@ export class MatchingLedger implements LedgerSubmitter {
           sender: { owner: arg.match.sellerAccount.owner },
           receiver: { owner: arg.match.buyerAccount.owner },
           amount: dec.formatDecimal(qty),
-          instrumentId: arg.match.baseInstrumentId,
+          instrumentId: base,
         },
         {
           transferLegId: "quote-payment",
           sender: { owner: arg.match.buyerAccount.owner },
           receiver: { owner: arg.match.sellerAccount.owner },
           amount: dec.formatDecimal(quoteAmount),
-          instrumentId: arg.match.quoteInstrumentId,
+          instrumentId: quote,
         },
       ],
     });
@@ -189,25 +232,80 @@ export class MatchingLedger implements LedgerSubmitter {
     };
   }
 
+  /**
+   * The next-iteration funding one side finalizes: the budget its allocation
+   * reserved, less this fill's spend. A caller that still declares the budget
+   * gets what it declared, right or wrong — the coverage check in `settle` is
+   * what rejects a declaration above the backing. A side the fill closes out
+   * reserves nothing, so its surplus is released.
+   */
+  private remainder(
+    allocationCid: string,
+    instrumentId: string,
+    spend: bigint,
+    closesOut: boolean,
+    declared: Record<string, string> | undefined,
+  ): Funding | null {
+    if (closesOut) return null;
+    const budget = declared
+      ? dec.parseDecimal(declared[instrumentId] ?? "0")
+      : (this.lockedBacking.get(allocationCid)?.get(instrumentId) ?? 0n);
+    const left = budget - spend;
+    return left > 0n ? one(instrumentId, left) : null;
+  }
+
+  /**
+   * Allocation_Settle for one side: per instrument the registry requires
+   * `sent + next <= locked + received`, then archives the allocation and
+   * re-locks exactly the next-iteration funding behind the one it mints.
+   */
+  private settle(
+    allocationCid: string,
+    sent: Funding,
+    received: Funding,
+    next: Funding | null,
+  ): string | null {
+    const locked = this.lockedBacking.get(allocationCid) ?? new Map<string, bigint>();
+    const needed = new Map(sent);
+    for (const [iid, amount] of next ?? []) {
+      needed.set(iid, (needed.get(iid) ?? 0n) + amount);
+    }
+    for (const [iid, amount] of needed) {
+      const available = (locked.get(iid) ?? 0n) + (received.get(iid) ?? 0n);
+      if (amount > available) {
+        throw new Error(
+          `legs + next-iteration funding exceed locked backing for ${iid}`,
+        );
+      }
+    }
+    this.consume(allocationCid);
+    return next === null ? null : this.mint(next);
+  }
+
   private roll(
     orderCid: string,
-    order: LiveOrderRow,
+    row: LiveOrderRow,
     filledQty: bigint,
-    residualFunding: bigint | null,
     nextAllocationCid: string | null,
   ): string | null {
     this.liveOrders.delete(orderCid);
-    const newRemaining = order.remainingQty - filledQty;
-    if (residualFunding === null && nextAllocationCid === null) return null;
-    if (residualFunding === null || nextAllocationCid === null) {
-      throw new Error("residual funding and rolled-forward allocation disagree");
-    }
+    if (nextAllocationCid === null) return null;
+    const newRemaining = row.remainingQty - filledQty;
     if (newRemaining <= 0n) {
       throw new Error("fully filled order must not roll funding forward");
     }
     const remainderCid = `#remainder:${this.nextOrder++}`;
     this.liveOrders.set(remainderCid, {
-      admin: order.admin,
+      order: {
+        ...row.order,
+        contractId: remainderCid as Order["contractId"],
+        remainingQty: dec.formatDecimal(newRemaining),
+        status: "PartiallyFilled",
+        allocationCid: nextAllocationCid as Order["allocationCid"],
+        // The remainder is created by the settling transaction, so it rests
+        // from now — behind anything that was already on the book.
+        ledgerCreatedAt: SETTLED_AT,
+      },
       remainingQty: newRemaining,
       allocationCid: nextAllocationCid,
     });
@@ -224,11 +322,13 @@ export class MatchingLedger implements LedgerSubmitter {
     if (!this.liveAllocations.delete(cid)) {
       throw new Error(`allocation is not live: ${cid}`);
     }
+    this.lockedBacking.delete(cid);
   }
 
-  private mint(): string {
+  private mint(funding: Funding): string {
     const cid = `#alloc:next:${this.nextAllocation++}`;
     this.liveAllocations.add(cid);
+    this.lockedBacking.set(cid, funding);
     return cid;
   }
 
@@ -241,7 +341,7 @@ export class MatchingLedger implements LedgerSubmitter {
       return this.settledTrades as unknown as T[];
     }
     if (f.templateId === "CantonDex.Dex.Order:Order") {
-      return this.orders as unknown as T[];
+      return [...this.liveOrders.values()].map((r) => r.order) as unknown as T[];
     }
     return [];
   }

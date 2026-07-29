@@ -10,7 +10,6 @@ import {
   recoverCreatedFundingRequest,
 } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
-import * as dec from "../pool/decimal.js";
 import type { Order, Party, V2Account, V2TransferLeg } from "../types.js";
 import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
 
@@ -77,9 +76,6 @@ interface OrderMatchExecuteResult {
 interface LiveOrder {
   cid: ContractId<"Order">;
   allocationCid: ContractId<"Allocation"> | null;
-  remainingQty: bigint;
-  /** Budget still locked behind the order, scaled. */
-  committed: bigint;
 }
 
 export interface OrderMatchInput {
@@ -299,25 +295,27 @@ export class OrderService {
     // remainder rolled forward to so the next match targets the live contract
     // and the live allocation, not the archived ones.
     const live = new Map<string, LiveOrder>();
-    const stateOf = (o: Order): LiveOrder => {
-      const carried = live.get(o.contractId);
-      if (carried) return carried;
-      const qty = dec.parseDecimal(o.remainingQty);
-      return {
+    // Orders a fill closed out. `matches` was computed against the book as it
+    // stood at the start of the run, so it can still pair a closed-out order
+    // with further counterparties; those submissions would name an archived
+    // contract id and abort.
+    const closed = new Set<string>();
+    const stateOf = (o: Order): LiveOrder =>
+      live.get(o.contractId) ?? {
         cid: o.contractId,
         allocationCid: o.allocationCid,
-        remainingQty: qty,
-        // What placement locked: quote for a bid, base for an ask.
-        committed:
-          o.side === "Bid" ? dec.mul(qty, dec.parseDecimal(o.limitPrice)) : qty,
       };
-    };
     const advance = (o: Order, next: LiveOrder | null): void => {
-      if (next) live.set(o.contractId, next);
-      else live.delete(o.contractId);
+      if (next) {
+        live.set(o.contractId, next);
+      } else {
+        live.delete(o.contractId);
+        closed.add(o.contractId);
+      }
     };
 
     for (const m of matches) {
+      if (closed.has(m.buy.contractId) || closed.has(m.sell.contractId)) continue;
       // Deterministic, replay-safe: derived from the matched order cids + the
       // cleared price/qty, NOT Date.now(), so a retry of the same match
       // collapses onto the cached submission rather than settling it twice.
@@ -328,19 +326,6 @@ export class OrderService {
         if (!buy.allocationCid || !sell.allocationCid) {
           throw new Error(`match ${matchId}: a matched order has no funding allocation`);
         }
-        // Each side's spend out of its locked budget: the buyer pays
-        // price * quantity, the seller delivers quantity. Computed at 10dp
-        // round-half-even through the BigInt decimal module so it agrees with
-        // the on-ledger Decimal multiply to the last digit. Never IEEE-754.
-        const qty = dec.parseDecimal(m.quantity);
-        const quoteSpend = dec.mul(dec.parseDecimal(m.price), qty);
-        // The choice rolls forward `committed - spend`. A side that fills
-        // completely is about to archive, so it must roll nothing forward:
-        // hand it exactly this fill's spend so the settle releases the rest of
-        // its locked budget. A buyer filling below their limit has such a
-        // surplus, and behind an archived order it has no release path.
-        const buyBudget = qty >= buy.remainingQty ? quoteSpend : buy.committed;
-        const sellBudget = qty >= sell.remainingQty ? qty : sell.committed;
         const acct = (owner: Party): V2Account => ({
           owner,
           provider: null,
@@ -373,13 +358,6 @@ export class OrderService {
                 sellOrderCid: sell.cid,
                 buyerAllocationCid: buy.allocationCid,
                 sellerAllocationCid: sell.allocationCid,
-                // Funding is a TextMap: instrument id -> locked amount.
-                buyerCommittedFunding: {
-                  [m.buy.quoteInstrumentId]: dec.formatDecimal(buyBudget),
-                },
-                sellerCommittedFunding: {
-                  [m.sell.baseInstrumentId]: dec.formatDecimal(sellBudget),
-                },
               },
               choice: "OrderMatchExecution_Execute",
               choiceArgument: {
@@ -395,23 +373,13 @@ export class OrderService {
         const buyRemainderCid = executed.buyRemainderCid ?? null;
         advance(
           m.buy,
-          buyRemainderCid && {
-            cid: buyRemainderCid,
-            allocationCid: buyNext,
-            remainingQty: buy.remainingQty - qty,
-            committed: buy.committed - quoteSpend,
-          },
+          buyRemainderCid && { cid: buyRemainderCid, allocationCid: buyNext },
         );
         const sellNext = executed.sellerNextAllocationCid ?? null;
         const sellRemainderCid = executed.sellRemainderCid ?? null;
         advance(
           m.sell,
-          sellRemainderCid && {
-            cid: sellRemainderCid,
-            allocationCid: sellNext,
-            remainingQty: sell.remainingQty - qty,
-            committed: sell.committed - qty,
-          },
+          sellRemainderCid && { cid: sellRemainderCid, allocationCid: sellNext },
         );
         out.push({
           buyCid: m.buy.contractId,

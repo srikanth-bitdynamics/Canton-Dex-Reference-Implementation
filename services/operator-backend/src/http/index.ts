@@ -1027,15 +1027,28 @@ async function routeRequest(
       return;
     }
     const pair = url.searchParams.get("pair");
+    const kindParam = url.searchParams.get("kind");
+    // The kinds the indexer records in `swaps`.
+    const SWAP_KINDS = ["swap", "add_liquidity", "remove_liquidity", "state_change"];
+    if (kindParam !== null && !SWAP_KINDS.includes(kindParam)) {
+      respondJson(res, 400, {
+        error: `unknown kind '${kindParam}'; allowed: ${SWAP_KINDS.join(", ")}`,
+      });
+      return;
+    }
+    // Default to swaps only: LP moves and pause/resume rotate the state too,
+    // and existing callers pass no kind and expect the trade feed alone.
+    const kind = kindParam ?? "swap";
     const limit = Math.min(
       parseInt(url.searchParams.get("limit") ?? "50", 10),
       500,
     );
-    // Swaps only: LP moves and pause/resume rotate the state too.
     const sql = pair
-      ? `SELECT * FROM swaps WHERE kind = 'swap' AND pair = ? ORDER BY ts DESC LIMIT ${limit}`
-      : `SELECT * FROM swaps WHERE kind = 'swap' ORDER BY ts DESC LIMIT ${limit}`;
-    const rows = (pair ? db.prepare(sql).all(pair) : db.prepare(sql).all()) as Array<{
+      ? `SELECT * FROM swaps WHERE kind = ? AND pair = ? ORDER BY ts DESC LIMIT ${limit}`
+      : `SELECT * FROM swaps WHERE kind = ? ORDER BY ts DESC LIMIT ${limit}`;
+    const rows = (pair
+      ? db.prepare(sql).all(kind, pair)
+      : db.prepare(sql).all(kind)) as Array<{
       ts: number;
       pair: string;
       baseDelta: string;

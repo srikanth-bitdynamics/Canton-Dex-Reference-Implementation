@@ -12,6 +12,9 @@ import {
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import type { Order, Party, V2Account, V2TransferLeg } from "../types.js";
 import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
+import { rootLogger } from "../lib/logger.js";
+
+const log = rootLogger.child({ component: "order" });
 
 export type { Match, BookLevel };
 
@@ -402,13 +405,23 @@ export class OrderService {
           sellRemainderCid,
         });
       } catch (e) {
+        const error = e instanceof Error ? e.message : String(e);
+        // Operator-side only. The public receipt gets the error-code token; the
+        // full text stays here for diagnosing why a discovered cross would not
+        // settle.
+        log.warn("match settlement failed", {
+          matchId,
+          buyCid: m.buy.contractId,
+          sellCid: m.sell.contractId,
+          error,
+        });
         out.push({
           buyCid: m.buy.contractId,
           sellCid: m.sell.contractId,
           quantity: m.quantity,
           price: m.price,
           matchId,
-          error: e instanceof Error ? e.message : String(e),
+          error,
         });
       }
     }

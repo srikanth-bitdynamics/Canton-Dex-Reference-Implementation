@@ -7,6 +7,41 @@ on:
     branches: [main]
 
 jobs:
+  commit-hygiene:
+    name: Commit messages
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commit messages
+        run: scripts/check-commit-hygiene.sh "origin/${{ github.base_ref }}"
+
+  daml:
+    name: Daml (build + upgrade compatibility)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Cache DPM and the pinned SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.dpm
+          key: dpm-${{ runner.os }}-${{ hashFiles('trading/daml.yaml') }}
+          restore-keys: dpm-${{ runner.os }}-
+      - name: Install DPM
+        run: |
+          curl -sSL https://get.digitalasset.com/install/install.sh | sh
+          echo "$HOME/.dpm/bin" >> "$GITHUB_PATH"
+      - name: Install the SDK pinned by trading/daml.yaml
+        run: dpm install "$(awk '/^sdk-version:/ {print $2; exit}' trading/daml.yaml)"
+      - name: Upgrade compatibility with the deployed version
+        run: scripts/check-upgrade-compat.sh
+
   backend:
     name: Backend (typecheck + tests)
     runs-on: ubuntu-latest

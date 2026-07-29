@@ -181,8 +181,8 @@ describe("OrderService.runMatching settlement", () => {
     // Nothing in the command declares a budget. The choice reads it off the
     // allocation, so no operator-side arithmetic can declare more than the
     // settle actually holds.
-    assert.equal(arg.buyerCommittedFunding, undefined);
-    assert.equal(arg.sellerCommittedFunding, undefined);
+    assert.deepEqual(arg.buyerCommittedFunding, {});
+    assert.deepEqual(arg.sellerCommittedFunding, {});
     // The bid's placement locked 3 @ 110; this fill cleared at 100, so 230 of
     // quote rolls on behind the remainder.
     const remainder = ledger.liveOrders.get(results[0]!.buyRemainderCid!)!;

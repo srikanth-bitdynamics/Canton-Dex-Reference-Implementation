@@ -162,6 +162,16 @@ template Order with
               cancelResult = Some result
               releasedHoldings = result.authorizerHoldingCids
 
+    -- Unused, retained for upgrade compatibility. A fill rolls its order
+    -- forward inside OrderMatchExecution_Execute; recording one separately
+    -- leaves the order bound to the allocation that settle already archived.
+    choice Order_RecordPartialFill : Optional (ContractId Order)
+      with
+        filledQty : Decimal
+        newAllocationCid : Optional (ContractId V2.Allocation)
+      controller operator
+      do abort "Order_RecordPartialFill is retired; use OrderMatchExecution_Execute"
+
 -- | Trader-observed request issued by the operator to fund a specific Order.
 -- The trader accepts (AllocationRequest_Accept, archiving self) and composes
 -- AllocationFactory_Allocate in the same transaction; the resulting cid is

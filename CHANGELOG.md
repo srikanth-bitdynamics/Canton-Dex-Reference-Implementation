@@ -26,6 +26,31 @@ earlier version execute the newer choice, and contract ids are preserved.
 
 ### Fixed
 
+- `canton-dex-trading` 0.1.3 → 0.1.4. Settlement legs are now scoped per
+  registry admin, and the reference registry enforces the standard's
+  allocation-to-leg coverage. `MatchedTrade_Settle` used to hand every
+  per-admin batch the trade's full leg list; the Token Standard requires a
+  batch's allocations to cover its own legs exactly, so any trade whose legs
+  span two registries would abort against a registry using the standard's
+  default settle. `SettlementBatchV2` now carries the admin's own leg subset,
+  as `Optional [TransferLeg]` so the record stays upgradeable; the settle
+  rejects `None` rather than falling back to the full list.
+  Separately, `Registry.V2`'s `SettlementFactory_SettleBatch` never read
+  `transferLegs` at all, which is why the mismatch stayed invisible: it now
+  rejects missing and superfluous allocation authorizations, duplicate leg
+  ids, non-positive leg amounts, and allocations belonging to another admin,
+  alongside the per-instrument conservation check it already ran.
+- `canton-dex-trading` 0.1.3 → 0.1.4. 0.1.3 could not be uploaded over the
+  deployed 0.1.1: smart upgrading only permits additions, and 0.1.3 had added
+  non-`Optional` fields to `PoolLiquidityRules_SettleAddResult` and
+  `OrderMatch_ExecuteResult`, dropped `buyerCommittedFunding` /
+  `sellerCommittedFunding` from `OrderMatchExecution`, and dropped the
+  `Order_RecordPartialFill` choice. The added result fields are now `Optional`,
+  and the dropped field and choice are back with their original types, unused.
+  The match budget still comes from each side's own allocation, never from the
+  restored fields. CI now runs the same check the participant does, so an
+  incompatible package fails the PR instead of the upload.
+
 - `canton-dex-trading` 0.1.2 → 0.1.3. An off-ratio add-liquidity deposit no
   longer donates its excess to the pool. LP tokens are minted against the
   limiting side, but both legs used to enter the reserves in full, so the

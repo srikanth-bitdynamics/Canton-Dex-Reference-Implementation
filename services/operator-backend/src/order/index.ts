@@ -375,6 +375,11 @@ export class OrderService {
                 sellOrderCid: sell.cid,
                 buyerAllocationCid: buy.allocationCid,
                 sellerAllocationCid: sell.allocationCid,
+                // Ignored by the choice, retained for upgrade compatibility.
+                // The budget is read off each side's own allocation, so the
+                // operator declares nothing here.
+                buyerCommittedFunding: {},
+                sellerCommittedFunding: {},
               },
               choice: "OrderMatchExecution_Execute",
               choiceArgument: {

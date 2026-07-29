@@ -16,7 +16,8 @@ module CantonDex.Tests.RealRegistryDvpTests where
 import DA.Assert
 import DA.Foldable (foldMap)
 import DA.List (head)
-import DA.Optional (isNone)
+import DA.Map qualified as Map
+import DA.Optional (fromSome, isNone)
 import DA.Text qualified as T
 import DA.TextMap qualified as TextMap
 import Daml.Script
@@ -35,6 +36,7 @@ import Splice.Testing.Tokens.TestTokenV2.Holding qualified as TTHolding
 import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState qualified as PS
 import CantonDex.Dex.PoolModel qualified as PM
+import CantonDex.Dex.MatchedTrade qualified as MT
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
 import CantonDex.Dex.PoolRules qualified as PRules
 import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
@@ -57,6 +59,23 @@ unlockedAmountsFor : Party -> Text -> Script [Decimal]
 unlockedAmountsFor owner instrId = do
   hs <- queryInterface @V2.Holding owner
   pure [ v.amount | (_, Some v) <- hs, v.instrumentId.id == instrId, v.account.owner == Some owner, isNone v.lock ]
+
+-- Author an allocation through our own registry (the LP side), which needs no
+-- choice context. readAs the registrar so a party outside the registry's own
+-- user list can still read the factory contract; production serves it as a
+-- disclosure.
+lpAlloc
+  : Fixture -> Party -> V2.SettlementInfo -> V2.AllocationSpecification
+  -> [ContractId V2.Holding] -> Time -> Script (ContractId V2.Allocation)
+lpAlloc fx party settlement spec inputHoldingCids now = do
+  res <- submit (actAs party <> readAs [fx.lpRegistrar]) $
+    exerciseCmd (toInterfaceContractId fx.lpReg : ContractId V2.AllocationFactory)
+      V2.AllocationFactory_Allocate with
+        settlement; allocation = spec; requestedAt = now
+        inputHoldingCids; actors = [party]; extraArgs = emptyExtraArgs
+  case res.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "lpAlloc: allocation must complete"
 
 -- Author an allocation through the TestTokenV2 registry: enrich the factory
 -- choice (real context + TokenRules disclosure) and submit it as `party`.
@@ -321,8 +340,8 @@ testRealRegistryDvpAddRefundsOffRatioExcess = do
       requestedAt = now
       poolAdminExtraArgs = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
       lpRegistrarExtraArgs = emptyExtraArgs
-  res.baseAdded === 5.0
-  res.quoteAdded === 100000.0
+  res.baseAdded === Some 5.0
+  res.quoteAdded === Some 100000.0
   Some state <- queryContractId fx.operator res.poolStateCid
   state.reserves.baseAmount === 15.0
   state.reserves.quoteAmount === 300000.0
@@ -454,3 +473,114 @@ testRealRegistryDvpSwapSettles = do
   -- Bob received base (X) out as a real TestTokenV2 holding.
   bobBase <- holdingCidsFor bob "X"
   assertMsg "bob received base (X) from the swap" (not (null bobBase))
+
+-- A matched trade whose two legs live under DIFFERENT registries: the X leg
+-- under the upstream TestTokenV2 registry, the LP leg under ours. The Token
+-- Standard requires a batch's allocations to cover exactly the legs the batch
+-- is handed, so each admin's batch must carry only its own admin's legs.
+data TwoAdminTrade = TwoAdminTrade with
+    fx : Fixture
+    tradeCid : ContractId MT.MatchedTrade
+    xLeg : V2.TransferLeg
+    lpLeg : V2.TransferLeg
+    ttAllocations : [V2.FinalizedAllocation]
+    lpAllocations : [V2.FinalizedAllocation]
+    settleDisclosures : Disclosures'
+
+-- alice sends 1 X (TestTokenV2) against bob's 5 LP (our registry), with all
+-- four allocations authored against the trade's own settlement info. The
+-- trade's single `admin` field only feeds MatchedTrade_RequestAllocations,
+-- which a two-registry trade cannot use.
+setupTwoAdminTrade : Party -> Party -> Script TwoAdminTrade
+setupTwoAdminTrade alice bob = do
+  fx <- setup alice
+  now <- getTime
+  let aliceAcct = Utils.basicAccount alice
+      bobAcct = Utils.basicAccount bob
+      xLeg = V2.TransferLeg with
+        transferLegId = "trade-x"; sender = aliceAcct; receiver = bobAcct
+        amount = 1.0; instrumentId = "X"; meta = emptyMetadata
+      lpLeg = V2.TransferLeg with
+        transferLegId = "trade-lp"; sender = bobAcct; receiver = aliceAcct
+        amount = 5.0; instrumentId = lpId; meta = emptyMetadata
+  bobLpHolding <- submit (actAs [fx.lpRegistrar, bob]) $ createCmd RegV2.Holding with
+    admin = fx.lpRegistrar; owner = bob; instrumentId = lpId; amount = 5.0; locked = False
+  tradeCid <- submit fx.operator $ createCmd MT.MatchedTrade with
+    venue = fx.operator; admin = fx.ttAdmin
+    transferLegs = [xLeg, lpLeg]
+    settlementDeadline = None; policyReceipt = None
+  trade <- fromSome <$> queryContractId fx.operator tradeCid
+  let settlement = MT.mkTradeSettlementInfo tradeCid trade
+  aliceX <- holdingCidsFor alice "X"
+  xSender <- ttAlloc fx.ttReg alice settlement (mkSpec fx.ttAdmin aliceAcct [xLeg] False) aliceX now
+  xReceiver <- ttAlloc fx.ttReg bob settlement (mkSpec fx.ttAdmin bobAcct [xLeg] False) [] now
+  lpSender <- lpAlloc fx bob settlement (mkSpec fx.lpRegistrar bobAcct [lpLeg] False)
+    [toInterfaceContractId bobLpHolding] now
+  lpReceiver <- lpAlloc fx alice settlement (mkSpec fx.lpRegistrar aliceAcct [lpLeg] False) [] now
+  disc <- ttSettleDisclosures fx
+  pure TwoAdminTrade with
+    fx; tradeCid; xLeg; lpLeg
+    ttAllocations = map Utils.finalAllocation [xSender, xReceiver]
+    lpAllocations = map Utils.finalAllocation [lpSender, lpReceiver]
+    settleDisclosures = disc
+
+-- The venue's settle, parameterized on what each batch is told to settle.
+mkTwoAdminSettle
+  : TwoAdminTrade -> Optional [V2.TransferLeg] -> Optional [V2.TransferLeg]
+  -> Commands MT.MatchedTrade_SettleResult
+mkTwoAdminSettle t ttLegs lpLegs =
+  exerciseCmd t.tradeCid MT.MatchedTrade_Settle with
+    batchesByAdmin = Map.fromList
+      [ (t.fx.ttAdmin, MT.SettlementBatchV2 with
+          transferLegs = ttLegs
+          allocations = t.ttAllocations
+          factoryCid = t.fx.ttSettleCid
+          extraArgs = ExtraArgs with context = t.fx.ttContext; meta = emptyMetadata)
+      , (t.fx.lpRegistrar, MT.SettlementBatchV2 with
+          transferLegs = lpLegs
+          allocations = t.lpAllocations
+          factoryCid = coerceContractId t.fx.lpReg
+          extraArgs = emptyExtraArgs)
+      ]
+    allocationRequests = []
+    dexPairCid = None
+
+-- readAs the LP registrar: our Holding is `signatory admin, owner`, so the
+-- venue is not a stakeholder of the LP holding the settle archives.
+twoAdminSubmitOptions : TwoAdminTrade -> SubmitOptions
+twoAdminSubmitOptions t =
+  actAs t.fx.operator <> readAs [t.fx.lpRegistrar] <> discloseMany' t.settleDisclosures
+
+-- Handed the whole trade, a batch carries legs its own allocations do not
+-- authorize and the registry rejects it; handed no legs at all, the settle
+-- refuses rather than falling back to the trade's full list; handed its own
+-- admin's legs, each batch covers them exactly and the trade settles across
+-- both registries in one transaction. The rejected attempts commit nothing, so
+-- the same allocations settle in the last phase.
+testMatchedTradeSettlesPerAdminLegSubsets : Script ()
+testMatchedTradeSettlesPerAdminLegSubsets = do
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  t <- setupTwoAdminTrade alice bob
+  let allLegs = Some [t.xLeg, t.lpLeg]
+  rejected <- trySubmit (twoAdminSubmitOptions t) $ mkTwoAdminSettle t allLegs allLegs
+  case rejected of
+    Right _ -> abort "a batch given the full leg list must be rejected"
+    Left e ->
+      assertMsg ("expected missing authorizations, got: " <> show e)
+        (T.isInfixOf "authorizations" (show e))
+
+  omitted <- trySubmit (twoAdminSubmitOptions t) $ mkTwoAdminSettle t None None
+  case omitted of
+    Right _ -> abort "a batch with no transfer legs must be rejected"
+    Left e ->
+      assertMsg ("expected a required-legs abort, got: " <> show e)
+        (T.isInfixOf "per-admin transfer legs are required" (show e))
+
+  res <- submit (twoAdminSubmitOptions t) $
+    mkTwoAdminSettle t (Some [t.xLeg]) (Some [t.lpLeg])
+  Map.size res.resultsByAdmin === 2
+  bobX <- holdingCidsFor bob "X"
+  assertMsg "bob received the X leg" (not (null bobX))
+  aliceHoldings <- query @RegV2.Holding alice
+  length (filter (\(_, h) -> h.instrumentId == lpId && h.owner == alice && not h.locked) aliceHoldings) === 1

@@ -11,6 +11,8 @@
 --   * surplus backing returns to the authorizer as an unlocked holding;
 --   * the SettlementFactory batch rejects per-instrument sender/receiver
 --     imbalance (an unbacked receiver leg with no matching sender);
+--   * the SettlementFactory batch rejects allocations that do not cover its
+--     legs exactly, whether an authorization is missing or superfluous;
 --   * an order-book fill stays inside that backing across iterations, where
 --     the face notional of the unfilled quantity does not.
 module CantonDex.Tests.RegistryConservationTests where
@@ -275,6 +277,40 @@ testBatchRejectsUnbalancedReceiverLeg = do
   submitMustFail fx.admin $ settleBatchCmd fx [leg]
     [ Utils.finalAllocation bobAlloc ]
 
+-- 6b. Allocation-to-leg coverage: the batch's allocations must authorize
+--     exactly the legs the batch settles ------------------------------------
+--
+-- Both batches below conserve per instrument, so the conservation check passes
+-- and the failure isolates the coverage check.
+
+testBatchRejectsSuperfluousAuthorization : Script ()
+testBatchRejectsSuperfluousAuthorization = do
+  fx <- setup
+  aliceAlloc <- prefunded fx fx.alice "X" 100.0
+  let settled = mkLeg "covered-1" fx.alice fx.bob 40.0 "X"
+      unlisted = mkLeg "unlisted-1" fx.alice fx.bob 10.0 "X"
+  bobAlloc <- sidedAlloc fx fx.bob [settled, unlisted]
+  -- The allocations authorize both legs; the batch only settles one of them.
+  submitMustFail fx.admin $ settleBatchCmd fx [settled]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [settled, unlisted]) None
+    , Utils.finalAllocation bobAlloc
+    ]
+
+testBatchRejectsMissingAuthorization : Script ()
+testBatchRejectsMissingAuthorization = do
+  fx <- setup
+  aliceAlloc <- prefunded fx fx.alice "X" 100.0
+  let authorized = mkLeg "covered-1" fx.alice fx.bob 40.0 "X"
+      unauthorized = mkLeg "unauthorized-1" fx.alice fx.bob 10.0 "X"
+  bobAlloc <- sidedAlloc fx fx.bob [authorized]
+  -- The batch settles a leg no allocation in it authorizes.
+  submitMustFail fx.admin $ settleBatchCmd fx [authorized, unauthorized]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [authorized]) None
+    , Utils.finalAllocation bobAlloc
+    ]
+
 -- 7. Allocation_Settle rejects expired allocation deadlines -----------------
 
 testExpiredAllocationSettleRejected : Script ()
@@ -431,12 +467,14 @@ restOrder operator admin trader factoryCid side limitPrice quantity ref = do
 
 -- The settle archives holdings the operator cannot see; production supplies
 -- them as disclosures from the registry's choice context, a script as readAs.
-execMatch
-  : Party -> Party -> ContractId V2.SettlementFactory -> Text -> Party -> Party
+execMatchDeclaring
+  : Utils.Funding -> Utils.Funding
+  -> Party -> Party -> ContractId V2.SettlementFactory -> Text -> Party -> Party
   -> ContractId Order.Order -> ContractId Order.Order
   -> ContractId V2.Allocation -> ContractId V2.Allocation
   -> Decimal -> Decimal -> Script OME.OrderMatch_ExecuteResult
-execMatch operator admin settleCid matchId buyer seller
+execMatchDeclaring buyerCommittedFunding sellerCommittedFunding
+          operator admin settleCid matchId buyer seller
           buyOrderCid sellOrderCid buyerAllocationCid sellerAllocationCid
           fillQty fillPrice = do
   execCid <- submit operator $ createCmd OME.OrderMatchExecution with
@@ -448,9 +486,17 @@ execMatch operator admin settleCid matchId buyer seller
       fillQty; fillPrice
     buyOrderCid; sellOrderCid
     buyerAllocationCid; sellerAllocationCid
+    buyerCommittedFunding; sellerCommittedFunding
   submit (actAs [operator] <> readAs [admin]) $
     exerciseCmd execCid OME.OrderMatchExecution_Execute with
       factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+execMatch
+  : Party -> Party -> ContractId V2.SettlementFactory -> Text -> Party -> Party
+  -> ContractId Order.Order -> ContractId Order.Order
+  -> ContractId V2.Allocation -> ContractId V2.Allocation
+  -> Decimal -> Decimal -> Script OME.OrderMatch_ExecuteResult
+execMatch = execMatchDeclaring TextMap.empty TextMap.empty
 
 testPartiallyFilledOrderStillFills : Script ()
 testPartiallyFilledOrderStillFills = do
@@ -495,3 +541,45 @@ testPartiallyFilledOrderStillFills = do
   bid3.remainingQty === 5.3989002800
   stillLocked <- lockedOf buyer "USDC"
   stillLocked === [45.8234126980]
+
+-- 8. The operator cannot declare the match budget --------------------------
+--
+-- OrderMatchExecution carries committed-funding fields the choice must not
+-- read: the operator authors that contract alone, so a budget taken from it
+-- is a budget the operator chose. The budget comes from each side's own
+-- allocation instead. Declaring one far above the locked backing changes
+-- nothing here; were it read, the roll-forward would exceed the backing and
+-- the registry's coverage check would reject the settle outright.
+testDeclaredMatchFundingIsIgnored : Script ()
+testDeclaredMatchFundingIsIgnored = do
+  operator <- allocateParty "declared-operator"
+  admin <- allocateParty "declared-admin"
+  buyer <- allocateParty "declared-buyer"
+  seller <- allocateParty "declared-seller"
+  reg <- submit admin $ createCmd RegV2.Registry with
+    admin; users = [operator, buyer, seller]
+  let factoryCid : ContractId V2.AllocationFactory = toInterfaceContractId reg
+      settleCid : ContractId V2.SettlementFactory = toInterfaceContractId reg
+      limitPrice = 8.4875456707
+      bidQty = 10.5993913768
+      fillQty = 4.2004910968
+
+  (bidCid, bidAllocCid) <- restOrder operator admin buyer factoryCid
+    Order.Bid limitPrice bidQty "bid-1"
+  (askCid, askAllocCid) <- restOrder operator admin seller factoryCid
+    Order.Ask limitPrice fillQty "ask-1"
+
+  res <- execMatchDeclaring
+    (TextMap.fromList [("USDC", 1000000.0)])
+    (TextMap.fromList [("BTC", 1000000.0)])
+    operator admin settleCid "m1" buyer seller
+    bidCid askCid bidAllocCid askAllocCid fillQty limitPrice
+
+  -- Identical to the honest run above: the residual is the allocation's own
+  -- budget minus this fill's spend, not the declared million.
+  Some bid2 <- queryContractId operator (fromSome res.buyRemainderCid)
+  bid2.remainingQty === 6.3989002800
+  lockedQuote <- lockedOf buyer "USDC"
+  lockedQuote === [54.3109583687]
+  unlockedQuote <- unlockedOf buyer "USDC"
+  unlockedQuote === []

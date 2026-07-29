@@ -1,7 +1,8 @@
 -- | Order matching settlement: both orders are already prefunded (no legs, just
 -- nextIterationFunding); the matcher builds FinalizedAllocations carrying the
 -- concrete leg sides + residual funding, and one settle batch consumes them.
--- Next-iteration allocations are stored on partially-filled orders or cancelled.
+-- The same transaction rolls both orders forward onto the allocations the
+-- settle minted and writes the settled-trade record.
 module CantonDex.Dex.OrderMatchExecution where
 
 import DA.TextMap qualified as TextMap
@@ -10,6 +11,7 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
+import CantonDex.Dex.MatchedTrade qualified as MT
 import CantonDex.Dex.Order (Order, OrderStatus (..), Side (..))
 import CantonDex.Trading.Utils qualified as Utils
 
@@ -26,6 +28,11 @@ data OrderMatch_ExecuteResult = OrderMatch_ExecuteResult with
     settleResult : V2.SettlementFactory_SettleBatchResult
     buyerNextAllocationCid : Optional (ContractId V2.Allocation)
     sellerNextAllocationCid : Optional (ContractId V2.Allocation)
+    buyRemainderCid : Optional (ContractId Order)
+      -- ^ Order the bid's unfilled quantity rolled forward to; None when the
+      --   fill closed it out.
+    sellRemainderCid : Optional (ContractId Order)
+    settledTradeCid : ContractId MT.SettledTrade
   deriving (Eq, Show)
 
 mkOrderMatchRefId : Text -> Text
@@ -50,6 +57,13 @@ mkMatchTransferLegs match =
           meta = emptyMetadata
       ]
 
+-- | The budget an allocation reserved for its next iteration, as the
+-- allocation itself records it. This is the amount the registry actually
+-- locked, so a remainder derived from it can never exceed the backing.
+allocationFunding : V2.Allocation -> Utils.Funding
+allocationFunding allocation =
+  optional TextMap.empty identity (view allocation).allocation.nextIterationFunding
+
 -- | Remainder funding for one side: the committed budget the side's
 -- allocation locked, minus what this fill spends out of it (the side's
 -- sender-side outflows). Non-positive entries are dropped. `None` (no
@@ -69,6 +83,39 @@ remainderFunding authorizer committedBudget transferLegs =
        Some f | null (TextMap.toList f) -> None
        other -> other
 
+-- | Roll one side of the match forward in the settling transaction: archive the
+-- filled order and, where quantity remains, recreate it bound to the allocation
+-- the settle rolled its residual budget into.
+--
+-- `residualFunding` is what this fill left of the side's committed budget. None
+-- means the budget is spent: the residual quantity has nothing behind it and no
+-- later fill could back it, so the order is closed out rather than created
+-- unbacked (an unbacked order is matchable, and every match against it aborts).
+-- The funds are not stranded — the budget genuinely went into this fill. The
+-- mirror case, budget left behind an order this fill closes, has no release
+-- path at all and is rejected.
+rollOrderForward
+  : ContractId Order
+  -> Order
+  -> Decimal
+  -> Optional Utils.Funding
+  -> Optional (ContractId V2.Allocation)
+  -> Update (Optional (ContractId Order))
+rollOrderForward orderCid order filledQty residualFunding nextAllocationCid = do
+  archive orderCid
+  let newRemaining = order.remainingQty - filledQty
+  case (residualFunding, nextAllocationCid) of
+    (None, None) -> pure None
+    (Some _, Some allocCid)
+      | newRemaining > 0.0 -> do
+          cid <- create order with
+            remainingQty = newRemaining
+            status = OS_PartiallyFilled
+            allocationCid = Some allocCid
+          pure (Some cid)
+      | otherwise -> abort "fully filled order must not roll funding forward"
+    _ -> abort "residual funding and rolled-forward allocation disagree"
+
 template OrderMatchExecution with
     operator : Party
     matchId : Text
@@ -81,13 +128,6 @@ template OrderMatchExecution with
       -- ^ The resting ask being filled.
     buyerAllocationCid : ContractId V2.Allocation
     sellerAllocationCid : ContractId V2.Allocation
-    buyerCommittedFunding : Utils.Funding
-      -- ^ The committed next-iteration budget the buyer's allocation locked
-      --   (e.g. quote = remainingQty * limitPrice). The remainder rolled
-      --   forward after this fill is this minus the buyer's spend.
-    sellerCommittedFunding : Utils.Funding
-      -- ^ The committed budget the seller's allocation locked (e.g. base =
-      --   remainingQty). Remainder = this minus the seller's spend.
   where
     signatory operator
 
@@ -136,6 +176,11 @@ template OrderMatchExecution with
         assertMsg "seller account is not the ask trader"
           (match.sellerAccount.owner == Some sellOrder.trader)
 
+        -- Instrument ids are only meaningful under a registry admin, so two
+        -- orders naming the same id under different admins are different
+        -- instruments.
+        assertMsg "registry admin mismatch" (buyOrder.admin == sellOrder.admin)
+
         -- Instruments must agree across both orders and the match.
         assertMsg "base instrument mismatch"
           (buyOrder.baseInstrumentId == sellOrder.baseInstrumentId
@@ -167,12 +212,24 @@ template OrderMatchExecution with
               cid = None
               meta = emptyMetadata
 
+        buyerAllocation <- fetch buyerAllocationCid
+        sellerAllocation <- fetch sellerAllocationCid
+
         -- Each side authorizes both legs; legsToSides projects each account's
-        -- own sides. The next-iteration funding the registry rolls forward is
-        -- the explicit remainder = committed budget minus this fill's spend.
-        -- `None` (empty remainder) means the side fully settles.
-        let buyerFunding = remainderFunding match.buyerAccount buyerCommittedFunding transferLegs
-            sellerFunding = remainderFunding match.sellerAccount sellerCommittedFunding transferLegs
+        -- own sides. The budget the remainder comes out of is the allocation's
+        -- own, never a caller-supplied one: a budget recomputed from the
+        -- order's face terms can round an ulp above the residual the previous
+        -- fill rolled forward, and every later settle of that allocation then
+        -- aborts on the registry's coverage check. A side the fill closes out
+        -- rolls nothing forward, so its surplus is released rather than locked
+        -- behind an order that is gone.
+        let sideFunding : Order -> V2.Allocation -> V2.Account -> Optional Utils.Funding
+            sideFunding order allocation account
+              | match.fillQty >= order.remainingQty = None
+              | otherwise =
+                  remainderFunding account (allocationFunding allocation) transferLegs
+            buyerFunding = sideFunding buyOrder buyerAllocation match.buyerAccount
+            sellerFunding = sideFunding sellOrder sellerAllocation match.sellerAccount
             buyerFinalized = Utils.mkFinalizedAllocation
               buyerAllocationCid
               (Utils.legsToSides match.buyerAccount transferLegs)
@@ -197,10 +254,30 @@ template OrderMatchExecution with
               (_ :: cid :: _) -> cid
               _ -> None
 
+        -- Both orders roll forward here, not in a follow-up submission: the
+        -- settle has archived the allocations they are bound to, so an order
+        -- left behind by a failure between the two would be uncancellable
+        -- (Order_Cancel exercises the archived cid) and unfillable for ever.
+        buyRemainderCid <- rollOrderForward
+          buyOrderCid buyOrder match.fillQty buyerFunding buyerNext
+        sellRemainderCid <- rollOrderForward
+          sellOrderCid sellOrder match.fillQty sellerFunding sellerNext
+
+        now <- getTime
+        settledTradeCid <- create MT.SettledTrade with
+          operator
+          admin = buyOrder.admin
+          matchId
+          transferLegs
+          settledAt = now
+
         pure OrderMatch_ExecuteResult with
           settleResult
           buyerNextAllocationCid = buyerNext
           sellerNextAllocationCid = sellerNext
+          buyRemainderCid
+          sellRemainderCid
+          settledTradeCid
 
     choice OrderMatchExecution_Abort : ()
       controller operator

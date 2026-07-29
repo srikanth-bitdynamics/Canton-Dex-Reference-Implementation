@@ -103,7 +103,7 @@ PolicyReceipt               on-chain record of operator ranking policy at accept
 Registry.V2.*               reference registry implementing Token Standard V2 interfaces
 ```
 
-The Daml package is `canton-dex-trading` (current version `v0.1.2`).
+The Daml package is `canton-dex-trading` (current version `v0.1.3`).
 
 ## Off-chain layout
 
@@ -137,11 +137,12 @@ quantity, picking fill price) lives in operator code:
 5. Creates `OrderMatchExecution` referencing both allocations and the fill numbers.
 6. Exercises `OrderMatchExecution_Execute`, which finalizes each allocation with
    the concrete match leg-sides, calls `SettlementFactory_SettleBatch` on the
-   finalized batch, and returns a `nextIterationAllocationCid` per side if any
-   leftover remains.
-7. For the side with remainder, exercise `Order_RecordPartialFill` against the new
-   next-iteration allocation; a fully-filled side's allocation is archived by
-   settlement.
+   finalized batch, rolls each order onto the next-iteration allocation the
+   batch minted for its residual budget, and writes a `SettledTrade` record.
+
+Steps 5 and 6 are one `createAndExercise` submission, so the funds and the
+orders they back always move together: the settle archives both allocations,
+and an order left pointing at one could neither be cancelled nor filled again.
 
 The split is intentional: matchers change often, settlement primitives do not. A
 fork can rewrite the matcher without touching any Daml template.

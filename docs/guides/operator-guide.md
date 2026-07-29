@@ -160,9 +160,17 @@ curl -X POST http://localhost:8080/v1/orders/match \
   -d '{"base":"BTC","quote":"USDC"}'
 ```
 
-This returns the list of matches. The operator is responsible for
-driving each match through the TradingAppV2-style allocation-request and
-per-admin settlement pattern.
+Each crossing pair is settled atomically as it is found: one
+`OrderMatchExecution_Execute` re-checks the fill against both orders'
+own terms, runs the settle batch that consumes both funding
+allocations, rolls each order onto the allocation that batch minted,
+and records the fill as a `SettledTrade` for `GET /v1/trades`. The
+response lists the matches, each with the order its remainder rolled
+forward to (`null` when that side filled completely).
+
+A fill whose spend exhausts the side's committed budget closes that
+order out even when quantity remains: the residual quantity has no
+collateral behind it and no later fill could back it.
 
 Production deployments typically run matching on a tick (every 1-5
 seconds) plus on order-placement events.

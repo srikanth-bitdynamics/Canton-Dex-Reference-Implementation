@@ -31,6 +31,10 @@ data PoolLiquidityRules_SettleAddResult = PoolLiquidityRules_SettleAddResult wit
     quoteSliceCid : ContractId PSlice.PoolSlice
     lpPolicyCid : ContractId LP.LPTokenPolicy
     lpTokensMinted : Decimal
+    baseAdded : Decimal
+      -- ^ The ratio-matched part of the deposit that entered the reserves;
+      --   the rest of the requested amount was refunded to the provider.
+    quoteAdded : Decimal
   deriving (Eq, Show)
 
 data PoolLiquidityRules_SettleRemoveResult = PoolLiquidityRules_SettleRemoveResult with
@@ -164,6 +168,13 @@ dvpSpec admin authorizer legs committed = V2.AllocationSpecification with
   settlementDeadline = None; nextIterationFunding = None; committed
   meta = emptyMetadata
 
+-- A deposit leg is committed, but the settle takes only the ratio-matched part
+-- of it and refunds the rest in the same batch. V2 permits the executor to add
+-- that refund side only on an iterated-enabled allocation, hence Some(empty).
+depositSpec : Party -> V2.Account -> V2.TransferLeg -> V2.AllocationSpecification
+depositSpec admin authorizer leg =
+  (dvpSpec admin authorizer [leg] True) with nextIterationFunding = Some TextMap.empty
+
 -- The three add specs the LP authors.
 addLiquiditySpecs
   : Pool -> Party -> Party -> Decimal -> Decimal -> Decimal -> [V2.AllocationSpecification]
@@ -173,8 +184,8 @@ addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount =
       baseLeg = dvpLeg "lp-base-deposit" lpAcct opAcct baseAmount pool.baseInstrumentId
       quoteLeg = dvpLeg "lp-quote-deposit" lpAcct opAcct quoteAmount pool.quoteInstrumentId
       mintLeg = Lp.lpMintLeg pool.lpRegistrar lpAcct pool.lpInstrumentId.id lpAmount
-  in [ dvpSpec pool.admin lpAcct [baseLeg] True
-     , dvpSpec pool.admin lpAcct [quoteLeg] True
+  in [ depositSpec pool.admin lpAcct baseLeg
+     , depositSpec pool.admin lpAcct quoteLeg
      , Lp.mintReceiptSpec pool.lpRegistrar lpAcct mintLeg ]
 
 -- The three remove specs the holder authors.
@@ -242,7 +253,9 @@ template PoolLiquidityRules with
 
     -- DvP add: the LP's committed deposits + LP-mint receipt settle
     -- atomically; the operator's receiver allocations roll forward into the
-    -- two new slices; the registrar mints LP tokens to the LP.
+    -- two new slices; the registrar mints LP tokens to the LP. Only the
+    -- ratio-matched part of the deposit reaches the slices — an off-ratio
+    -- excess buys no LP tokens and is refunded to the LP in the same batch.
     nonconsuming choice PoolLiquidityRules_SettleAddLiquidity : PoolLiquidityRules_SettleAddResult
       with
         expectedPoolId : PoolId
@@ -312,16 +325,36 @@ template PoolLiquidityRules with
         assertMsg "LP receipt shortfall beyond dust tolerance"
           (fairLp - lpAmount <= lpMintDustTolerance)
 
-        let baseDepositLeg = V2.TransferLeg with
+        -- Only the ratio-matched part backs the minted LP tokens, so only that
+        -- much may enter the pool; the long side's excess is refunded below.
+        let (baseUsed, quoteUsed) =
+              if state.totalLpSupply == 0.0
+                then (baseAmount, quoteAmount)
+                else PM.ratioMatchedDeposit state.reserves baseAmount quoteAmount
+            baseRefund = baseAmount - baseUsed
+            quoteRefund = quoteAmount - quoteUsed
+        assertMsg "Ratio-matched deposit must be positive on both sides"
+          (baseUsed > 0.0 && quoteUsed > 0.0)
+
+        let operatorAcct = Utils.basicAccount operator
+            baseDepositLeg = V2.TransferLeg with
               transferLegId = "lp-base-deposit"
-              sender = recipientAcct; receiver = Utils.basicAccount operator
+              sender = recipientAcct; receiver = operatorAcct
               amount = baseAmount; instrumentId = pool.baseInstrumentId
               meta = emptyMetadata
             quoteDepositLeg = V2.TransferLeg with
               transferLegId = "lp-quote-deposit"
-              sender = recipientAcct; receiver = Utils.basicAccount operator
+              sender = recipientAcct; receiver = operatorAcct
               amount = quoteAmount; instrumentId = pool.quoteInstrumentId
               meta = emptyMetadata
+            refundLeg legId instrumentId amount = V2.TransferLeg with
+              transferLegId = legId
+              sender = operatorAcct; receiver = recipientAcct
+              amount; instrumentId; meta = emptyMetadata
+            baseRefundLegs =
+              [refundLeg "lp-base-refund" pool.baseInstrumentId baseRefund | baseRefund > 0.0]
+            quoteRefundLegs =
+              [refundLeg "lp-quote-refund" pool.quoteInstrumentId quoteRefund | quoteRefund > 0.0]
             lpMintLeg = Lp.lpMintLeg lpRegistrar recipientAcct pool.lpInstrumentId.id lpAmount
 
         opBaseRecv <- exercise baseFactoryCid
@@ -341,14 +374,18 @@ template PoolLiquidityRules with
         -- forward with nextIterationFunding on the finalized step.
         bqResult <- exercise baseQuoteSettleCid V2.SettlementFactory_SettleBatch with
           settlement
-          transferLegs = [baseDepositLeg, quoteDepositLeg]
+          transferLegs = [baseDepositLeg, quoteDepositLeg] ++ baseRefundLegs ++ quoteRefundLegs
           allocations =
-            [ Utils.finalAllocation lpBaseDepositCid
-            , Utils.finalAllocation lpQuoteDepositCid
-            , Utils.mkFinalizedAllocation opBaseRecv []
-                (Some (TextMap.fromList [(pool.baseInstrumentId, baseAmount)]))
-            , Utils.mkFinalizedAllocation opQuoteRecv []
-                (Some (TextMap.fromList [(pool.quoteInstrumentId, quoteAmount)]))
+            [ Utils.mkFinalizedAllocation lpBaseDepositCid
+                (Utils.legsToSides recipientAcct baseRefundLegs) None
+            , Utils.mkFinalizedAllocation lpQuoteDepositCid
+                (Utils.legsToSides recipientAcct quoteRefundLegs) None
+            , Utils.mkFinalizedAllocation opBaseRecv
+                (Utils.legsToSides operatorAcct baseRefundLegs)
+                (Some (TextMap.fromList [(pool.baseInstrumentId, baseUsed)]))
+            , Utils.mkFinalizedAllocation opQuoteRecv
+                (Utils.legsToSides operatorAcct quoteRefundLegs)
+                (Some (TextMap.fromList [(pool.quoteInstrumentId, quoteUsed)]))
             ]
           actors = [operator]
           extraArgs = poolAdminExtraArgs
@@ -367,10 +404,10 @@ template PoolLiquidityRules with
 
         baseSliceCid <- create PSlice.PoolSlice with
           poolId = pool.poolId; operator; side = BaseSide
-          allocationCid = nextBaseAllocCid; amount = baseAmount
+          allocationCid = nextBaseAllocCid; amount = baseUsed
         quoteSliceCid <- create PSlice.PoolSlice with
           poolId = pool.poolId; operator; side = QuoteSide
-          allocationCid = nextQuoteAllocCid; amount = quoteAmount
+          allocationCid = nextQuoteAllocCid; amount = quoteUsed
 
         newPolicyCid <- exercise lpPolicyCid LP.LPTokenPolicy_RecordMint with amount = lpAmount
 
@@ -381,15 +418,15 @@ template PoolLiquidityRules with
         newBaseSlice <- fetch baseSliceCid
         newQuoteSlice <- fetch quoteSliceCid
         assertMsg "add: base reserve delta must equal created base slice amount"
-          (newBaseSlice.amount == baseAmount)
+          (newBaseSlice.amount == baseUsed)
         assertMsg "add: quote reserve delta must equal created quote slice amount"
-          (newQuoteSlice.amount == quoteAmount)
+          (newQuoteSlice.amount == quoteUsed)
         archive poolStateCid
         newStateCid <- create state with
           status = PS_Active
           reserves = PoolReserves with
-            baseAmount = state.reserves.baseAmount + baseAmount
-            quoteAmount = state.reserves.quoteAmount + quoteAmount
+            baseAmount = state.reserves.baseAmount + baseUsed
+            quoteAmount = state.reserves.quoteAmount + quoteUsed
           totalLpSupply = state.totalLpSupply + lpAmount
 
         pure PoolLiquidityRules_SettleAddResult with
@@ -397,6 +434,8 @@ template PoolLiquidityRules with
           baseSliceCid; quoteSliceCid
           lpPolicyCid = newPolicyCid
           lpTokensMinted = lpAmount
+          baseAdded = baseUsed
+          quoteAdded = quoteUsed
 
     -- DvP remove: pro-rata over aggregate reserves; sourced operator slices
     -- deliver base+quote to the holder (symmetric to swap) and the holder's

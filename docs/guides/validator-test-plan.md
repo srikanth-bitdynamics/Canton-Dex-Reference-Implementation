@@ -133,7 +133,8 @@ Requires `OPERATOR_ADMIN_TOKEN`.
 - [ ] Place a crossing sell order (price ≤ existing buy)
 - [ ] `POST /v1/orders/match {base,quote}` returns 1 match
 - [ ] After settle, both orders archived (or remaining qty updated for partial)
-- [ ] MatchedTrade appears in `GET /v1/trades`
+- [ ] The settled fill appears in `GET /v1/trades` (a `SettledTrade` row, with
+      `dealer` null and both parties across `trader` / `counterparty`)
 
 ### 5.3 Pool swap
 - [ ] Quote: `POST /v1/swaps/quote` returns positive output for 0.01 BTC

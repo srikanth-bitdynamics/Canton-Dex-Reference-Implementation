@@ -18,6 +18,7 @@ import DA.Foldable (foldMap)
 import DA.List (head)
 import DA.Optional (isNone)
 import DA.Text qualified as T
+import DA.TextMap qualified as TextMap
 import Daml.Script
 
 import Splice.Api.Token.AllocationV2 qualified as V2
@@ -51,6 +52,12 @@ holdingCidsFor owner instrId = do
   hs <- queryInterface @V2.Holding owner
   pure [ cid | (cid, Some v) <- hs, v.instrumentId.id == instrId, v.account.owner == Some owner, isNone v.lock ]
 
+-- The same holdings as amounts.
+unlockedAmountsFor : Party -> Text -> Script [Decimal]
+unlockedAmountsFor owner instrId = do
+  hs <- queryInterface @V2.Holding owner
+  pure [ v.amount | (_, Some v) <- hs, v.instrumentId.id == instrId, v.account.owner == Some owner, isNone v.lock ]
+
 -- Author an allocation through the TestTokenV2 registry: enrich the factory
 -- choice (real context + TokenRules disclosure) and submit it as `party`.
 ttAlloc
@@ -81,6 +88,12 @@ mkSpec admin authorizer legs committed = V2.AllocationSpecification with
   transferLegSides = Utils.legsToSides authorizer legs
   settlementDeadline = None; nextIterationFunding = None; committed
   meta = emptyMetadata
+
+-- The add flow's deposit specs are iterated-enabled, so the settle can attach
+-- the off-ratio refund leg.
+depositSpec : Party -> V2.Account -> V2.TransferLeg -> V2.AllocationSpecification
+depositSpec admin authorizer leg =
+  (mkSpec admin authorizer [leg] True) with nextIterationFunding = Some TextMap.empty
 
 data Fixture = Fixture with
   operator : Party
@@ -174,8 +187,8 @@ authorAdd fx lp baseAmount quoteAmount now = do
   baseCids <- holdingCidsFor lp "X"
   quoteCids <- holdingCidsFor lp "Y"
   -- base/quote deposits via the real TestTokenV2 registry.
-  baseDep <- ttAlloc fx.ttReg lp settlement (mkSpec fx.ttAdmin lpAcct [baseLeg] True) baseCids now
-  quoteDep <- ttAlloc fx.ttReg lp settlement (mkSpec fx.ttAdmin lpAcct [quoteLeg] True) quoteCids now
+  baseDep <- ttAlloc fx.ttReg lp settlement (depositSpec fx.ttAdmin lpAcct baseLeg) baseCids now
+  quoteDep <- ttAlloc fx.ttReg lp settlement (depositSpec fx.ttAdmin lpAcct quoteLeg) quoteCids now
   -- LP mint receipt via our self-registry (mint account, no context).
   let receiptSpec = mkSpec fx.lpRegistrar lpAcct [lpMintLeg] False
   rres <- submit lp $ exerciseCmd (toInterfaceContractId fx.lpReg : ContractId V2.AllocationFactory)
@@ -253,6 +266,70 @@ testRealRegistryDvpRejectsMissingContext = do
     Left e ->
       assertMsg ("expected missing tokenRules context, got: " <> show e)
         (T.isInfixOf "tokenRules" (show e))
+
+-- Off-ratio add against the REAL registry: the settle takes only the
+-- ratio-matched part of the deposit, and the standard registry returns the
+-- unmatched remainder to the LP as an unlocked holding — the refund does not
+-- depend on anything specific to our own registry.
+testRealRegistryDvpAddRefundsOffRatioExcess : Script ()
+testRealRegistryDvpAddRefundsOffRatioExcess = do
+  lp <- allocateParty "lp"
+  fx <- setup lp
+  now <- getTime
+  addRes <- addSettle fx lp now
+  let supply = PM.sqrtDecimal 2000000.0
+      lpAcct = Utils.basicAccount lp
+      opAcct = Utils.basicAccount fx.operator
+      settlement = PM.poolSettlement fx.poolCid fx.operator
+      -- 5 X + 150000 Y into a 10 : 200000 pool: base limits, so 50000 Y is
+      -- unmatched and must come back.
+      baseAmount = 5.0
+      quoteAmount = 150000.0
+      lpAmount = (baseAmount * supply) / 10.0
+      baseLeg = V2.TransferLeg with
+        transferLegId = "lp-base-deposit"; sender = lpAcct; receiver = opAcct
+        amount = baseAmount; instrumentId = "X"; meta = emptyMetadata
+      quoteLeg = V2.TransferLeg with
+        transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
+        amount = quoteAmount; instrumentId = "Y"; meta = emptyMetadata
+      lpMintLeg = Lp.lpMintLeg fx.lpRegistrar lpAcct lpId lpAmount
+  TT2.mint fx.ttReg lpAcct "X" baseAmount
+  TT2.mint fx.ttReg lpAcct "Y" quoteAmount
+  reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
+    poolCid = fx.poolCid; recipient = lp; baseAmount; quoteAmount; lpAmount
+    requestedAt = now; settleAt = None
+  baseCids <- holdingCidsFor lp "X"
+  quoteCids <- holdingCidsFor lp "Y"
+  baseDep <- ttAlloc fx.ttReg lp settlement (depositSpec fx.ttAdmin lpAcct baseLeg) baseCids now
+  quoteDep <- ttAlloc fx.ttReg lp settlement (depositSpec fx.ttAdmin lpAcct quoteLeg) quoteCids now
+  rres <- submit lp $ exerciseCmd (toInterfaceContractId fx.lpReg : ContractId V2.AllocationFactory)
+    V2.AllocationFactory_Allocate with
+      settlement; allocation = mkSpec fx.lpRegistrar lpAcct [lpMintLeg] False; requestedAt = now
+      inputHoldingCids = []; actors = [lp]; extraArgs = emptyExtraArgs
+  let V2.AllocationInstructionResult_Completed receiptCid = rres.output
+  settleDisc <- ttSettleDisclosures fx
+  res <- submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = addRes.poolStateCid
+      lpPolicyCid = addRes.lpPolicyCid; requestCid = Some reqCid; acceptanceCid = None
+      recipient = lp
+      lpBaseDepositCid = baseDep; lpQuoteDepositCid = quoteDep; lpReceiptCid = receiptCid
+      baseFactoryCid = fx.ttFactoryCid; quoteFactoryCid = fx.ttFactoryCid
+      lpFactoryCid = toInterfaceContractId fx.lpReg
+      baseQuoteSettleCid = fx.ttSettleCid; lpSettleCid = coerceContractId fx.lpReg
+      baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = supply
+      requestedAt = now
+      poolAdminExtraArgs = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
+      lpRegistrarExtraArgs = emptyExtraArgs
+  res.baseAdded === 5.0
+  res.quoteAdded === 100000.0
+  Some state <- queryContractId fx.operator res.poolStateCid
+  state.reserves.baseAmount === 15.0
+  state.reserves.quoteAmount === 300000.0
+  refundedY <- unlockedAmountsFor lp "Y"
+  refundedX <- unlockedAmountsFor lp "X"
+  refundedY === [50000.0]
+  refundedX === []
 
 -- Remove against the REAL TestTokenV2 registry: after a funded add, the holder
 -- redeems the full position. base/quote are DELIVERED to the holder from the

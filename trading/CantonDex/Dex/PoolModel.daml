@@ -55,6 +55,60 @@ floorDiv n d =
   let q = n / d
   in if compareProducts q d n 1.0 == GT then q - ulp else q
 
+-- | Smallest `Decimal` not below the exact product `x * y`. The mirror of
+-- `floorMul`: amounts drawn INTO the pool round up.
+ceilMul : Decimal -> Decimal -> Decimal
+ceilMul x y =
+  let p = x * y
+  in if compareProducts x y p 1.0 == GT then p + ulp else p
+
+-- | Smallest `Decimal` not below the exact quotient `n / d`, for `d > 0.0`.
+ceilDiv : Decimal -> Decimal -> Decimal
+ceilDiv n d =
+  let q = n / d
+  in if compareProducts q d n 1.0 == LT then q + ulp else q
+
+-- | Smallest `Decimal` not below the exact value `x * y / d`, for `d > 0.0`.
+-- Chaining `ceilMul` onto `ceilDiv` will not do: each rounds independently, so
+-- the quotient's ulp of slack comes back multiplied by `y`. Two round-ups do
+-- make an upper bound, which is all the estimate has to be; `compareProducts`
+-- then walks it down to the exact boundary.
+ceilMulDiv : Decimal -> Decimal -> Decimal -> Decimal
+ceilMulDiv x y d
+  | x <= 0.0 || y <= 0.0 = 0.0
+  | otherwise =
+      let reaches q = compareProducts q d x y /= LT
+      in stepDownTo reaches (ceilDiv (ceilMul x y) d) ulp
+
+-- Step down from a satisfying `hi` by a doubling stride until a value that
+-- does not satisfy, then halve the bracket. `holds` must be monotone and
+-- must not hold at 0.0.
+stepDownTo : (Decimal -> Bool) -> Decimal -> Decimal -> Decimal
+stepDownTo holds hi step =
+  let lo = max 0.0 (hi - step)
+  in if holds lo then stepDownTo holds lo (step * 2.0) else halveTo holds lo hi
+
+-- Smallest satisfying value in `(lo, hi]`, where `lo` does not satisfy.
+halveTo : (Decimal -> Bool) -> Decimal -> Decimal -> Decimal
+halveTo holds lo hi
+  | hi - lo <= ulp = hi
+  | otherwise =
+      let mid = lo + (hi - lo) / 2.0
+      in if holds mid then halveTo holds lo mid else halveTo holds mid hi
+
+-- | The portion of a two-sided deposit that matches the pool's current ratio,
+-- for a funded pool (both reserves > 0). The side that is short relative to
+-- the reserve ratio goes in whole; the other goes in only as far as that side
+-- exactly backs, rounded up by at most one ulp and capped at what was offered.
+-- The remainder buys no LP tokens, so the pool must not take it.
+ratioMatchedDeposit : PoolReserves -> Decimal -> Decimal -> (Decimal, Decimal)
+ratioMatchedDeposit reserves baseAmount quoteAmount =
+  let rb = reserves.baseAmount
+      rq = reserves.quoteAmount
+  in if compareProducts baseAmount rq quoteAmount rb == GT
+       then (min baseAmount (ceilMulDiv quoteAmount rb rq), quoteAmount)
+       else (baseAmount, min quoteAmount (ceilMulDiv baseAmount rq rb))
+
 newtonSqrt : Decimal -> Decimal -> Int -> Decimal
 newtonSqrt target guess iteration
   | iteration >= 50 = guess

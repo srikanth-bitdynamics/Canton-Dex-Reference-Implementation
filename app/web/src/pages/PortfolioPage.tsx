@@ -4,6 +4,7 @@ import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import type { TransactionEvent } from '@/types/contracts';
 import { EmptyState } from '@/primitives/EmptyState';
+import { fmt } from '@/primitives/format';
 
 export function PortfolioPage() {
   const party = useCurrentParty();
@@ -39,8 +40,9 @@ export function PortfolioPage() {
           pair: string;
           inputInstrumentId: string;
           outputInstrumentId: string;
-          inputAmount: number;
-          outputAmount: number;
+          // Decimal strings, exactly as the ledger holds them.
+          inputAmount: string;
+          outputAmount: string;
         }>;
       } catch {
         return [];
@@ -49,17 +51,21 @@ export function PortfolioPage() {
     refetchInterval: 10_000,
   });
 
-  const recentActivity: TransactionEvent[] = (swaps ?? []).map((s, i) => ({
-    id: `swap-${s.ts}-${i}`,
-    type: 'Swap',
-    timestamp: new Date(s.ts).toISOString(),
-    details: `${s.inputAmount} ${s.inputInstrumentId} → ${s.outputAmount.toFixed(2)} ${s.outputInstrumentId}`,
-    status: 'Settled',
-    amounts: [
-      { asset: s.inputInstrumentId, amount: -s.inputAmount },
-      { asset: s.outputInstrumentId, amount: s.outputAmount },
-    ],
-  }));
+  const recentActivity: TransactionEvent[] = (swaps ?? []).map((s, i) => {
+    const paid = Number(s.inputAmount);
+    const received = Number(s.outputAmount);
+    return {
+      id: `swap-${s.ts}-${i}`,
+      type: 'Swap',
+      timestamp: new Date(s.ts).toISOString(),
+      details: `${fmt(paid, 4)} ${s.inputInstrumentId} → ${fmt(received)} ${s.outputInstrumentId}`,
+      status: 'Settled',
+      amounts: [
+        { asset: s.inputInstrumentId, amount: -paid },
+        { asset: s.outputInstrumentId, amount: received },
+      ],
+    };
+  });
 
   if (!party) {
     return (

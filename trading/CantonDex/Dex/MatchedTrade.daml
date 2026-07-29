@@ -71,15 +71,16 @@ template TradeAllocationRequest with
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
 
 data SettlementBatchV2 = SettlementBatchV2 with
+    allocations : [V2.FinalizedAllocation]
+    factoryCid : ContractId V2.SettlementFactory
+    extraArgs : ExtraArgs
     transferLegs : Optional [V2.TransferLeg]
       -- ^ The legs administered by this batch's admin. A batch's allocations
       --   must cover exactly its own legs, so each admin gets its own subset
       --   of the trade's legs, never the whole list. Optional only to keep the
       --   record upgradeable; `None` is rejected rather than defaulted, since
       --   any default would settle a batch against legs it does not own.
-    allocations : [V2.FinalizedAllocation]
-    factoryCid : ContractId V2.SettlementFactory
-    extraArgs : ExtraArgs
+      --   Upgrades require new fields last, so this stays at the end.
   deriving (Eq, Show)
 
 data MatchedTrade_SettleResult = MatchedTrade_SettleResult with

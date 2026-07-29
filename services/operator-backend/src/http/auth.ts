@@ -166,20 +166,12 @@ const OPERATOR_WRITE_EXACT = new Set<string>([
   // the calling party. See ../testnet-onboarding/order.ts.
   //
   // Deliberately NOT listed, and the second exemption over OPERATOR-authority
-  // writes: POST /v1/testnet/match. The atomic matcher (POST /v1/orders/match,
-  // listed above) settles every crossing pair on a book in one transaction each
-  // under the operator's own authority. Dropping the token from that route would
-  // let anyone run the matcher for any pair; this route instead runs it for one
-  // listed pair and hands the caller no degree of freedom to abuse. It grants no
-  // authority the operator did not already hold: DEX_TESTNET_ONBOARDING gates
-  // its existence, the pair must be one this deployment lists under its own
-  // admin, and it takes no party, no order cid and no price/quantity from the
-  // body -- it can only clear orders their owners already placed and funded, so
-  // it cannot inject an order, choose the clearing price, or redirect funds.
-  // Every leg moves the resting orders' own owners' funds per those orders'
-  // terms. The one abuse vector, submission spam, is bound by the same daily
-  // caps; once the book is cleared, repeat calls settle nothing. See
-  // ../testnet-onboarding/index.ts (matchPair).
+  // writes: POST /v1/testnet/match. It runs the operator's own matcher (POST
+  // /v1/orders/match, above) on one listed pair, taking no party, order cid or
+  // price/quantity from the body -- so it grants no authority the operator did
+  // not already hold and can only clear orders their owners already placed and
+  // funded. Gated by DEX_TESTNET_ONBOARDING and the daily caps; spam is the only
+  // abuse vector. See ../testnet-onboarding/index.ts (matchPair).
   //
   // Deliberately NOT listed, on the same terms: POST /v1/testnet/rfq and POST
   // /v1/testnet/rfq/accept. An RFQ round trip touches more authorities than any

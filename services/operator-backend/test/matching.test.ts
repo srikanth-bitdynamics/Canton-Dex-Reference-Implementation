@@ -9,7 +9,7 @@ function mkOrder(o: Record<string, any>): Order {
   return {
     contractId: o.contractId,
     operator: "op",
-    trader: o.trader ?? "alice",
+    trader: o.trader ?? (o.side === "Bid" ? "buyer" : "seller"),
     admin: "admin",
     baseInstrumentId: o.baseInstrumentId ?? "BTC",
     quoteInstrumentId: o.quoteInstrumentId ?? "USDC",
@@ -34,6 +34,29 @@ describe("matchOrdersForPair", () => {
     ];
     const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" });
     assert.equal(matches.length, 0);
+  });
+
+  it("does not match a party against its own crossing order", () => {
+    // A self-cross can never settle -- the transfer leg's sender and receiver
+    // would be the same party -- so the matcher must not propose it.
+    const orders = [
+      mkOrder({ contractId: "a1", trader: "alice", side: "Ask", limitPrice: "100", remainingQty: "1" }),
+      mkOrder({ contractId: "b1", trader: "alice", side: "Bid", limitPrice: "110", remainingQty: "1" }),
+    ];
+    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" });
+    assert.equal(matches.length, 0);
+  });
+
+  it("matches a bid against a different maker's ask, skipping its own", () => {
+    const orders = [
+      mkOrder({ contractId: "a-self", trader: "alice", side: "Ask", limitPrice: "100", remainingQty: "1", ledgerCreatedAt: "2026-01-01T10:00:00Z" }),
+      mkOrder({ contractId: "a-bob", trader: "bob", side: "Ask", limitPrice: "105", remainingQty: "1", ledgerCreatedAt: "2026-01-01T10:30:00Z" }),
+      mkOrder({ contractId: "b1", trader: "alice", side: "Bid", limitPrice: "110", remainingQty: "1", ledgerCreatedAt: "2026-01-01T11:00:00Z" }),
+    ];
+    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" }, NOW);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0]!.buy.contractId, "b1");
+    assert.equal(matches[0]!.sell.contractId, "a-bob");
   });
 
   it("crosses a simple full match at the older order's limit", () => {

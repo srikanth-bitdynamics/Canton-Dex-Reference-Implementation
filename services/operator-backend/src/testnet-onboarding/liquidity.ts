@@ -70,6 +70,7 @@
 
 import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { CreatedEventRef } from "../ledger/index.js";
+import { isDecimalString } from "../http/validate.js";
 import * as dec from "../pool/decimal.js";
 import type {
   Decimal,
@@ -101,10 +102,59 @@ export interface TestnetLiquidityReceipt {
   updateId: string;
   /** LP tokens minted (add) or burned (remove). */
   lpAmount: Decimal;
-  /** Base deposited (add) or paid out (remove). */
+  /** Base actually entered into reserves (add) or paid out (remove). */
   baseAmount: Decimal;
-  /** Quote deposited (add) or paid out (remove). */
+  /** Quote actually entered into reserves (add) or paid out (remove). */
   quoteAmount: Decimal;
+  /**
+   * Base returned to the party when an off-ratio add drew less than requested.
+   * Absent on a remove and on an on-ratio add.
+   */
+  baseRefunded?: Decimal;
+  /** Quote returned to the party. Absent on a remove and on an on-ratio add. */
+  quoteRefunded?: Decimal;
+}
+
+/**
+ * The fields POST /v1/testnet/liquidity reads back from
+ * PoolLiquidityRules_SettleAddLiquidity. `baseAdded`/`quoteAdded` are `Optional
+ * Decimal` on the choice, so the JSON API returns the amount or null; an
+ * off-ratio add draws less than requested and the receipt reports what actually
+ * entered reserves rather than the request.
+ */
+export interface PoolSettleAddResult {
+  lpTokensMinted: Decimal;
+  baseAdded: Decimal | null;
+  quoteAdded: Decimal | null;
+}
+
+/**
+ * Decode the settle exercise result (typed `unknown` off the JSON API) into the
+ * three fields the receipt needs. Throws on a malformed result rather than
+ * silently coercing, so a receipt never reports a fabricated amount.
+ */
+export function decodeSettleAddResult(raw: unknown): PoolSettleAddResult {
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error("add-liquidity settle returned no result record");
+  }
+  const r = raw as Record<string, unknown>;
+  const optional = (field: string): Decimal | null => {
+    const v = r[field];
+    if (v === undefined || v === null) return null;
+    if (typeof v !== "string" || !isDecimalString(v)) {
+      throw new Error(`add-liquidity settle result field ${field} is malformed`);
+    }
+    return v;
+  };
+  const lpTokensMinted = r.lpTokensMinted;
+  if (typeof lpTokensMinted !== "string" || !isDecimalString(lpTokensMinted)) {
+    throw new Error("add-liquidity settle result field lpTokensMinted is malformed");
+  }
+  return {
+    lpTokensMinted,
+    baseAdded: optional("baseAdded"),
+    quoteAdded: optional("quoteAdded"),
+  };
 }
 
 /**

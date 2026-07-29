@@ -156,7 +156,21 @@ const DEFAULT_HOLDINGS: StubHolding[] = [
 class PoolLedger implements LedgerSubmitter {
   readonly submits: SubmitRequest[] = [];
 
-  constructor(readonly holdings: StubHolding[] = DEFAULT_HOLDINGS) {}
+  constructor(
+    readonly holdings: StubHolding[] = DEFAULT_HOLDINGS,
+    /**
+     * What PoolLiquidityRules_SettleAddLiquidity returns. Defaults to echoing
+     * the settle's own inputs (an on-ratio add: everything requested entered
+     * reserves); an off-ratio test overrides it to return smaller amounts.
+     */
+    private readonly addSettleResult: (
+      arg: Record<string, unknown>,
+    ) => unknown = (arg) => ({
+      lpTokensMinted: arg.minLpTokens,
+      baseAdded: arg.baseAmount,
+      quoteAdded: arg.quoteAmount,
+    }),
+  ) {}
 
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.submits.push(req);
@@ -167,6 +181,16 @@ class PoolLedger implements LedgerSubmitter {
     ) {
       // What the Daml choice returns: the request the LP authors against.
       return REQUEST_CID as R;
+    }
+    if (
+      req.command.kind === "exercise" &&
+      req.command.choice === "PoolLiquidityRules_SettleAddLiquidity"
+    ) {
+      // PoolLiquidityRules_SettleAddResult: lpTokensMinted + Optional
+      // baseAdded/quoteAdded, the amounts that actually entered reserves.
+      return this.addSettleResult(
+        req.command.argument as Record<string, unknown>,
+      ) as R;
     }
     return "#result:0" as R;
   }
@@ -343,9 +367,14 @@ interface StartedServer {
  */
 async function startServer(
   env: Record<string, string | undefined>,
-  opts: ParticipantStubOptions & { holdings?: StubHolding[] } = {},
+  opts: ParticipantStubOptions & {
+    holdings?: StubHolding[];
+    addSettleResult?: (arg: Record<string, unknown>) => unknown;
+  } = {},
 ): Promise<StartedServer> {
-  const ledger = new PoolLedger(opts.holdings ?? DEFAULT_HOLDINGS);
+  const ledger = opts.addSettleResult
+    ? new PoolLedger(opts.holdings ?? DEFAULT_HOLDINGS, opts.addSettleResult)
+    : new PoolLedger(opts.holdings ?? DEFAULT_HOLDINGS);
   const { fetchImpl, submissions } = participantStub(opts);
 
   const saved = new Map<string, string | undefined>();
@@ -452,7 +481,10 @@ function removeBody(
 
 async function withServer(
   env: Record<string, string | undefined>,
-  opts: ParticipantStubOptions & { holdings?: StubHolding[] },
+  opts: ParticipantStubOptions & {
+    holdings?: StubHolding[];
+    addSettleResult?: (arg: Record<string, unknown>) => unknown;
+  },
   run: (s: StartedServer) => Promise<void>,
 ): Promise<void> {
   const server = await startServer(env, opts);
@@ -642,6 +674,56 @@ describe("testnet liquidity: happy path", () => {
       assert.equal(settle.knownTotalLpSupply, "10000.0000000000");
       assert.ok(!JSON.stringify(settle).includes("00attacker"));
     });
+  });
+
+  it("adds off-ratio: the receipt reports the settled amounts and the refunds", async () => {
+    // The pool draws less than requested and refunds the rest, so the settle
+    // returns baseAdded/quoteAdded/lpTokensMinted that differ from the request.
+    await withServer(
+      ON,
+      {
+        addSettleResult: () => ({
+          lpTokensMinted: "101.5000000000",
+          baseAdded: "9.5000000000",
+          quoteAdded: "857.5700000000",
+        }),
+      },
+      async (s) => {
+        const r = await postJson(s.url, "/v1/testnet/liquidity", addBody());
+        assert.equal(r.status, 200);
+        // Not the request (10 / 1000 / quoted 100): the settle result.
+        assert.equal(r.body.lpAmount, "101.5000000000");
+        assert.equal(r.body.baseAmount, "9.5000000000");
+        assert.equal(r.body.quoteAmount, "857.5700000000");
+        // Requested minus settled.
+        assert.equal(r.body.baseRefunded, "0.5000000000");
+        assert.equal(r.body.quoteRefunded, "142.4300000000");
+      },
+    );
+  });
+
+  it("adds on-ratio: a null baseAdded/quoteAdded falls back to the request", async () => {
+    // PoolLiquidityRules_SettleAddResult carries Optional baseAdded/quoteAdded;
+    // None (an exact-ratio add) decodes to null and the receipt reports the
+    // requested amount, with a zero refund.
+    await withServer(
+      ON,
+      {
+        addSettleResult: (arg) => ({
+          lpTokensMinted: arg.minLpTokens,
+          baseAdded: null,
+          quoteAdded: null,
+        }),
+      },
+      async (s) => {
+        const r = await postJson(s.url, "/v1/testnet/liquidity", addBody());
+        assert.equal(r.status, 200);
+        assert.equal(r.body.baseAmount, "10.0000000000");
+        assert.equal(r.body.quoteAmount, "1000.0000000000");
+        assert.equal(r.body.baseRefunded, "0.0000000000");
+        assert.equal(r.body.quoteRefunded, "0.0000000000");
+      },
+    );
   });
 
   it("removes: burns the party's own LP and settles at the quoted payout", async () => {

@@ -97,6 +97,7 @@ import {
 import {
   createdAllocationCids,
   liquidityAllocateCommands,
+  decodeSettleAddResult,
   liquidityDisclosure,
   selectLiquidityFunding,
   sumDecimals,
@@ -1592,36 +1593,55 @@ export class TestnetOnboardingService {
       // 3. Settle against the live request and the allocations the relay
       // actually produced -- never ones named by the caller. The LP floor is
       // the operator's own quote, so the add cannot mint less than quoted.
-      await this.settleOrRelease(pool, relayed.allocationCids, target.admin, input.party, () =>
-        pool.settleAddLiquidity({
-          poolCid: input.poolCid as ContractId<"Pool">,
-          requestCid: request.requestCid,
-          recipient: input.party,
-          lpBaseDepositCid: relayed.allocationCids[0] as ContractId<"Allocation">,
-          lpQuoteDepositCid: relayed.allocationCids[1] as ContractId<"Allocation">,
-          lpReceiptCid: relayed.allocationCids[2] as ContractId<"Allocation">,
-          baseAmount,
-          quoteAmount,
-          minLpTokens: request.lpAmount,
-          knownTotalLpSupply: request.knownTotalLpSupply,
-          requestedAt,
-        }),
+      const settled = decodeSettleAddResult(
+        await this.settleOrRelease(pool, relayed.allocationCids, target.admin, input.party, () =>
+          pool.settleAddLiquidity({
+            poolCid: input.poolCid as ContractId<"Pool">,
+            requestCid: request.requestCid,
+            recipient: input.party,
+            lpBaseDepositCid: relayed.allocationCids[0] as ContractId<"Allocation">,
+            lpQuoteDepositCid: relayed.allocationCids[1] as ContractId<"Allocation">,
+            lpReceiptCid: relayed.allocationCids[2] as ContractId<"Allocation">,
+            baseAmount,
+            quoteAmount,
+            minLpTokens: request.lpAmount,
+            knownTotalLpSupply: request.knownTotalLpSupply,
+            requestedAt,
+          }),
+        ),
+      );
+
+      // Off-ratio, the pool draws less than requested and refunds the rest, so
+      // the receipt reports what actually entered reserves and minted -- not the
+      // request. A null baseAdded/quoteAdded (an on-ratio add) falls back to the
+      // requested amount, which the refund delta then reads as zero.
+      const baseSettled = settled.baseAdded ?? baseAmount;
+      const quoteSettled = settled.quoteAdded ?? quoteAmount;
+      const baseRefunded = dec.formatDecimal(
+        dec.parseDecimal(baseAmount) - dec.parseDecimal(baseSettled),
+      );
+      const quoteRefunded = dec.formatDecimal(
+        dec.parseDecimal(quoteAmount) - dec.parseDecimal(quoteSettled),
       );
 
       log.info("settled a testnet add-liquidity", {
         party: input.party,
         poolId: target.poolId,
-        baseAmount,
-        quoteAmount,
-        lpAmount: request.lpAmount,
+        baseAmount: baseSettled,
+        quoteAmount: quoteSettled,
+        lpAmount: settled.lpTokensMinted,
+        baseRefunded,
+        quoteRefunded,
         holdings: baseFunding.length + quoteFunding.length,
         updateId: relayed.updateId,
       });
       return {
         updateId: relayed.updateId,
-        lpAmount: request.lpAmount,
-        baseAmount,
-        quoteAmount,
+        lpAmount: settled.lpTokensMinted,
+        baseAmount: baseSettled,
+        quoteAmount: quoteSettled,
+        baseRefunded,
+        quoteRefunded,
       };
     }
 

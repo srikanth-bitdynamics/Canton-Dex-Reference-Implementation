@@ -38,7 +38,9 @@ export interface SettlementBatchV2 {
    * The legs administered by this batch's admin. The Token Standard requires a
    * batch's allocations to cover exactly the legs it is handed, so a trade
    * spanning two registries must give each batch only its own admin's legs —
-   * see `groupLegsByAdmin`.
+   * see `groupLegsByAdmin`. Required here: the choice field is
+   * `Optional [TransferLeg]` purely so the record stays upgradeable, and the
+   * choice aborts on `None` rather than defaulting to the whole trade.
    */
   transferLegs: V2TransferLeg[];
 }
@@ -117,9 +119,11 @@ export class MatchedTradeService {
             // GenMap, whose JSON encoding is an ARRAY of [key, value] pairs.
             // An object encodes a TextMap, which this is not -- that is why
             // this choice had never once decoded. And SettlementBatchV2 is a
-            // plain record (MatchedTrade.daml:73-77), not the vendored
-            // upstream variant: no `tag`, and the field is `allocations` of
-            // V2.FinalizedAllocation, not `allocationCids`.
+            // plain record, not the vendored upstream variant: no `tag`, and
+            // the field is `allocations` of V2.FinalizedAllocation, not
+            // `allocationCids`. `transferLegs` is `Optional [TransferLeg]`,
+            // which encodes as the bare array for Some and null for None --
+            // and the choice rejects None.
             //
             // The encoding below is the one proven against the live
             // participant in scripts/testnet-v2registry-trade.ts.

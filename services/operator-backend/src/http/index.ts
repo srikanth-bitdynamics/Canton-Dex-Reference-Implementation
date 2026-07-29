@@ -1278,7 +1278,9 @@ async function routeRequest(
     >(body, "batchesByAdmin");
     const allocationRequestCids = expectField<string[]>(body, "allocationRequestCids");
     // Each batch carries its own admin's legs; the registry rejects a batch
-    // whose allocations do not cover exactly the legs it is given.
+    // whose allocations do not cover exactly the legs it is given, and the
+    // choice rejects a batch carrying none. Fail here so the caller gets a 400
+    // instead of a ledger abort.
     const batchesByAdmin = new Map(
       Object.entries(batchesByAdminRaw).map(([admin, batch]) => {
         if (!Array.isArray(batch?.transferLegs) || batch.transferLegs.length === 0) {

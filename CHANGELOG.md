@@ -32,7 +32,9 @@ earlier version execute the newer choice, and contract ids are preserved.
   per-admin batch the trade's full leg list; the Token Standard requires a
   batch's allocations to cover its own legs exactly, so any trade whose legs
   span two registries would abort against a registry using the standard's
-  default settle. `SettlementBatchV2` now carries the admin's own leg subset.
+  default settle. `SettlementBatchV2` now carries the admin's own leg subset,
+  as `Optional [TransferLeg]` so the record stays upgradeable; the settle
+  rejects `None` rather than falling back to the full list.
   Separately, `Registry.V2`'s `SettlementFactory_SettleBatch` never read
   `transferLegs` at all, which is why the mismatch stayed invisible: it now
   rejects missing and superfluous allocation authorizations, duplicate leg

@@ -1850,15 +1850,8 @@ async function routeRequest(
     return;
   }
 
-  // Faucet-callable trigger for the operator's atomic order matcher. It grants
-  // no authority the operator did not already hold: it runs the operator's OWN
-  // matcher (POST /v1/orders/match, listed in ./auth.ts) on a pair this
-  // deployment lists, and can inject no order, choose no clearing price or
-  // quantity, and redirect no funds -- every leg moves the resting orders'
-  // owners' own funds per those orders' terms. It takes no party, no cid and no
-  // amount. The only abuse vector is submission spam, which the testnet caps
-  // bound; once the book is cleared, repeat calls settle nothing. The deliberate
-  // absence of the operator token is noted in ./auth.ts.
+  // Faucet-callable trigger for the operator's own matcher on a listed pair;
+  // takes no party, cid or amount. Why it needs no operator token: ./auth.ts.
   if (onboarding && method === "POST" && path === "/v1/testnet/match") {
     const body = await readValidatedJson<{ base: string; quote: string }>(
       req,

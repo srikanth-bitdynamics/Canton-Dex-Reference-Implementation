@@ -38,7 +38,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { OperatorBackend } from "../index.js";
-import type { Party, Pool } from "../types.js";
+import type { Party, Pool, V2TransferLeg } from "../types.js";
 import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
@@ -1273,16 +1273,30 @@ async function routeRequest(
   if (method === "POST" && path === "/v1/matched-trades/settle") {
     const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/settle", callerAuth);
     const tradeCid = expectString(body, "tradeCid");
-    const batchesByAdminRaw = expectField<Record<string, { allocationCids: string[] }>>(
-      body,
-      "batchesByAdmin",
-    );
+    const batchesByAdminRaw = expectField<
+      Record<string, { allocationCids: string[]; transferLegs: V2TransferLeg[] }>
+    >(body, "batchesByAdmin");
     const allocationRequestCids = expectField<string[]>(body, "allocationRequestCids");
+    // Each batch carries its own admin's legs; the registry rejects a batch
+    // whose allocations do not cover exactly the legs it is given, and the
+    // choice rejects a batch carrying none. Fail here so the caller gets a 400
+    // instead of a ledger abort.
     const batchesByAdmin = new Map(
-      Object.entries(batchesByAdminRaw).map(([admin, batch]) => [
-        admin as Party,
-        { allocationCids: (batch.allocationCids ?? []) as never[] },
-      ]),
+      Object.entries(batchesByAdminRaw).map(([admin, batch]) => {
+        if (!Array.isArray(batch?.transferLegs) || batch.transferLegs.length === 0) {
+          throw new ValidationError(
+            `batchesByAdmin.${admin}.transferLegs must be a non-empty array of this admin's legs`,
+            { field: `batchesByAdmin.${admin}.transferLegs` },
+          );
+        }
+        return [
+          admin as Party,
+          {
+            allocationCids: (batch.allocationCids ?? []) as never[],
+            transferLegs: batch.transferLegs,
+          },
+        ] as const;
+      }),
     );
     const result = await backend.matchedTrade.settle({
       tradeCid: tradeCid as never,

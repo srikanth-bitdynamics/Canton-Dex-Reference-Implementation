@@ -202,12 +202,14 @@ allocateFor fx reqCid = do
 -- Holding is `signatory admin, owner`, so the operator is not a stakeholder of
 -- the locked holdings this choice fetches and archives.
 settleTrade
-  : Fixture -> ContractId MT.MatchedTrade -> [ContractId V2.Allocation]
+  : Fixture -> ContractId MT.MatchedTrade -> [V2.TransferLeg]
+  -> [ContractId V2.Allocation]
   -> [ContractId MT.TradeAllocationRequest] -> Commands MT.MatchedTrade_SettleResult
-settleTrade fx tradeCid allocationCids reqs =
+settleTrade fx tradeCid legs allocationCids reqs =
   exerciseCmd tradeCid MT.MatchedTrade_Settle with
     batchesByAdmin = Map.fromList
       [ (fx.admin, MT.SettlementBatchV2 with
+          transferLegs = Some legs
           allocations =
             [ V2.FinalizedAllocation with
                 allocationCid; extraTransferLegSides = []; nextIterationFunding = None
@@ -233,9 +235,10 @@ acceptAndSettle fx rfq accepted considered = do
   reqs <- submit fx.operator $
     exerciseCmd res.tradeCid MT.MatchedTrade_RequestAllocations
   allocs <- forA reqs (allocateFor fx)
+  trade <- fromSome <$> queryContractId fx.operator res.tradeCid
   -- readAs admin, for the reason spelled out on settleTrade.
   settled <- submit (actAs [fx.operator] <> readAs [fx.admin]) $
-    settleTrade fx res.tradeCid allocs reqs
+    settleTrade fx res.tradeCid trade.transferLegs allocs reqs
   pure (settled, res)
 
 -- | RFQ_Buy: the dealer delivers base, the trader delivers quote.
@@ -348,11 +351,12 @@ testExpiryBetweenAcceptAndSettleBlocksTheSettle = do
   reqs <- submit fx.operator $
     exerciseCmd res.tradeCid MT.MatchedTrade_RequestAllocations
   allocs <- forA reqs (allocateFor fx)
+  trade <- fromSome <$> queryContractId fx.operator res.tradeCid
 
   -- Past the RFQ's expiry, which the trade inherited as its deadline.
   setTime (addRelTime expiresAt (minutes 1))
   submitMustFail (actAs [fx.operator] <> readAs [fx.admin]) $
-    settleTrade fx res.tradeCid allocs reqs
+    settleTrade fx res.tradeCid trade.transferLegs allocs reqs
 
   -- And the money is where the failure leaves it: locked behind allocations
   -- that can now only be cancelled, never settled.

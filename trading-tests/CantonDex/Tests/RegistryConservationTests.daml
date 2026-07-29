@@ -11,6 +11,8 @@
 --   * surplus backing returns to the authorizer as an unlocked holding;
 --   * the SettlementFactory batch rejects per-instrument sender/receiver
 --     imbalance (an unbacked receiver leg with no matching sender);
+--   * the SettlementFactory batch rejects allocations that do not cover its
+--     legs exactly, whether an authorization is missing or superfluous;
 --   * an order-book fill stays inside that backing across iterations, where
 --     the face notional of the unfilled quantity does not.
 module CantonDex.Tests.RegistryConservationTests where
@@ -274,6 +276,40 @@ testBatchRejectsUnbalancedReceiverLeg = do
   bobAlloc <- sidedAlloc fx fx.bob [leg]
   submitMustFail fx.admin $ settleBatchCmd fx [leg]
     [ Utils.finalAllocation bobAlloc ]
+
+-- 6b. Allocation-to-leg coverage: the batch's allocations must authorize
+--     exactly the legs the batch settles ------------------------------------
+--
+-- Both batches below conserve per instrument, so the conservation check passes
+-- and the failure isolates the coverage check.
+
+testBatchRejectsSuperfluousAuthorization : Script ()
+testBatchRejectsSuperfluousAuthorization = do
+  fx <- setup
+  aliceAlloc <- prefunded fx fx.alice "X" 100.0
+  let settled = mkLeg "covered-1" fx.alice fx.bob 40.0 "X"
+      unlisted = mkLeg "unlisted-1" fx.alice fx.bob 10.0 "X"
+  bobAlloc <- sidedAlloc fx fx.bob [settled, unlisted]
+  -- The allocations authorize both legs; the batch only settles one of them.
+  submitMustFail fx.admin $ settleBatchCmd fx [settled]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [settled, unlisted]) None
+    , Utils.finalAllocation bobAlloc
+    ]
+
+testBatchRejectsMissingAuthorization : Script ()
+testBatchRejectsMissingAuthorization = do
+  fx <- setup
+  aliceAlloc <- prefunded fx fx.alice "X" 100.0
+  let authorized = mkLeg "covered-1" fx.alice fx.bob 40.0 "X"
+      unauthorized = mkLeg "unauthorized-1" fx.alice fx.bob 10.0 "X"
+  bobAlloc <- sidedAlloc fx fx.bob [authorized]
+  -- The batch settles a leg no allocation in it authorizes.
+  submitMustFail fx.admin $ settleBatchCmd fx [authorized, unauthorized]
+    [ Utils.mkFinalizedAllocation aliceAlloc
+        (Utils.legsToSides (Utils.basicAccount fx.alice) [authorized]) None
+    , Utils.finalAllocation bobAlloc
+    ]
 
 -- 7. Allocation_Settle rejects expired allocation deadlines -----------------
 

@@ -102,6 +102,30 @@ adjustedNextIterationFunding authorizer currentFunding additionalTransferLegs =
       currentFunding
       (netFundingDelta authorizer additionalTransferLegs)
 
+senderSide : V2.TransferLeg -> V2.TransferLegSide
+senderSide leg = V2.TransferLegSide with
+  transferLegId = leg.transferLegId
+  side = V2.SenderSide
+  otherside = leg.receiver
+  amount = leg.amount
+  instrumentId = leg.instrumentId
+  meta = leg.meta
+
+receiverSide : V2.TransferLeg -> V2.TransferLegSide
+receiverSide leg = V2.TransferLegSide with
+  transferLegId = leg.transferLegId
+  side = V2.ReceiverSide
+  otherside = leg.sender
+  amount = leg.amount
+  instrumentId = leg.instrumentId
+  meta = leg.meta
+
+-- | Both sides of a leg, each paired with the account that must authorize it.
+-- This is the authorization a settlement batch has to find, exactly once, in
+-- the allocations it settles.
+legSidesWithAuthorizer : V2.TransferLeg -> [(HoldingV2.Account, V2.TransferLegSide)]
+legSidesWithAuthorizer leg = [(leg.sender, senderSide leg), (leg.receiver, receiverSide leg)]
+
 -- | Project a leg into the authorizer's side, or None if it is neither end.
 --
 -- A leg whose sender == receiver is malformed: it transfers nothing yet would
@@ -113,20 +137,8 @@ legToSide : HoldingV2.Account -> V2.TransferLeg -> Optional V2.TransferLegSide
 legToSide authorizer leg
   | leg.sender == leg.receiver =
       error "legToSide: transfer leg sender and receiver must differ (self-transfer)"
-  | leg.sender == authorizer = Some V2.TransferLegSide with
-      transferLegId = leg.transferLegId
-      side = V2.SenderSide
-      otherside = leg.receiver
-      amount = leg.amount
-      instrumentId = leg.instrumentId
-      meta = leg.meta
-  | leg.receiver == authorizer = Some V2.TransferLegSide with
-      transferLegId = leg.transferLegId
-      side = V2.ReceiverSide
-      otherside = leg.sender
-      amount = leg.amount
-      instrumentId = leg.instrumentId
-      meta = leg.meta
+  | leg.sender == authorizer = Some (senderSide leg)
+  | leg.receiver == authorizer = Some (receiverSide leg)
   | otherwise = None
 
 legsToSides : HoldingV2.Account -> [V2.TransferLeg] -> [V2.TransferLegSide]

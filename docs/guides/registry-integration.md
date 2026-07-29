@@ -218,8 +218,12 @@ authorizer under that one admin.
 
 `MatchedTrade_Settle` does take `batchesByAdmin : Map Party SettlementBatchV2`
 and is shaped for multiple admins, inherited from the upstream batching
-utility — but nothing in this repo constructs a two-admin trade to feed it.
-Note that `splitLegsByAuthorizer` splits by *authorizer*, not by admin.
+utility. Each `SettlementBatchV2` carries its own `transferLegs`: the standard
+requires a batch's allocations to cover exactly the legs the batch is handed,
+so the caller partitions the trade's legs by the instrument admin of each leg
+(`groupLegsByAdmin` in the operator backend). Note that `splitLegsByAuthorizer`
+splits by *authorizer*, not by admin, so the request path still emits one
+specification per authorizer under the trade's single admin.
 
 Pairing instruments from two different registries needs a second admin field
 on those four templates and one specification per `(authorizer, admin)`. That

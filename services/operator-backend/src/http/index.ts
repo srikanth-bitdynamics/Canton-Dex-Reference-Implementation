@@ -657,9 +657,9 @@ async function routeRequest(
   // pools. `symbol` is the instrument id (the canonical symbol in this system);
   // `decimals` is null for instruments with no on-ledger config row.
 
-  // Execute path: discover crossing orders and create MatchedTrade
-  // contracts. Operator-auth gated (state-changing). The read-only preview
-  // is GET /v1/orders/matches, above.
+  // Execute path: discover crossing orders and settle each atomically.
+  // Operator-auth gated (state-changing). The read-only preview is
+  // GET /v1/orders/matches, above.
   if (method === "POST" && path === "/v1/orders/match") {
     const body = await readJson<{ base: string; quote: string }>(req);
     if (!body.base || !body.quote) {
@@ -669,7 +669,6 @@ async function routeRequest(
     const results = await backend.order.runMatching({
       baseInstrumentId: body.base,
       quoteInstrumentId: body.quote,
-      venue: context.operator as Party,
       admin: context.admin as Party,
     });
     // runMatching catches per-match so one bad pair cannot stop the rest, but

@@ -12,7 +12,7 @@
 module CantonDex.Tests.EndToEndTests where
 
 import DA.Assert
-import DA.List (head, tail)
+import DA.List (head, sort, tail)
 import DA.Map qualified as Map
 import DA.Optional (isSome, isNone, fromSome)
 import DA.TextMap qualified as TextMap
@@ -802,8 +802,6 @@ omeExec operator buyerAcct sellerAcct buyOrderCid sellOrderCid
       fillQty = 4.0; fillPrice
     buyOrderCid; sellOrderCid
     buyerAllocationCid; sellerAllocationCid
-    buyerCommittedFunding = TextMap.fromList [("USDC", 400.0)]
-    sellerCommittedFunding = TextMap.fromList [("BTC", 10.0)]
 
 testOrderMatchEnforcesLimitPrice : Script ()
 testOrderMatchEnforcesLimitPrice = do
@@ -934,6 +932,138 @@ testOrderMatchRejectsPendingOrder = do
   res <- submit operator $ exerciseCmd ok OME.OrderMatchExecution_Execute with
     factoryCid = settleCid; extraArgs = emptyExtraArgs
   length res.settleResult.allocationSettleResults === 2
+  pure ()
+
+-- 8e. The settle and the orders it fills move in one transaction ------------
+--
+-- The settle archives both funding allocations, so an order left behind
+-- pointing at one is uncancellable (Order_Cancel exercises the archived cid)
+-- and unfillable. Nothing outside this choice may observe that state, so the
+-- choice itself archives the filled orders, rolls each remainder onto the
+-- allocation the settle minted, and records the trade.
+testOrderMatchRollsOrdersForwardAtomically : Script ()
+testOrderMatchRollsOrdersForwardAtomically = do
+  operator <- allocateParty "ome5-op"
+  admin <- allocateParty "ome5-admin"
+  buyer <- allocateParty "ome5-bid"
+  seller <- allocateParty "ome5-ask"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, buyer, seller]
+
+  let buyerAcct = Utils.basicAccount buyer
+      sellerAcct = Utils.basicAccount seller
+
+  buyerAllocationCid <- omeAlloc operator admin factoryCid buyer buyerAcct
+    (TextMap.fromList [("USDC", 400.0)]) now
+  sellerAllocationCid <- omeAlloc operator admin factoryCid seller sellerAcct
+    (TextMap.fromList [("BTC", 10.0)]) now
+
+  buyOrderCid <- omeOrder operator admin buyer Order.Bid 100.0 Order.OS_Funded
+    (Some buyerAllocationCid) "bid"
+  sellOrderCid <- omeOrder operator admin seller Order.Ask 90.0 Order.OS_Funded
+    (Some sellerAllocationCid) "ask"
+
+  execCid <- submit operator $ createCmd (omeExec operator buyerAcct sellerAcct
+    buyOrderCid sellOrderCid buyerAllocationCid sellerAllocationCid 95.0)
+  res <- submit operator $ exerciseCmd execCid OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  -- Both orders filled 4 of 10, so both roll forward onto the allocation the
+  -- same transaction minted for them. The cids the orders were bound to are
+  -- gone with the settle.
+  isSome res.buyRemainderCid === True
+  isSome res.sellRemainderCid === True
+  liveOrders <- query @Order.Order operator
+  -- The ACS comes back ordered by contract id, so compare as a set.
+  sort (map fst liveOrders)
+    === sort [fromSome res.buyRemainderCid, fromSome res.sellRemainderCid]
+  Some buyRemainder <- queryContractId operator (fromSome res.buyRemainderCid)
+  Some sellRemainder <- queryContractId operator (fromSome res.sellRemainderCid)
+  buyRemainder.allocationCid === res.buyerNextAllocationCid
+  sellRemainder.allocationCid === res.sellerNextAllocationCid
+  [buyRemainder.remainingQty, sellRemainder.remainingQty] === [6.0, 6.0]
+  [buyRemainder.status, sellRemainder.status]
+    === [Order.OS_PartiallyFilled, Order.OS_PartiallyFilled]
+
+  -- The fill is durable trade history: OrderMatchExecution is consumed by the
+  -- choice, so nothing about the match would survive in the ACS without it.
+  settled <- query @MT.SettledTrade operator
+  map fst settled === [res.settledTradeCid]
+  [ t.transferLegs | (_, t) <- settled ] === [OME.mkMatchTransferLegs
+    (OME.MatchedOrderPair with
+       buyerAccount = buyerAcct; sellerAccount = sellerAcct
+       baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+       fillQty = 4.0; fillPrice = 95.0)]
+  pure ()
+
+-- 8f. A fill that spends the whole budget closes out the residual quantity ---
+--
+-- The committed budget and the fill's spend are both 10dp round-half-even
+-- products, so they collide on a PARTIAL fill: a bid for 1000 base @ 0.000001
+-- commits 0.0010000000 quote, and filling 999.99996 of it spends
+-- 0.00099999996 — which rounds back up to the same 0.0010000000. The residual
+-- budget is empty while 0.00004 base is still unfilled. Rolling that quantity
+-- forward would leave a live, matchable order with no allocation behind it,
+-- and every later matching run would abort on it. The budget really is spent,
+-- so the residual quantity is closed out rather than created unbacked.
+testOrderMatchClosesUnbackedRemainder : Script ()
+testOrderMatchClosesUnbackedRemainder = do
+  operator <- allocateParty "ome6-op"
+  admin <- allocateParty "ome6-admin"
+  buyer <- allocateParty "ome6-bid"
+  seller <- allocateParty "ome6-ask"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, buyer, seller]
+
+  let buyerAcct = Utils.basicAccount buyer
+      sellerAcct = Utils.basicAccount seller
+      price = 0.000001
+      restingQty = 1000.0
+      fillQty = 999.99996
+      committedQuote = restingQty * price
+
+  -- The collision: a strictly partial fill whose spend equals the whole budget.
+  (fillQty < restingQty) === True
+  fillQty * price === committedQuote
+
+  buyerAllocationCid <- omeAlloc operator admin factoryCid buyer buyerAcct
+    (TextMap.fromList [("USDC", committedQuote)]) now
+  sellerAllocationCid <- omeAlloc operator admin factoryCid seller sellerAcct
+    (TextMap.fromList [("BTC", fillQty)]) now
+
+  let mkOrder trader side limitPrice remainingQty allocationCid ref =
+        submit operator $ createCmd Order.Order with
+          operator; trader; admin
+          baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+          side; limitPrice; remainingQty
+          expiry = None; status = Order.OS_Funded
+          allocationCid = Some allocationCid
+          settlementRef = Order.makeOrderRefFromText ref
+  buyOrderCid <- mkOrder buyer Order.Bid price restingQty buyerAllocationCid "dust-bid"
+  sellOrderCid <- mkOrder seller Order.Ask price fillQty sellerAllocationCid "dust-ask"
+
+  execCid <- submit operator $ createCmd OME.OrderMatchExecution with
+    operator; matchId = "dust"
+    match = OME.MatchedOrderPair with
+      buyerAccount = buyerAcct; sellerAccount = sellerAcct
+      baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+      fillQty; fillPrice = price
+    buyOrderCid; sellOrderCid
+    buyerAllocationCid; sellerAllocationCid
+  res <- submit operator $ exerciseCmd execCid OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  -- 0.00004 base is unfilled and the quote behind it is gone, so nothing rolls
+  -- forward on the bid.
+  restingQty - fillQty === 0.00004
+  res.buyerNextAllocationCid === None
+  res.buyRemainderCid === None
+  res.sellRemainderCid === None
+  liveOrders <- query @Order.Order operator
+  [ cid | (cid, o) <- liveOrders, isNone o.allocationCid ] === []
+  liveOrders === []
   pure ()
 
 -- The DEX threads registry choice context through to the token-standard

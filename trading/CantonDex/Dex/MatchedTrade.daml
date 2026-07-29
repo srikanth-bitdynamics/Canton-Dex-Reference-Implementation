@@ -191,3 +191,17 @@ template MatchedTrade with
           pure (allocView.allocation.authorizer, result)
 
         pure MatchedTrade_CancelResult with cancelResults
+
+-- | Immutable record of a fill that has already settled, written by the choice
+-- that settled it. `MatchedTrade` is a pre-settlement proposal its own settle
+-- choice archives, so it cannot serve as trade history for a flow that settles
+-- inside a single choice; this contract stays in the ACS for the indexer.
+template SettledTrade with
+    operator : Party
+    admin : Party
+    matchId : Text
+    transferLegs : [V2.TransferLeg]
+    settledAt : Time
+  where
+    signatory operator
+    observer legParties transferLegs

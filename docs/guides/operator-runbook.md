@@ -14,7 +14,7 @@ operator dev instance but should not be the production posture.
 
 | Party         | Owns                                                                          | Signs                                                               |
 | ------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `operator`    | `DexPair`, `Order`, `MatchedTrade`, `Pool`, `PoolState`, `PoolSlice`, `PoolRules`, `OrderMatchExecution` | All DEX-side market state                                          |
+| `operator`    | `DexPair`, `Order`, `MatchedTrade`, `SettledTrade`, `Pool`, `PoolState`, `PoolSlice`, `PoolRules`, `OrderMatchExecution` | All DEX-side market state                                          |
 | `lpRegistrar` | `LPTokenPolicy`, LP registry config (reference: `InstrumentConfiguration`) | Mint/burn supply and LP-token policy                               |
 | `admin`       | Base/quote registry config (reference: `InstrumentConfiguration`), `AllocationFactory`, `SettlementFactory` | Allocations, settlement batches, registry-side mint/burn/transfer |
 | `trader` / `lp` | `OrderFundingRequest`, `Rfq`, and the deposit/receipt/burn allocations they author against a `LiquidityAllocationRequest` | Their own intents and allocation accepts                          |

@@ -340,8 +340,8 @@ testRealRegistryDvpAddRefundsOffRatioExcess = do
       requestedAt = now
       poolAdminExtraArgs = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
       lpRegistrarExtraArgs = emptyExtraArgs
-  res.baseAdded === 5.0
-  res.quoteAdded === 100000.0
+  res.baseAdded === Some 5.0
+  res.quoteAdded === Some 100000.0
   Some state <- queryContractId fx.operator res.poolStateCid
   state.reserves.baseAmount === 15.0
   state.reserves.quoteAmount === 300000.0

@@ -32,7 +32,7 @@ data OrderMatch_ExecuteResult = OrderMatch_ExecuteResult with
       -- ^ Order the bid's unfilled quantity rolled forward to; None when the
       --   fill closed it out.
     sellRemainderCid : Optional (ContractId Order)
-    settledTradeCid : ContractId MT.SettledTrade
+    settledTradeCid : Optional (ContractId MT.SettledTrade)
   deriving (Eq, Show)
 
 mkOrderMatchRefId : Text -> Text
@@ -128,6 +128,10 @@ template OrderMatchExecution with
       -- ^ The resting ask being filled.
     buyerAllocationCid : ContractId V2.Allocation
     sellerAllocationCid : ContractId V2.Allocation
+    buyerCommittedFunding : Utils.Funding
+      -- ^ Unused, retained for upgrade compatibility. Each side's budget is
+      --   read from its own allocation below, never from the caller.
+    sellerCommittedFunding : Utils.Funding
   where
     signatory operator
 
@@ -277,7 +281,7 @@ template OrderMatchExecution with
           sellerNextAllocationCid = sellerNext
           buyRemainderCid
           sellRemainderCid
-          settledTradeCid
+          settledTradeCid = Some settledTradeCid
 
     choice OrderMatchExecution_Abort : ()
       controller operator

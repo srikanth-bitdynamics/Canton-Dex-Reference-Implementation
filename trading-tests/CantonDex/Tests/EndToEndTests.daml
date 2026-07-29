@@ -803,6 +803,8 @@ omeExec operator buyerAcct sellerAcct buyOrderCid sellOrderCid
       fillQty = 4.0; fillPrice
     buyOrderCid; sellOrderCid
     buyerAllocationCid; sellerAllocationCid
+    buyerCommittedFunding = TextMap.empty
+    sellerCommittedFunding = TextMap.empty
 
 testOrderMatchEnforcesLimitPrice : Script ()
 testOrderMatchEnforcesLimitPrice = do
@@ -990,7 +992,7 @@ testOrderMatchRollsOrdersForwardAtomically = do
   -- The fill is durable trade history: OrderMatchExecution is consumed by the
   -- choice, so nothing about the match would survive in the ACS without it.
   settled <- query @MT.SettledTrade operator
-  map fst settled === [res.settledTradeCid]
+  map (Some . fst) settled === [res.settledTradeCid]
   [ t.transferLegs | (_, t) <- settled ] === [OME.mkMatchTransferLegs
     (OME.MatchedOrderPair with
        buyerAccount = buyerAcct; sellerAccount = sellerAcct
@@ -1053,6 +1055,8 @@ testOrderMatchClosesUnbackedRemainder = do
       fillQty; fillPrice = price
     buyOrderCid; sellOrderCid
     buyerAllocationCid; sellerAllocationCid
+    buyerCommittedFunding = TextMap.empty
+    sellerCommittedFunding = TextMap.empty
   res <- submit operator $ exerciseCmd execCid OME.OrderMatchExecution_Execute with
     factoryCid = settleCid; extraArgs = emptyExtraArgs
 

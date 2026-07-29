@@ -31,10 +31,10 @@ data PoolLiquidityRules_SettleAddResult = PoolLiquidityRules_SettleAddResult wit
     quoteSliceCid : ContractId PSlice.PoolSlice
     lpPolicyCid : ContractId LP.LPTokenPolicy
     lpTokensMinted : Decimal
-    baseAdded : Decimal
+    baseAdded : Optional Decimal
       -- ^ The ratio-matched part of the deposit that entered the reserves;
       --   the rest of the requested amount was refunded to the provider.
-    quoteAdded : Decimal
+    quoteAdded : Optional Decimal
   deriving (Eq, Show)
 
 data PoolLiquidityRules_SettleRemoveResult = PoolLiquidityRules_SettleRemoveResult with
@@ -434,8 +434,8 @@ template PoolLiquidityRules with
           baseSliceCid; quoteSliceCid
           lpPolicyCid = newPolicyCid
           lpTokensMinted = lpAmount
-          baseAdded = baseUsed
-          quoteAdded = quoteUsed
+          baseAdded = Some baseUsed
+          quoteAdded = Some quoteUsed
 
     -- DvP remove: pro-rata over aggregate reserves; sourced operator slices
     -- deliver base+quote to the holder (symmetric to swap) and the holder's

@@ -28,6 +28,13 @@ local dev builds, never in production or testnet.
 Once connected, your party id appears in the top bar. The wallet
 provider persists across reloads (session is stored in `localStorage`).
 
+On the public testnet at `testnet-dex.bitdynamics.cc`, testers are onboarded as
+hosted parties on the operator's (BitDynamics) validator, and the traded assets
+are issued locally by the deployment's own Token Standard V2 registry. This is an
+interim arrangement until the general-purpose validator and wallet tooling (DA
+Utilities) supports Token Standard V2, at which point users bring their own party
+and V2 assets. See [Non-goals](../concepts/non-goals.md#the-hosted-testnet-is-a-demo-surface-not-a-wallet).
+
 ---
 
 ## Swap (Trade page)

@@ -76,6 +76,18 @@ relay exists so the milestone flows can be exercised from a browser without one.
 The hosted onboarding routes and their caps are documented in
 [../guides/operator-runbook.md](../guides/operator-runbook.md).
 
+**Current deployment status.** On the public testnet at
+`testnet-dex.bitdynamics.cc`, every tester is onboarded as a hosted party on the
+operator's (BitDynamics) validator, and every traded asset — `dBTC`, `dUSD`, and
+the pool's LP token — is issued locally by the deployment's own Token Standard V2
+registry. This is a bridge: external participants cannot yet bring their own
+Token Standard V2 party and assets because the general-purpose validator and
+wallet tooling (DA Utilities) does not yet support Token Standard V2. When that
+support ships, users connect their own participant's party and trade their own V2
+assets through PartyLayer or the dapp-sdk, and the hosted onboarding is retired.
+The code path for that is already the intended one — the hosted relay is the only
+piece specific to this interim.
+
 ## Operational hardening is out of scope
 
 The reference includes an operator runbook covering deployment, recovery and

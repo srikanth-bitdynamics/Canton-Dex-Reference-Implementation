@@ -29,7 +29,7 @@ For the ideas behind the design, read the **[Overview](concepts/overview.md)**.
 | **Operate a venue** | [Deployment](guides/deployment.md) → [Operator Guide](guides/operator-guide.md) → [Operator Runbook](guides/operator-runbook.md) |
 | **Integrate a registry** | [Registry Integration](guides/registry-integration.md) → [Choice Context](guides/choice-context.md) → [Allocation Surface](reference/allocation-surface.md) |
 | **Trade in the dApp** | [Using the dApp](guides/using-the-dapp.md) |
-| **Evaluate / review it** | [Overview](concepts/overview.md) → [Architecture](concepts/architecture.md) → [Glossary](concepts/glossary.md) |
+| **Evaluate / review it** | [Overview](concepts/overview.md) → [Architecture](concepts/architecture.md) → [Non-goals](concepts/non-goals.md) → [Ecosystem feedback](reference/ecosystem-feedback.md) |
 
 ---
 
@@ -54,6 +54,7 @@ lookup (reference).
 | [LP Tokens](concepts/lp-tokens.md) | Builder, integrator | Why LP tokens are a single, unversioned V2 instrument per pool. |
 | [Pricing](concepts/pricing.md) | Operator, integrator | Where prices come from — pool-derived, order book, RFQ — and the (absent) oracle attachment points. |
 | [Glossary](concepts/glossary.md) | Everyone | The key terms: allocation, commitment, iterated settlement, DvP, slice, registrar, and more. |
+| [Non-goals](concepts/non-goals.md) | Everyone | What the reference intentionally does not include, and why. |
 
 ### Guides — do a task
 | Page | Audience | Recipe |
@@ -76,6 +77,7 @@ lookup (reference).
 | [HTTP API](reference/http-api.md) | The operator-backend HTTP endpoints, wallet intents, and error codes. |
 | [Allocation Surface](reference/allocation-surface.md) | The V2 allocation surface this reference relies on (committed allocations, iterated settlement). |
 | [Testing](reference/testing.md) | The real-ledger, JSON Ledger API end-to-end test driver. |
+| [Ecosystem feedback](reference/ecosystem-feedback.md) | How the reference was evaluated externally, what was found, and what changed. |
 
 ---
 

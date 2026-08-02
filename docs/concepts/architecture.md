@@ -4,8 +4,9 @@
 
 Canton DEX is a token-standard-native reference DEX for Canton.
 
-It is intentionally not a generic settlement engine. The goal is to show
-builders how to build a real exchange directly on top of:
+It is intentionally not a generic settlement engine. What the reference leaves
+out on purpose, and why, is collected in [Non-goals](non-goals.md). The goal is
+to show builders how to build a real exchange directly on top of:
 
 - Token Standard V2 allocations and batch settlement
 - registry-backed holdings whose registries implement the V2 holding,

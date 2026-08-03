@@ -1,6 +1,6 @@
-# Builder Guide
+# Builder guide
 
-For engineers who want to pick this reference up, read it, and extend it. Read
+For engineers who want to read and extend this reference. Read
 after [Getting Started](../getting-started.md) (which gets the stack running)
 and the [Overview](../concepts/overview.md) + [Architecture](../concepts/architecture.md)
 (which explain the design).
@@ -10,7 +10,7 @@ and the [Overview](../concepts/overview.md) + [Architecture](../concepts/archite
 A runnable Canton DEX that:
 
 - uses Token Standard V2 (CIP-0112) for every asset: base, quote, and LP are
-  represented by contracts implementing `V2.Holding`.
+  contracts implementing `V2.Holding`.
 - uses iterated allocations from Token Standard V2 (CIP-0112), now merged into
   `canton-network/splice` `main`, so pool reserves and resting orders can be
   adjusted in place without re-funding round trips.
@@ -20,31 +20,32 @@ A runnable Canton DEX that:
 
 ## Out of scope
 
-Short version: no central limit-order-book matcher, no production order routing,
-no oracle integration, no custody, and no compliance/KYC layer. Those belong in
-forks or deployment-specific services.
+No central limit-order-book matcher, no production order routing, no oracle
+integration, no custody, and no compliance/KYC layer. Those belong in forks or
+deployment-specific services.
 
-## A guided tour of the workflow families
+## Workflow families
 
 The four workflow families below are the ones the Daml test suite exercises.
 Each corresponds to tests under `trading-tests/CantonDex/Tests/`. Read them in
 this order to understand the venue end-to-end.
 
 ### A. Pair / instrument listing
-- `trading/CantonDex/Dex/DexPair.daml` — listing record: base + quote instrument
-  id, fee model, trading mode (`OrderBook`, `Pool`, `Both`), and an `active` flag.
-- `trading/CantonDex/Instrument/InstrumentConfiguration.daml` — the reference
+- `trading/CantonDex/Dex/DexPair.daml`: listing record with base + quote
+  instrument id, fee model, trading mode (`OrderBook`, `Pool`, `Both`), and an
+  `active` flag.
+- `trading/CantonDex/Instrument/InstrumentConfiguration.daml`: the reference
   registry's instrument config (holder/issuer credential requirements, optional
-  ISIN/CUSIP). This is **not** a Token Standard V2 template; other registries can
+  ISIN/CUSIP). This is not a Token Standard V2 template; other registries can
   use different config contracts.
 - Test: `InstrumentTests.daml::testInstrumentConfigCreate`.
 
 ### B. Matched-trade OTC / RFQ settlement (TradingAppV2 pattern)
-- `trading/CantonDex/Dex/MatchedTrade.daml` — a V2 adaptation of TradingAppV2.
+- `trading/CantonDex/Dex/MatchedTrade.daml`: a V2 adaptation of TradingAppV2.
   `MatchedTrade_RequestAllocations` creates one request per authorizer;
   `MatchedTrade_Settle` groups by admin and calls `SettlementFactory_SettleBatch`;
   `MatchedTrade_Cancel` mirrors the cleanup.
-- `trading/CantonDex/Dex/Rfq.daml` + `PolicyReceipt.daml` — the bilateral
+- `trading/CantonDex/Dex/Rfq.daml` + `PolicyReceipt.daml` hold the bilateral
   block-trade flow: trader RFQ, dealer quotes, joint `Rfq_Accept` emitting a
   `MatchedTrade` that carries an operator-signed `PolicyReceipt` folded into
   `SettlementInfo.meta`.
@@ -55,29 +56,29 @@ this order to understand the venue end-to-end.
   `vendor/splice/token-standard/examples/splice-token-test-trading-app-v2/`.
 
 ### C. Resting orders backed by a V2 allocation
-- `trading/CantonDex/Dex/OrderFundingRequest.daml` — trader-signed intent.
-- `trading/CantonDex/Dex/Order.daml` — the operator-bound `Order` plus its
+- `trading/CantonDex/Dex/OrderFundingRequest.daml`: trader-signed intent.
+- `trading/CantonDex/Dex/Order.daml`: the operator-bound `Order` plus its
   `OrderAllocationRequest`. Funding requires the trader to author the allocation
   via `AllocationFactory_Allocate`, so the trader's own authority moves the
-  holding — the operator cannot move trader holdings on its own.
-- `trading/CantonDex/Dex/OrderMatchExecution.daml` — the prefunded-trade pattern:
+  holding. The operator cannot move trader holdings on its own.
+- `trading/CantonDex/Dex/OrderMatchExecution.daml`: the prefunded-trade pattern:
   concrete match legs are supplied as `FinalizedAllocation.extraTransferLegSides`
   at batch-settlement time; next-iteration cids roll forward onto partial fills.
 - Tests: `EndToEndTests.daml::testOrderFundingFlow`,
   `testFinalizedAllocationFundingConservation`.
 
 ### D. Constant-product pool with committed allocations
-- `trading/CantonDex/Dex/Pool.daml` + `PoolState.daml` + `PoolSlice.daml` — the
-  split pool: immutable config, the hot reserves/supply/status **state**, and one
-  committed allocation per **slice** (each slice is its own contract, passed by
+- `trading/CantonDex/Dex/Pool.daml` + `PoolState.daml` + `PoolSlice.daml` make up
+  the split pool: immutable config, the hot reserves/supply/status state, and one
+  committed allocation per slice (each slice is its own contract, passed by
   cid).
-- `trading/CantonDex/Dex/PoolRules.daml` — the swap-side choices:
+- `trading/CantonDex/Dex/PoolRules.daml` holds the swap-side choices:
   `PoolRules_RequestSwap`, `PoolRules_Swap`, `PoolRules_Pause`, `PoolRules_Resume`.
 - `trading/CantonDex/Dex/PoolLiquidityRules.daml` + `LiquidityAllocationRequest.daml`
-  — the delivery-versus-payment add/remove path: `_RequestAddLiquidity` /
+  hold the delivery-versus-payment add/remove path: `_RequestAddLiquidity` /
   `_SettleAddLiquidity` and `_RequestRemoveLiquidity` / `_SettleRemoveLiquidity`,
   co-controlled by `operator` + `lpRegistrar`.
-- `trading/CantonDex/Lp/Policy.daml` + `Instrument.daml` — the LP-token component.
+- `trading/CantonDex/Lp/Policy.daml` + `Instrument.daml`: the LP-token component.
   `LPTokenPolicy` is owned by `lpRegistrar`, keyed by a `V2.InstrumentId`, and
   knows nothing about pools or orders.
 - Tests: `EndToEndTests.daml::testPoolFullLifecycle`, `testPoolSwapEndToEnd`;
@@ -151,7 +152,7 @@ fork can rewrite the matcher without touching any Daml template.
 
 The dApp does not sign as the trader. Trader-authority writes (place order,
 add/remove-liquidity allocations via `AllocationFactory_Allocate`, swap allocation
-creation) go through the connected wallet over the **CIP-0103** dApp standard
+creation) go through the connected wallet over the CIP-0103 dApp standard
 (prepare → sign → execute). The operator backend produces unsigned command
 trees; the wallet signs and submits. RFQ accepts are the one exception in this
 reference: trader + operator co-sign via `POST /v1/rfq/accept` (a production
@@ -162,10 +163,10 @@ from the backend's indexer cache. Keep trader-authority writes in the wallet pat
 the operator backend should only orchestrate and settle flows it is authorized to
 submit.
 
-**Why single-command flows.** CIP-0103 interactive submission prepares **one
-top-level command** per transaction, and the Splice Amulet Wallet UI only
+**Why single-command flows.** CIP-0103 interactive submission prepares one
+top-level command per transaction, and the Splice Amulet Wallet UI only
 batches multiple requested allocations for Amulet allocations. The DEX
-therefore uses the token standard's batching utility —
+therefore uses the token standard's batching utility,
 `Splice.Util.Token.Wallet.BatchingUtilityV2` (Splice 0.6.11, vendored under
 `vendor/splice/daml/splice-util-token-standard-wallet/` and built by the
 vendored-DAR script): the wallet `createAndExercise`s `ExecuteBatch`, which
@@ -199,7 +200,7 @@ confusion in the workflows.
 ## Upgrade discipline
 
 Keep the reference templates as small as possible; do not carry compatibility
-choices "just in case" — they add noise for readers. If an adopter deploys a
+choices "just in case". They add noise for readers. If an adopter deploys a
 package and needs to preserve Daml smart-upgrade lineage, follow the participant's
 upload-check rules: new fields `Optional` and at the end of the record, choices
 kept (not removed), input/result field types stable, no field reordering. If you

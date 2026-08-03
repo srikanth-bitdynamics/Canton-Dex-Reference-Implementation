@@ -1,8 +1,8 @@
-# Guide: Issuing a new LP token or lifecycle-rich instrument
+# Issuing a new LP token or lifecycle-rich instrument
 
 How to mint a new asset on Canton DEX using Token Standard V2 (CIP-0112)
-surfaces. This covers both the simple case (fungible LP token) and examples of
-lifecycle-rich assets (vested, dividend-paying, restricted) implemented through
+surfaces. It covers the simple case (a fungible LP token) and lifecycle-rich
+assets (vested, dividend-paying, restricted) implemented through
 registry-specific contracts.
 
 ## What "lifecycle-rich" means here
@@ -23,8 +23,8 @@ that can encode:
 Those are reference-registry features, not Token Standard requirements. A
 different registry may publish different metadata and choice context while
 still implementing the same V2 `Holding`, `AllocationFactory`, and
-`SettlementFactory` interfaces. A lifecycle-rich instrument in this repo is the
-composition of a per-instrument config plus optional issuer-signed
+`SettlementFactory` interfaces. A lifecycle-rich instrument in this repo
+combines a per-instrument config with optional issuer-signed
 `Credential` contracts that the recipient must present at mint time.
 
 ## Case A. Vanilla LP token (the common case)

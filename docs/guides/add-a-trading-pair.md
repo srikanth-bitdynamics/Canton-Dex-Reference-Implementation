@@ -1,12 +1,12 @@
-# Guide: Adding a new trading pair
+# Adding a new trading pair
 
-End-to-end recipe for listing a new pair (say `ETH/USDT`) on a running
+Recipe for listing a new pair (say `ETH/USDT`) on a running
 Canton DEX deployment. Assumes the operator backend is already wired
 to a participant and the base + quote assets already have registries that
 produce Token Standard V2 holdings, allocation factories, and settlement
 factories.
 
-If the base or quote asset does **not** yet have a V2-compatible registry,
+If the base or quote asset does not yet have a V2-compatible registry,
 do that first: see
 [`add-lp-or-instrument.md`](add-lp-or-instrument.md).
 
@@ -139,7 +139,7 @@ curl -s 'http://localhost:8080/v1/swaps?pair=ETH/USDT&limit=10'
 | Pool created but `/v1/pools` is empty | Pool is operator + lpRegistrar observed only. The backend observes as `operator`, but if you used a different signing party the read won't see it. |
 | Trades fail even though `DexPair` exists | The pair metadata is only a venue listing. The relevant registries still need to publish V2 holdings, allocation factories, settlement factories, and any choice context required for the instruments. |
 
-## When to NOT do this
+## When not to do this
 
 - If you're listing many pairs programmatically: write a one-shot
   script that builds all the commands in one batch, not curl loops.

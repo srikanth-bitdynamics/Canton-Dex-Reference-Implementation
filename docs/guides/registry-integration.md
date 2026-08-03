@@ -45,7 +45,7 @@ For every instrument the DEX trades, the registry must provide:
 Registries may bound how long an allocation or instruction can live. Amulet
 (Splice 0.6.11+) enforces `AmuletConfig.tokenStandardMaxTTL` — **90 days by
 default** — on token-standard allocations and instructions. This matters for
-the DEX because pool reserves are held as **long-lived committed allocations**
+the DEX because pool reserves are held as long-lived committed allocations
 (one per slice): against a TTL-capping registry, pool inventory must be rolled
 into fresh allocations before the cap expires, and settlement deadlines on
 order/LP allocations must stay inside the registry's cap. The reference
@@ -55,8 +55,8 @@ operational task.
 
 ## Registry API surface (Daml + OpenAPI)
 
-Token Standard V2 registries are expected to expose **both** the Daml
-interfaces and the standard **OpenAPI** endpoints (the specs ship alongside
+Token Standard V2 registries are expected to expose both the Daml
+interfaces and the standard OpenAPI endpoints (the specs ship alongside
 each API package in `canton-network/splice` under `token-standard/`). The
 reference registry implements the Daml interface side in full; its off-ledger
 surface is the choice-context endpoint the backend's registry-client consumes
@@ -112,8 +112,8 @@ operator code:
    them and to anyone monitoring the operator's stream.
 
 When these are enforced in Daml, a malicious operator attempting to
-spend funds the authorizer never granted has to submit an **invalid
-Daml transaction**, which the engine rejects regardless of operator
+spend funds the authorizer never granted has to submit an invalid
+Daml transaction, which the engine rejects regardless of operator
 intent.
 
 The mock at [MockRegistry.daml](../../trading/CantonDex/Testing/MockRegistry.daml)
@@ -143,7 +143,7 @@ it is registry-specific.
 What this means in practice for a DEX integrator:
 
 - **Active holders upgrade themselves.** One possible pattern is
-  *upgrade-on-use* — the registry's transfer/allocation factories
+  *upgrade-on-use*: the registry's transfer/allocation factories
   rewrite the holding to the current version on any operation that
   touches it. A holder who is actively trading or otherwise moving
   their position pays for the upgrade implicitly as part of that
@@ -173,7 +173,7 @@ The DEX has three classes of holdings to think about:
    upgrade-on-use covered.
 
 2. **Pool reserves.** Reserves are held by the pool contract under the
-   operator's authority. They are *not* passive — every swap rotates a
+   operator's authority. They are not passive: every swap rotates a
    slice of reserves through the factory paths. The pool is therefore
    effectively self-maintaining against issuer upgrades, with the one
    edge case that a pool sitting completely idle for a long stretch
@@ -196,13 +196,13 @@ The DEX has three classes of holdings to think about:
 - When a wallet command returns a "holding not found" or "holding
   version mismatch" error after a forced upgrade, re-fetch the holding
   list and retry rather than surfacing the error to the user.
-- Treat instrument *id* (e.g., `BTC`) as the stable join key; treat the
+- Treat instrument id (e.g., `BTC`) as the stable join key; treat the
   per-holding contract id and package hash as ephemeral.
 
 The DEX's allocation flow already re-queries holdings on each user
 action (pre-allocation greedy selection, post-settlement refresh), so
 incidental force-upgrade exposure is minimal. Where it could bite is
-manual replay tooling that caches a stale holding cid — the operator
+manual replay tooling that caches a stale holding cid. The operator
 backend's command path does not cache cids across requests.
 
 ## Known limitation: one registry admin per pair
@@ -221,8 +221,8 @@ and is shaped for multiple admins, inherited from the upstream batching
 utility. Each `SettlementBatchV2` carries its own `transferLegs`: the standard
 requires a batch's allocations to cover exactly the legs the batch is handed,
 so the caller partitions the trade's legs by the instrument admin of each leg
-(`groupLegsByAdmin` in the operator backend). Note that `splitLegsByAuthorizer`
-splits by *authorizer*, not by admin, so the request path still emits one
+(`groupLegsByAdmin` in the operator backend). `splitLegsByAuthorizer`
+splits by authorizer, not by admin, so the request path still emits one
 specification per authorizer under the trade's single admin.
 
 Pairing instruments from two different registries needs a second admin field

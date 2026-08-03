@@ -3,19 +3,19 @@
 Canton DEX is a runnable **reference implementation** of exchange workflows on
 the Canton Network. It shows how market state, wallet-authorized funding,
 registry-defined holdings, Token Standard V2 allocations, and atomic settlement
-batches fit together in one application — as real Daml workflows and a working
+batches fit together in one application, as real Daml workflows and a working
 dApp, not just diagrams.
 
 If you want to run it, go to **[Getting Started](../getting-started.md)**. This
-page explains *why it is shaped the way it is*.
+page explains why it is shaped the way it is.
 
 ## What it demonstrates
 
 - **Token-standard-native funds movement.** Value moves through V2 holdings,
-  allocations, allocation requests, and settlement factories — not a custom
+  allocations, allocation requests, and settlement factories, not a custom
   off-ledger balance model.
 - **A strict authority boundary.** The operator can only submit the commands it
-  is authorized to submit; every movement of *trader* assets is authorized by
+  is authorized to submit; every movement of trader assets is authorized by
   the trader's own wallet.
 - **Concrete settlement patterns.** RFQs, matched trades, prefunded orders,
   swaps, and LP add/remove are each implemented as delivery-versus-payment
@@ -32,25 +32,25 @@ page explains *why it is shaped the way it is*.
 |---|---|---|
 | **CIP-0056** — Canton Network Token Standard | The base token standard (holdings, transfers, metadata). | The foundation the V2 revision extends. |
 | **CIP-0112** — Token Standard **V2** | The privacy / performance / traditional-accounting revision, adding the allocation + settlement surface. | Every asset (base, quote, and LP token) is a V2 instrument; funds move via V2 allocations and settlement factories. |
-| **CIP-0103** — dApp Standard | The wallet interaction standard (prepare → sign → execute interactive submission). | The dApp hands *trader-authority* commands to a wallet over CIP-0103 rather than submitting them itself. |
+| **CIP-0103** — dApp Standard | The wallet interaction standard (prepare → sign → execute interactive submission). | The dApp hands trader-authority commands to a wallet over CIP-0103 rather than submitting them itself. |
 
 Token Standard V2 has **merged into `canton-network/splice` `main`** and
 becomes the network default from **mid-July 2026**. This repo vendors the V2
-sources at a pinned commit — see
+sources at a pinned commit. See
 [`../../vendor/splice/VENDOR_PIN.md`](../../vendor/splice/VENDOR_PIN.md) and the
 [Allocation Surface](../reference/allocation-surface.md) reference for the exact
 surface it relies on.
 
 ## The trust model
 
-The single most important design idea is **who is allowed to move what**. Four
+The single most important design idea is who is allowed to move what. Four
 authorities, each with a distinct responsibility:
 
 | Authority | Owns | Example |
 |---|---|---|
 | **DEX contracts** | Market state and workflow validation. | An `Order` records price/size and enforces matching rules. |
 | **Token Standard contracts** | Asset reservation and settlement. | An `Allocation` locks a holding; `SettlementFactory_SettleBatch` settles atomically. |
-| **Registry** | Instrument semantics and choice context. | The registry says what a holding *is* and supplies the context a settlement needs. |
+| **Registry** | Instrument semantics and choice context. | The registry says what a holding is and supplies the context a settlement needs. |
 | **Wallet + operator** | Submission authority. | The **wallet** submits trader-authority commands (funding, allocation creation); the **operator** submits only the commands it is authorized to (binding orders, matching, settling batches). |
 
 The operator backend **never** moves a trader's assets on its own. When a

@@ -1,6 +1,6 @@
-# Canton DEX Workflow Design
+# Canton DEX workflow design
 
-## Why Workflow First
+## Why workflow first
 
 The hard part of this reference DEX is not matching Uniswap feature-for-feature.
 The hard part is getting the Daml workflows right so that:
@@ -13,7 +13,7 @@ The hard part is getting the Daml workflows right so that:
 That means we should design workflows first and let features fall out of those
 workflows.
 
-## We Do Not Need Full Uniswap Parity
+## We do not need full Uniswap parity
 
 A production-shaped reference DEX does not need every Uniswap V2 or V3 feature.
 
@@ -47,7 +47,7 @@ add/remove, prefunded orders, OTC/RFQ, cancellation, and operator recovery. If
 this document makes volume-coverage claims in the future, they should be backed
 by current market data rather than asserted qualitatively.
 
-## Workflow Design Principles
+## Workflow design principles
 
 1. One workflow, one business object
    - orders, trades, pools, and LP issuance each get their own app contract
@@ -68,8 +68,8 @@ by current market data rather than asserted qualitatively.
 6. Executor-controlled funds must be usage-constrained on ledger
    - if committed or iterated allocations put funds under executor-driven
      settlement control, the app contracts must validate every permitted use
-   - off-chain services may choose *when* to exercise a workflow, but not
-     redefine *what* the funds may be used for
+   - off-chain services may choose when to exercise a workflow, but not
+     redefine what the funds may be used for
 
 7. Keep hot-path transactions shard-local
    - avoid workflow shapes that require touching every pool reserve allocation
@@ -90,7 +90,7 @@ For a reference deployment, `Matcher` and `PoolOperator` may both be operated
 by the `DexOperator`, but the workflows should keep their responsibilities
 separate.
 
-## Core On-Ledger Contracts
+## Core on-ledger contracts
 
 - `DexPair`
 - `MatchedTrade`
@@ -116,7 +116,7 @@ DAR implements upstream Token Standard V2 interfaces, but it does not define a
 separate app-facing interface that decouples an LP-token registry package from a
 venue package.
 
-## Dependency Split
+## Dependency split
 
 There are two distinct workflow families.
 
@@ -201,7 +201,7 @@ sequenceDiagram
     L-->>O: settled, trade recorded (private to counterparties)
 ```
 
-## Workflow 1: Pair Listing
+## Workflow 1: Pair listing
 
 Purpose:
 - define that the DEX supports trading a given base and quote `InstrumentId`
@@ -236,7 +236,7 @@ Why it matters:
 - it is the right place to gate experimental pool support or lifecycle-rich
   assets
 
-## Workflow 2: OTC / RFQ Trade
+## Workflow 2: OTC / RFQ trade
 
 Purpose:
 - prove the baseline token-standard-native trade flow
@@ -268,7 +268,7 @@ Why it comes first:
 - this is the cleanest reference workflow available today
 - it teaches the core DvP pattern without depending on pool semantics
 
-## Workflow 3: Resting Order Placement
+## Workflow 3: Resting order placement
 
 Purpose:
 - represent a bid or ask as DEX state backed by reserved funds
@@ -304,7 +304,7 @@ Required invariants:
 - allocation funding must cover remaining order quantity
 - order expiry must bound allocation usability
 
-## Workflow 4: Order Match and Settlement
+## Workflow 4: Order match and settlement
 
 Purpose:
 - convert two resting orders into one settled trade
@@ -331,7 +331,7 @@ Failure and unwind flow:
 2. if settlement fails, orders remain unchanged
 3. if one order expires mid-flight, the DEX cancels the match attempt
 
-## Workflow 5: Order Cancel or Expiry
+## Workflow 5: Order cancel or expiry
 
 Purpose:
 - release funds and remove dead liquidity
@@ -351,7 +351,7 @@ Important policy choice:
 - the operator should sweep orders past their expiry time; for RFQs the
   operator-controlled `Rfq_Expire` choice enforces the deadline on-ledger
 
-## Workflow 6: Pool Creation
+## Workflow 6: Pool creation
 
 Purpose:
 - define a pool and its LP token
@@ -380,7 +380,7 @@ Why:
 - it keeps the workflow challenge in Daml rather than concentrated-liquidity
   math
 
-## Workflow 7: Add Liquidity
+## Workflow 7: Add liquidity
 
 Purpose:
 - fund the pool and mint LP shares
@@ -399,7 +399,7 @@ On-ledger flow:
    allocations via `AllocationFactory_Allocate`
 3. operator and `lpRegistrar` settle with `PoolLiquidityRules_SettleAddLiquidity`:
    funds enter the pool, reserve state is updated, pool-managed committed
-   allocations are refreshed, and LP tokens are minted to the provider —
+   allocations are refreshed, and LP tokens are minted to the provider,
    atomically in one settlement
 
 Important note:
@@ -407,7 +407,7 @@ Important note:
 - LP deposits do not need concentrated-liquidity position NFTs
 - fungible LP shares are enough for the first production-shaped reference
 
-## Workflow 8: Remove Liquidity
+## Workflow 8: Remove liquidity
 
 Purpose:
 - burn LP shares and return the provider's proportional reserves
@@ -421,7 +421,7 @@ On-ledger flow:
 3. operator and `lpRegistrar` settle with `PoolLiquidityRules_SettleRemoveLiquidity`:
    base and quote are delivered to the holder, the LP tokens burn to the burn
    account, pool reserve allocations are adjusted down, and reserve references
-   are rolled forward — atomically in one settlement
+   are rolled forward, atomically in one settlement
 
 Required invariants:
 
@@ -434,7 +434,7 @@ Required invariants:
   the boundary are untouched. Operator pays for at most ONE re-allocation per
   side, never one per existing slice
 
-## Workflow 9: Pool Swap
+## Workflow 9: Pool swap
 
 Purpose:
 - execute a trader swap against the pool
@@ -475,7 +475,7 @@ Failure and unwind flow:
 3. if pool reserve references are stale, the operator must refresh state before
    retrying
 
-## Workflow 10: Asset Lifecycle Interaction
+## Workflow 10: Asset lifecycle interaction
 
 Purpose:
 - let lifecycle-rich instruments trade without making the DEX own their
@@ -505,7 +505,7 @@ Important boundary:
 - it should only respond to registry-published tradable instrument versions or
   metadata updates
 
-## Implemented Reference Scope
+## Implemented reference scope
 
 The reference implementation covers:
 
@@ -526,7 +526,7 @@ It deliberately defers:
 4. advanced oracle surfaces
 5. NFT-style LP positions
 
-## Contract Boundary Summary
+## Contract boundary summary
 
 Keep the market objects (`DexPair`, `Order`, `MatchedTrade`, `Rfq`) separate
 from the pool accounting objects (`Pool`, `PoolState`, `PoolSlice`) and the

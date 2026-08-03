@@ -1,4 +1,4 @@
-# LP Liquidity Custody Model
+# LP liquidity custody model
 
 This document explains how the reference pool represents LP liquidity and how
 assets cross the pool boundary during add- and remove-liquidity workflows.
@@ -10,7 +10,7 @@ assets cross the pool boundary during add- and remove-liquidity workflows.
 - Between operations, pool reserves are operator-authored committed
   `PoolSlice` allocations. Slices are
   **locality units, not LP entitlement units**: they exist so add/remove/
-  swap touch only the slices they source, not so a slice "belongs to" an
+  swap touch only the slices they source; a slice does not "belong to" an
   LP.
 - An LP's entitlement is **pro-rata over the aggregate reserves**
   (`lpHeld / totalLpSupply × reserves`), sourced from selected slices.
@@ -35,7 +35,7 @@ if `pool.admin == pool.lpRegistrar`):
   (`LP → operator` base+quote) settle into **operator-authored receiver
   allocations**. `nextIterationFunding = {instrument: amount}` is applied
   on the `FinalizedAllocation` **at the settle step** (not pre-funded at
-  allocate time — that would trip the coverage check in
+  allocate time, which would trip the coverage check in
 	  `Registry.V2`), matching the pool's slice roll-forward model. The
   returned next-iteration allocation cids become the new
   operator-authored `PoolSlice`s.
@@ -44,7 +44,7 @@ if `pool.admin == pool.lpRegistrar`):
   receives freshly-minted LP-token holdings.
 
 The settle choice then exercises `LPTokenPolicy_RecordMint` and rewrites
-`PoolState` **once** with the new reserves + `totalLpSupply`.
+`PoolState` once with the new reserves + `totalLpSupply`.
 
 ## Remove (DvP at the boundary, symmetric to Swap)
 
@@ -60,9 +60,8 @@ two-admin settle in one transaction:
   `holder → burnAccount lpRegistrar`, against the holder's burn-sender
   allocation.
 
-Then `LPTokenPolicy_RecordBurn` + a single `PoolState` rewrite. The key
-correctness point is that funds reach the **holder**, not the operator's
-pool account.
+Then `LPTokenPolicy_RecordBurn` + a single `PoolState` rewrite. Funds reach
+the holder, not the operator's pool account.
 
 ## Choreography & authority
 
@@ -74,7 +73,7 @@ pool account.
   (`pool.lpRegistrar`, sender-side).
 - The settle choices live on a **co-controlled `PoolLiquidityRules`**
   contract (`{ operator, lpRegistrar }`, `signatory operator,
-  lpRegistrar`, choices `controller operator, lpRegistrar`) — not on the
+  lpRegistrar`, choices `controller operator, lpRegistrar`), not on the
   operator-only `PoolRules`, which has no `lpRegistrar` visibility. This
   gives the settle the authority to drive both the operator-signed
   `PoolState`/`PoolSlice` writes and the lpRegistrar-controlled
@@ -95,7 +94,7 @@ pool account.
   `PoolState` and aborts a
   stale request.
 
-## What does NOT change
+## What does not change
 
 - Pricing / share math (`x*y=k` on aggregate reserves; pro-rata shares).
 - `PoolSlice` shape (still operator-authored, no `owner`).
@@ -113,7 +112,7 @@ crediting, and the allocate factory. `RealRegistry` already supports
 these semantics.
 
 One more registry-dependent bound: pool slices are **long-lived committed
-allocations**, and some registries cap allocation lifetime — Amulet enforces
+allocations**, and some registries cap allocation lifetime: Amulet enforces
 `tokenStandardMaxTTL` (default **90 days**) from Splice 0.6.11. Against such a
 registry the operator must roll slices into fresh allocations before the cap
 expires; see

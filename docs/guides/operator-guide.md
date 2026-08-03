@@ -2,7 +2,7 @@
 
 How the DEX operator (admin) deploys, configures, and runs the venue.
 
-The operator is the party that owns the trading venue — sets up pairs
+The operator is the party that owns the trading venue. It sets up pairs
 and pools, observes settlement events, runs the matching engine,
 collects fees, and recovers from incidents.
 
@@ -257,7 +257,7 @@ authenticated operational environment.
 The token is configured via the `OPERATOR_ADMIN_TOKEN` env var. If
 lost, set a new one and restart the operator backend. Existing admin
 writes that haven't settled won't be replayable (different token
-hash) — re-submit them via the new token.
+hash). Re-submit them via the new token.
 
 ---
 

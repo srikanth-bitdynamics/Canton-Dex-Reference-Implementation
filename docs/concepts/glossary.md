@@ -7,7 +7,7 @@ that explains them in depth.
 ### Allocation
 A Token Standard V2 contract that **locks** a holder's [holding](#holding) for a
 specific settlement, so it can be settled atomically later. The DEX never moves
-trader assets directly — it moves them by having the trader create allocations
+trader assets directly. It moves them by having the trader create allocations
 and then settling a batch. See [Allocation Surface](../reference/allocation-surface.md).
 
 ### AllocationFactory / `AllocationFactory_Allocate`
@@ -27,16 +27,16 @@ when its factory choices are exercised. The operator backend fetches these and
 attaches them to each submission. See [Choice Context](../guides/choice-context.md).
 
 ### CIP-0056
-The **Canton Network Token Standard** — the base standard (holdings, transfers,
+The **Canton Network Token Standard**: the base standard (holdings, transfers,
 metadata) that CIP-0112 revises.
 
 ### CIP-0103
-The **dApp Standard** — the wallet interaction standard used for
+The **dApp Standard**: the wallet interaction standard used for
 [prepare/sign/execute](#prepare--sign--execute) interactive submission. The dApp
 hands trader-authority commands to a wallet over CIP-0103.
 
 ### CIP-0112
-The **Canton Network Token Standard V2** — the privacy / performance /
+The **Canton Network Token Standard V2**: the privacy / performance /
 traditional-accounting revision of CIP-0056, adding the allocation + settlement
 surface this DEX is built on. Often written "Token Standard V2" or "TSv2".
 

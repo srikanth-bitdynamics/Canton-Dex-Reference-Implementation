@@ -4,16 +4,16 @@
 
 Canton DEX is a token-standard-native reference DEX for Canton.
 
-It is intentionally not a generic settlement engine. What the reference leaves
-out on purpose, and why, is collected in [Non-goals](non-goals.md). The goal is
-to show builders how to build a real exchange directly on top of:
+It is intentionally not a generic settlement engine. [Non-goals](non-goals.md)
+collects what the reference leaves out on purpose, and why. The goal is to
+show builders how to build a real exchange directly on top of:
 
 - Token Standard V2 allocations and batch settlement
 - registry-backed holdings whose registries implement the V2 holding,
   allocation, and settlement APIs
 - Canton privacy, routing, and atomic transaction semantics
 
-## Design Inputs
+## Design inputs
 
 The architecture is based on three concrete upstream inputs.
 
@@ -63,10 +63,10 @@ extensions, now merged into `canton-network/splice` `main`:
 - `FinalizedAllocation.extraTransferLegSides`
 - settle results that return next-iteration allocation state
 
-Those changes are what make it possible to use allocations not only for trade
+Those changes make it possible to use allocations not only for trade
 reservation but also for long-lived pool inventory.
 
-## Core Decisions
+## Core decisions
 
 1. Token standard first
    - the DEX should use V2 allocation primitives directly, not hide them behind
@@ -86,7 +86,7 @@ reservation but also for long-lived pool inventory.
      `Pool` and `MatchedTrade` each carry a single `admin : Party`, and the
      standard's `TransferLeg.instrumentId` is bare `Text`, so a leg cannot
      name its own admin. Pairing instruments from two different registries is
-     therefore not expressible today — see
+     therefore not expressible today. See
      [Registry Integration](../guides/registry-integration.md#what-the-dex-does-not-assume)
 
 5. Instrument lifecycle stays outside DEX logic
@@ -110,7 +110,7 @@ reservation but also for long-lived pool inventory.
    - therefore every permitted use of those funds should be validated by Daml
      contract state and choice logic, not only by an off-ledger service
 
-## System Model
+## System model
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
@@ -142,9 +142,9 @@ reservation but also for long-lived pool inventory.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Workflow-First Reading
+## Workflow-first reading
 
-The best way to read this architecture is through the workflows:
+Read this architecture through its workflows:
 
 - pair listing
 - OTC / RFQ trade settlement
@@ -157,7 +157,7 @@ The best way to read this architecture is through the workflows:
 Those workflows are described in [workflows.md](./workflows.md). The contracts
 should be shaped around those state transitions, not the other way around.
 
-## On-Ledger Model
+## On-ledger model
 
 ### Instrument layer
 
@@ -210,9 +210,8 @@ A practical model is:
 - each swap adjusts those allocations, settles them, and rolls forward the
   next-iteration allocations
 
-This is the critical architectural move: pool inventory
-should be allocation-native, not a custom internal balance model with a
-different settlement bridge behind it.
+Pool inventory should be allocation-native, not a custom internal balance model
+with a different settlement bridge behind it.
 
 ### Executor-control constraint
 
@@ -234,7 +233,7 @@ The intended model is:
 - the off-chain operator proposes actions, but the ledger-visible contracts
   validate the quantity, pair, expiry, side, and reserve references being used
 
-> **Further reading — decentralizing the operator.** This validation logic can
+> **Further reading: decentralizing the operator.** This validation logic can
 > itself be decentralized. See the
 > [BitSafe decentralization manager proposal](https://github.com/canton-foundation/canton-dev-fund/blob/main/proposals/2026-05-BitSafe-decentralization-manager.md)
 > for decentralizing the execution of validation logic, the
@@ -278,8 +277,8 @@ side` is protected at three levels:
   `PoolRules` / `PoolLiquidityRules` choice that rewrites `reserves` asserts
   inside the choice that its reserve delta equals the net slice-amount change
   the same choice performs (created slice amounts minus consumed/drained
-  slice amounts). These are assertions on the choice's own arithmetic — cheap
-  and contention-free — so a future code change cannot silently let reserves
+  slice amounts). These are assertions on the choice's own arithmetic (cheap
+  and contention-free), so a future code change cannot silently let reserves
   and slices drift apart.
 - **Global equality, auditable on-ledger on demand.** The nonconsuming
   `PoolRules_ReconcileState` choice takes the `PoolState` and the full list
@@ -307,7 +306,7 @@ Expected characteristics:
 - the LP instrument definition should explain redemption policy and pool
   identity
 
-## Token Standard Usage
+## Token Standard usage
 
 ### For OTC and RFQ
 
@@ -353,7 +352,7 @@ Without those semantics, a pool-backed design would drift back toward custom
 escrow or off-ledger reserve tracking, which is exactly what this repo is trying
 to avoid.
 
-## Admin and Pairing Model
+## Admin and pairing model
 
 The DEX should support arbitrary trading pairs of `InstrumentId`, but
 allocations still need to respect token-standard admin boundaries.
@@ -365,9 +364,7 @@ That implies:
 - pool state should store active allocation references in a way that makes
   admin partitioning explicit
 
-This is an important design constraint, not an implementation detail.
-
-## Rich Asset Lifecycle Model
+## Rich asset lifecycle model
 
 The standard holding model remains intentionally small:
 
@@ -401,10 +398,10 @@ In other words, a lifecycle-aware registry may take one instrument version in
 and hand back a new version with the lifecycle side effects applied. The DEX
 does not assume this is available for every registry.
 
-The important point is that the traded asset remains a standard holding even
+The traded asset remains a standard holding even
 when its lifecycle is rich.
 
-## Off-Chain Services
+## Off-chain services
 
 Off-chain services are still necessary, but their job is narrower than in older
 generic-settlement architectures.
@@ -420,13 +417,13 @@ They should focus on:
 They should not become the main abstraction for moving value around. The token
 standard remains the settlement substrate.
 
-## Dependency Boundary
+## Dependency boundary
 
 The reference architecture has a deliberate split:
 
 - OTC and RFQ flows follow the `TradingAppV2` allocation-request and
   per-admin `SettlementFactory_SettleBatch` pattern, against V2 allocations
-  only — this repo declares no V1 allocation dependency
+  only (this repo declares no V1 allocation dependency)
 - pool-backed liquidity requires the V2 allocation extensions used by this
   repo: committed allocations, iterated settlement, extra leg sides, and
   next-iteration allocation results
@@ -434,7 +431,7 @@ The reference architecture has a deliberate split:
 If the upstream API shape changes before landing, this repo should preserve the
 same design intent even if field names or result structures move.
 
-## Component Boundary
+## Component boundary
 
 The current implementation separates concerns by module and template:
 
@@ -443,7 +440,7 @@ The current implementation separates concerns by module and template:
   workflows.
 - `CantonDex.Registry.V2` is a reference registry used for tests and demos.
 
-The DAR implements upstream Token Standard V2 interfaces, but it does **not**
+The DAR implements upstream Token Standard V2 interfaces, but it does not
 define custom Daml interfaces that decouple the LP-token component from the
 DEX venue component. The shared boundary today is the Token Standard V2
 holding/allocation/settlement surface plus explicit template references inside
@@ -457,7 +454,7 @@ pair admission yet. That keeps the reference small, while leaving room for
 forks to add governance, multi-operator approval, or a decentralized rules
 layer.
 
-## Repository Shape
+## Repository shape
 
 ```text
 canton-dex/

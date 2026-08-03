@@ -1,4 +1,4 @@
-# Run Against a Canton Testnet
+# Run against a Canton testnet
 
 This guide shows how to point the operator backend and web app at a Canton
 participant that already has the required DEX and token-standard packages
@@ -18,7 +18,7 @@ Do not commit tokens, concrete party ids, or validator-specific package hashes.
 - Operator, LP registrar, and asset-admin parties allocated on the participant.
 - Registry factory contracts for the asset admins the DEX will touch.
 
-## Start the Operator Backend
+## Start the operator backend
 
 ```bash
 cd services/operator-backend
@@ -38,7 +38,7 @@ npm run testnet
 
 The backend reads the token from the environment and does not write it to disk.
 
-## Start the Web App
+## Start the web app
 
 ```bash
 cd app/web
@@ -54,7 +54,7 @@ npm run preview
 Open <http://localhost:4173>. The header should show the configured network and
 the backend status should report `synced: true`.
 
-## PartyLayer Wallet Live Probe
+## PartyLayer wallet live probe
 
 PartyLayer support is integrated into the main web app; no separate probe app is
 needed. Use this checklist when validating a submit-capable wallet adapter
@@ -115,7 +115,7 @@ lookup response. The usual causes are missing operator visibility on the
 created contracts, a wallet receipt without `updateId`, or a party mismatch
 between the connected wallet and the holdings being spent.
 
-## Smoke Checks
+## Smoke checks
 
 ```bash
 curl -s http://localhost:8080/v1/status  | python3 -m json.tool
@@ -131,7 +131,7 @@ Expected:
 - `/v1/pairs` and `/v1/pools` return the on-ledger contracts visible to the
   operator party.
 
-## Bootstrap a Pair and Pool
+## Bootstrap a pair and pool
 
 Use the admin endpoints in [operator-guide.md](operator-guide.md):
 
@@ -141,7 +141,7 @@ Use the admin endpoints in [operator-guide.md](operator-guide.md):
 New pools start in `PS_Unfunded`. The first LP funds the pool through the same
 add-liquidity request/allocate/settle flow used for later deposits.
 
-## Package Hash Alignment
+## Package hash alignment
 
 If DAR upload or vetting fails with package-version/hash errors, confirm that
 all local DARs were built against the same upstream Token Standard package
@@ -154,17 +154,17 @@ If a pair uses Amulet (CC) as an asset, note the Splice 0.6.11+ requirements:
 
 - The validator node (yours or your wallet provider's) must run a version that
   supports the Token Standard V2 APIs, and the Amulet DARs must be at the
-  V2-capable versions (`amulet` 0.1.21+, `wallet` 0.1.22+ — see the
+  V2-capable versions (`amulet` 0.1.21+, `wallet` 0.1.22+; see the
   [Splice release notes](https://docs.canton.network/global-synchronizer/release-notes/splice)).
 - Amulet enforces `tokenStandardMaxTTL` (default 90 days) on allocations and
-  instructions — see
+  instructions. See
   [Registry Integration](registry-integration.md#allocation-lifetime-caps).
 - Known upstream limitation: the **Splice Amulet Wallet UI** can only create
   multiple requested allocations in a single transaction for *Amulet*
   allocations. The DEX sidesteps this for its own flows by having one Daml
   choice author all allocations of a request in a single command.
 
-## Wallet Boundary
+## Wallet boundary
 
 Operator-authority calls go through the backend. Trader-authority calls, such as
 authoring allocations for add/remove liquidity, swaps, and order funding, must

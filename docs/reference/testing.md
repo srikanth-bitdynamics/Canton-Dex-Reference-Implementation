@@ -8,7 +8,7 @@ participant.
 ## What it verifies
 
 The test covers the same ground as the existing `rfq.test.ts`
-(`InMemoryLedger`-driven), but going through the **real Daml engine**
+(`InMemoryLedger`-driven), but going through the real Daml engine
 on a Canton participant via the JSON Ledger API:
 
 - `JsonApiLedger.submit` correctly serializes `submit-and-wait`
@@ -75,7 +75,7 @@ CANTON_E2E=1 \
   npm test --prefix services/operator-backend
 ```
 
-Expected output — the three Canton E2E cases (enabled by `CANTON_E2E=1`)
+Expected output: the three Canton E2E cases (enabled by `CANTON_E2E=1`)
 within the full backend suite:
 
 ```
@@ -122,7 +122,7 @@ retryable so `retryOnContention` recovers automatically.
 - The token is passed as `Authorization: Bearer ...` on every
   request.
 
-## What this test does NOT cover
+## Out of scope
 
 - Pool initialization + add liquidity + swap end-to-end on a live
   ledger. The `testPoolFullLifecycle` and `testPoolSwapEndToEnd`

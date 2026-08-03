@@ -1,4 +1,4 @@
-# User Guide
+# User guide
 
 How traders, LPs, and RFQ counterparties use the Canton DEX.
 

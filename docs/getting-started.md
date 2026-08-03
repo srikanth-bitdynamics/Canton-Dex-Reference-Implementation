@@ -1,11 +1,11 @@
 # Local Setup & Testing
 
-One page to clone, build, run, test, and explore the **whole** reference DEX on
-your machine — the Daml core, the operator backend, the dApp, and the scripts.
+One page to clone, build, run, test, and explore the whole reference DEX on
+your machine: the Daml core, the operator backend, the dApp, and the scripts.
 The local path needs **no Canton participant**: the dev backend ships an
 in-memory ledger, so you can have the full stack up in a few minutes.
 
-> TL;DR
+> Quick start
 > ```bash
 > git clone https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation.git && cd Canton-Dex-Reference-Implementation
 > bash scripts/run-local-daml-tests.sh                                 # Daml build + tests
@@ -191,11 +191,11 @@ For the Dev Fund milestone reviewers, the same commands map to the deliverables:
 
 ## Optional: run against a real Canton ledger
 The dev backend is in-memory. To run on real Canton:
-- **LocalNet** — a self-contained Canton + Splice network on one host; build the
+- **LocalNet**: a self-contained Canton + Splice network on one host; build the
   DAR, upload it + the V2 DARs, seed a pair/pool, point the backend at the
   participant (`CANTON_LEDGER_URL`), and run `npm run start`. See
   `docs/guides/deployment.md`.
-- **Testnet** — `scripts/deploy-testnet.sh` uploads the DAR + seeds; record the
+- **Testnet**: `scripts/deploy-testnet.sh` uploads the DAR + seeds; record the
   vetted package id + seed CIDs in `docs/guides/run-on-testnet.md`.
 
 ---

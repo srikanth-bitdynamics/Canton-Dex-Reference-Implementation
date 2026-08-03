@@ -1,10 +1,10 @@
-# Deployment Guide
+# Deployment guide
 
 How to deploy the Canton DEX reference implementation. Three deployment
 paths are supported: **Docker Compose**, **local dev** (in-memory ledger),
 and **direct testnet** (real Canton participant).
 
-## 1. Local Dev (no Canton required)
+## 1. Local dev (no Canton required)
 
 For UI development. Uses the `InMemoryLedger` and seeds a BTC/USDC pair
 and pool.
@@ -45,7 +45,7 @@ docker-compose up -d
 Persistent state lives in the `backend-data` volume (SQLite indexer DB).
 To wipe and restart fresh: `docker-compose down -v && docker-compose up -d`.
 
-## 3. Testnet Deployment
+## 3. Testnet deployment
 
 Direct deployment without containers. Same path as docker-compose's
 backend service but you manage the Node process yourself (systemd, pm2,
@@ -75,14 +75,14 @@ export CANTON_OPERATOR=...
 node --import tsx scripts/bootstrap-registry.ts
 ```
 
-The script is idempotent — running it twice is a no-op. See
+The script is idempotent: running it twice is a no-op. See
 [Registry Integration](registry-integration.md) for what
 contracts are created and why.
 
 Among them is a `Registry.V2` under the **lpRegistrar**. That one is not
 optional: the pool's LP token is issued by this repository, and its
 allocation specs name the lpRegistrar as admin, which `Registry.V2` asserts
-against its own. Without it, add- and remove-liquidity cannot allocate —
+against its own. Without it, add- and remove-liquidity cannot allocate,
 whatever the pool trades.
 
 A second registry, under `CANTON_ADMIN`, is created only if you add a
@@ -97,7 +97,7 @@ per-admin registry lookup the design calls for. In a deployment serving
 foreign tokens, each admin's factory cid comes from that admin's own
 registry API, not from these variables.
 
-## Environment Variables
+## Environment variables
 
 See `services/operator-backend/.env.example` and `app/web/.env.example`
 for the canonical list. Required for production:
@@ -114,7 +114,7 @@ for the canonical list. Required for production:
 | `OPERATOR_ADMIN_TOKEN` | Admin auth token for `/v1/admin/*` |
 | `ALLOWED_ORIGINS` | CSV of CORS origins to allow |
 
-## Production Checklist
+## Production checklist
 
 - [ ] `OPERATOR_ADMIN_TOKEN` set to a strong random value
 - [ ] `ALLOWED_ORIGINS` narrowed to your dApp host (not `*`)

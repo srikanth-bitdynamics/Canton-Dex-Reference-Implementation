@@ -1,4 +1,4 @@
-# Choice Context and Disclosure Retrieval
+# Choice context and disclosure retrieval
 
 Defines what the DEX operator backend must attach to each transaction it
 submits, in terms of registry-supplied disclosed contracts and choice-context
@@ -28,8 +28,8 @@ required by the registry's Token Standard V2 choices. The operator-backend's
 
 ## Choice-context-bearing arguments
 
-Each registry-touching choice the DEX exercises has a **context
-shape** the operator must satisfy. Listed here as `(choice, required
+Each registry-touching choice the DEX exercises has a context
+shape the operator must satisfy. Listed here as `(choice, required
 context)` pairs.
 
 ### Allocation creation

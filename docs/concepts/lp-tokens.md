@@ -1,10 +1,10 @@
-# LP Token Versioning Strategy
+# LP token versioning strategy
 
 ## Decision
 
 **Canton DEX LP tokens are unversioned.** The LP token `instrumentId` for a
 given pool is derived from the pool's pair (e.g., `BTC-USDC-LP`) and does
-**not** include a version suffix or per-iteration discriminator.
+not include a version suffix or per-iteration discriminator.
 
 ## Rationale
 
@@ -19,11 +19,11 @@ The reference DEX prioritises:
 3. **UX simplicity** — the wallet shows one LP balance per pool, not a
    timeline of versioned slivers.
 
-## Implications for the Pool Contract
+## Implications for the pool contract
 
 The pool contract template carries `lpInstrumentId : V2.InstrumentId` as a
 static field fixed at pool creation. It MUST NOT be derived from the pool's
-contract id, the current settlement iteration, or the pool's status — those
+contract id, the current settlement iteration, or the pool's status. Those
 all change over a pool's life and would re-version the LP behind users' backs.
 
 Concretely:
@@ -34,27 +34,27 @@ Concretely:
 - `PoolLiquidityRules_SettleRemoveLiquidity` burns `lpInstrumentId` tokens. The pool
   does not care which iteration created them.
 - The `LPTokenPolicy` registrar must accept any holding of `lpInstrumentId`
-  for burn — there is no version check.
+  for burn: there is no version check.
 
-## What about settlement iterations?
+## Settlement iterations
 
 The V2 allocation API introduces `nextIterationAllocationCid` so the pool can hand pool-
 side allocations forward across settlement batches without users re-allocating.
-This is an **allocation lifecycle** concern, not an instrument-versioning
+This is an allocation lifecycle concern, not an instrument-versioning
 concern. The LP holdings users hold are unaffected by allocation iteration.
 
-## What about fee/rule changes?
+## Fee and rule changes
 
 If the admin changes the pool's fee model, the LP instrument stays the same.
 Existing LP holders share in future fees at the new rate. If the change is
 non-trivial and existing LPs should be honoured at old rates, the operator
-must spin up a **new pool** with a **new pair of `lpInstrumentId`** — that
+must spin up a new pool with a new pair of `lpInstrumentId`. That
 is a deliberate migration, not an incidental rebase.
 
-## What about emergency upgrades?
+## Emergency upgrades
 
 If the LP token policy itself needs to be replaced (security fix, choice
-signature change), the upgrade path is a Canton package upgrade — same
+signature change), the upgrade path is a Canton package upgrade: same
 `instrumentId`, new package hash. Holders are unaffected.
 
 ## Why one LP instrument per pool
@@ -69,7 +69,7 @@ signature change), the upgrade path is a Canton package upgrade — same
 ## Why this is separate from registry primitive versioning
 
 Some lifecycle-aware registry-side instruments may version when their issuer
-makes a breaking change — e.g., a coupon payment at epoch N that needs to be
+makes a breaking change, e.g., a coupon payment at epoch N that needs to be
 paid into v_N holdings before they roll forward to v_{N+1}. That is a
 fundamentally different shape of problem from the LP token:
 
@@ -81,17 +81,16 @@ fundamentally different shape of problem from the LP token:
 - **LP tokens** have the pool's LP registrar/policy as the issuer. The
   reference LP token has no off-ledger event to crystallize against a passive
   holder's balance. So upgrade-on-use plus force-upgrade does not apply in this
-  reference — the LP token simply stays at one stable `instrumentId` for the
+  reference: the LP token stays at one stable `instrumentId` for the
   life of the pool.
 
 That means a wallet, lending market, or vault that consumes registry
 primitives needs to handle upgrade-on-use behavior; the same wallet
 consuming LP tokens does not. The two surfaces look fungible-equivalent
-externally but have different upgrade semantics under the hood, and
-that's by design.
+externally but have different upgrade semantics.
 
 See [CIP-0112](https://github.com/global-synchronizer-foundation/cips/blob/main/cip-0112/cip-0112.md)
-for the canonical V1→V2 compatibility framing — V1 instruments continue
+for the canonical V1→V2 compatibility framing: V1 instruments continue
 to exist alongside V2 implementations rather than being bulk-migrated.
 
 ## See also

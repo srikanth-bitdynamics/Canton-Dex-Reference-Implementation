@@ -9,7 +9,7 @@ operational documentation, not here.
 ## Roles and party model
 
 The reference deployment expects four distinct parties. Keeping them logically
-separate is part of the design — collapsing them is acceptable for a single-
+separate is part of the design. Collapsing them is acceptable for a single-
 operator dev instance but should not be the production posture.
 
 | Party         | Owns                                                                          | Signs                                                               |
@@ -67,7 +67,7 @@ on a schedule.
 
 ### Stale or expired orders
 
-- `Order_Cancel` (operator-driven) — cancels the bound allocation via
+- `Order_Cancel` (operator-driven): cancels the bound allocation via
   `Allocation_Cancel`, releasing the trader's locked holdings back to their
   authorizer account. The operator's sweep uses it both for orders past
   `expiry` (checked off-ledger when scheduling the cancel) and for
@@ -80,30 +80,30 @@ on a schedule.
   `currentTime < expiresAt`, so nothing can settle against it. Quote
   contracts stay until their own `expiresAt`; the operator sweep exercises
   `RfqQuote_Withdraw` (dealer-driven) or lets quotes age out.
-- `Rfq_Cancel` (trader-driven) — the trader retracts before any quote
+- `Rfq_Cancel` (trader-driven): the trader retracts before any quote
   acceptance.
 
 ### Stuck matched trades
 
-- `MatchedTrade_Cancel` (venue-driven) — archives outstanding
-  `TradeAllocationRequest` contracts AND exercises `Allocation_Cancel` on
+- `MatchedTrade_Cancel` (venue-driven): archives outstanding
+  `TradeAllocationRequest` contracts and exercises `Allocation_Cancel` on
   any allocations that have already been created. Use when one leg's
   authorizer rejects or times out before settlement.
 
 ### Pool maintenance
 
-- `PoolRules_Pause` (operator) — halts new swaps and liquidity actions while
+- `PoolRules_Pause` (operator): halts new swaps and liquidity actions while
   leaving reserve allocations in place. Useful for upgrades and incident
   response.
-- `PoolRules_Resume` (operator) — exits Paused back to Active.
+- `PoolRules_Resume` (operator): exits Paused back to Active.
 - Remove-liquidity is slice-local: the `PoolLiquidityRules_SettleRemoveLiquidity`
-  settle sources a routine withdrawal from at most ONE boundary
+  settle sources a routine withdrawal from at most one boundary
   re-allocation per side. The architecture and workflows docs describe the
   invariant; the liquidity rules tests exercise the boundary case.
 
 ### LP supply reconciliation
 
-- `PoolState_RecordLPSupply` (lpRegistrar) — pushes the registrar-owned LP
+- `PoolState_RecordLPSupply` (lpRegistrar): pushes the registrar-owned LP
   supply ledger back into the pool's pricing state. Run after each
   mint/burn accept so add-liquidity quoting stays accurate.
 
@@ -222,9 +222,9 @@ package exposes an `EventLog` interface for replayable audit.
 
 The on-ledger state is the source of truth and is replicated by the
 synchronizer. The operator backend's local SQLite is rebuildable from
-the ledger and does **not** need to be backed up for correctness; back
+the ledger and does not need to be backed up for correctness; back
 it up only if you care about historical query performance during
-rebuild. Operator config in the `operator_kv` table IS worth backing
+rebuild. Operator config in the `operator_kv` table is worth backing
 up. It carries dealer whitelist, RFQ policy parameters, and similar
 runtime knobs that are not encoded on-ledger.
 

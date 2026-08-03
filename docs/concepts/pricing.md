@@ -1,8 +1,8 @@
-# Pricing and Oracle Sources
+# Pricing and oracle sources
 
-## Short answer
+## No on-chain price oracle
 
-**There is no on-chain price oracle in this DEX.** Every executable
+There is no on-chain price oracle in this DEX. Every executable
 price comes from one of four endogenous sources, and the codebase
 contains no integration with Chainlink, Pyth, an attested feed, a TWAP
 window, or any external pricing service.
@@ -21,7 +21,7 @@ reserves; it does not consult any external feed. The operator
 backend's `policy/index.ts rankQuotes` ranks dealer quotes but never
 substitutes a price.
 
-## What this means in practice
+## Practical consequences
 
 - Pool prices follow reserves. A pool with stale or thin liquidity
   will quote stale prices. There is no oracle-backed "fair value"
@@ -32,8 +32,8 @@ substitutes a price.
   fee-model the pair config encodes.
 - RFQ prices are whatever dealers quote. The
   [PolicyReceipt](../../trading/CantonDex/Dex/PolicyReceipt.daml) records
-  *which* quote ranked where under which policy version, but does not
-  certify that the chosen price is "good" — only that the policy was
+  which quote ranked where under which policy version, but does not
+  certify that the chosen price is "good", only that the policy was
   applied honestly.
 - The fiat estimates the dApp shows next to instrument balances are
   **live, pool-derived values**, sourced from the operator backend's
@@ -44,22 +44,22 @@ substitutes a price.
   price. They are advisory display estimates, deliberately not used for
   any executable decision.
 
-## What an oracle would change (and where it would attach)
+## Oracle attachment points
 
 If a future tranche introduces an oracle, the natural attachment
 points are:
 
-1. **Slippage / circuit-breaker on `PoolRules_Swap`.** Add an
+1. Slippage / circuit-breaker on `PoolRules_Swap`. Add an
    `oracleAttestation` argument with a signed price + timestamp; the
    choice asserts the realized swap price stays within a band of the
    attested price. The signer would be a separate `oracleAuthority`
    party in the choice context (production registries already follow
-   this pattern for credential checks — see
+   this pattern for credential checks, see
    [registry-integration.md](../guides/registry-integration.md)).
-2. **TWAP for compliance reporting.** A separate `PoolPriceObservation`
+2. TWAP for compliance reporting. A separate `PoolPriceObservation`
    template the operator creates after each `PoolRules_Swap`, sampled by an
    off-chain ingestor. Pure observability, no consensus role.
-3. **Fiat-display reference.** The dApp's `assets.ts` could call out
+3. Fiat-display reference. The dApp's `assets.ts` could call out
    to a public price API at the edge. This is presentation-only and
    does not need to be on-ledger.
 

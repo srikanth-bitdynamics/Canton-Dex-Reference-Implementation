@@ -1,9 +1,9 @@
 # Token Standard V2 allocation surface
 
 This document records the specific Token Standard **V2 (CIP-0112)** allocation-
-surface features this DEX relies on — committed allocations and iterated
-settlement — together with the exact DEX consumers, reconstructed from the
-**actual vendored interface** so readers can audit the dependency directly.
+surface features this DEX relies on (committed allocations and iterated
+settlement), together with the exact DEX consumers, reconstructed from the
+actual vendored interface so readers can audit the dependency directly.
 
 Token Standard V2 has merged into `canton-network/splice` `main` and becomes the
 network default from mid-July 2026; this repo vendors the V2 sources at the
@@ -12,7 +12,7 @@ commit pinned in
 
 For the architectural rationale (why the DEX leans on these extensions for pool
 inventory, not just trade reservation), see
-[`../concepts/architecture.md`](../concepts/architecture.md) — section
+[`../concepts/architecture.md`](../concepts/architecture.md), section
 "3. Token Standard V2 allocation surface". This document is the
 factual, file-anchored reference; the architecture doc is the design context.
 
@@ -51,7 +51,7 @@ elements the DEX consumes directly.
 Defined in `AllocationV2.daml` on `AllocationSpecification`
 (`committed : Bool`). When `True`, the authorizer cannot withdraw the
 allocation until the settlement deadline passes (or the executors
-settle/cancel, or the admin expires it). This is what lets pool liquidity sit in
+settle/cancel, or the admin expires it). This lets pool liquidity sit in
 an allocation that an LP cannot casually pull back.
 
 DEX usage:
@@ -109,8 +109,8 @@ DEX usage:
 ### `FinalizedAllocation.extraTransferLegSides`
 
 `FinalizedAllocation.extraTransferLegSides : [TransferLegSide]` lets executors
-supply the concrete transfer leg sides to authorize **in this settlement
-iteration**, on top of the legs fixed at allocation creation. They MUST be empty
+supply the concrete transfer leg sides to authorize in this settlement
+iteration, on top of the legs fixed at allocation creation. They MUST be empty
 unless the authorizer enabled iterated settlement. The matching
 `Allocation_Settle.extraTransferLegSides` choice argument carries them into the
 settle path.
@@ -136,10 +136,10 @@ DEX usage:
 
 The vendored `AllocationV2.daml` `Allocation` interface exposes exactly three
 state-changing choices: `Allocation_Settle`, `Allocation_Cancel`, and
-`Allocation_Withdraw`. There is **no** `Allocation_Adjust` choice on the
+`Allocation_Withdraw`. There is no `Allocation_Adjust` choice on the
 V2 surface. Earlier/alternative designs adjusted an allocation's
 authorized amounts in place via a dedicated choice; on this surface that role is
-subsumed by iterated settlement — `Allocation_Settle` carries
+subsumed by iterated settlement: `Allocation_Settle` carries
 `extraTransferLegSides` and `nextIterationFunding` and emits a next-iteration
 allocation via `nextIterationAllocationCid`, so the funding "adjustment" happens
 as part of settle rather than as a separate choice.

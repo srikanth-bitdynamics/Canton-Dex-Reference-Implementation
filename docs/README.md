@@ -2,10 +2,10 @@
 
 A full-stack, **Token Standard V2 (CIP-0112)** reference DEX for the Canton
 Network: Daml contracts, an operator backend, a React dApp with a CIP-0103
-wallet boundary, tests, and operator runbooks — covering RFQs, prefunded
+wallet boundary, tests, and operator runbooks, covering RFQs, prefunded
 orders, constant-product pools, swaps, and LP tokens.
 
-New here? **[Start with Getting Started](getting-started.md)** — it takes you
+New here? **[Start with Getting Started](getting-started.md)**: it takes you
 from a clone to the full stack running locally (no Canton participant needed).
 For the ideas behind the design, read the **[Overview](concepts/overview.md)**.
 
@@ -35,7 +35,7 @@ For the ideas behind the design, read the **[Overview](concepts/overview.md)**.
 
 ## All documentation
 
-The docs follow the [Diátaxis](https://diataxis.fr/) model — separating
+The docs follow the [Diátaxis](https://diataxis.fr/) model, separating
 learning (tutorial), tasks (how-to guides), understanding (concepts), and
 lookup (reference).
 
@@ -84,11 +84,11 @@ lookup (reference).
 ## Also in the repo
 - **[Getting Started](getting-started.md)** doubles as the local test-suite
   reference (Daml, backend, and dApp commands with expected counts).
-- The [Builder Guide](guides/builder-guide.md) includes a **guided tour of the
-  four workflow families** — pair listing, matched-trade/RFQ, prefunded orders,
+- The [Builder Guide](guides/builder-guide.md) walks through the four workflow
+  families — pair listing, matched-trade/RFQ, prefunded orders,
   and pool/swap/LP — with file and test pointers.
 - [`examples/stable-pool/`](../examples/stable-pool/) is a separate Daml
-  project that consumes the DEX DAR — a reuse proof point.
+  project that consumes the DEX DAR (a reuse proof point).
 
 ## Governance
 [Contributing](../CONTRIBUTING.md) · [Code of Conduct](../CODE_OF_CONDUCT.md)

@@ -87,6 +87,16 @@ export function Layout() {
                 {label}
               </NavLink>
             ))}
+            <a
+              href="/docs/"
+              target="_blank"
+              rel="noreferrer"
+              data-screen-label="Docs"
+              className="px-3 py-1.5 rounded-sm text-sm transition-colors"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              Docs
+            </a>
           </nav>
 
           <div className="flex-1" />

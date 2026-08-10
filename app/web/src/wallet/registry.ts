@@ -133,7 +133,11 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
       new TestnetHostedProvider(packagePrefix, new OperatorApi(apiBase)),
     );
   }
-  map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));
+  // The operator signing relay is a dev-only convenience, not a real wallet, so
+  // it is registered only in dev builds (like `canton-direct` and `mock`).
+  if (import.meta.env.DEV) {
+    map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));
+  }
   if (projectId) map.set("walletconnect", new WalletConnectProvider(projectId, networkId));
   // canton-direct relies on a long-lived bearer token in localStorage, so it is
   // gated to dev like `mock`. `authToken` is already "" in prod.

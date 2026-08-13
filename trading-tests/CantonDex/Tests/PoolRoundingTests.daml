@@ -1,3 +1,8 @@
+-- What this file proves: the pool's arithmetic always rounds in the pool's
+-- favour, so a swap, a deposit, or a withdrawal can never quietly pay out more
+-- than it should. Each script below pins down one rounding rule with worked
+-- numbers, showing the exact case where naive `*` and `/` would leak value.
+
 -- | Pool payouts round DOWN, so the constant product never falls. `Decimal` is
 -- `Numeric 10`, so a payout cannot be floored once computed — the flooring has
 -- to happen at the multiplication and division that produce it.
@@ -16,6 +21,8 @@ import CantonDex.Dex.PoolState qualified as PS
 import CantonDex.Tests.PoolLiquidityRulesTests qualified as PLT
 import CantonDex.Trading.Utils qualified as Utils
 
+-- Division rounds DOWN: `floorDiv` never returns more than the true quotient
+-- (plain `/` can round the last digit up), yet leaves exact quotients as-is.
 testFloorDivStaysBelowExactQuotient : Script ()
 testFloorDivStaysBelowExactQuotient = do
   -- 7000 / 1007 = 6.95134061569016…, which `/` rounds UP.
@@ -27,6 +34,9 @@ testFloorDivStaysBelowExactQuotient = do
   PM.floorDiv 1.0 8.0 === 0.125
   pure ()
 
+-- Multiplication rounds DOWN: `floorMul` never returns more than the true
+-- product (plain `*` can round the last digit up), yet leaves exact products
+-- untouched.
 testFloorMulStaysBelowExactProduct : Script ()
 testFloorMulStaysBelowExactProduct = do
   -- 0.0000000002 * 0.75 = 0.00000000015 exactly, which `*` rounds UP.
@@ -38,12 +48,17 @@ testFloorMulStaysBelowExactProduct = do
   PM.floorMul 2.5 4.0 === 10.0
   pure ()
 
+-- A lopsided deposit only takes the part of each side the pool's current price
+-- actually backs and hands the rest back, rather than absorbing the unmatched
+-- excess as a free gift to the parties already in the pool.
+--
 -- Deposits draw the ratio-matched share, which must be rounded off the exact
 -- product. Ceiling the quotient and then the product hands back the divisor's
 -- ulp multiplied by the far reserve, so the unmatched excess is absorbed
 -- unrefunded — the donation the refund path exists to prevent.
 testRatioMatchedDepositRoundsOnce : Script ()
 testRatioMatchedDepositRoundsOnce = do
+  -- A pool weighted far toward quote (1000 base : 10 billion quote).
   let big = PoolReserves with baseAmount = 1000.0; quoteAmount = 10000000000.0
   -- 1e-10 base pairs with 1e-10 * 1e10 / 1000 = 0.001 quote, not the whole leg.
   PM.ratioMatchedDeposit big 0.0000000001 1.0 === (0.0000000001, 0.001)
@@ -63,32 +78,50 @@ testRatioMatchedDepositRoundsOnce = do
 -- A full redemption still drains the pool exactly rather than stranding an ulp.
 testFullRedemptionShareIsExact : Script ()
 testFullRedemptionShareIsExact = do
+  -- The sole holder redeems everything: their share is total supply / supply.
   let supply = 1414.2135623731
       share = PM.floorDiv supply supply
+  -- Owning the whole supply is exactly a 100% share, not 0.9999999999.
   share === 1.0
+  -- Multiplying a reserve by that 100% share hands it back whole, to the last
+  -- unit, so nothing is left stranded in the pool.
   PM.floorMul 993.0486593843 share === 993.0486593843
   pure ()
 
+-- The end-to-end proof: a real swap run through the full settlement machinery
+-- must leave base*quote (the pool's invariant `k`) no lower than it started.
+--
 -- A zero-fee pool has no fee slack to absorb a rounding error. 7 USDC into a
 -- 1000/1000 pool prices at 7000/1007, whose rounded quotient sits above the
 -- exact one — paying that out drops base*quote below k.
 testSwapOutputRoundsDownToKeepConstantProduct : Script ()
 testSwapOutputRoundsDownToKeepConstantProduct = do
+  -- Parties: alice supplies the pool's liquidity, bob is the trader.
   alice <- allocateParty "alice"
   bob <- allocateParty "bob"
+  -- Stand up the fixture (operator, registry, factories, empty pool) with a
+  -- ZERO fee, so there is no fee cushion to hide a rounding slip in.
   fx <- PLT.setupWithFee 0 [alice, bob]
+  -- The contract the operator drives trades through.
   rulesCid <- submit fx.operator $ createCmd PRules.PoolRules with operator = fx.operator
   now <- getTime
 
+  -- Seed the pool: alice deposits 1000 BTC + 1000 USDC, so reserves start 1000/1000.
   addRes <- PLT.dvpAdd fx fx.stateCid fx.policyCid alice 1000.0 1000.0 0.0 0.0 0.0 now
+  -- The value to protect: base*quote before the swap.
   let kBefore = 1000.0 * 1000.0
 
+  -- Operator opens a swap request for bob: 7 USDC in.
   reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid = fx.poolCid; swapper = bob
     inputInstrumentId = "USDC"; inputAmount = 7.0
+  -- Allocation plumbing: give bob the 7 USDC and lock it into the settlement
+  -- the request named, the way a real trade would fund its input.
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 7.0
   swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
     [toInterfaceContractId usdcHold] now
+  -- Execute the swap (operator acts, reading the registry's holdings): 7 USDC
+  -- in, BTC out, no minimum-out floor enforced.
   swapRes <- submit (actAs [fx.operator] <> readAs [fx.registry]) $
     exerciseCmd rulesCid PRules.PoolRules_Swap with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
@@ -101,10 +134,15 @@ testSwapOutputRoundsDownToKeepConstantProduct = do
       factoryCid = fx.settleCid
       extraArgs = emptyExtraArgs
 
+  -- Read back the pool the swap left behind.
   state <- fromSome <$> queryContractId @PS.PoolState fx.operator swapRes.poolStateCid
+  -- The core guarantee: the swap did not lower base*quote.
   assertMsg "swap must not lower the constant product"
     (state.reserves.baseAmount * state.reserves.quoteAmount >= kBefore)
 
+  -- And the exact figures: BTC out is the DOWN-rounded quotient (0.0000000001
+  -- less than plain division would give), leaving 993.0486593844 base against
+  -- the 1007 quote now in the pool.
   swapRes.amountOut === 6.9513406156
   state.reserves.baseAmount === 993.0486593844
   state.reserves.quoteAmount === 1007.0

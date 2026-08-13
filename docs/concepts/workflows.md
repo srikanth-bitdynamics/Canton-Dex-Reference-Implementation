@@ -1,150 +1,65 @@
 # Canton DEX workflow design
 
-## Why workflow first
+Every settling workflow in this DEX is one app choice that builds the transfer
+legs and calls a single Token Standard settlement. The app contracts own market
+structure; the Token Standard owns the funds; the registry owns what an
+instrument means. The hard part was never Uniswap parity — it was getting those
+Daml workflows right.
 
-The hard part of this reference DEX is not matching Uniswap feature-for-feature.
-The hard part is getting the Daml workflows right so that:
+## Two workflow families
 
-- the app contracts own market structure
-- token-standard contracts own reservation and settlement
-- registry contracts own asset semantics
-- the production instance is operationally believable
+Every flow settles through the same primitive — `SettlementFactory_SettleBatch`
+over Token Standard allocations — but they split into two families that keep
+different application state and cancellation rules.
 
-That means we should design workflows first and let features fall out of those
-workflows.
+- **Bilateral settlement** — OTC and RFQ block trades. A `MatchedTrade` names
+  two pre-agreed legs; each side authors a one-shot allocation; the operator
+  batches them by registry admin and settles.
+- **Pool and prefunded orders** — swaps, add/remove liquidity, and resting
+  orders. Funds sit under *committed*, *iterated* allocations that the settle
+  rolls forward via `FinalizedAllocation.nextIterationFunding`, so the same
+  reserve or order can settle repeatedly without re-authoring.
 
-## We do not need full Uniswap parity
+The rest of this page walks the four workflows that carry the design: swap,
+add/remove liquidity, the order lifecycle, and RFQ. Secondary flows (pair
+listing, pool creation, asset lifecycle) and the design principles are in
+[Reference](#reference).
 
-A production-shaped reference DEX does not need every Uniswap V2 or V3 feature.
+## Actors and core contracts
 
-It does need:
+| Actor | Role |
+|---|---|
+| `Trader` / `LiquidityProvider` | authors allocations from their own wallet over CIP-0103 |
+| `DexOperator` | drives the settling choices; also acts as `Matcher` and `PoolOperator` in a reference deployment |
+| `Registrar` / `lpRegistrar` | signs mint/burn of the LP instrument |
 
-- single-pool or single-hop swaps
-- add liquidity and remove liquidity
-- LP token mint and burn
-- slippage bounds
-- fees and fee accrual
-- order or RFQ settlement that proves the V2 allocation story
-- cancellation and expiry flows
-- operational controls, observability, and failure handling
+The market objects (`DexPair`, `Order`, `MatchedTrade`, `Rfq`, `RfqQuote`) stay
+separate from the pool-accounting objects (`Pool`, `PoolState`, `PoolSlice`) and
+the LP-token policy (`LPTokenPolicy`). This is a template boundary, not a custom
+Daml-interface boundary: the DAR implements upstream Token Standard V2
+interfaces but defines no app-facing interface of its own.
 
-It does not need on day one:
+## The settlement shape every workflow shares
 
-- concentrated liquidity
-- ticks and tick crossing
-- NFT positions
-- permissionless pool factory
-- multi-hop routing
-- flash swaps
-- advanced oracle and TWAP machinery
+Two mechanics recur below and are worth stating once, because they are the
+non-obvious part:
 
-Those are worthwhile later features, but they are not required to validate the
-core Canton-native design.
+- **Prefunded, iterated allocations.** A pool reserve slice and a resting order
+  are authored with `nextIterationFunding = Some ...` and no transfer legs. The
+  settling choice supplies the real legs as `extraTransferLegSides` on a
+  `FinalizedAllocation`, and the registry rolls the residual budget into a fresh
+  allocation the choice binds back onto the slice or order. A one-shot
+  allocation (`nextIterationFunding = None`) could not do this.
+- **Per-admin batches.** Legs are grouped by the registry `admin` that governs
+  the instrument. Liquidity settles as *split-admin* DvP: base and quote under
+  `pool.admin`, the LP mint/burn under `pool.lpRegistrar` — two
+  `SettleBatch`es in one transaction, each carrying its own registry choice
+  context.
 
-The chosen workflows cover the dominant reference-DEX shapes without claiming
-full market parity: pair listing, single-hop constant-product swaps, LP
-add/remove, prefunded orders, OTC/RFQ, cancellation, and operator recovery. If
-this document makes volume-coverage claims in the future, they should be backed
-by current market data rather than asserted qualitatively.
+## Swap against a pool
 
-## Workflow design principles
-
-1. One workflow, one business object
-   - orders, trades, pools, and LP issuance each get their own app contract
-
-2. Allocations represent funds
-   - not just abstract approvals
-
-3. Settlement is explicit
-   - the DEX should create matched trade or swap state before calling settlement
-
-4. Cancellation is a first-class workflow
-   - no hidden cleanup assumptions
-
-5. Registry lifecycle stays outside market logic
-   - the DEX trades `InstrumentId`; the registry explains what that means
-     through V2 views, metadata, and any registry-specific context/contracts
-
-6. Executor-controlled funds must be usage-constrained on ledger
-   - if committed or iterated allocations put funds under executor-driven
-     settlement control, the app contracts must validate every permitted use
-   - off-chain services may choose when to exercise a workflow, but not
-     redefine what the funds may be used for
-
-7. Keep hot-path transactions shard-local
-   - avoid workflow shapes that require touching every pool reserve allocation
-     for ordinary swaps or redemptions
-   - prefer order-local or reserve-slice-local transactions, with
-     consolidation handled as an explicit maintenance path
-
-## Actors
-
-- `Trader`
-- `LiquidityProvider`
-- `DexOperator`
-- `Matcher`
-- `PoolOperator`
-- `Registrar`
-
-For a reference deployment, `Matcher` and `PoolOperator` may both be operated
-by the `DexOperator`, but the workflows should keep their responsibilities
-separate.
-
-## Core on-ledger contracts
-
-- `DexPair`
-- `MatchedTrade`
-- `TradeAllocationRequest`
-- `Rfq`
-- `RfqQuote`
-- `OrderFundingRequest`
-- `Order`
-- `OrderAllocationRequest`
-- `Pool`
-- `PoolState`
-- `PoolSlice`
-- `PoolRules`
-- `PoolLiquidityRules`
-- `LiquidityAllocationRequest`
-- `LPTokenPolicy`
-
-Together these contracts separate market state, pool accounting, LP-token
-policy, and token-standard allocation requests.
-
-This is a template/module boundary, not a custom Daml-interface boundary. The
-DAR implements upstream Token Standard V2 interfaces, but it does not define a
-separate app-facing interface that decouples an LP-token registry package from a
-venue package.
-
-## Dependency split
-
-There are two distinct workflow families.
-
-### Bilateral settlement workflows
-
-- OTC and RFQ trade request
-- matched trade settlement
-- trade cancellation
-
-### Pool and prefunded-order workflows
-
-- resting orders backed by prefunded allocations
-- pool reserves represented by committed allocations
-- repeated swaps via iterated settlement
-- reserve roll-forward using `FinalizedAllocation.nextIterationFunding`
-
-This split matters because the bilateral path and the pool path share the same
-token-standard settlement primitives while preserving different application
-state and cancellation rules.
-
-## Sequence diagrams
-
-These three flows show how the authorities — the trader's wallet, the dApp, the
-operator, and the ledger's Token Standard contracts — choreograph a settlement.
-Every trader-authority step goes through the wallet over CIP-0103; the operator
-submits only what it is authorized to.
-
-### Pool swap (Workflow 9)
+**Intent:** a trader swaps one pool asset for the other at the constant-product
+price, atomically against the pool's reserves.
 
 ```mermaid
 sequenceDiagram
@@ -153,17 +68,50 @@ sequenceDiagram
     participant O as Operator backend
     participant L as Ledger (Token Standard + Pool)
     D->>O: POST /v1/pools/swap/request
-    O-->>D: allocation spec + choice context
-    T->>L: AllocationFactory_Allocate (lock input holding)
+    O->>L: PoolRules_RequestSwap
+    L-->>O: allocation spec + settlement descriptor
+    O-->>D: spec
+    T->>L: AllocationFactory_Allocate (prefund the input)
     Note over T,L: trader-signed via wallet (CIP-0103)
     D->>O: POST /v1/pools/swap (allocation cid)
     O->>L: PoolRules_Swap -> SettlementFactory_SettleBatch
-    Note over O,L: pool + trader allocations settle atomically (DvP)
-    L-->>O: settled, pool state rolled forward
-    O-->>D: swap result
+    Note over O,L: swapper + input slice + output slices settle atomically (DvP)
+    L-->>O: settled, PoolState rolled forward
 ```
 
-### Add liquidity — delivery-versus-payment (Workflow 7)
+`PoolRules_Swap` prices `amountOut` from the current reserves *inside the
+choice* (`constantProductOut`, see [Pricing](pricing.md)), enforces the taker's
+`minOutputAmount` floor, then settles the swapper against the pool in one batch.
+The input reserve slice rolls forward grown by the full input; the output side
+is drained from an ordered slice prefix so a routine swap never touches every
+reserve slice.
+
+```daml
+let swapperFinalized = Utils.mkFinalizedAllocation swapperAllocationCid
+      (Utils.legsToSides swapperAccount (swapInLeg :: outDel.legs)) None
+    inputFinalized = Utils.mkFinalizedAllocation inputSlice.allocationCid
+      (Utils.legsToSides poolAccount [swapInLeg])
+      (Some (TextMap.fromList [(inputInstrumentId, inputSlice.amount + inputAmount)]))
+
+settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
+  settlement
+  transferLegs = swapInLeg :: outDel.legs
+  allocations = swapperFinalized :: inputFinalized :: outDel.sliceFinalizeds
+  actors = [operator]
+  extraArgs
+```
+
+Proven in
+[`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml) —
+`testPoolSwapEndToEnd` (reserves move, the consumed input slice is replaced by
+its next-iteration slice, sibling slices stay untouched) and
+`testPoolSwapViaRequestSwap` (the spec `PoolRules_RequestSwap` emits settles
+end to end).
+
+## Add and remove liquidity
+
+**Intent:** fund the pool and mint LP shares, or burn LP shares and return the
+provider's proportional reserves — each in one atomic settlement.
 
 ```mermaid
 sequenceDiagram
@@ -172,18 +120,103 @@ sequenceDiagram
     participant O as Operator + lpRegistrar
     participant L as Ledger
     D->>O: POST /v1/pools/add-liquidity/request
-    O->>L: create LiquidityAllocationRequest
-    O-->>D: request + specs (base, quote, LP receipt) + factories
+    O->>L: PoolLiquidityRules_RequestAddLiquidity
+    O-->>D: request + specs (base, quote, LP receipt)
     LP->>L: 3x AllocationFactory_Allocate (base, quote, LP receipt)
     Note over LP,L: LP-signed via wallet
     D->>O: POST /v1/pools/add-liquidity/settle (allocation cids)
     O->>L: PoolLiquidityRules_SettleAddLiquidity
-    Note over O,L: two per-admin SettleBatches — base/quote under pool admin,<br/>LP mint under lpRegistrar
-    L-->>O: funds in pool, LP tokens minted to LP, PoolState rewritten
-    O-->>D: settled
+    Note over O,L: base/quote batch under pool.admin,<br/>LP mint batch under pool.lpRegistrar
+    L-->>O: funds in pool, LP tokens minted, PoolState rewritten
 ```
 
-### RFQ accept (Workflow 2)
+`PoolLiquidityRules_SettleAddLiquidity` runs the split-admin DvP: the LP's
+committed deposits and LP-mint receipt settle together, the operator's receiver
+allocations roll forward into the two new `PoolSlice`s, and the registrar mints
+LP tokens to the provider. Only the ratio-matched part of an off-ratio deposit
+enters the reserves; the excess is refunded in the same batch, so it never buys
+LP tokens.
+
+```daml
+-- base/quote batch (pool.admin): deposits in, operator receivers roll
+-- forward with nextIterationFunding on the finalized step.
+bqResult <- exercise baseQuoteSettleCid V2.SettlementFactory_SettleBatch with
+  settlement
+  transferLegs = [baseDepositLeg, quoteDepositLeg] ++ baseRefundLegs ++ quoteRefundLegs
+  allocations = ...
+  actors = [operator]
+  extraArgs = poolAdminExtraArgs
+...
+-- LP-mint batch (pool.lpRegistrar).
+_ <- exercise lpSettleCid V2.SettlementFactory_SettleBatch with
+  settlement
+  transferLegs = [lpMintLeg]
+  allocations = [Utils.finalAllocation regMint, Utils.finalAllocation lpReceiptCid]
+  actors = [operator]
+  extraArgs = lpRegistrarExtraArgs
+```
+
+Remove is the mirror: `PoolLiquidityRules_SettleRemoveLiquidity` draws the
+pro-rata payout across an ordered slice prefix (full slices drain, only the
+boundary slice is re-wrapped for its leftover), delivers base and quote to the
+holder, and burns the LP tokens under `pool.lpRegistrar`.
+
+Proven in
+[`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml) —
+`testDvpAddLiquidity` (LP funds base+quote and receives real LP holdings in one
+flow), `testDvpAddOffRatioRefundsExcess` (the unmatched leg is refunded, not
+donated), `testDvpRemoveDeliversToHolder` (base+quote go to the holder, LP burns),
+and `testDvpMultiSliceRemove` (a redemption draws across multiple slices).
+
+## Order lifecycle
+
+**Intent:** rest a prefunded bid or ask, then convert two crossing orders into
+one settled trade without either side trusting the matcher.
+
+```mermaid
+flowchart LR
+  P["Order (Pending)"] -->|Order_Fund| F["Order (Funded)"]
+  F -->|OrderMatchExecution_Execute| S{{"SettleBatch<br/>+ roll orders forward"}}
+  S -->|partial fill| PF["Order (PartiallyFilled)"]
+  S -->|full fill| X["archived + SettledTrade"]
+  PF -->|OrderMatchExecution_Execute| S
+  F -->|Order_Cancel| C["cancelled, allocation released"]
+  PF -->|Order_Cancel| C
+```
+
+A resting order is an authorization for a future match whose exact legs are not
+yet known — a prefunded, iterated allocation, not a one-shot one.
+`OrderMatchExecution_Execute` fetches both orders and refuses any fill their own
+terms do not permit, so a buggy or malicious matcher cannot cross a resting
+order outside its limit price or for instruments it never agreed to.
+
+```daml
+assertMsg "fill price must be positive" (match.fillPrice > 0.0)
+assertMsg "fill price above bid limit"
+  (match.fillPrice <= buyOrder.limitPrice)
+assertMsg "fill price below ask limit"
+  (match.fillPrice >= sellOrder.limitPrice)
+```
+
+The same transaction settles the batch and rolls both orders forward: a fully
+filled order is archived, a partial fill is recreated bound to the allocation
+the settle minted, and a `SettledTrade` records the fill. Doing this in one
+choice is load-bearing — the settle archives the allocations the orders point
+at, so an order left behind by a two-step flow would be uncancellable and
+unfillable. `Order_Cancel` is the single operator-controlled path for
+trader-requested cancels and post-expiry cleanup.
+
+Proven in
+[`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml) —
+`testOrderMatchEnforcesLimitPrice` (a fill outside `[ask, bid]` is rejected) and
+`testOrderMatchRollsOrdersForwardAtomically` (both orders roll onto the minted
+allocations and the trade is recorded, in one transaction).
+
+## RFQ and OTC block trades
+
+**Intent:** let a trader request quotes from a whitelisted dealer set, accept
+one, and settle the bilateral trade — with an audit trail of how the quote was
+ranked.
 
 ```mermaid
 sequenceDiagram
@@ -191,352 +224,103 @@ sequenceDiagram
     actor Dl as Dealer (wallet)
     participant O as Operator
     participant L as Ledger
-    T->>O: POST /v1/rfq (create RFQ)
+    T->>O: POST /v1/rfq (create Rfq)
     Dl->>O: post RfqQuote
     T->>O: POST /v1/rfq/accept
-    O->>L: Rfq_Accept (operator + trader) -> MatchedTrade + PolicyReceipt
+    O->>L: Rfq_Accept (trader + operator) -> MatchedTrade + PolicyReceipt
     T->>L: author allocation
     Dl->>L: author allocation
     O->>L: MatchedTrade_Settle -> SettlementFactory_SettleBatch (per admin)
-    L-->>O: settled, trade recorded (private to counterparties)
+    L-->>O: settled, trade private to counterparties
 ```
 
-## Workflow 1: Pair listing
-
-Purpose:
-- define that the DEX supports trading a given base and quote `InstrumentId`
-
-Inputs:
-
-- base instrument id
-- quote instrument id
-- fee model
-- allowed trading mode
-  - RFQ only
-  - order book
-  - pool
-
-On-ledger flow:
-
-1. `DexOperator` creates `DexPair`
-2. `DexPair` records the supported instruments and execution policy
-3. off-chain services subscribe to the pair for matching or pool operations
-
-Current governance boundary:
-
-- `DexPair`, `Pool` and `PoolState` are all directly operator-created in
-  this reference.
-- There is no separate `DexRules` contract for pair admission yet.
-- A production fork can add a rules/governance layer if pair listing needs
-  multi-party approval, package-level decoupling, or decentralized operation.
-
-Why it matters:
-
-- it makes pair support explicit
-- it is the right place to gate experimental pool support or lifecycle-rich
-  assets
-
-## Workflow 2: OTC / RFQ trade
-
-Purpose:
-- prove the baseline token-standard-native trade flow
-
-Primary contracts:
-
-- `MatchedTrade`
-- `TradeAllocationRequest`
-
-On-ledger flow:
-
-1. traders negotiate off-chain
-2. `DexOperator` creates `MatchedTrade`
-3. `MatchedTrade_RequestAllocations` creates one allocation request per
-   authorizer, following the `TradingAppV2` pattern
-4. traders accept their allocation requests
-5. `DexOperator` groups allocations by admin
-6. `MatchedTrade_Settle` calls `SettlementFactory_SettleBatch`
-7. settlement archives requests and finalizes the trade state
-
-Failure and unwind flow:
-
-1. if allocations are not accepted in time, the trade expires
-2. `MatchedTrade_Cancel` archives outstanding requests
-3. any live allocations are cancelled and funds are released
-
-Why it comes first:
-
-- this is the cleanest reference workflow available today
-- it teaches the core DvP pattern without depending on pool semantics
-
-## Workflow 3: Resting order placement
-
-Purpose:
-- represent a bid or ask as DEX state backed by reserved funds
-
-Primary contracts:
-
-- `Order`
-- allocation contract referenced by the order
-
-Reason:
-
-- a resting order is an authorization for a future match whose exact transfer
-  legs are not yet known
-- that is a much better fit for prefunded, adjustable allocations than for the
-  one-shot bilateral allocation shape
-
-On-ledger flow:
-
-1. trader submits order parameters
-   - pair
-   - side
-   - limit price
-   - quantity
-   - expiry
-2. DEX requests or validates a prefunding allocation for the order
-3. trader accepts the allocation
-4. `DexOperator` creates `Order` pointing at the live allocation reference
-5. order becomes matchable only once funding is confirmed
-
-Required invariants:
-
-- live order implies live allocation
-- allocation funding must cover remaining order quantity
-- order expiry must bound allocation usability
-
-## Workflow 4: Order match and settlement
-
-Purpose:
-- convert two resting orders into one settled trade
-
-Primary contracts:
-
-- `Order`
-- `MatchedTrade`
-
-On-ledger flow:
-
-1. `Matcher` chooses compatible orders
-2. `DexOperator` creates `MatchedTrade`
-3. the buy and sell allocations are adjusted with the concrete transfer legs
-4. adjusted allocations are settled atomically
-5. returned next-iteration allocation references are stored back on any
-   partially filled orders
-6. fully filled orders are archived
-7. partially filled orders remain open with reduced remaining quantity
-
-Failure and unwind flow:
-
-1. if adjustment fails, the match is rejected before settlement
-2. if settlement fails, orders remain unchanged
-3. if one order expires mid-flight, the DEX cancels the match attempt
-
-## Workflow 5: Order cancel or expiry
-
-Purpose:
-- release funds and remove dead liquidity
-
-On-ledger flow:
-
-1. `DexOperator` exercises `Order_Cancel` (the single operator-controlled
-   cancellation path; it covers both trader-requested cancels relayed via
-   the operator API and post-expiry cleanup)
-2. the referenced allocation is cancelled
-3. the order is archived
-4. any residual state is recorded for auditability
-
-Important policy choice:
-
-- trader-requested cancel should be honoured before match
-- the operator should sweep orders past their expiry time; for RFQs the
-  operator-controlled `Rfq_Expire` choice enforces the deadline on-ledger
-
-## Workflow 6: Pool creation
-
-Purpose:
-- define a pool and its LP token
-
-Primary contracts:
-
-- `Pool`
-- `LPTokenPolicy`
-
-On-ledger flow:
-
-1. `DexOperator` creates `Pool` for a `DexPair`
-2. `DexOperator` or `Registrar` creates the LP token instrument definition
-   required by the chosen registry; in the reference registry this is an
-   `InstrumentConfiguration`
-3. `Pool` stores fee policy, invariant type, and active reserve references
-4. the pool starts in `Unfunded` state until first liquidity arrives
-
-Recommended first invariant:
-
-- constant product
-
-Why:
-
-- it is enough for a credible reference implementation
-- it keeps the workflow challenge in Daml rather than concentrated-liquidity
-  math
-
-## Workflow 7: Add liquidity
-
-Purpose:
-- fund the pool and mint LP shares
-
-Primary contracts:
-
-- `Pool`
-- `PoolLiquidityRules`
-- `LiquidityAllocationRequest`
-
-On-ledger flow:
-
-1. operator creates a `LiquidityAllocationRequest` for the deposit amounts and
-   minimum LP shares (the add-liquidity request step)
-2. the trader's wallet authors the base-deposit, quote-deposit, and LP-receipt
-   allocations via `AllocationFactory_Allocate`
-3. operator and `lpRegistrar` settle with `PoolLiquidityRules_SettleAddLiquidity`:
-   funds enter the pool, reserve state is updated, pool-managed committed
-   allocations are refreshed, and LP tokens are minted to the provider,
-   atomically in one settlement
-
-Important note:
-
-- LP deposits do not need concentrated-liquidity position NFTs
-- fungible LP shares are enough for the first production-shaped reference
-
-## Workflow 8: Remove liquidity
-
-Purpose:
-- burn LP shares and return the provider's proportional reserves
-
-On-ledger flow:
-
-1. operator creates a `LiquidityAllocationRequest` for the LP amount to redeem
-   and minimum asset outputs (the remove-liquidity request step)
-2. the wallet authors the holder's base-receipt and quote-receipt allocations
-   plus the LP burn-sender allocation via `AllocationFactory_Allocate`
-3. operator and `lpRegistrar` settle with `PoolLiquidityRules_SettleRemoveLiquidity`:
-   base and quote are delivered to the holder, the LP tokens burn to the burn
-   account, pool reserve allocations are adjusted down, and reserve references
-   are rolled forward, atomically in one settlement
-
-Required invariants:
-
-- no over-redemption
-- reserve updates and LP burn must stay atomic
-- routine withdrawals must not touch every reserve allocation. `Pool` holds a
-  list of `PoolSlice` per side and removal settlement walks slices from
-  the front. Only slices needed to cover the redemption are cancelled; the
-  boundary slice (if any) is re-allocated for its leftover; all slices beyond
-  the boundary are untouched. Operator pays for at most ONE re-allocation per
-  side, never one per existing slice
-
-## Workflow 9: Pool swap
-
-Purpose:
-- execute a trader swap against the pool
-
-Primary contracts:
-
-- `Pool`
-- `PoolRules`
-- `PoolSlice`
-
-On-ledger flow:
-
-1. trader submits swap parameters
-   - asset in
-   - amount in or amount out target
-   - slippage bound
-   - deadline
-2. DEX computes quote from the current reserve state
-3. DEX requests or validates trader funding allocation
-4. DEX adjusts the pool reserve allocations for the exact swap legs
-5. DEX settles trader and pool allocations atomically
-6. returned next-iteration pool allocation references are stored on the pool
-7. fees are reflected in reserve accounting
-8. swap action is archived with result metadata
-
-Executor-control note:
-
-- because the executor can drive iterated settlement on the pool allocations,
-  the pool contract state must fully determine which reserve slice is being
-  consumed, the permitted transfer legs, and the resulting reserve update
-- this is why reserve references belong on ledger and why swap settlement
-  should touch only the specific reserve slices participating in the trade
-
-Failure and unwind flow:
-
-1. if slippage bound is violated, no settlement happens
-2. if trader funding disappears, swap action expires or is cancelled
-3. if pool reserve references are stale, the operator must refresh state before
-   retrying
-
-## Workflow 10: Asset lifecycle interaction
-
-Purpose:
-- let lifecycle-rich instruments trade without making the DEX own their
-  lifecycle semantics
-
-Token Standard V2 does not standardize lifecycle transitions for bonds,
-options, escrow obligations, or similar assets. This workflow describes how a
-DEX can stay compatible with registries that implement those behaviours
-themselves.
-
-On-ledger flow:
-
-1. registrar or lifecycle service applies a registry-specific lifecycle
-   transition
-   - coupon event
-   - maturity event
-   - exercise event
-2. a new instrument version or registry metadata record becomes the tradable
-   reference
-3. the DEX updates pair or pool eligibility rules if needed
-4. old orders or pools can be paused, migrated, or settled out according to
-   policy
-
-Important boundary:
-
-- the DEX should not calculate coupons or option exercise
-- it should only respond to registry-published tradable instrument versions or
-  metadata updates
-
-## Implemented reference scope
-
-The reference implementation covers:
-
-1. pair listing
-2. OTC / RFQ trade settlement
-3. constant-product pools
-4. add liquidity
-5. remove liquidity
-6. single-hop swaps with slippage bounds
-7. LP token issuance
-8. cancellation, expiry, and operator observability
-
-It deliberately defers:
-
-1. concentrated liquidity
-2. multi-hop routing
-3. permissionless pool creation
-4. advanced oracle surfaces
-5. NFT-style LP positions
-
-## Contract boundary summary
-
-Keep the market objects (`DexPair`, `Order`, `MatchedTrade`, `Rfq`) separate
-from the pool accounting objects (`Pool`, `PoolState`, `PoolSlice`) and the
-LP-token policy (`LPTokenPolicy`). The shared boundary is the token-standard
-allocation and settlement surface, not a custom internal escrow system.
-
-The current reference stops at that shared Token Standard boundary. It does not
-yet introduce custom Daml interfaces or a separate `DexRules` contract to
-govern pair creation.
+`Rfq_Accept` is jointly controlled by `trader, operator`: the trader consumes
+the `Rfq` and every quote, the operator signs the resulting `MatchedTrade`. It
+ranks the considered quotes, records the winner and its rank in a
+[`PolicyReceipt`](../../trading/CantonDex/Dex/PolicyReceipt.daml) (evidence the
+published policy was applied, not that the price was good), and copies the RFQ's
+`expiresAt` onto the trade's `settlementDeadline`.
+
+```daml
+tradeCid <- create MT.MatchedTrade with
+  venue = operator
+  admin
+  transferLegs = legs
+  settlementDeadline = Some expiresAt
+  policyReceipt = Some receipt
+```
+
+That deadline coupling is a real hazard: `Allocation_Settle` aborts once the
+deadline passes, and because `Rfq_Accept` is consuming there is nothing left to
+retry with, so an RFQ that expires between accept and settle strands both
+sides' funds until someone cancels — which is why the backend clamps a
+requested expiry to a floor.
+
+Proven in
+[`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml),
+which runs against real `Registry.V2` holdings —
+`testRfqBuySettlesAgainstRealHoldings` (balances and the rank-1 receipt are
+exactly as expected, no locks stranded) and
+`testExpiryBetweenAcceptAndSettleBlocksTheSettle` (past the inherited deadline
+the settle fails and the funds stay locked).
 
 ---
 
-**Where to read next:** [Architecture](architecture.md) · [Builder Guide](../guides/builder-guide.md) · [Allocation Surface](../reference/allocation-surface.md) · [All docs](../README.md)
+## Reference
+
+### Secondary workflows
+
+- **Pair listing.** `DexOperator` creates a `DexPair` recording the base/quote
+  `InstrumentId`s, fee model, and trading mode (RFQ, order book, or pool). There
+  is no separate `DexRules` admission contract yet; a production fork can add one
+  if listing needs multi-party approval.
+- **Pool creation.** `DexOperator` creates a `Pool` for a `DexPair` and the LP
+  instrument definition (an `InstrumentConfiguration` in the reference
+  registry). The pool starts `Unfunded` with a constant-product invariant until
+  the first add-liquidity settles.
+- **Direct creation.** `DexPair`, `Pool`, and `PoolState` are all directly
+  operator-created; no rules contract mediates their creation.
+- **Asset lifecycle.** Token Standard V2 does not standardize coupon, maturity,
+  or exercise transitions. The DEX only responds to registry-published tradable
+  instrument versions; it never calculates lifecycle events itself.
+
+### Design principles
+
+1. One workflow, one business object — orders, trades, pools, and LP issuance
+   each get their own app contract.
+2. Allocations represent funds, not abstract approvals.
+3. Settlement is explicit — the app creates matched trade/swap state before
+   calling settlement.
+4. Cancellation is a first-class workflow, with no hidden cleanup.
+5. Registry lifecycle stays outside market logic — the DEX trades
+   `InstrumentId`; the registry explains what it means through V2 views.
+6. Executor-controlled funds are usage-constrained on-ledger. Because the
+   executor can drive iterated settlement on committed pool allocations, the
+   `Pool`/`PoolSlice` state must fully determine which reserve slice is
+   consumed, the permitted legs, and the resulting reserve update. Off-ledger
+   services choose *when* to settle, never *what* the funds may be used for.
+7. Keep hot-path transactions shard-local — an ordinary swap or redemption
+   touches only the slices it draws from, with consolidation as an explicit
+   maintenance path. `PoolRules_ReconcileState` is the off-hot-path audit anchor
+   that asserts the per-side slice sums equal the recorded reserves.
+
+### Implemented scope
+
+Covered: pair listing; OTC/RFQ settlement; constant-product pools; add and
+remove liquidity; single-hop swaps with slippage bounds; LP token issuance;
+cancellation, expiry, and operator observability.
+
+Deferred: concentrated liquidity and ticks; multi-hop routing; permissionless
+pool creation; NFT-style LP positions; advanced oracle/TWAP surfaces. These are
+later features, not requirements for validating the Canton-native design.
+
+### Contract boundary
+
+The shared boundary between the market objects and the pool/LP objects is the
+Token Standard allocation-and-settlement surface, not a custom internal escrow
+system. The reference stops at that boundary: it introduces no custom Daml
+interfaces and no separate `DexRules` governance contract.
+
+---
+
+**Where to read next:** [Architecture](architecture.md) · [Pricing](pricing.md) · [Builder Guide](../guides/builder-guide.md) · [Allocation Surface](../reference/allocation-surface.md) · [All docs](../README.md)

@@ -1,8 +1,60 @@
-# Operator backend API reference
+# Operator backend HTTP API
 
-All endpoints are served from the operator-backend HTTP shim at the
-configured port (default 8080). Every response is JSON. Error responses
-have the shape:
+The operator backend exposes a small REST surface over its view of the ledger.
+It does exactly two kinds of work, and the split is the thing to understand
+before reading the endpoint tables:
+
+1. **Operator-observed reads.** The operator's active-contract-set view and its
+   indexer, projected into JSON the dApp renders — pairs, pools, order books,
+   a party's holdings, trade and swap history. Reads never move value and, with
+   two scoping exceptions below, need no authorization.
+2. **Orchestration writes.** Choices the *operator* is an authorizer on —
+   creating a pair or pool, opening a DvP allocation request, settling a matched
+   trade, cancelling an order. These carry the operator's authority and are
+   gated by a bearer token.
+
+What this API deliberately does **not** do is author trader-authority writes.
+Placing an order, allocating a holding, signing a swap — anything that spends a
+trader's funds — is signed by the trader's own wallet under the CIP-0103 dApp
+standard and never passes through this backend. The operator can *orchestrate*
+a settlement but cannot *move* a counterparty's value; that boundary is what the
+two-call flows below exist to preserve.
+
+```mermaid
+flowchart LR
+  UI["dApp / integrator"]
+  subgraph op["Operator backend — this API"]
+    R["Reads<br/>ACS + indexer → JSON"]
+    W["Orchestration writes<br/>operator-signed choices"]
+  end
+  A["Trader wallet<br/>(CIP-0103)"]
+  L[("Canton ledger")]
+  UI -->|GET| R --> L
+  UI -->|"POST + operator token"| W -->|operator authority| L
+  UI -.->|WalletIntent| A -.->|trader authority| L
+```
+
+A DvP flow crosses both lanes: the operator `POST …/request` returns an
+allocation spec, the **wallet** authors the allocations that lock the trader's
+funds, and the operator `POST …/settle` completes the atomic swap. The
+value-moving step is the middle one, and it is never an endpoint here.
+
+## Conventions
+
+- **Base URL.** Served on the configured port (default `8080`); examples use
+  `http://localhost:8080`.
+- **Versioning.** Every route is under `/v1`.
+- **JSON everywhere.** Amounts are Daml `Decimal` **strings** at scale 10, never
+  JSON numbers — the API never round-trips a value through a float. (Derived
+  ratios that are not amounts — a 24h price change — are the one exception, and
+  are documented as such.)
+- **Request id.** Every response carries `X-Request-Id`, echoed from the request
+  if supplied, otherwise generated.
+- **Body limit.** POST bodies over 1 MiB are rejected with **413**.
+- **CORS.** Default-deny: no `Access-Control-Allow-Origin` is emitted unless the
+  request origin is on the `ALLOWED_ORIGINS` allowlist.
+
+The error envelope:
 
 ```json
 {
@@ -13,68 +65,113 @@ have the shape:
 }
 ```
 
-Every response also carries the `X-Request-Id` header (echoed from the
-request if supplied, otherwise generated).
+A handful of store-gated routes (see
+[indexer-backed reads](#reads--history-stats-indexer-backed)) answer with a bare
+`{ "error": "…" }` and **503** when their backing store is absent, rather than
+the full envelope.
+
+## Authorization
+
+Three fail-closed gates, applied in this order:
+
+| Gate | Applies to | Requirement |
+|---|---|---|
+| **Admin token** | `/v1/admin/*` writes | `Authorization: Bearer $OPERATOR_ADMIN_TOKEN` |
+| **Operator token** | every other state-changing route (pool swap/LP, order, RFQ, matched-trade, wallet relay) | `Authorization: Bearer $DEX_OPERATOR_API_TOKEN` |
+| **Per-caller binding** *(optional)* | trader-subject writes | `X-Caller-Token` JWT whose `sub` is the caller's own party |
+
+Reads are open, except the *unfiltered* forms of `/v1/trades`, `/v1/rfq`, and
+`/v1/rfq/history`, whose rows name both parties and so require the admin token.
+On the in-memory dev server, `DEX_DEV_OPEN=1` opens the operator-write gate
+without a token; see
+[Local Setup → Exercising write paths](../getting-started.md#exercising-write-paths-in-demo-mode).
+
+When the operator token is unset and the dev bypass is off, an operator write
+returns **401**. When per-caller binding is configured
+(`callerJwtSecret`), a write whose subject party is not the caller's own — or
+that carries no valid `X-Caller-Token` — returns **403**. Binding is off by
+default (a single trusted backend); turn it on when the backend fronts
+mutually-distrusting callers.
+
+---
 
 ## Read endpoints
 
-### `GET /v1/context`
+Auth is **open** for every read below unless the row says otherwise.
 
-Returns `DexContext`: the static parties and factory CIDs the dApp
-needs to build trader-authority intents.
+### Reads — context and market
+
+| Method · Path | Purpose |
+|---|---|
+| `GET /v1/context` | Static parties and factory CIDs the dApp needs to build wallet intents |
+| `GET /v1/status` | Network id, ledger slot (offset), sync flag, server time |
+| `GET /v1/pairs` | All `DexPair` contracts (whether or not they have a pool) |
+| `GET /v1/pools` | All active pools |
+| `GET /v1/instruments` | Instrument metadata, merged from the registry configs; `?ids=BTC,USDC` filters |
+| `GET /v1/prices?pairs=` | Advisory pool mid-prices for fiat display |
+| `GET /v1/credentials?holder=` | `Credential` contracts held by a party |
+
+`GET /v1/context` returns the `DexContext` — the operator holds the knowledge of
+which admin governs which instrument and which factory to allocate against, so
+it surfaces it here rather than making the dApp guess:
 
 ```json
 {
-  "operator": "...",
-  "lpRegistrar": "...",
-  "admin": "...",
-  "allocationFactoryCid": "...",
-  "settlementFactoryCid": "...",
+  "operator": "...", "lpRegistrar": "...", "admin": "...",
+  "allocationFactoryCid": "...", "settlementFactoryCid": "...",
+  "allocationFactoryExtraArgs": { "context": { "values": {} }, "meta": { "values": {} } },
+  "allocationFactoryDisclosure": [ /* DisclosedContract[] for the wallet */ ],
   "network": "canton:devnet"
 }
 ```
 
-### `GET /v1/status`
-
-Health + slot snapshot.
+`GET /v1/status` reports `slot` as the participant's latest offset (polled every
+2s, with a local counter fallback so the UI's liveness pill keeps moving if the
+poll fails):
 
 ```json
 { "network": "canton:devnet", "slot": 1234567, "synced": true, "serverTime": "2026-05-17T..." }
 ```
 
-### `GET /v1/pools` → `Pool[]`
+`GET /v1/instruments` merges `decimals` from Registry.V2 `InstrumentConfig` with
+`isin`/`cusip`/`description` from `InstrumentConfiguration`, keyed by
+`instrumentId`, then unions in the instruments referenced by active pools so the
+list is populated even before any config is registered. Both config templates
+are `signatory admin`, so the endpoint reads as `admin` and `lpRegistrar`, not
+as the operator. Metadata therefore exists only for instruments issued by a
+registry this deployment hosts; a foreign registry's instrument reports `null`
+fields until `registry-client` implements the standard's off-ledger
+`metadata-v1` API.
 
-All active pools. `Pool` shape defined in
-`services/operator-backend/src/types.ts`.
+```json
+[ { "instrumentId": "BTC", "symbol": "BTC", "decimals": 8, "isin": null, "cusip": null, "description": null } ]
+```
 
-### `GET /v1/pairs` → `DexPair[]`
+### Reads — order book
 
-All trading pairs (whether or not they have pools).
+| Method · Path | Purpose |
+|---|---|
+| `GET /v1/orders?trader=` | Open orders for one trader (**400** without `?trader=`) |
+| `GET /v1/orders/book?pair=BASE/QUOTE` | Resting bids and asks for one market |
+| `GET /v1/orders/matches?pair=BASE/QUOTE` | Crossable pairs — a read-only preview |
 
-### `GET /v1/orders?trader=:party` → `Order[]`
+Both pair-scoped reads also accept `?base=&quote=`, and return **400** if
+neither form resolves. `/v1/orders/matches` projects each cross down to its
+terms — `price`, `quantity`, `buyOrderCid`, `sellOrderCid`. The `Order`
+contracts themselves name their traders and allocations and are not served here;
+the operator route that *acts* on a match
+([`POST /v1/orders/match`](#order-lifecycle)) sits behind the operator token.
 
-Open orders for a specific trader. **400** if `trader` is missing.
+### Reads — account
 
-### `GET /v1/orders/book?pair=BASE/QUOTE` → `{ bids, asks }`
-### `GET /v1/orders/matches?pair=BASE/QUOTE` → `{ matches }`
+| Method · Path | Purpose |
+|---|---|
+| `GET /v1/holdings?owner=` | Per-contract (UTXO-style) holding rows (**400** without `?owner=`) |
+| `GET /v1/balances?owner=` | The holding rows summed per instrument, `available` vs `locked` |
 
-Each entry carries only the terms: `price`, `quantity`, `buyOrderCid`,
-`sellOrderCid`. The orders themselves name their traders and allocations and
-are not served here.
-
-Resting book and crossable pairs for one market. `?base=&quote=` is also
-accepted. **400** if neither form is supplied.
-
-### `GET /v1/holdings?owner=:party` → `Holding[]`
-
-Holdings for the owner. **400** if `owner` is missing. Returns per-contract
-(UTXO-style) rows. For a summed balance, use `/v1/balances` below.
-
-### `GET /v1/balances?owner=:party` → `Balance[]`
-
-Aggregated balances for the owner: the `/v1/holdings` rows summed per
-instrument, with `locked` (in open orders / swaps / allocations) split from
-`available`. **400** if `owner` is missing. Exact decimal math.
+`/v1/balances` saves every client re-deriving a balance from the UTXO-style
+rows. `locked` is the portion committed to open orders, swaps, or allocations;
+the split is exact decimal math:
 
 ```json
 [
@@ -83,294 +180,309 @@ instrument, with `locked` (in open orders / swaps / allocations) split from
 ]
 ```
 
-### `GET /v1/instruments` → `Instrument[]`
+### Reads — history, stats, indexer-backed
 
-Known instruments with metadata: `decimals` from the registry's
-`InstrumentConfig`, `isin`/`cusip`/`description` from `InstrumentConfiguration`,
-merged by `instrumentId` and unioned with the instruments referenced by active
-pools (so it is populated even before any config is registered; fields are
-`null` where no config exists). `symbol` is the instrument id. Optional
-`?ids=BTC,USDC` filters.
+These read the SQLite indexer and return **503** when the server was started
+without a `db` handle.
 
-Both config templates are `signatory admin`, so this reads as the configured
-`admin` and `lpRegistrar` rather than as the operator. Metadata is therefore
-available only for instruments issued by a registry this deployment hosts; a
-foreign registry's instrument reports `null` until `registry-client`
-implements the standard's off-ledger `metadata-v1` API.
+| Method · Path | Purpose | Auth |
+|---|---|---|
+| `GET /v1/trades?trader=&pair=&limit=` | RFQ `MatchedTrade`s + the `SettledTrade` each order-book fill writes | open / **admin** unfiltered |
+| `GET /v1/swaps?pair=&kind=&limit=` | Pool history; `kind` ∈ `swap`,`add_liquidity`,`remove_liquidity`,`state_change` (default `swap`) | open |
+| `GET /v1/rfq/history?trader=&limit=` | Settled RFQ acceptances (trader, pair, winning dealer, rank) | open / **admin** unfiltered |
+| `GET /v1/price-history?pair=&hours=` | Price points from the swaps feed (`hours` 1–720, default 24) | open |
+| `GET /v1/stats/24h?pair=` | 24h price change, volume, swap count | open |
+| `GET /v1/dealers` | Dealer registry — public list | open |
 
-```json
-[ { "instrumentId": "BTC", "symbol": "BTC", "decimals": 8, "isin": null, "cusip": null, "description": null } ]
-```
+`/v1/trades` matches `?trader=` on either side: a party is `trader` on the
+trades it initiated and `counterparty` on those it was matched into. `dealer` is
+a role, set only where a signed policy receipt names one, so it is `null` on
+order-book fills. On `/v1/swaps`, `inputAmount`/`outputAmount` are derived
+textually from the signed reserve deltas the indexer stores — a positive
+`baseDelta` means the pool gained base, i.e. the swapper sent base and received
+quote — so the stored scale survives. `/v1/stats/24h`'s `priceChange24h` is the
+one genuinely float-valued field on the API: it is a ratio, not an amount.
 
-### Historical rows and the exactness cutover
+### Reads — RFQ
 
-The exactness and trade-labelling fixes are **forward-only**: rows written
-before them keep the values they were recorded with. A pre-cutover swap can
-differ from the ledger in the last decimal place, and a pre-cutover trade can
-carry `trader` and `dealer` inverted on a buy.
+| Method · Path | Purpose | Auth |
+|---|---|---|
+| `GET /v1/rfq?owner=` | RFQs and quotes scoped to one party | open / **admin** unfiltered |
 
-`scripts/reindex-derived.ts` recomputes both in place, from data the indexer
-already stores, with no ledger read:
-
-```bash
-node --import tsx scripts/reindex-derived.ts --db <indexer.db> --dry-run
-node --import tsx scripts/reindex-derived.ts --db <indexer.db>
-```
-
-It reports every row it would change before changing anything, and is
-idempotent. Run it once after upgrading, or expect the disagreement when
-backfilling history.
-
-### `GET /v1/trades?trader=&pair=&limit=` → indexer rows
-
-Trade history for one trader: RFQ `MatchedTrade`s and the `SettledTrade` each
-order-book fill writes as it settles. **400** without `?trader=`, unless the
-request carries the admin token: a row names both parties. **503** if the
-indexer is not configured.
-
-`?trader=` matches either side: a party appears as `trader` on the trades
-it initiated and as `counterparty` on those it was matched into. `dealer` is a
-role and is set only where a signed policy receipt names one, so it is null on
-order-book fills; `counterparty` is populated either way.
-
-### `GET /v1/swaps?pair=&limit=` → indexer rows
-
-Amounts are strings, at the stored 10-decimal scale. `inputAmount` and
-`outputAmount` are derived from the signed deltas textually, never through a
-float.
-
-Pool swap history from the indexer. Swaps only: an LP add/remove and a
-pause/resume also rotate the pool state, and are recorded with a `kind` of
-`add_liquidity` / `remove_liquidity` / `state_change` rather than served here.
-
-### `GET /v1/rfq?owner=:party` → `{ rfqs: Rfq[], quotes: RfqQuote[] }`
-
-RFQs and quotes for one party: the RFQs they raised or were whitelisted for,
-and the quotes they posted or received. **400** without `?owner=`, unless the
-request carries the admin token: the operator observes every RFQ and quote,
-so the unfiltered view is admin-only.
-
-### `GET /v1/rfq/history?trader=&limit=` → indexer rows
-
-Settled RFQ acceptances for one trader. **400** without `?trader=`, unless the
-request carries the admin token: each row names the trader, the pair, the
-winning dealer and its rank.
-
-### `GET /v1/admin/config` → `Record<string, string>`
-
-All operator config key-values.
-
-## Quote endpoint
-
-### `POST /v1/swaps/quote`
+A trader sees the RFQs they raised or were whitelisted for; a dealer sees the
+quotes they posted or received. The operator observes *every* RFQ and quote — who
+is asking, on what, in what size, and the price each dealer answered — so the
+unscoped sweep is admin-only:
 
 ```json
-// request — supply `poolCid` (the pool ContractId). `poolId` is also accepted
-// and resolves EITHER the ContractId OR the logical pool id (e.g. "BTC-USDC").
-{ "poolCid": "#2:0", "inputInstrumentId": "BTC", "inputAmount": "0.5" }
-// response — the output plus the fields a trading client would otherwise
-// recompute from reserves + feeBps (all exact, no floats):
-{
-  "outputAmount": "9496.5947516312",
-  "inputAmount": "0.5",
-  "inputInstrumentId": "BTC",
-  "outputInstrumentId": "USDC",
-  "feeBps": 30,
-  "feeAmount": "0.0015000000",      // fee actually applied to the input
-  "executionPrice": "18993.18...",  // output per unit input
-  "spotPrice": "20000.00...",       // pre-trade reserve mid
-  "priceImpact": "0.0503...",       // (spot - execution) / spot
-  "poolCid": "#2:0",
-  "poolId": "BTC-USDC"
-}
+{ "rfqs": [ /* Rfq[] */ ], "quotes": [ /* RfqQuote[] */ ] }
 ```
 
-Advisory; the on-ledger `PoolRules_Swap` choice re-validates with the latest
-reserves.
+The `Pool`, `DexPair`, `Order`, `Holding`, `Balance`, and `Instrument` shapes are
+defined in
+[`services/operator-backend/src/types.ts`](../../services/operator-backend/src/types.ts).
 
-## Write endpoints
+---
 
-All POST endpoints return **400** for malformed JSON or missing required
-fields, **413** if the body exceeds 1 MiB.
+## Quote
 
-### `POST /v1/rfq`
+| Method · Path | Purpose | Auth |
+|---|---|---|
+| `POST /v1/swaps/quote` | Exact off-ledger swap quote | open |
 
-Create an RFQ on a trader's behalf.
-
-```json
-{ "trader": "...", "rfqId": "...", "pair": "BTC/USDC", "side": "RFQ_Buy",
-  "size": "0.5", "expiresAt": "2026-...", "whitelist": [...], "createdAt": "..." }
-```
-
-### `POST /v1/rfq/:cid/cancel` → `204`
-
-Cancel an open RFQ.
-
-### `POST /v1/rfq/accept`
-
-Operator + trader co-sign the accept. Returns `{ tradeCid, receipt }`.
-
-### `POST /v1/orders/bind`, `POST /v1/orders/fund`, `POST /v1/orders/:cid/cancel`
-
-Order lifecycle. See `services/operator-backend/src/order/index.ts` for
-the input shapes (the HTTP shim is a thin pass-through).
-
-### `POST /v1/pools/swap`
-
-Operator-driven `PoolRules_Swap` exercise. The dApp first calls
-`POST /v1/pools/swap/request`, passes the returned allocation spec +
-choice context to the wallet, and then sends the wallet-created allocation
-CID to this endpoint.
-
-### `POST /v1/pools/add-liquidity/request`
-
-Operator opens the add-liquidity flow by creating a
-`LiquidityAllocationRequest`. The trader's wallet then authors the
-base-deposit, quote-deposit, and LP-receipt allocations via
-`AllocationFactory_Allocate`.
+A quote is advisory — the on-ledger `PoolRules_Swap` choice re-derives the output
+from the current reserves and settles against that value, so the operator cannot
+quote one number and settle another. Because the endpoint runs the *same*
+function off-ledger, preview and settlement agree to the last digit (see
+[Pricing](../concepts/pricing.md)). Supply `poolCid`; `poolId` is also accepted
+and resolves either the ContractId or the logical id (e.g. `"BTC-USDC"`).
 
 ```json
 // request
+{ "poolCid": "#2:0", "inputInstrumentId": "BTC", "inputAmount": "0.5" }
+// response — the output plus the fields a client would otherwise recompute
 {
-  "poolCid": "#2:0",
-  "recipient": "lp::1220ab...",
-  "baseAmount": "0.1",
-  "quoteAmount": "10000.0",
-  "requestedAt": "2026-07-01T00:00:00Z",
-  "maxOffRatioBps": "50"   // optional, see below
-}
-// response (the quote fields; the allocation specs, factories, choice
-// contexts and disclosures the wallet needs are returned alongside them)
-{
-  "requestCid": "...",
-  "lpAmount": "29.6531048680",
-  "matchedBaseAmount": "0.1000000000",
-  "matchedQuoteAmount": "8847.7436669408",
-  "refundedBaseAmount": "0.0000000000",
-  "refundedQuoteAmount": "1152.2563330592",
-  "offRatioBps": "1152.2563330592",
-  "knownTotalLpSupply": "1581.0163443902",
-  "baseAmount": "0.1",
-  "quoteAmount": "10000.0"
+  "outputAmount": "9496.5947516312",
+  "inputInstrumentId": "BTC", "outputInstrumentId": "USDC",
+  "feeBps": 30,
+  "feeAmount": "0.0015000000",     // fee applied to the input
+  "executionPrice": "18993.18...", // output per unit input
+  "spotPrice": "20000.00...",      // pre-trade reserve mid
+  "priceImpact": "0.0503...",      // (spot − execution) / spot
+  "poolCid": "#2:0", "poolId": "BTC-USDC"
 }
 ```
 
-**A deposit off the reserve ratio is only partly taken.** LP tokens are minted
-against whichever leg is short relative to the pool's reserve ratio
-(`min((base·S)/rb, (quote·S)/rq)`), and the settle takes only the matching part
-of the other leg into the reserves. `matchedBaseAmount` / `matchedQuoteAmount`
-are the parts of the deposit the minted LP tokens represent and that reach the
-pool; `refundedBaseAmount` / `refundedQuoteAmount` are the remainder, which
-`PoolLiquidityRules_SettleAddLiquidity` refunds to the depositor in the same
-transaction (the settle result reports what it took as `baseAdded` /
-`quoteAdded`). In the example above, 1152.26 dUSD (11.5% of the quote leg)
-comes back. At the reserve ratio both remainders are zero, and the first
-deposit into an unfunded pool sets the ratio, so nothing is left over there
-either.
+---
 
-`maxOffRatioBps` (optional, `0`..`10000`, number or Decimal string) refuses
-the request with **400** when `offRatioBps` exceeds it, before any contract is
-created. Omitting it means no ceiling: the historical behaviour. Use it when
-a partly-filled add is not what you want: the excess is refunded rather than
-lost, but the position you get is smaller than the amounts you sent.
-Decimal rounding alone can leave a sub-bps remainder on an otherwise on-ratio
-deposit, so `0` is stricter than it looks; `1` is the usual "on ratio" check.
-Compute the paired amount from `GET /v1/pools` reserves to stay on ratio, or
-send a tolerance and re-quote when it refuses.
+## Write endpoints
 
-### `POST /v1/pools/add-liquidity/settle`
+All writes below return **400** for malformed JSON or a missing/invalid field
+(amounts must be `Decimal` strings, parties canonical `hint::fingerprint`, cids
+non-empty), **413** over 1 MiB, and require the **operator** token unless noted.
+Field-level specs live in
+[`services/operator-backend/src/http/validate.ts`](../../services/operator-backend/src/http/validate.ts).
 
-Operator + lpRegistrar settle (`PoolLiquidityRules_SettleAddLiquidity`): funds
-enter the pool and LP tokens are minted to the LP, atomically.
+### The two-call DvP pattern
 
-### `POST /v1/pools/remove-liquidity/request`
+Every pool swap and LP move is a delivery-versus-payment settlement, and the
+operator holds only one side of it. So each runs as two operator calls around one
+wallet step:
 
-Operator opens the remove-liquidity flow by creating a
-`LiquidityAllocationRequest`. The trader's wallet then authors the
-base-receipt, quote-receipt, and LP burn-sender allocations.
+1. **`POST …/request`** — the operator opens the flow (for LP, by creating a
+   `LiquidityAllocationRequest`) and returns the allocation specs, factories,
+   choice contexts, and disclosures the wallet needs, alongside a quote.
+2. The trader's **wallet** authors the allocations via
+   `AllocationFactory_Allocate`, locking the trader's funds under the trader's own
+   authority.
+3. **`POST …/settle`** (or `POST /v1/pools/swap` for a swap) — the operator, and
+   the `lpRegistrar` on LP moves, exercises the settle choice: funds enter or
+   leave the pool and LP tokens mint or burn, atomically.
 
-### `POST /v1/pools/remove-liquidity/settle`
+If a wallet returns only an `updateId` (no created-event tree),
+`POST /v1/pools/recover-dvp-allocations` recovers the created allocation cids
+from the transaction tree so the settle can still be assembled.
 
-Operator + lpRegistrar settle (`PoolLiquidityRules_SettleRemoveLiquidity`):
-base + quote are delivered to the holder and the LP tokens burn to the
-burn account, atomically.
+### Pool — swap and liquidity
 
-## Authentication
+| Method · Path | Purpose |
+|---|---|
+| `POST /v1/pools/swap/request` | Open a swap; returns the allocation spec + choice context |
+| `POST /v1/pools/swap` | Settle with the wallet-created allocation (`PoolRules_Swap`) |
+| `POST /v1/pools/add-liquidity/request` | Open add-LP; create `LiquidityAllocationRequest`, return quote + specs |
+| `POST /v1/pools/add-liquidity/settle` | `PoolLiquidityRules_SettleAddLiquidity` (operator + lpRegistrar) |
+| `POST /v1/pools/remove-liquidity/request` | Open remove-LP |
+| `POST /v1/pools/remove-liquidity/settle` | `PoolLiquidityRules_SettleRemoveLiquidity` (operator + lpRegistrar) |
+| `POST /v1/pools/recover-dvp-allocations` | Recover created allocation cids from an `updateId`-only receipt |
 
-**All state-changing routes require operator authorization**, not only
-`/v1/admin/*`, but also the trader-facing writes (`/v1/pools/swap*`,
-`/v1/rfq`, `/v1/orders/*`). They return **401** unless `DEX_OPERATOR_API_TOKEN`
-is configured (send `Authorization: Bearer <token>`) or, on the in-memory dev
-server only, `DEX_DEV_OPEN=1` is set. Read (GET) routes need no auth. Admin
-routes additionally require the `OPERATOR_ADMIN_TOKEN`. See
-[Local Setup → Exercising write paths](../getting-started.md#exercising-write-paths-in-demo-mode).
+**An add off the reserve ratio is only partly taken.** LP tokens are minted
+against whichever leg is short relative to the pool's ratio
+(`min((base·S)/rb, (quote·S)/rq)`), and only the matching part of the other leg
+enters the reserves. The `add-liquidity/request` response reports both parts, so
+the receipt reflects what actually settled rather than what was asked:
 
-## Admin endpoints
+```json
+{
+  "requestCid": "...",
+  "lpAmount": "29.6531048680",
+  "matchedBaseAmount": "0.1000000000",  "matchedQuoteAmount": "8847.7436669408",
+  "refundedBaseAmount": "0.0000000000", "refundedQuoteAmount": "1152.2563330592",
+  "offRatioBps": "1152.2563330592",
+  "knownTotalLpSupply": "1581.0163443902",
+  "baseAmount": "0.1", "quoteAmount": "10000.0"
+}
+```
 
-### `POST /v1/admin/pairs` → `{ pairCid }`
-### `POST /v1/admin/pairs/:cid/fee-model` → `{ pairCid }`
-### `POST /v1/admin/pairs/:cid/active` → `{ pairCid }`
-### `POST /v1/admin/pairs/:cid/trading-mode` → `{ pairCid }`
-### `POST /v1/admin/pools` → `{ poolCid }`
-### `PUT /v1/admin/config` body `{ key, value }`
-### `DELETE /v1/admin/config/:key`
+`matchedBaseAmount`/`matchedQuoteAmount` are the parts the minted LP tokens
+represent and that reach the pool; `refundedBaseAmount`/`refundedQuoteAmount` are
+the remainder, which `PoolLiquidityRules_SettleAddLiquidity` returns to the
+depositor in the same transaction. At the reserve ratio both remainders are
+zero, and the first deposit into an unfunded pool sets the ratio.
+
+The optional `maxOffRatioBps` (`0`..`10000`) refuses the request with **400**
+when `offRatioBps` exceeds it, before any contract is created — use it when a
+partly-filled add is not what you want. Decimal rounding alone can leave a
+sub-bps remainder on an otherwise on-ratio deposit, so `0` is stricter than it
+looks; `1` is the usual "on ratio" check.
+
+### Order lifecycle
+
+| Method · Path | Purpose |
+|---|---|
+| `POST /v1/orders/bind` | Bind a funded order to a settlement ref (full-tree or `updateId` recovery) |
+| `POST /v1/orders/fund` | Fund a bound order |
+| `POST /v1/orders/:cid/cancel` | Cancel an open order (**204**) |
+| `POST /v1/orders/match` | Discover crossing orders and settle each atomically |
+
+`POST /v1/orders/match` catches per match so one bad pair cannot stop the rest,
+and reports the outcome in its status: **200** when all settled, **207** when
+some failed, **502** when every one did.
+
+```json
+{ "matches": [ /* per-match results */ ], "settled": 3, "failed": 0 }
+```
+
+### Matched-trade (OTC) settlement
+
+| Method · Path | Purpose |
+|---|---|
+| `POST /v1/matched-trades/request-allocations` | `MatchedTrade_RequestAllocations` |
+| `POST /v1/matched-trades/settle` | `MatchedTrade_Settle` — one allocation batch per admin |
+| `POST /v1/matched-trades/cancel` | `MatchedTrade_Cancel` — release allocations |
+
+`settle` and `cancel` carry a `batchesByAdmin` / `allocationsByAdmin` object
+keyed by admin party; each admin's batch must cover exactly its own legs, or the
+request is rejected with **400** before it reaches the ledger.
+
+### RFQ
+
+| Method · Path | Purpose |
+|---|---|
+| `POST /v1/rfq` | Create an RFQ on a trader's behalf |
+| `POST /v1/rfq/:cid/cancel` | Cancel an open RFQ (**204**) |
+| `POST /v1/rfq/accept` | Operator + trader co-sign the accept → `{ tradeCid, receipt }` |
+
+```json
+// POST /v1/rfq
+{ "trader": "...", "rfqId": "...", "pair": "BTC/USDC", "side": "RFQ_Buy",
+  "size": "0.5", "expiresAt": "2026-...", "whitelist": [], "createdAt": "..." }
+```
+
+`cancel` and `accept` act as the *fetched* RFQ's `trader`, which a body-field
+binding cannot reach. With per-caller binding on, both resolve the caller from
+the `X-Caller-Token` and reject a mismatch (**403**), so an operator-token holder
+cannot cancel or accept on another trader's behalf.
+
+### Admin
+
+The admin routes require the **admin** token, except the config *read*, which is
+open. The dealer routes additionally require the indexer (**503** without it).
+
+| Method · Path | Purpose |
+|---|---|
+| `POST /v1/admin/pairs` | Create a `DexPair` → `{ pairCid }` |
+| `POST /v1/admin/pairs/:cid/fee-model` | Update the pair's fee model |
+| `POST /v1/admin/pairs/:cid/active` | Activate / deactivate a pair |
+| `POST /v1/admin/pairs/:cid/trading-mode` | Set the pair's trading mode |
+| `POST /v1/admin/pools` | Create a pool → `{ poolCid }` |
+| `GET /v1/admin/config` | Dump operator config (open read) |
+| `PUT /v1/admin/config` | Set a key `{ key, value }` |
+| `DELETE /v1/admin/config/:key` | Delete a key |
+| `PUT /v1/admin/dealers` | Upsert a dealer |
+| `DELETE /v1/admin/dealers/:party` | Remove a dealer |
+
+The pass-through bodies for the pair/pool routes are the service inputs in
+[`services/operator-backend/src/admin/index.ts`](../../services/operator-backend/src/admin/index.ts).
+
+### Wallet relay — dev only
+
+| Method · Path | Purpose | Auth |
+|---|---|---|
+| `POST /v1/wallet/submit` | Forward shaped ledger commands under the operator JWT | operator + flag |
+
+Off by default: it returns **404** unless `DEX_DEV_WALLET_RELAY=1`. When on, the
+forwarded `actAs` parties must be on the `DEX_DEV_RELAY_PARTIES` allowlist (else
+**403**), the `commands` array and `commandId` are shape-checked, and the relay
+follows the committed transaction tree to return the created allocation cids the
+DvP settle path needs. It is a convenience for the walletless demo, not a
+production authority path.
+
+---
 
 ## Wallet intent shapes
 
-The frontend never calls the on-chain ledger directly for trader-
-authority writes. Instead it hands intents to the active
-`WalletProvider`. Intent shapes are defined in
-`app/web/src/wallet/types.ts`:
+For trader-authority writes, the frontend hands an intent to the active
+`WalletProvider` rather than calling the ledger — the wallet holds the trader's
+key, this backend does not. Shapes are in
+[`app/web/src/wallet/types.ts`](../../app/web/src/wallet/types.ts):
 
 | Intent | When |
-|--------|------|
+|---|---|
 | `AcceptAllocationRequestIntent` | Trader allocates holdings for an open order or swap |
 | `PlaceOrderIntent` | Trader places a new order |
 | `RequestSwapIntent` | Trader initiates a pool swap |
-| `AddLiquidityIntent` | Trader authors the base/quote/LP-receipt allocations for an add-liquidity request |
-| `RemoveLiquidityIntent` | Trader authors the base/quote-receipt and LP burn-sender allocations for a remove-liquidity request |
+| `AddLiquidityIntent` | Trader authors the base / quote / LP-receipt allocations for an add |
+| `RemoveLiquidityIntent` | Trader authors the base / quote-receipt and LP burn-sender allocations for a remove |
 | `PostRfqQuoteIntent` | Dealer posts a quote on an RFQ |
-| `AcceptRfqIntent` | Trader accepts a dealer's quote (co-signed with operator) |
+| `AcceptRfqIntent` | Trader accepts a dealer's quote (co-signed with the operator) |
 
-## Error codes
+The wallet also exposes `SplitHoldingIntent` / `MergeHoldingsIntent` for holding
+management; those are a wallet concern and have no operator endpoint.
+
+---
+
+## Status and error codes
 
 | `code` | HTTP | Meaning |
-|--------|------|---------|
-| `bad_request` | 400 | malformed JSON, missing fields, invalid types |
-| `unauthorized` | 401 | missing or invalid admin token |
-| `not_found` | 404 | route or resource not found |
+|---|---|---|
+| `bad_request` | 400 | malformed JSON, missing field, invalid amount / party / cid |
+| `unauthorized` | 401 | missing or invalid operator / admin token |
+| `forbidden` | 403 | per-caller party mismatch, or wallet-relay `actAs` not allowlisted |
+| `not_found` | 404 | route or resource not found (also the disabled wallet relay) |
 | `payload_too_large` | 413 | body > 1 MiB |
+| `not_supported` | 501 | a demo-mode limitation surfaced cleanly, not a server fault |
 | `internal_error` | 500 | unexpected server error |
 
+Beyond the enveloped codes, `POST /v1/orders/match` returns **207** / **502** for
+partial / total settlement failure, the wallet relay returns **502**
+(`tree_fetch_failed`) when a committed transaction's tree cannot be fetched, and
+indexer- or config-gated routes return a bare-`{ error }` **503** when their
+store is absent.
+
+---
 
 ## Examples
 
-All examples assume the local backend on `http://localhost:8080`. Reads need no
-auth; `/v1/admin/*` writes need `Authorization: Bearer $OPERATOR_ADMIN_TOKEN`.
+Reads need no auth; `/v1/admin/*` writes need `Authorization: Bearer
+$OPERATOR_ADMIN_TOKEN`, other writes `Authorization: Bearer
+$DEX_OPERATOR_API_TOKEN` (or `DEX_DEV_OPEN=1` on the dev server).
 
 ```bash
-# Read: trading pairs, pools, and a trader's holdings
-curl -s http://localhost:8080/v1/pairs   | python3 -m json.tool
-curl -s http://localhost:8080/v1/pools   | python3 -m json.tool
-curl -s "http://localhost:8080/v1/holdings?owner=$TRADER" | python3 -m json.tool
+# Reads: pairs, pools, a trader's aggregated balance
+curl -s http://localhost:8080/v1/pairs                       | python3 -m json.tool
+curl -s http://localhost:8080/v1/pools                       | python3 -m json.tool
+curl -s "http://localhost:8080/v1/balances?owner=$TRADER"    | python3 -m json.tool
 
 # Advisory swap quote (re-validated on-ledger by PoolRules_Swap)
 curl -s -X POST http://localhost:8080/v1/swaps/quote \
-  -H 'Content-Type: application/json' \
-  -d '{"poolId":"<Pool cid>","inputInstrumentId":"BTC","inputAmount":"0.5"}'
-# -> {"outputAmount":"9852.14..."}
+  -H 'content-type: application/json' \
+  -d '{"poolCid":"#2:0","inputInstrumentId":"BTC","inputAmount":"0.5"}'
+# -> {"outputAmount":"9496.59...", ...}
 
-# Create an RFQ on a trader's behalf
+# Create an RFQ on a trader's behalf (operator token)
 curl -s -X POST http://localhost:8080/v1/rfq \
-  -H 'Content-Type: application/json' \
+  -H "authorization: Bearer $DEX_OPERATOR_API_TOKEN" -H 'content-type: application/json' \
   -d '{"trader":"'"$TRADER"'","rfqId":"rfq-1","pair":"BTC/USDC","side":"RFQ_Buy",
        "size":"0.5","expiresAt":"2026-12-31T00:00:00Z","whitelist":[],"createdAt":"2026-07-01T00:00:00Z"}'
 ```
 
-The `POST` bodies for the order lifecycle (`/v1/orders/bind`, `/v1/orders/fund`),
-the pool DvP settle endpoints, and `/v1/admin/*` are the pass-through inputs
-defined in `services/operator-backend/src/{order,pool,matched-trade,admin}/index.ts`.
+> **Historical rows.** The exactness and trade-labelling fixes are forward-only:
+> rows written before them keep their recorded values, so a pre-cutover swap can
+> differ in the last decimal and a pre-cutover buy can carry `trader`/`dealer`
+> inverted.
+> [`services/operator-backend/scripts/reindex-derived.ts`](../../services/operator-backend/scripts/reindex-derived.ts)
+> recomputes both in place (idempotent, `--dry-run` first) with no ledger read.
 
 ---
 
-**Where to read next:** [Builder Guide](../guides/builder-guide.md) · [Choice Context](../guides/choice-context.md) · [All docs](../README.md)
+**Where to read next:** [Builder Guide](../guides/builder-guide.md) · [Choice Context](../guides/choice-context.md) · [Allocation surface](allocation-surface.md) · [Pricing](../concepts/pricing.md)

@@ -6,9 +6,73 @@ instrument-configuration or lifecycle template. This document therefore
 separates hard V2 interface requirements from the reference registry's optional
 configuration model in `trading/CantonDex/Instrument/`.
 
+## The registry boundary
+
+The DEX touches a registry through exactly four surfaces. Everything else about
+your asset — issuance policy, precision, lifecycle, credential rules — stays
+behind that line, and the DEX never reaches across it.
+
+```mermaid
+flowchart LR
+  subgraph DEX["DEX (this repo)"]
+    W["Trader wallet"]
+    OB["Operator backend"]
+  end
+  subgraph REG["Asset registry (yours)"]
+    AF["AllocationFactory"]
+    SF["SettlementFactory"]
+    H[("Holding")]
+    CC(["Choice-context endpoint<br/>(off-ledger)"])
+  end
+  W -->|"AllocationFactory_Allocate<br/>locks holdings into an Allocation"| AF
+  OB -->|"SettlementFactory_SettleBatch<br/>atomic net settlement"| SF
+  W -.->|"observe / select"| H
+  AF --> H
+  SF --> H
+  OB -.->|"fetch disclosures"| CC
+  CC -.->|"extraArgs"| SF
+```
+
+Solid arrows are on-ledger interface choices; dashed arrows are off-ledger
+reads. The two choices are the whole on-ledger contract the DEX depends on:
+
+```daml
+-- AllocationInstructionV2.daml -- the trader locks funds under their own authority
+nonconsuming choice AllocationFactory_Allocate : AllocationInstructionResult
+  with
+    settlement : SettlementInfo
+    allocation : AllocationSpecification
+    requestedAt : Time
+    inputHoldingCids : [ContractId Holding]
+    extraArgs : ExtraArgs
+    actors : [Party]
+  ...
+
+-- AllocationV2.daml -- the operator settles a batch of allocations atomically
+nonconsuming choice SettlementFactory_SettleBatch : SettlementFactory_SettleBatchResult
+  with
+    settlement : SettlementInfo
+    transferLegs : [TransferLeg]
+    allocations : [FinalizedAllocation]
+    actors : [Party]
+    extraArgs : ExtraArgs
+  ...
+```
+
+The trader exercises `AllocationFactory_Allocate` under their own authority to
+lock holdings into a `V2.Allocation`; the operator exercises
+`SettlementFactory_SettleBatch` to move the net amounts atomically. `extraArgs`
+on both choices is where the registry's [choice context](choice-context.md) —
+disclosed config and credential contracts — rides along. The DEX only ever
+*reads* a holding through the `V2.Holding` interface (`account`, `instrumentId`,
+`amount`, `lock`); the registry alone mints, locks, splits, and merges it. For
+the exact allocation-surface fields the DEX sets and reads on these choices, see
+[Allocation Surface](../reference/allocation-surface.md).
+
 ## What the registry guarantees
 
-For every instrument the DEX trades, the registry must provide:
+Those surfaces rest on a small set of guarantees. For every instrument the DEX
+trades, the registry must provide:
 
 1. **A stable `InstrumentId` and admin.** The DEX keys orders, pools, RFQs, and
    matched trades by `InstrumentId`. In the reference registry this information
@@ -64,6 +128,17 @@ surface is the choice-context endpoint the backend's registry-client consumes
 implement the standard OpenAPI so V2-compliant wallets and apps can discover
 factories and context without bespoke integration.
 
+The DEX's own flows are exercised against a standard-shaped registry, not only
+its reference one. `testMatchedTradeViaTokenStandardRegistry` in
+[`TokenStandardHarnessTests.daml`](../../trading-tests/CantonDex/Tests/TokenStandardHarnessTests.daml)
+drives the matched-trade flow through the upstream `RegistryApiV2`
+factory-discovery path — proving the DEX composes over a standard registry, not
+a bespoke one. `testRealRegistryDvpAddSettles` and `testRealRegistryDvpSwapSettles`
+in [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml)
+settle add-liquidity and swap DvPs against a genuinely context-requiring
+registry, and `testRealRegistryDvpRejectsMissingContext` proves the settle
+aborts when that registry's disclosed context is dropped.
+
 ## Mint / Burn / Transfer prerequisites
 
 For trader-facing flows (mint, burn, hold, transfer), the reference registry
@@ -116,11 +191,28 @@ spend funds the authorizer never granted has to submit an invalid
 Daml transaction, which the engine rejects regardless of operator
 intent.
 
-The mock at [MockRegistry.daml](../../trading/CantonDex/Testing/MockRegistry.daml)
-implements these conservation rules and is covered by the iterated
-settlement tests in
-[EndToEndTests.daml](../../trading-tests/CantonDex/Tests/EndToEndTests.daml).
-Production registries are expected to do at least the same.
+The reference registry
+[`Registry.V2`](../../trading/CantonDex/Registry/V2.daml) enforces all five in
+Daml, inside `allocation_settleImpl` and `settlementFactory_settleBatchImpl`.
+[`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)
+proves them against that production code:
+
+- `testExtraLegBeyondBackingRejected` — executor-supplied extra leg-sides
+  cannot draw more than the allocation's locked backing.
+- `testNextFundingBeyondBackingRejected` — `sent + nextIterationFunding` is
+  bounded by that backing.
+- `testRollForwardCarriesLockedBacking` / `testSecondIterationCannotExceedFunding`
+  — each roll-forward is backed by freshly locked holdings worth its funding, so
+  a follow-on iteration can spend only what was reserved (the double-spend guard).
+- `testBatchRejectsMissingAuthorization` / `testBatchRejectsSuperfluousAuthorization`
+  / `testBatchRejectsUnbalancedReceiverLeg` — the batch settles every leg-side
+  with exactly one allocation and balances per instrument.
+
+The testing-only
+[`MockRegistry.daml`](../../trading/CantonDex/Testing/MockRegistry.daml)
+deliberately skips these checks: it tracks no holdings and exists to exercise
+flows that *compose* the V2 calls, not the authorization model. Production
+registries are expected to enforce at least what `Registry.V2` does.
 
 ## Choice-context retrieval the DEX needs
 
@@ -160,7 +252,7 @@ What this means in practice for a DEX integrator:
 
 - **Issuers should do this sparingly.** Force-upgrades cost the issuer traffic
   and may disrupt active trades that touch a holding mid-upgrade.
-  Issuers will batch them and choose moments when on-chain activity is
+  Issuers will batch them and choose moments when on-ledger activity is
   low.
 
 ### DEX exposure model
@@ -229,7 +321,14 @@ Pairing instruments from two different registries needs a second admin field
 on those four templates and one specification per `(authorizer, admin)`. That
 is a schema change, not a configuration option.
 
-## What the DEX does NOT assume
+The per-admin batching this describes is load-bearing and tested:
+`testMatchedTradeSettlesPerAdminLegSubsets` in
+[`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml)
+settles a trade's legs across two real registries in one transaction when they
+are partitioned by admin, and proves a batch handed the full leg list — or no
+legs — is rejected rather than settled.
+
+## What the DEX does not assume
 
 - It does not assume any particular registry implementation. Any registry
   implementing the V2 holding and allocation APIs works; nothing depends on

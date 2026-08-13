@@ -1,7 +1,11 @@
 # Canton Testnet Validator — Live Test Plan
 
-End-to-end test plan for validating the Canton DEX reference
-implementation against a live Canton testnet validator.
+The checklist that signs off a Canton DEX deployment against a live testnet
+validator. Work it top to bottom: an offline pre-flight first, then eleven
+numbered phases — from DAR upload through Docker Compose — each a set of
+checkboxes you tick against a real participant. Where a phase has a headless
+script that proves the same thing without a browser, it is linked inline; run it
+to corroborate the manual check, not to replace the sign-off.
 
 ## Goals
 
@@ -21,10 +25,34 @@ implementation against a live Canton testnet validator.
   `https://canton-testnet.example.com:7575`).
 - A bearer JWT issued for `ledger-api-user` with rights to act-as the
   operator, lpRegistrar, admin, and demo trader parties.
-- The synchronizer id (e.g., `global-domain::1220...`).
+- The synchronizer id (e.g., `global-domain::1220...`), exported as
+  `CANTON_SYNCHRONIZER`.
 - Docker / Docker Compose installed on the test runner host.
-- `daml` CLI installed (SDK 3.4.11).
+- `dpm` installed — it resolves the pinned SDK 3.5.2 automatically (see
+  [Local Setup](../getting-started.md#prerequisites)).
 - All env vars in `services/operator-backend/.env.example` populated.
+
+## Pre-flight (offline)
+
+Before pointing anything at the validator, prove the build and the API surface
+on your own machine — no Canton required. Both scripts exit non-zero on the
+first failure, so they gate cleanly.
+
+```bash
+bash scripts/run-local-daml-tests.sh   # dpm build + the Daml suites
+bash scripts/e2e-smoke.sh              # boots the dev backend, curls every endpoint
+```
+
+- [`run-local-daml-tests.sh`](../../scripts/run-local-daml-tests.sh) — builds
+  `canton-dex-trading` and runs the `trading-tests` and `stable-pool` suites.
+  Proves the DAR you are about to upload compiles and its conservation and
+  invariant tests hold.
+- [`e2e-smoke.sh`](../../scripts/e2e-smoke.sh) — starts the backend on an
+  in-memory ledger and curls the read endpoints, a swap quote, the order book,
+  the price feed, and the admin auth gate, printing `==> All smoke checks
+  passed`. Proves the HTTP surface answers and that `POST /v1/admin/pairs` is
+  refused without a bearer token — the same shapes Phases 1–8 exercise against
+  the validator.
 
 ## Phase 0 — Build & upload DARs
 
@@ -39,7 +67,7 @@ export CANTON_ADMIN=...
 ```
 
 Expected:
-- `daml build` succeeds; `.daml/dist/canton-dex-*.dar` exists.
+- `dpm build` succeeds; `trading/.daml/dist/canton-dex-trading-0.1.4.dar` exists.
 - DARs upload to participant (HTTP 200 from `/v2/packages`).
 - Parties allocated (or pre-existing).
 - `scripts/bootstrap-registry.ts` reports each instrument and LP
@@ -121,6 +149,24 @@ Requires `OPERATOR_ADMIN_TOKEN`.
       envelope
 
 ## Phase 5 — Trader flows
+
+Three scripts drive these flows against a live participant without a browser
+wallet — run them to corroborate the manual checks below, each proving one seam:
+
+- [`localnet-dvp-e2e.ts`](../../scripts/localnet-dvp-e2e.ts)
+  (`npm run localnet:dvp-e2e --prefix services/operator-backend`) — stands in
+  for the trader's CIP-0103 wallet, authoring the three allocations for each
+  DvP and settling. Proves the operator two-call add → swap → remove round-trip
+  (§5.3–5.5) and asserts the on-ledger reserves and LP supply.
+- [`seed-testnet-pool.ts`](../../scripts/seed-testnet-pool.ts)
+  (`npm run testnet:seed-pool --prefix services/operator-backend`) — mints, adds
+  liquidity, and swaps against an *existing* live pool. Proves a swap moved the
+  reserves by exactly the constant-product amount and that `x·y` did not
+  decrease (§5.3).
+- [`testnet-v2registry-trade.ts`](../../scripts/testnet-v2registry-trade.ts) —
+  posts a `MatchedTrade`, runs the V2 allocation accept on both sides, and
+  settles via `SettleBatch`. Proves matched-trade settlement through the
+  registry acting as allocation + settlement factory (§5.2).
 
 ### 5.1 Place order
 - [ ] Submit a buy order for BTC/USDC at limit price < current ask
@@ -217,4 +263,4 @@ real Canton testnet validator.
 
 ---
 
-**Where to read next:** [Run on a Testnet](run-on-testnet.md) · [Operator Runbook](operator-runbook.md) · [All docs](../README.md)
+**Where to read next:** [Run on a Testnet](run-on-testnet.md) · [Operator Runbook](operator-runbook.md) · [Testing reference](../reference/testing.md) · [All docs](../README.md)

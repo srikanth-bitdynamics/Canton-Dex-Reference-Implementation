@@ -1,10 +1,15 @@
 # Operator Runbook
 
-Deployment, recovery, and observability guidance for the operator roles
-defined by the reference DEX. It describes the contract surface and the
-off-chain responsibilities that follow from it. Specific cluster topology
-(cantond / participants / synchronizer config) belongs in your Canton
-operational documentation, not here.
+How to deploy, observe, and recover the off-ledger operator services that run
+the reference DEX. The through-line for every recovery decision below: **the
+ledger is the source of truth.** Every fact an operator needs to explain a
+trade or rebuild a service lives on-ledger, replicated by the synchronizer;
+the operator backend's own SQLite is a projection over it. That single
+property is why most recovery here is "rebuild a cache", not "restore a
+database".
+
+Specific cluster topology (cantond / participants / synchronizer config) is a
+Canton operational concern, not a DEX one — see [Out of scope](#out-of-scope-for-this-document).
 
 ## Roles and party model
 
@@ -20,7 +25,9 @@ operator dev instance but should not be the production posture.
 | `trader` / `lp` | `OrderFundingRequest`, `Rfq`, and the deposit/receipt/burn allocations they author against a `LiquidityAllocationRequest` | Their own intents and allocation accepts                          |
 
 The traffic-cost split (called out in module headers) follows the role
-ownership: each role pays for the transactions it submits.
+ownership: each role pays for the transactions it submits. The party wiring is
+read from env at boot (`CANTON_OPERATOR`, `CANTON_LP_REGISTRAR`, `CANTON_ADMIN`);
+see [`.env.example`](../../services/operator-backend/.env.example).
 
 ## Deployment checklist
 
@@ -54,29 +61,33 @@ In rough order of dependency:
    are active, traders may submit `OrderFundingRequest`, liquidity adds/removes
    via the DvP `/request` flow, `Rfq`, etc.
 
-The dev / testnet path in `trading-tests/CantonDex/Tests/EndToEndTests.daml`
-walks every step above against the mock registry. Treat it as the canonical
-bring-up script.
+The dev / testnet path in
+[`trading-tests/CantonDex/Tests/EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
+walks every step above against the mock registry — treat it as the canonical
+bring-up script (it proves the full deploy sequence settles end to end).
 
-## Recovery and operator-driven cleanup
+## Operator-driven cleanup (on-ledger)
 
 Iterated allocations put settlement authority in the executor's hands, so the
-DEX application layer must constrain every permitted use. The recovery
-choices below are app-owned cleanup hooks; an operator service drives them
-on a schedule.
+DEX application layer must constrain every permitted use. The choices below are
+app-owned cleanup hooks on the ledger; an operator service drives them on a
+schedule. None of them fabricate state — each is a real contract choice, so
+the cleanup surface is auditable in one place.
 
 ### Stale or expired orders
 
-- `Order_Cancel` (operator-driven): cancels the bound allocation via
-  `Allocation_Cancel`, releasing the trader's locked holdings back to their
-  authorizer account. The operator's sweep uses it both for orders past
-  `expiry` (checked off-ledger when scheduling the cancel) and for
+- `Order_Cancel` (operator-driven,
+  [`Order.daml`](../../trading/CantonDex/Dex/Order.daml)): cancels the bound
+  allocation via `Allocation_Cancel`, releasing the trader's locked holdings
+  back to their authorizer account. The operator's sweep uses it both for
+  orders past `expiry` (checked off-ledger when scheduling the cancel) and for
   operator-initiated takedowns (compliance, fat-finger cancels, pair
   de-listing).
 
 ### Stale RFQs and quotes
 
-- An RFQ past `expiresAt` is inert: `Rfq_Accept` asserts
+- An RFQ past `expiresAt` is inert:
+  [`Rfq_Accept`](../../trading/CantonDex/Dex/Rfq.daml) asserts
   `currentTime < expiresAt`, so nothing can settle against it. Quote
   contracts stay until their own `expiresAt`; the operator sweep exercises
   `RfqQuote_Withdraw` (dealer-driven) or lets quotes age out.
@@ -85,27 +96,32 @@ on a schedule.
 
 ### Stuck matched trades
 
-- `MatchedTrade_Cancel` (venue-driven): archives outstanding
-  `TradeAllocationRequest` contracts and exercises `Allocation_Cancel` on
-  any allocations that have already been created. Use when one leg's
-  authorizer rejects or times out before settlement.
+- `MatchedTrade_Cancel` (venue-driven,
+  [`MatchedTrade.daml`](../../trading/CantonDex/Dex/MatchedTrade.daml)):
+  archives outstanding `TradeAllocationRequest` contracts and exercises
+  `Allocation_Cancel` on any allocations that have already been created. Use
+  when one leg's authorizer rejects or times out before settlement.
 
 ### Pool maintenance
 
-- `PoolRules_Pause` (operator): halts new swaps and liquidity actions while
-  leaving reserve allocations in place. Useful for upgrades and incident
-  response.
+- `PoolRules_Pause` (operator,
+  [`PoolRules.daml`](../../trading/CantonDex/Dex/PoolRules.daml)): halts new
+  swaps and liquidity actions while leaving reserve allocations in place.
+  Useful for upgrades and incident response.
 - `PoolRules_Resume` (operator): exits Paused back to Active.
 - Remove-liquidity is slice-local: the `PoolLiquidityRules_SettleRemoveLiquidity`
   settle sources a routine withdrawal from at most one boundary
   re-allocation per side. The architecture and workflows docs describe the
-  invariant; the liquidity rules tests exercise the boundary case.
+  invariant;
+  [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml)
+  exercises the multi-slice boundary case (`testDvpMultiSliceRemove`).
 
 ### LP supply reconciliation
 
-- `PoolState_RecordLPSupply` (lpRegistrar): pushes the registrar-owned LP
-  supply ledger back into the pool's pricing state. Run after each
-  mint/burn accept so add-liquidity quoting stays accurate.
+- `PoolState_RecordLPSupply` (lpRegistrar,
+  [`PoolState.daml`](../../trading/CantonDex/Dex/PoolState.daml)): pushes the
+  registrar-owned LP supply ledger back into the pool's pricing state. Run
+  after each mint/burn accept so add-liquidity quoting stays accurate.
 
 ## Observability
 
@@ -122,7 +138,7 @@ operators do not need a parallel database to explain a trade.
 | Why is this `PoolRules_Swap` failing slippage?        | Call the quote endpoint before swap; the on-ledger choice re-validates against current reserves and `minOutputAmount` |
 | Did this LP mint actually run?                        | `PoolLiquidityRules_SettleAddLiquidity` mints against the LP receipt allocation and records the resulting supply on `LPTokenPolicy` |
 
-Off-chain telemetry the operator should also collect:
+Off-ledger telemetry the operator should also collect:
 
 - **Latency** per workflow (`OrderFundingRequest_Bind` → `Order_Fund`,
   `Rfq_Accept` → `MatchedTrade_Settle`, `PoolRules_Swap` end-to-end).
@@ -134,105 +150,203 @@ Off-chain telemetry the operator should also collect:
   `LiquidityAllocationRequest`, and `MintRequest` records have been open
   without a downstream accept.
 
-### Indexer-backed endpoints (v0.1.0+)
+Every HTTP request carries an `X-Request-Id` (echoed back and stamped on each
+log line) and emits a structured, one-JSON-object-per-line record via
+[`lib/logger.ts`](../../services/operator-backend/src/lib/logger.ts) — set
+`LOG_LEVEL` to tune verbosity. Errors and warnings go to stderr, everything
+else to stdout.
 
-The operator backend ships with a polling indexer that projects ledger
-state into a local SQLite database (`data/operator.db` by default).
-Surfaces:
+### Indexer-backed endpoints
+
+The operator backend ships with a polling indexer
+([`indexer/index.ts`](../../services/operator-backend/src/indexer/index.ts))
+that projects ledger state into a local SQLite database (`data/operator.db` by
+default). These endpoints exist only when the server was started with a `db`
+handle; without one they return `503 indexer disabled`.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /v1/trades?trader=&pair=&limit=` | Matched-trade history including archived contracts |
-| `GET /v1/swaps?pair=&limit=` | Per-swap base/quote deltas + price after |
+| `GET /v1/trades?trader=&pair=&limit=` | Matched-trade history including archived contracts (unscoped view is admin-only) |
+| `GET /v1/swaps?pair=&kind=&limit=` | Per-rotation base/quote deltas + price after; `kind` ∈ `swap` (default) / `add_liquidity` / `remove_liquidity` / `state_change` |
 | `GET /v1/rfq/history?trader=&limit=` | RFQ lifecycle events (open / accepted / closed) |
+| `GET /v1/price-history?pair=&hours=` · `GET /v1/stats/24h?pair=` | Price points and derived 24h volume / change from the `swaps` table |
 | `GET /v1/admin/config` | Operator KV (read open by default) |
 | `PUT /v1/admin/config` (Bearer auth) | Set a KV key |
 
-The indexer is single-flight and tolerant of restarts: it reconciles
-from the current ACS on every tick, so a missed tick doesn't corrupt
-state. Set `INDEXER_INTERVAL_MS` to tune polling cadence (default 5s).
+A `swaps` row is not necessarily a swap: five different choices rotate a
+`PoolState`. The indexer polls the ACS and never sees a choice name, so it uses
+`totalLpSupply` as the discriminator (only an add or a remove moves it), in
+exact scaled-integer arithmetic so an LP mint that float subtraction would
+collapse to zero is never misclassified as a swap. Proven in
+[`indexer-pool-kind.test.ts`](../../services/operator-backend/test/indexer-pool-kind.test.ts)
+("sees an LP mint that float subtraction would lose entirely") and
+[`indexer-projection-exactness.test.ts`](../../services/operator-backend/test/indexer-projection-exactness.test.ts)
+(the served magnitudes are the stored strings, digit for digit).
+
+The indexer is single-flight and tolerant of restarts. Its own header states
+the guarantee:
+
+```ts
+// Crash safety: state is reconciled from current ACS on every tick,
+// so a crash just means a missed poll, not a corrupt DB.
+```
+
+Set `INDEXER_INTERVAL_MS` to tune polling cadence (default 5s). Read scoping is
+enforced at the route: an unfiltered `/v1/trades` or `/v1/rfq/history` sweep
+names both counterparties, so it requires the admin token — proven in
+[`read-exposure.test.ts`](../../services/operator-backend/test/read-exposure.test.ts)
+(refuses an unscoped read without the admin token).
 
 ### Idempotency cache
 
-Every command submission is keyed by `commandId` and stored in
-`command_submissions(commandId PK, submittedAt, status, resultJson)`.
-A retry with the same `commandId`:
-- returns the cached result if status='ok'
-- rejects if status='pending' and submittedAt < 60s ago
-- overwrites if stale-pending or 'error'
+Every command submission is wrapped by `IdempotentLedger`
+([`indexer/idempotency.ts`](../../services/operator-backend/src/indexer/idempotency.ts)),
+keyed by `commandId` and stored in:
 
-The cache survives operator restarts and is the recommended defence
-against double-fire across crash/replay boundaries. Sweep the table
-once an hour to discard rows older than the 24h TTL.
+```sql
+CREATE TABLE IF NOT EXISTS command_submissions (
+  commandId TEXT PRIMARY KEY,
+  submittedAt INTEGER NOT NULL,
+  completedAt INTEGER,
+  status TEXT NOT NULL,         -- 'pending' | 'ok' | 'error'
+  resultJson TEXT
+);
+```
+
+A retry with the same `commandId` returns the cached result if `status='ok'`,
+rejects if it is still `pending` and younger than `PENDING_STALE_MS` (60s), and
+overwrites if the row is stale-pending or `error`. A same-`commandId` submit
+carrying *different* args is a replay conflict and is rejected rather than
+served a stale result — proven in
+[`idempotency.test.ts`](../../services/operator-backend/test/idempotency.test.ts)
+("rejects a replay: same commandId, different args"). The cache survives
+operator restarts and is the recommended defence against double-fire across
+crash/replay boundaries. `testnet-server` sweeps rows past the 24h TTL once an
+hour.
 
 ## Recovery procedures
 
-The most likely operational pains for a single-operator deployment:
+Recovery starts from one distinction: what is authoritative versus what is a
+rebuildable projection. The on-ledger ACS is authoritative and replicated by
+the synchronizer. The operator backend's `operator.db` holds only projections
+of it — with one exception, `operator_kv`, which carries runtime knobs (dealer
+whitelist, RFQ policy) that were never written on-ledger and therefore cannot
+be rebuilt from it.
 
-### Operator backend crash / restart
+```mermaid
+flowchart LR
+  ACS[("On-ledger ACS<br/>source of truth,<br/>synchronizer-replicated")]
+  subgraph db["operator.db · local SQLite (WAL)"]
+    PROJ["projections:<br/>trades · swaps<br/>rfq_history · pool_states"]
+    IDEM["command_submissions<br/>(idempotency cache)"]
+    KV["operator_kv<br/>dealer whitelist · RFQ policy"]
+  end
+  ACS -->|"indexer reconciles<br/>every tick"| PROJ
+  PROJ -.->|"rebuildable on delete"| ACS
+  IDEM -.->|"rebuildable"| ACS
+  KV ==>|"off-ledger only —<br/>the one thing to back up"| BK[["operator backup"]]
+```
 
-1. SQLite WAL is durable; the indexer state survives.
-2. On reboot, `Indexer.start()` reconciles from current ACS (no replay
-   needed). Anything new shows up on the next tick.
-3. The idempotency cache prevents the dApp's retry-on-restart from
-   double-submitting commands that completed pre-crash.
-4. If `data/operator.db` is corrupted, delete it: the next tick
-   rebuilds from the live ledger. Cost: trade history older than the
-   ACS-archive cutoff is gone (since it lives only in the indexer DB).
+Ledger errors are classified once, in the JSON-API driver's `errorFor`
+([`json-api.ts`](../../services/operator-backend/src/ledger/json-api.ts)), into
+the `LedgerErrorKind` the rest of the backend reacts to. Only `contention` is
+retryable:
 
-### Participant / synchronizer outage
+```ts
+if (lower.includes("contention") || lower.includes("inconsistent")) {
+  kind = "contention";
+  retryable = true;
+} else if (lower.includes("authoriz") || res.status === 401 || res.status === 403) {
+  kind = "authorization";
+} else if (res.status === 400) {
+  kind = "validation";
+}
+```
 
-1. The JSON LAPI returns 5xx; the indexer logs the error and tries
-   again next tick.
-2. Operator-driven writes (pair create, pool init, settle) fail with
-   `transport` errors; the idempotency cache marks them 'error'.
-3. When the participant recovers, retry from the dApp.
+Every operator write runs inside `retryOnContention`
+([`submit-with-retry.ts`](../../services/operator-backend/src/ledger/submit-with-retry.ts)),
+which retries only that class, with exponential backoff, up to five attempts:
 
-### Smart-upgrade lineage break (lost upgrade compatibility)
+```ts
+if (e instanceof LedgerError && e.kind === "contention") {
+  await sleep(delay);
+  delay = Math.min(maxDelay, Math.floor(delay * 2));
+  continue;
+}
+throw e;
+```
 
-Symptom: `NOT_VALID_UPGRADE_PACKAGE` on DAR upload.
+### Failure modes and recovery
 
-Either:
-- Revert the offending change (add removed choices back as deprecated
-  stubs, make new fields Optional, move new fields to the end of the
-  record).
-- Rename the package (e.g. `canton-dex-trading` to `canton-dex`). All
-  existing contracts from the old name remain queryable but cannot be
-  upgraded.
+Operational (infrastructure- and process-level) failures. For contract-choice
+rejections a trader or LP hits, see [Contract-level rejections](#contract-level-rejections).
 
-See the "Upgrade discipline" section of `docs/guides/builder-guide.md` for smart-upgrade lineage guidance.
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| Operator backend crashed / was restarted | Process died; WAL keeps `operator.db` intact | None required. `Indexer.start()` reconciles from the current ACS on the first tick; the idempotency cache absorbs the dApp's retry-on-restart. |
+| Indexer endpoints stall; logs show `[indexer] tick failed` | Participant / JSON LAPI unreachable | Transient: the tick retries next interval — no corruption. Persistent: check the participant and `CANTON_LEDGER_URL` / token. |
+| Operator writes fail with a `transport` `LedgerError` | Participant or synchronizer outage | The idempotency row is marked `error`; retry from the dApp once the participant recovers. |
+| A write fails with a `contention` error after retrying | Two commands raced the same input UTXO and the five backoff attempts were exhausted | Resubmit; the on-ledger choice is safe to re-run once the contending commit lands. |
+| `operator.db` corrupted / unreadable | Disk fault or partial write | Delete it and restart; the next tick rebuilds projections from the ACS. See [Reference](#reference-multi-step-procedures) — this also drops `operator_kv`. |
+| `NOT_VALID_UPGRADE_PACKAGE` on DAR upload | Smart-upgrade lineage broken | Revert the incompatible change or rename the package. See [Reference](#reference-multi-step-procedures). |
+| A liquidity settle aborts on its supply-sync guard | `LPTokenPolicy.totalSupply` drifted from `PoolState.totalLpSupply` | Re-run `PoolState_RecordLPSupply` with `newSupply = policy.totalSupply`. See [Reference](#reference-multi-step-procedures). |
+| Trader reports a missing holding | V2 holding not visible to the party's query | Replay the registry's `Registry_RegisterInstrument` / `Registry_Mint` events for that party via the `EventLog` interface. |
 
-### LP supply drift
+### Reference: multi-step procedures
 
-`LPTokenPolicy.totalSupply` and `PoolState.totalLpSupply` are kept in
-lock-step: the DvP liquidity settles
-(`PoolLiquidityRules_SettleAddLiquidity`/`_SettleRemoveLiquidity`) rewrite both
-inline and assert they match on entry. If they diverge, the settle's
-supply-sync guard aborts. Recovery: query the policy supply and re-run
+The table cells above are one-liners for the failures that resolve in a step or
+two. These three need more.
+
+**`operator.db` corruption — rebuild from the ledger.** SQLite runs in WAL mode
+([`db.ts`](../../services/operator-backend/src/indexer/db.ts)), so an ordinary
+crash leaves the file intact and nothing is needed. If the file is genuinely
+corrupt, delete it and restart: the indexer reconciles projections from the
+live ACS on the next tick. Two things do *not* come back — trade history older
+than the ACS-archive cutoff (it lived only in the indexer DB) and, because it
+lives in the same file, `operator_kv`. Restore `operator_kv` from backup after
+the rebuild (see [Backup](#backup)). Schema migrations are append-only and
+tolerant of a hand-repaired database, proven in
+[`indexer-migrations.test.ts`](../../services/operator-backend/test/indexer-migrations.test.ts)
+("a hand-repaired database can still advance").
+
+**Smart-upgrade lineage break.** Symptom: `NOT_VALID_UPGRADE_PACKAGE` on DAR
+upload. Either:
+
+- Revert the offending change — add removed choices back as deprecated stubs,
+  make new fields `Optional`, move new fields to the end of the record.
+- Rename the package (e.g. `canton-dex-trading` → `canton-dex`). All existing
+  contracts from the old name remain queryable but cannot be upgraded.
+
+See [Upgrade discipline](builder-guide.md#upgrade-discipline) for the lineage
+rules and the CI gate that catches a break before upload.
+
+**LP supply drift.** `LPTokenPolicy.totalSupply` and `PoolState.totalLpSupply`
+are kept in lock-step: the DvP liquidity settles
+(`PoolLiquidityRules_SettleAddLiquidity` / `_SettleRemoveLiquidity`) rewrite
+both inline and assert they match on entry, so a divergence aborts the settle
+rather than corrupting reserves. Recovery: query the policy supply and re-run
 `PoolState_RecordLPSupply` with `newSupply = policy.totalSupply`.
-
-### Lost trader holdings
-
-V2 holdings are admin+owner signed. If a trader claims a missing
-holding, check the registry's `Registry_RegisterInstrument` /
-`Registry_Mint` events for that party. The `splice-api-token-transfer-events-v2`
-package exposes an `EventLog` interface for replayable audit.
 
 ## Backup
 
 The on-ledger state is the source of truth and is replicated by the
-synchronizer. The operator backend's local SQLite is rebuildable from
-the ledger and does not need to be backed up for correctness; back
-it up only if you care about historical query performance during
-rebuild. Operator config in the `operator_kv` table is worth backing
-up. It carries dealer whitelist, RFQ policy parameters, and similar
-runtime knobs that are not encoded on-ledger.
+synchronizer. `operator.db` is rebuildable from the ledger and does not need to
+be backed up for correctness; back it up only if you care about historical
+query performance during a rebuild. The one thing worth backing up is the
+`operator_kv` table — it carries the dealer whitelist, RFQ policy parameters,
+and similar runtime knobs that are not encoded on-ledger and cannot be
+reconstructed from the ACS.
 
-## Failure modes and remediation
+## Contract-level rejections
+
+Rejections a trader, LP, or dealer hits at a contract choice — business-logic
+guards, not infrastructure faults. Each surfaces to the caller as the assert
+message shown; the operator's job is to route the fix, not to override the
+guard.
 
 | Symptom                                                   | Likely cause                                                                                       | Remediation                                                                                  |
 | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `FinalizedAllocation extra leg-sides exceed funding budget` | Operator tried to settle more than the authorizer pre-committed                                | Re-quote: the swap or match math drifted from the budget. Fix off-chain quoting state         |
+| `FinalizedAllocation extra leg-sides exceed funding budget` | Operator tried to settle more than the authorizer pre-committed                                | Re-quote: the swap or match math drifted from the budget. Fix off-ledger quoting state         |
 | `Pool has no base slices` / `... no quote slices`         | Pool drained to empty by Remove without entering Unfunded state                                    | Inspect the slice list and reserves; if mismatched, escalate (the contract should prevent this) |
 | `LP tokens below minimum`                                 | LP's `minLpTokens` slippage bound too tight                                                        | LP resubmits with a looser bound or smaller deposit                                          |
 | `Output below slippage minimum`                           | Reserve drift between quote time and submit                                                        | Trader resubmits with a looser bound, or operator routes through a different pool             |
@@ -242,10 +356,15 @@ runtime knobs that are not encoded on-ledger.
 ## Single-operator dev shortcut
 
 For local exploration, collapse `operator` / `lpRegistrar` / `admin` into one
-party. Tests under `trading-tests/` show the multi-party shape, but the same
-contracts compile and run with one party signing everything. Production
-should keep the parties distinct so audit-trail and key-management
-responsibilities stay decoupled.
+party, and run the dev server with `DEX_DEV_OPEN=1` so the operator-token gate
+is bypassed (in-memory dev only). Tests under `trading-tests/` show the
+multi-party shape, but the same contracts compile and run with one party
+signing everything. Production should keep the parties distinct so audit-trail
+and key-management responsibilities stay decoupled, and must set
+`DEX_OPERATOR_API_TOKEN` / `OPERATOR_ADMIN_TOKEN` — both gates fail closed
+otherwise, proven in
+[`auth.test.ts`](../../services/operator-backend/test/auth.test.ts)
+("fails closed when no token and no devOpen").
 
 ## Out of scope for this document
 

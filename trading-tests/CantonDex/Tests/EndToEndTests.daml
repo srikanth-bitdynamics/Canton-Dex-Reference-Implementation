@@ -1,3 +1,13 @@
+-- What this file proves, in plain terms:
+--
+-- These scripts drive the whole exchange front-to-back against a stand-in
+-- ("mock") token registry, so a reader can watch each concept actually
+-- happen: funding a liquidity pool, funding and matching orders, accepting
+-- dealer quotes, and settling trades. Two properties matter throughout --
+-- money is never created or destroyed as trades settle, and every step is
+-- taken by the party actually allowed to take it. If these pass, the pieces
+-- fit together and those two guarantees hold.
+--
 -- | End-to-end Daml Script tests of the full DEX workflows against the
 -- MockRegistry:
 --
@@ -59,8 +69,11 @@ setupPool
        , ContractId LP.LPTokenPolicy
        )
 setupPool operator lpRegistrar admin = do
+  -- One BTC/USDC pool. The pool mints its own "BTC-USDC-LP" share token to
+  -- liquidity providers, issued by the LP registrar. Fee is 0.30% (30 bps).
   let poolId = "BTC-USDC"
       lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
+  -- Pool: the static config (the two sides, who runs it, the fee).
   poolCid <- submit operator $ createCmd Pool.Pool with
     poolId
     operator
@@ -70,6 +83,8 @@ setupPool operator lpRegistrar admin = do
     quoteInstrumentId = "USDC"
     lpInstrumentId
     feeBps = 30
+  -- PoolState: the live balances. Starts empty and Unfunded (no reserves,
+  -- no LP shares issued yet); the first deposit flips it to Active.
   stateCid <- submit operator $ createCmd PState.PoolState with
     poolId
     operator
@@ -78,9 +93,13 @@ setupPool operator lpRegistrar admin = do
     reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
     totalLpSupply = 0.0
     publicReaders = []
+  -- PoolRules: the swap choices (trade against the pool).
   rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
+  -- PoolLiquidityRules: the add/remove-liquidity choices, run jointly by the
+  -- operator and the LP registrar (both signatures are required).
   dvpCid <- submit (actAs [operator, lpRegistrar]) $
     createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar
+  -- LPTokenPolicy: tracks how many LP shares exist across all providers.
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar
     operator
@@ -89,6 +108,10 @@ setupPool operator lpRegistrar admin = do
     active = True
   pure (poolId, poolCid, stateCid, rulesCid, dvpCid, policyCid)
 
+-- Stand up the stand-in token registry: an allocation factory (which turns a
+-- request to set aside funds into a locked allocation) and a settlement
+-- factory (which atomically swaps the locked allocations). These replace a
+-- real token issuer so the trading flows can be exercised in isolation.
 setupRegistries : Party -> [Party] -> Script ( ContractId V2.AllocationFactory
                                               , ContractId V2.SettlementFactory
                                               )
@@ -97,6 +120,13 @@ setupRegistries admin users = do
   settleCid <- submit admin $ createCmd Mock.MockSettlementFactory with admin; users; requireContext = False
   pure (toInterfaceContractId factoryCid, toInterfaceContractId settleCid)
 
+-- Deposit liquidity into a pool the honest way: delivery-versus-payment (DvP),
+-- meaning the base and quote go in and the LP shares come out as one
+-- all-or-nothing swap. Steps: the operator opens the request, the depositor
+-- sets aside the two deposits plus the mint receipt as locked allocations,
+-- then operator and LP registrar jointly settle all three at once. The pool's
+-- LP shares are the square root of base*quote, the standard constant-product
+-- rule.
 dvpFundPool
   : Party
   -> Party
@@ -115,9 +145,13 @@ dvpFundPool
   -> Script Dvp.PoolLiquidityRules_SettleAddResult
 dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid policyCid dvpCid recipient baseAmount quoteAmount now extraArgs = do
   let lpAmount = PM.sqrtDecimal (baseAmount * quoteAmount)
+  -- Operator opens the add-liquidity request; it lists the three legs the
+  -- depositor must fund: base deposit, quote deposit, and the LP-mint receipt.
   reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid; recipient; baseAmount; quoteAmount; lpAmount; requestedAt = now; settleAt = None
   Some req <- queryContractId operator reqCid
+  -- The three legs, in order, and a helper that locks up each one via the
+  -- allocation factory (the mock completes instantly instead of pending).
   let baseSpec = head req.allocations
       quoteSpec = head (tail req.allocations)
       receiptSpec = head (tail (tail req.allocations))
@@ -160,15 +194,24 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
       lpRegistrarExtraArgs = extraArgs
 
 -- 1. DvP add on an Unfunded pool keeps reserves backed ------------------
+--
+-- Asserts: depositing 10 BTC and 200,000 USDC into an empty pool turns it
+-- Active, records exactly those reserves, and mints LP shares equal to
+-- sqrt(base*quote). Why it matters: the reported balances always match what
+-- was actually put in -- the pool is fully backed.
 
 testPoolFullLifecycle : Script ()
 testPoolFullLifecycle = do
+  -- Roles: the venue operator, the LP-share registrar, the token admin, and
+  -- Alice, who supplies the liquidity.
   operator <- allocateParty "operator"
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   alice <- allocateParty "alice"
   now <- getTime
 
+  -- Stand up the mock registry and an empty BTC/USDC pool, then have Alice
+  -- deposit through the honest DvP path.
   (factoryCid, _settleCid) <- setupRegistries admin [operator, lpRegistrar, alice]
   (poolId, poolCid, stateCid, _rulesCid, dvpCid, policyCid) <- setupPool operator lpRegistrar admin
   initRes <- dvpFundPool
@@ -187,6 +230,8 @@ testPoolFullLifecycle = do
     now
     emptyExtraArgs
 
+  -- Check the outcome: shares minted match the formula, the pool is now
+  -- Active, and its reserves and total shares equal exactly what went in.
   Some state <- queryContractId operator initRes.poolStateCid
   Some _baseSlice <- queryContractId operator initRes.baseSliceCid
   Some _quoteSlice <- queryContractId operator initRes.quoteSliceCid
@@ -200,6 +245,11 @@ testPoolFullLifecycle = do
   pure ()
 
 -- 2. TradeAllocationRequest accept now returns (no abort) ---------------
+--
+-- Asserts: when the trader accepts a request to set aside funds for a trade,
+-- the request completes cleanly and archives itself. Why it matters: this
+-- accept step used to abort ("registry-specific wiring"); this pins that it
+-- now succeeds so the settlement flow can proceed.
 
 testTradeAllocationRequestAccept : Script ()
 testTradeAllocationRequestAccept = do
@@ -211,7 +261,8 @@ testTradeAllocationRequestAccept = do
 
   (factoryCid, _) <- setupRegistries admin [operator, alice, bob]
 
-  -- Build a trade allocation request that Alice can accept.
+  -- Build the request: one leg moving 10 BTC from Alice to Bob, with the
+  -- operator named as the executor allowed to settle it.
   let aliceAccount = Utils.basicAccount alice
       bobAccount = Utils.basicAccount bob
       leg = V2.TransferLeg with
@@ -250,6 +301,13 @@ testTradeAllocationRequestAccept = do
   pure ()
 
 -- 3. Order funding flow with correct trader authority -------------------
+--
+-- Asserts the full path from "I want to place an order" to a funded order:
+-- the trader requests, the operator binds it into a Pending order plus a
+-- funding request, the trader (as her own wallet) locks the cash, and the
+-- operator attaches that money and consumes the request. Ends Funded with the
+-- funding request gone. Why it matters: the trader's own authority pays for
+-- and backs the order, and no stray funding request is left dangling.
 
 testOrderFundingFlow : Script ()
 testOrderFundingFlow = do
@@ -314,6 +372,13 @@ testOrderFundingFlow = do
   pure ()
 
 -- 4. RFQ accept produces a MatchedTrade with a real PolicyReceipt -------
+--
+-- RFQ = request-for-quote: the trader asks dealers to bid, then accepts one.
+-- Asserts that when three dealers quote and the trader accepts, the winner is
+-- picked by the stated policy (trusted dealers first, then best price, then
+-- earliest), a trade is created, and it carries a signed receipt proving that
+-- ranking. Why it matters: the choice of counterparty is auditable, not
+-- arbitrary -- here the cheapest overall quote loses to a trusted one.
 
 testRfqAcceptProducesMatchedTradeWithReceipt : Script ()
 testRfqAcceptProducesMatchedTradeWithReceipt = do
@@ -340,7 +405,9 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
     whitelist = [orca, jump, galaxy]
     createdAt = now
 
-  -- Three dealers post quotes.
+  -- Three dealers post quotes. Galaxy is the cheapest but only whitelisted;
+  -- Jump and Orca are trusted, and Jump is the cheaper of the two -- so the
+  -- policy should rank Jump first.
   quoteOrca <- submit orca $ createCmd Rfq.RfqQuote with
     dealer = orca
     trader = alice
@@ -399,9 +466,14 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
 
   pure ()
 
--- Rfq_Expire: operator-authority cleanup of an expired RFQ. Rfq_Cancel is
+-- 5. Rfq_Expire: operator-authority cleanup of an expired RFQ. Rfq_Cancel is
 -- trader-controlled, so this is the only path that works once external
 -- wallets hold trader authority.
+--
+-- Asserts the operator can sweep away an expired RFQ, but only after its
+-- deadline, and that the trader cannot use this path at all. Why it matters:
+-- stale quote requests get cleaned up by the venue without letting either
+-- side expire something early.
 testRfqExpireOperatorCleanup : Script ()
 testRfqExpireOperatorCleanup = do
   operator <- allocateParty "operator-exp"
@@ -442,6 +514,9 @@ testRfqExpireOperatorCleanup = do
 -- Trader pre-funds a swap by creating their own prefunded allocation
 -- via the mock factory; operator drives PoolRules_Swap which adjusts both
 -- pool allocations + the trader allocation and batch-settles them.
+--
+-- Why it matters: a trade against the pool moves reserves the right way and
+-- only touches the slice it consumes, leaving the rest of the pool intact.
 --
 -- Verifies:
 --   - the swap completes without error
@@ -599,8 +674,11 @@ testPoolSwapViaRequestSwap = do
 
 -- 7. Full MatchedTrade lifecycle: request → accept → settle -------------
 --
--- Verifies the OTC settlement path end-to-end with two trader-created
--- allocations and the operator's batch settle.
+-- Verifies the OTC (over-the-counter, dealt directly not via the order book)
+-- settlement path end-to-end: the operator requests allocations, each side
+-- accepts and locks its own funds, and the operator settles both in one
+-- batch. Why it matters: a bilateral trade settles atomically with each
+-- party's own authority behind its leg.
 
 testMatchedTradeFullSettle : Script ()
 testMatchedTradeFullSettle = do
@@ -778,6 +856,8 @@ omeAlloc operator admin factoryCid party acct funding now = do
     V2.AllocationInstructionResult_Completed cid -> pure cid
     _ -> abort "alloc must complete"
 
+-- A resting BTC/USDC order for 10 base at the given limit price, side, and
+-- status, optionally bound to a funding allocation.
 omeOrder
   : Party -> Party -> Party -> Order.Side -> Decimal -> Order.OrderStatus
   -> Optional (ContractId V2.Allocation) -> Text -> Script (ContractId Order.Order)
@@ -789,6 +869,9 @@ omeOrder operator admin trader side limitPrice status allocationCid ref =
     expiry = None; status; allocationCid
     settlementRef = Order.makeOrderRefFromText ref
 
+-- A proposed fill of 4 base at the given price, naming the two orders and the
+-- two allocations it intends to spend. Exercising its _Execute choice is what
+-- the matching tests accept or reject.
 omeExec
   : Party -> V2.Account -> V2.Account -> ContractId Order.Order
   -> ContractId Order.Order -> ContractId V2.Allocation -> ContractId V2.Allocation
@@ -1076,6 +1159,9 @@ testOrderMatchClosesUnbackedRemainder = do
 -- context-requiring mock factory: DvP add succeeds only when the caller
 -- supplies the marker context.
 
+-- Same empty-pool setup as above, but the mock factories can be put in
+-- "requireContext" mode -- they refuse to act unless the caller passes a
+-- marker in the choice context. Used to prove the DEX forwards that context.
 mkPoolFixture
   : Party -> Party -> Party -> Bool
   -> Script
@@ -1110,12 +1196,18 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
     totalSupply = 0.0; active = True
   pure (poolId, poolCid, stateCid, dvpCid, policyCid, toInterfaceContractId factory, toInterfaceContractId settle)
 
+-- The marker the context-requiring mock factories look for: a single flag in
+-- the choice context. Supplying it is what makes those factories act.
 markerContext : ExtraArgs
 markerContext = ExtraArgs with
   context = ChoiceContext with
     values = TextMap.fromList [(Mock.dexChoiceContextKey, AV_Bool True)]
   meta = emptyMetadata
 
+-- Asserts: with the marker context supplied, a DvP add against the
+-- context-requiring factory succeeds and the pool goes Active. Why it
+-- matters: the DEX actually passes the registry's required context through
+-- (it doesn't quietly send an empty one).
 testDvpAddThreadsChoiceContext : Script ()
 testDvpAddThreadsChoiceContext = do
   operator <- allocateParty "operator"
@@ -1127,6 +1219,8 @@ testDvpAddThreadsChoiceContext = do
   Some state <- queryContractId operator res.poolStateCid
   state.status === Pool.PS_Active
 
+-- The mirror image: with the marker omitted, the context-requiring factory
+-- refuses the allocation. Confirms the check above is real, not vacuous.
 testDvpAddRejectsEmptyContext : Script ()
 testDvpAddRejectsEmptyContext = do
   operator <- allocateParty "operator"

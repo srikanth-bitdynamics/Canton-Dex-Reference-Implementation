@@ -1,3 +1,9 @@
+-- READER'S GUIDE (a concepts doc links here): this file proves our test
+-- registry can create new tokens out of nothing ("mint") and destroy them
+-- ("burn"), each as one atomic settlement. It matters because mint and burn are
+-- how token supply enters and leaves the system; the scripts below check
+-- exactly who is credited and who is debited so balances can't silently drift.
+--
 -- | Proves the delivery-versus-mint/burn mechanism on the V2 allocation
 -- surface against the holding-tracking RealRegistry (mirrors upstream
 -- TestDeliveryVersusBurnMint): a mint is a leg mintAccount -> recipient
@@ -46,12 +52,23 @@ completed r = case r.output of
   V2.AllocationInstructionResult_Completed cid -> cid
   _ -> error "allocation must complete immediately"
 
+-- Happy path (proves the mechanism, not the authorization model): mint 100 LP
+-- into Alice's account, then burn all 100 back out, checking her holdings after
+-- each step. Confirms a mint credits the receiver and a burn leaves nothing
+-- behind — not even a stray locked coin from a settle that failed to archive.
 testDvpMintThenBurn : Script ()
 testDvpMintThenBurn = do
+  -- Two parties: the registrar is the registry's admin (it does the minting and
+  -- burning), and alice is an ordinary user who will hold the tokens.
   registrar <- allocateParty "registrar"
   alice <- allocateParty "alice"
   now <- getTime
 
+  -- Stand up the registry contract. One contract answers as both the allocation
+  -- factory and the settlement factory (two interface views of the same cid, so
+  -- factoryCid and settleCid point at the same registry). alice is registered as
+  -- a user, aliceAcct is her plain holding account, and `settlement` names the
+  -- batch that all the legs below belong to.
   regCid <- submit registrar $ createCmd RR.RealRegistry with
     admin = registrar
     users = [alice]
@@ -65,6 +82,10 @@ testDvpMintThenBurn = do
         meta = emptyMetadata
 
   -- ---- MINT 100 LP to alice via DvP ----
+  -- A delivery-versus-payment leg only settles once BOTH sides have allocated.
+  -- mintSpec is the sender side (from the special mint account, authored by the
+  -- registrar); receiptSpec is the same leg's receiver side (Alice's account,
+  -- authored by Alice). Neither party moves anything until the batch settles.
   let mintLeg = V2.TransferLeg with
         transferLegId = "mint-lp"
         sender = mintAcct
@@ -84,6 +105,8 @@ testDvpMintThenBurn = do
         authorizer = aliceAcct
         transferLegSides = Utils.legsToSides aliceAcct [mintLeg]
 
+  -- Each party allocates its own side of the mint leg (no holdings go in — the
+  -- tokens don't exist yet, they're being minted).
   mintRes <- submit registrar $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
     settlement; allocation = mintSpec; requestedAt = now
     inputHoldingCids = []; actors = [registrar]; extraArgs = emptyExtraArgs
@@ -91,6 +114,8 @@ testDvpMintThenBurn = do
     settlement; allocation = receiptSpec; requestedAt = now
     inputHoldingCids = []; actors = [alice]; extraArgs = emptyExtraArgs
 
+  -- Both parties settle the batch together. This is the moment the mint takes
+  -- effect: Alice is credited 100 fresh LP.
   _ <- submit (actAs [registrar, alice]) $
     exerciseCmd settleCid V2.SettlementFactory_SettleBatch with
       settlement
@@ -110,6 +135,10 @@ testDvpMintThenBurn = do
   lpHolding.amount === 100.0
 
   -- ---- BURN the 100 LP via DvP ----
+  -- Burn is the mirror image of mint. Alice's account is the sender (so she must
+  -- lock the holding she is giving up), and the special burn account is the
+  -- receiver. Because the burn account's owner is None, nothing is ever credited
+  -- back — the tokens simply cease to exist when the batch settles.
   let burnLeg = V2.TransferLeg with
         transferLegId = "burn-lp"
         sender = aliceAcct
@@ -129,6 +158,8 @@ testDvpMintThenBurn = do
         authorizer = burnAcct
         transferLegSides = Utils.legsToSides burnAcct [burnLeg]
 
+  -- Alice locks her actual 100-LP holding into the burn leg (that's what
+  -- inputHoldingCids carries); the registrar allocates the burn-account side.
   burnSenderRes <- submit alice $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
     settlement; allocation = burnSenderSpec; requestedAt = now
     inputHoldingCids = [toInterfaceContractId lpCid]; actors = [alice]; extraArgs = emptyExtraArgs
@@ -136,6 +167,7 @@ testDvpMintThenBurn = do
     settlement; allocation = burnReceiverSpec; requestedAt = now
     inputHoldingCids = []; actors = [registrar]; extraArgs = emptyExtraArgs
 
+  -- Settle the burn batch. Alice's locked LP is archived here and disappears.
   _ <- submit (actAs [registrar, alice]) $
     exerciseCmd settleCid V2.SettlementFactory_SettleBatch with
       settlement
@@ -166,6 +198,8 @@ testDvpMintThenBurn = do
 -- `mkAllocMustFail alice adminMintAlloc`).
 testHarnessDoesNotGateMintAuthorization : Script ()
 testHarnessDoesNotGateMintAuthorization = do
+  -- Same shape of setup as the happy path, but the second party is mallory, a
+  -- non-admin who should NOT be permitted to mint tokens.
   registrar <- allocateParty "registrar"
   mallory <- allocateParty "mallory"
   now <- getTime
@@ -174,6 +208,9 @@ testHarnessDoesNotGateMintAuthorization = do
   let factoryCid : ContractId V2.AllocationFactory = toInterfaceContractId regCid
       settlement = V2.SettlementInfo with
         executors = [registrar]; id = "forge"; cid = None; meta = emptyMetadata
+      -- A one-sided mint: 1000 LP from the mint account to mallory, authorized
+      -- only by the mint account. A production registry would reject a non-admin
+      -- authoring this; here it is expected to slip through.
       forgedMintLeg = V2.TransferLeg with
         transferLegId = "forge-mint"; sender = mintAcct
         receiver = Utils.basicAccount mallory; amount = 1000.0

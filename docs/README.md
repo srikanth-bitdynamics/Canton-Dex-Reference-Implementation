@@ -12,9 +12,9 @@ For the ideas behind the design, read the **[Overview](concepts/overview.md)**.
 > **Standards note.** This reference implements the Canton Network Token
 > Standard **V2 (CIP-0112)** — the privacy/performance/accounting revision of
 > the base token standard (**CIP-0056**) — and uses the **CIP-0103** dApp
-> standard for trader-authorized wallet submissions. V2 has merged into
-> `canton-network/splice` `main` and becomes the network default from
-> **mid-July 2026**; the exact vendored commit is pinned in
+> standard for trader-authorized wallet submissions. V2 is merged into
+> `canton-network/splice` `main` and is the network default; the exact
+> vendored commit is pinned in
 > [`../vendor/splice/VENDOR_PIN.md`](../vendor/splice/VENDOR_PIN.md).
 
 ---
@@ -59,7 +59,7 @@ lookup (reference).
 ### Guides — do a task
 | Page | Audience | Recipe |
 |---|---|---|
-| [Builder Guide](guides/builder-guide.md) | Builder | The contract surface, off-chain layout, matcher logic, and extension patterns. |
+| [Builder Guide](guides/builder-guide.md) | Builder | The contract surface, off-ledger layout, matcher logic, and extension patterns. |
 | [Using the dApp](guides/using-the-dapp.md) | Trader, LP, dealer | Swap, add/remove liquidity, place orders, trade an RFQ block, read the portfolio. |
 | [Add a Trading Pair](guides/add-a-trading-pair.md) | Operator | List a new pair (e.g. `ETH/USDT`) on a running venue. |
 | [Add an LP or Instrument](guides/add-lp-or-instrument.md) | Builder, operator | Mint a new asset or lifecycle-rich instrument via Token Standard V2. |

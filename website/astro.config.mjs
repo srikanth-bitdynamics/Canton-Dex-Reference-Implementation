@@ -17,6 +17,11 @@ export default defineConfig({
         'A full-stack Token Standard V2 (CIP-0112) reference DEX for the Canton Network.',
       customCss: ['./src/styles/custom.css'],
       social: [{ icon: 'github', label: 'GitHub', href: REPO }],
+      expressiveCode: {
+        // Daml has no bundled Shiki grammar; Haskell's is close enough to
+        // colour the inlined snippets.
+        shiki: { langAlias: { daml: 'haskell' } },
+      },
       // Client-side Mermaid rendering for the <pre class="mermaid"> blocks that
       // sync-docs.mjs emits from ```mermaid fences.
       head: [

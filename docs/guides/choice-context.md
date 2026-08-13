@@ -1,12 +1,116 @@
 # Choice context and disclosure retrieval
 
-Defines what the DEX operator backend must attach to each transaction it
-submits, in terms of registry-supplied disclosed contracts and choice-context
-fields. This is the reference registry-client integration contract, not a
-Token Standard V2 endpoint specification. It mirrors the Registry Utility guide's
-"Note: Before the command is submitted by the UI, an API call is being
-made (in the background) to an endpoint to retrieve required additional
-choice context (including disclosure)..." pattern.
+The operator submits every transaction under its own party. But the holdings a
+settlement archives are signed `signatory admin, owner` — a registry admin the
+operator never sees — and the Token Standard V2 factory choices take a context
+argument the operator cannot compute for itself. So each registry-touching
+submission carries two riders sourced from the asset registry: a **choice
+context** threaded into the choice's `extraArgs.context`, and a set of
+**disclosed contracts** threaded into the ledger submission's
+`disclosedContracts`. One module — the operator backend's
+[`registry-client`](../../services/registry-client/src/index.ts) — is the single
+place both come from, so cache invalidation stays correct.
+
+This is the reference registry-client integration contract, not a Token Standard
+V2 endpoint specification. It mirrors the Registry Utility guide's "Note: Before
+the command is submitted by the UI, an API call is being made (in the
+background) to an endpoint to retrieve required additional choice context
+(including disclosure)..." pattern.
+
+## The two riders
+
+| Rider | Threaded into | Why the operator needs it |
+|---|---|---|
+| **Choice context** (`context.values`) | `choiceArgument.extraArgs.context` | The registry computes it (disclosed config, featured-app rights, rate limits). Self-registries return it empty, but the choice's `ExtraArgs` shape still requires the field. |
+| **Disclosed contracts** | submission `disclosedContracts` | The factory contracts, registry config, and admin-signed holdings the choice fetches are invisible to the operator's party. Disclosure hands the participant the created-event blobs it needs to validate them without `readAs`. |
+
+```mermaid
+flowchart LR
+  subgraph reg["Asset registry — off-ledger HTTP"]
+    E1["/registry/factories/:admin"]
+    E2["/registry/choice-context/:admin"]
+  end
+  subgraph rc["registry-client — TTL caches"]
+    F["getFactories<br/>→ { factoryCid, disclosure }"]
+    C["getChoiceContext<br/>→ { context, disclosure }"]
+  end
+  A["operator submission:<br/>extraArgs.context +<br/>[...factories.disclosure, ...ctx.disclosure]"]
+  L["JSON Ledger API<br/>extraArgs + disclosedContracts"]
+  X["on-ledger factory choice<br/>Allocate / SettleBatch"]
+  E1 --> F --> A
+  E2 --> C --> A
+  A --> L --> X
+```
+
+## Where the riders are assembled
+
+One helper turns the registry's `ChoiceContextRef` into the `extraArgs` shape the
+choices take — [`fetchChoiceContext`](../../services/operator-backend/src/ledger/choice-context.ts),
+shared by the pool, order, and matched-trade services:
+
+```typescript
+export async function fetchChoiceContext(
+  registry: RegistryClient,
+  admin: Party,
+): Promise<ChoiceContext> {
+  const ctx = await registry.getChoiceContext(admin);
+  return {
+    extraArgs: { context: ctx.context, meta: { values: {} } },
+    disclosure: ctx.disclosure,
+  };
+}
+```
+
+At each submit site, the factory disclosure and the choice-context disclosure are
+merged into one array and the context is passed through as `extraArgs`. From the
+pool swap ([`pool/index.ts`](../../services/operator-backend/src/pool/index.ts),
+`PoolRules_Swap`):
+
+```typescript
+const factories = await this.registry.getFactories(pool.admin);
+const ctx = await this.choiceContext(pool.admin);
+// ...
+this.ledger.submit({
+  actAs: [this.operatorParty],
+  readAs: input.swapperAccount.owner ? [input.swapperAccount.owner] : [],
+  disclosure: [...factories.disclosure, ...ctx.disclosure],
+  command: {
+    kind: "exercise",
+    choice: "PoolRules_Swap",
+    argument: { /* ... */ extraArgs: ctx.extraArgs },
+  },
+});
+```
+
+The submitter's last step drops that `disclosure` verbatim into the JSON Ledger
+API command ([`ledger/json-api.ts`](../../services/operator-backend/src/ledger/json-api.ts)):
+
+```typescript
+disclosedContracts: req.disclosure ?? [],
+```
+
+Each disclosed contract carries a base64 `createdEventBlob` — Canton's
+disclosed-contract field — threaded through unchanged; the operator never
+inspects or rewrites it.
+
+For a **cross-registry** trade, the merge is per admin: the operator groups legs
+by their instrument's admin, fetches each admin's factories and context
+separately, and concatenates the disclosure so every batch carries only its own
+registry's contracts (see [`matched-trade/index.ts`](../../services/operator-backend/src/matched-trade/index.ts),
+`MatchedTrade_Settle`). On-ledger the context rides all the way down: the
+registry's `SettlementFactory_SettleBatch` forwards `arg.extraArgs` into each
+`Allocation_Settle` it exercises (see
+[`Registry/V2.daml`](../../trading/CantonDex/Registry/V2.daml),
+`settlementFactory_settleBatchImpl`).
+
+**Proven by:**
+[`registry-client.test.ts`](../../services/operator-backend/test/registry-client.test.ts)
+— `getChoiceContext` fetches, caches (one HTTP call for two reads), and falls
+back to empty context + no disclosure on a 404;
+[`matched-trade.test.ts`](../../services/operator-backend/test/matched-trade.test.ts)
+— a two-admin settle threads each admin's `extraArgs.context` into its own
+`SettlementBatchV2` and emits the disclosure in
+`[factory-A, context-A, factory-B, context-B]` order.
 
 ## Endpoints the operator queries
 
@@ -26,11 +130,48 @@ the operator backend can produce the disclosed contracts and choice context
 required by the registry's Token Standard V2 choices. The operator-backend's
 `registry-client` module is the single integration point.
 
-## Choice-context-bearing arguments
+## Disclosure retrieval and caching
 
-Each registry-touching choice the DEX exercises has a context
-shape the operator must satisfy. Listed here as `(choice, required
-context)` pairs.
+The `registry-client` owns five caches, keyed and refreshed as follows:
+
+1. Registry config CIDs and their explicit-disclosure payloads, keyed by
+   `InstrumentId`, when the registry provides config contracts.
+2. Allocation/Settlement factory CIDs (plus disclosure) per admin. Stale on admin
+   re-publish, when the registry archives + recreates.
+3. Choice-context refs per admin, honouring `choiceContextTtlMs`.
+4. Reference-registry `TransferPreapproval` CIDs, keyed by `(receiver, admin)`,
+   when the registry supports preapproval contracts.
+5. Credentials or equivalent authorization evidence, keyed by `holder` — a short
+   TTL (`credentialsTtlMs`, default 60 s) because credentials can be revoked.
+
+Only the credentials and choice-context caches carry a TTL; the config, factory,
+and preapproval caches hold their entries until they are flushed. The client
+exposes `invalidateAll()` for a full flush after a known archive or re-publish.
+There is no registry-side event stream driving invalidation, so a co-hosted
+registry (or an explicit flush) is what keeps a non-TTL cache honest.
+
+Registry responses are never trusted via a bare cast: `fetchJson` runs each
+payload through a shape validator and raises `RegistryError("malformed", ...)` on
+a mismatch (see [`registry-client/src/validate.ts`](../../services/registry-client/src/validate.ts)).
+
+## Failure modes the backend must handle
+
+| Failure | Recovery |
+|---|---|
+| Stale registry config/disclosure CID (archived since cache fetch) | Refetch and retry once |
+| Missing credential for required claim | Surface to the wallet UI; operator does not synthesize credentials |
+| Factory CID stale | Refetch from `factories/:admin`; backoff on repeated failures |
+| Preapproval revoked between fetch and submit | Fall back to offer/accept flow |
+| Settlement batch rejected by factory | Cancel the trade, surface to operator monitoring |
+
+The `registry-client` module raises a typed `RegistryError` — with a `kind`
+(`config-not-found`, `factory-stale`, `auth`, `transport`, `malformed`, …) and a
+`retryable` flag — so the calling code path can recover correctly.
+
+## Reference: choice-context-bearing arguments
+
+Each registry-touching choice the DEX exercises has a context shape the operator
+must satisfy. Listed here as `(choice, required context)` pairs.
 
 ### Allocation creation
 
@@ -132,40 +273,6 @@ Required inputs:
   preapprovals endpoint.
 - `configCid : ContractId InstrumentConfiguration` — reference-registry config.
 - `senderClaims : [Credential]` — sender's holder claims.
-
-## Disclosure retrieval pattern
-
-The operator backend caches:
-
-1. Registry config CIDs and their associated explicit-disclosure payloads,
-   keyed by `InstrumentId`, when the registry provides config contracts.
-   Refreshed on archive events.
-2. Allocation/Settlement factory CIDs per admin. Refreshed on admin
-   re-publish (the registry archives + recreates).
-3. Reference-registry `TransferPreapproval` CIDs, keyed by `(receiver, admin)`,
-   when the registry supports preapproval contracts.
-4. Credentials or equivalent authorization evidence, keyed by
-   `holder` — short TTL because credentials can be revoked.
-
-The cache keys are hashed. Entries expire by TTL (`credentialsTtlMs`
-for credentials, `choiceContextTtlMs` for choice contexts, with
-per-cache defaults); the client also exposes `invalidate()` /
-`invalidateAll()` for manual eviction after a known archive or
-re-publish. There is no registry-side event stream driving
-invalidation.
-
-## Failure modes the backend must handle
-
-| Failure | Recovery |
-|---|---|
-| Stale registry config/disclosure CID (archived since cache fetch) | Refetch and retry once |
-| Missing credential for required claim | Surface to the wallet UI; operator does not synthesize credentials |
-| Factory CID stale | Refetch from `factories/:admin`; backoff on repeated failures |
-| Preapproval revoked between fetch and submit | Fall back to offer/accept flow |
-| Settlement batch rejected by factory | Cancel the trade, surface to operator monitoring |
-
-The operator backend's `registry-client` module provides typed
-errors for each so the calling code path can recover correctly.
 
 ---
 

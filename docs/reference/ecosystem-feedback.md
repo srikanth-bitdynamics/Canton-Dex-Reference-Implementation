@@ -48,45 +48,109 @@ external builder would hit.
 ## Findings and resulting changes
 
 Every finding from the six rounds was addressed. They fall into a few themes.
+Each theme below closes with the test that pins the fix.
 
-Amounts must be served at ledger precision as
-exact decimal strings, not re-floated. Fixes: the fills feed no longer routes
-deltas through `parseFloat().toFixed` (F13); `/v1/swaps` serves the exact strings
-rather than re-floating them (F20); `/v1/instruments` reports each instrument's
-`decimals`, so a client can learn scale from the API; pre-fix rows were backfilled
-rather than left wrong (F21).
+### Amounts are served at ledger precision
 
-External clients depend on the read API being
-uniform. Fixes: the status wire value stopped shipping a `PS_`-prefixed enum the
-dApp silently stripped (F11); `/v1/orders/book` accepts `?pair=` like every other
-read (F15, additively); the trades feed no longer inverts trader and dealer on
-buys (F16); `/v1/trades` includes `counterparty` after the deployment was brought
-current with `main` (F22); an unscoped, unauthenticated `GET /v1/rfq` that lived
-only on a soon-to-be-retired branch was fixed on `main` (F23).
+Amounts must reach the client as exact decimal strings at ledger scale, never
+re-floated through IEEE-754. The fills feed no longer routes deltas through
+`parseFloat().toFixed` (F13); `/v1/swaps` serves the exact stored strings rather
+than re-floating them (F20); `/v1/instruments` reports each instrument's
+`decimals` so a client can learn scale from the API, and pre-fix rows were
+backfilled rather than left wrong (F21).
 
-Two fixes concern funding and custody: funding an order locks only what the
+Proven by
+[`decimal-money.test.ts`](../../services/operator-backend/test/decimal-money.test.ts)
+(money amounts go through the BigInt decimal module, not IEEE-754) and
+[`instruments-route.test.ts`](../../services/operator-backend/test/instruments-route.test.ts)
+(`decimals` is decoded from the string the ledger sends, not dropped by a
+`typeof === "number"` guard).
+
+### The read API stays uniform
+
+External clients depend on every read speaking the same shapes. The status wire
+value stopped shipping a `PS_`-prefixed enum the dApp silently stripped (F11);
+`/v1/orders/book` accepts `?pair=` like every other read (F15, additively); the
+trades feed no longer inverts trader and dealer on buys (F16); `/v1/trades`
+includes `counterparty` after the deployment was brought current with `main`
+(F22); an unscoped, unauthenticated `GET /v1/rfq` that lived only on a
+soon-to-be-retired branch was fixed on `main` (F23).
+
+Proven by
+[`pool-status-normalisation.test.ts`](../../services/operator-backend/test/pool-status-normalisation.test.ts)
+(the read path strips `PS_` so a client typed against `Active` still sees the
+pool),
+[`order-route-pair-param.test.ts`](../../services/operator-backend/test/order-route-pair-param.test.ts)
+(`?pair=BASE/QUOTE` is accepted on the book and matches routes, `?base=&quote=`
+still works),
+[`indexer-trade-parties.test.ts`](../../services/operator-backend/test/indexer-trade-parties.test.ts)
+(a buy is labelled trader/dealer the right way round and its counterparty
+recorded), and
+[`rfq-read-scoping.test.ts`](../../services/operator-backend/test/rfq-read-scoping.test.ts)
+(the unfiltered `/v1/rfq` requires the admin token).
+
+### Funding locks only what an order needs
+
+Two fixes concern funding and custody. Funding an order locks only what the
 order needs and returns the change, so a party can place more than one order
-(F12); the off-ratio liquidity add refunds the unmatched remainder and the hosted
-receipt reports the settled amounts rather than echoing the request (F25).
+(F12); the off-ratio liquidity add refunds the unmatched remainder, and the
+hosted receipt reports the settled amounts rather than echoing the request (F25).
 
-The hosted routes are the only path for a
-walletless integrator, so gaps in them block external evaluation entirely. Fixes:
-RFQ gained a hosted cancel, so a round trip has an exit other than expiry (F17);
-order matching gained a hosted, unauthenticated trigger (`POST /v1/testnet/match`)
-so matching and its atomic settlement can be verified from outside (F24);
-`/v1/swaps` gained `?kind=` so liquidity events, not just swaps, are readable
-(F26). The whole `/v1/testnet/*` surface and the faucet's per-IP party quota were
-documented with their consequences (F14, F18).
+Proven by
+[`normalize-funding.test.ts`](../../app/web/src/__tests__/normalize-funding.test.ts)
+(a covering subset is locked and the surplus returned as unlocked change, with no
+split handed to the wallet) and `testDvpAddOffRatioRefundsExcess` in
+[`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml)
+(the unmatched leg is refunded in the same settlement, never reaching the
+reserves).
 
-Some reports were answered by design:
-`Holding_Split` is refused by the hosted relay because the relay admits only a
-fixed choice allowlist, and splitting is a wallet concern the relay does not
-expose (F19).
+### The hosted routes are the only path in
 
-One item remained open at the time of the report and has since been closed: a
-resting order the book published but the matcher would not pair (F27). The cause
-was a self-cross (a party's own bid and ask) which can never settle. The matcher
-now applies self-trade prevention and no longer proposes it.
+For a walletless integrator the hosted routes are the whole surface, so a gap in
+them blocks external evaluation entirely. RFQ gained a hosted cancel, so a round
+trip has an exit other than expiry (F17); order matching gained a hosted,
+unauthenticated trigger (`POST /v1/testnet/match`) so matching and its atomic
+settlement can be verified from outside (F24); `/v1/swaps` gained `?kind=` so
+liquidity events, not just swaps, are readable (F26). The whole `/v1/testnet/*`
+surface and the faucet's per-IP party quota were documented with their
+consequences (F14, F18).
+
+Proven by
+[`swaps-kind-filter.test.ts`](../../services/operator-backend/test/swaps-kind-filter.test.ts)
+(`?kind=` returns add- and remove-liquidity rows and composes with `?pair=`) and
+[`order-fill-recording.test.ts`](../../services/operator-backend/test/order-fill-recording.test.ts)
+(a discovered cross settles in exactly one submission, leaving no stranded
+collateral).
+
+### Answered by design
+
+`Holding_Split` is refused by the hosted relay because the relay exposes only a
+fixed set of settlement choices, and splitting is a wallet concern it does not
+surface (F19). The boundary is described in
+[Non-goals: the hosted testnet is a demo surface](../concepts/non-goals.md#the-hosted-testnet-is-a-demo-surface-not-a-wallet).
+
+### Closed after the report
+
+One item was open at the time of the report and has since been closed: a resting
+order the book published but the matcher would not pair (F27). The cause was a
+self-cross — a party's own bid and ask, which can never settle. The matcher now
+applies self-trade prevention in
+[`matching.ts`](../../services/operator-backend/src/order/matching.ts):
+
+```typescript
+// Self-trade prevention: a party's own bid and ask must not match. The
+// settle would build a transfer leg whose sender and receiver are the same
+// party and abort, so this cross can never settle. Move to the next ask ...
+if (buy.trader === sell.trader) {
+  ai += 1;
+  continue;
+}
+```
+
+Proven by
+[`matching.test.ts`](../../services/operator-backend/test/matching.test.ts)
+("does not match a party against its own crossing order", while a bid still
+crosses a different maker's ask and skips its own).
 
 ## How this loop is expected to continue
 
@@ -94,3 +158,7 @@ The reference tracks the same standard the ecosystem builds against, and its
 hosted testnet is open for exactly this kind of evaluation. New reports open as
 issues on the implementation repository; confirmed findings are fixed with a
 regression test and this summary is updated.
+
+---
+
+**Where to read next:** [Non-goals](../concepts/non-goals.md) · [HTTP API](http-api.md) · [Testing](testing.md) · [All docs](../README.md)

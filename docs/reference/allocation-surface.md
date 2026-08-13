@@ -1,58 +1,65 @@
 # Token Standard V2 allocation surface
 
-This document records the specific Token Standard **V2 (CIP-0112)** allocation-
-surface features this DEX relies on (committed allocations and iterated
-settlement), together with the exact DEX consumers, reconstructed from the
-actual vendored interface so readers can audit the dependency directly.
+Token Standard **V2 (CIP-0112)** is merged into `canton-network/splice` `main`
+and is the network default. This document is the factual, file-anchored
+reference for the specific V2 allocation-surface features the DEX consumes —
+committed allocations and iterated settlement — and the exact DEX code that
+consumes each one.
 
-Token Standard V2 has merged into `canton-network/splice` `main` and becomes the
-network default from mid-July 2026; this repo vendors the V2 sources at the
-commit pinned in
-[`../../vendor/splice/VENDOR_PIN.md`](../../vendor/splice/VENDOR_PIN.md).
+The DEX uses allocations for two jobs. The obvious one is reserving funds for a
+single trade. The load-bearing one is holding **long-lived, iterated pool
+inventory**: a bid, an ask, and each side of pool liquidity are backed by an
+allocation that stays live and rolls forward across many settlements. That
+second job is what pulls in the committed-allocation and iterated-settlement
+parts of the standard catalogued below.
 
-For the architectural rationale (why the DEX leans on these extensions for pool
-inventory, not just trade reservation), see
+For the architectural rationale (why the pool leans on these features rather
+than a custom balance with an escrow bridge behind it), see
 [`../concepts/architecture.md`](../concepts/architecture.md), section
-"3. Token Standard V2 allocation surface". This document is the
-factual, file-anchored reference; the architecture doc is the design context.
+["What settles value: the Token Standard V2 spine"](../concepts/architecture.md#what-settles-value-the-token-standard-v2-spine).
+That page is the design context; this page is the field-by-field reference.
 
 ## Source of truth
 
-- Vendored interface:
+- Standard interface (vendored):
   [`vendor/splice/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml`](../../vendor/splice/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml)
 - Vendor pin (upstream repo, branch, commit):
   [`../../vendor/splice/VENDOR_PIN.md`](../../vendor/splice/VENDOR_PIN.md)
 - DEX consumers:
   - [`trading/CantonDex/Trading/Utils.daml`](../../trading/CantonDex/Trading/Utils.daml)
     — funding arithmetic, leg→leg-side projection, allocation/spec builders.
-    Together with the registry below it consumes the full vendored surface, so
-    the build fails fast if a vendored package drifts.
+    Together with the registry below it exercises every field listed here, so
+    the build fails fast if a re-pin changes the surface.
   - [`trading/CantonDex/Registry/V2.daml`](../../trading/CantonDex/Registry/V2.daml)
-    — the registry that implements `AllocationFactory` / `Allocation` /
+    — the reference registry implementing `AllocationFactory` / `Allocation` /
     `SettlementFactory`.
-
-> The build targets Token Standard V2 at the commit pinned above. See the pin
-> file and the README's "Token Standard V2" section for the vendoring details.
-
-## Why the pool leans on these features
-
-The pool design uses allocations not only as one-shot trade reservations but
-also as long-lived, iterated pool inventory. That requires the iterated-
-settlement and committed-allocation semantics that Token Standard V2 (CIP-0112)
-provides. The sections below are the specific surface elements the DEX consumes.
 
 ## Surface features
 
-The following fields/behaviours are the Token Standard V2 allocation-surface
-elements the DEX consumes directly.
+The following fields and behaviours are the Token Standard V2 allocation-surface
+elements the DEX consumes directly. Each is defined in `AllocationV2.daml`; the
+"DEX usage" notes point at the code that reads or sets it.
 
 ### `committed` — on `AllocationSpecification`
 
-Defined in `AllocationV2.daml` on `AllocationSpecification`
-(`committed : Bool`). When `True`, the authorizer cannot withdraw the
-allocation until the settlement deadline passes (or the executors
-settle/cancel, or the admin expires it). This lets pool liquidity sit in
-an allocation that an LP cannot casually pull back.
+`committed : Bool` on `AllocationSpecification`. When `True`, the authorizer
+cannot withdraw the allocation until the settlement deadline passes (or the
+executors settle/cancel it, or the admin expires it). This lets pool liquidity
+sit in an allocation that an LP cannot casually pull back:
+
+```daml
+committed : Bool
+  -- ^ Whether the authorizer commits to the allocation until either
+  --   - the executors settle allocation,
+  ...
+  --   - the admin expires the allocation.
+  -- If set to `True`, then the authorizer cannot withdraw the allocation
+  -- until the settlement deadline.
+```
+
+The matching enforcement is on `Allocation_Withdraw`: "For committed allocations
+(i.e., `committed` set to `True`), this choice can only be exercised once the
+settlement deadline has passed."
 
 DEX usage:
 
@@ -64,16 +71,16 @@ DEX usage:
 
 `nextIterationFunding : Optional (TextMap.TextMap Decimal)`, keyed by instrument
 id with positive amounts. Setting it to `None` disables iterated settlement (the
-allocation can settle exactly once with its specified legs). An empty map
-enables iterated settlement with no reserved funding. It appears in three
-places on the vendored surface:
+allocation settles exactly once, with its specified legs). An empty map enables
+iterated settlement with no reserved funding. It appears in three places on the
+surface:
 
 - `AllocationSpecification.nextIterationFunding` — funds reserved at allocation
   creation for the next iteration.
 - `FinalizedAllocation.nextIterationFunding` — the funding to reserve for the
   next iteration at settlement time.
-- `Allocation_Settle.nextIterationFunding` — same, on the settle choice;
-  `None` here signals that no further iterations follow.
+- `Allocation_Settle.nextIterationFunding` — same, on the settle choice; `None`
+  here signals that no further iterations follow.
 
 DEX usage:
 
@@ -81,26 +88,34 @@ DEX usage:
   `Utils.normalizeFunding` compute the per-instrument funding map the authorizer
   must cover.
 - `Utils.mkIteratedAllocationSpecification` /
-  `mkPrefundedAllocationSpecification` set it on the spec.
+  `Utils.mkPrefundedAllocationSpecification` set it on the spec.
 - `Registry.V2.allocationFactory_allocateImpl` validates that the locked input
   holdings cover the sender-side legs **plus** `nextIterationFunding`
-  (`required = sideRequired ∪ funding`).
+  (`required = Utils.textMapUnionWith (+) sideRequired funding`).
 - `Registry.V2.allocation_settleImpl` rolls `arg.nextIterationFunding` forward
   into a fresh allocation with `numIterations + 1`.
 
 ### `nextIterationAllocationCid` — via `AllocationResult_Settled`
 
-On the released surface a settle result does not carry a forward pointer to a
-next-iteration allocation. The vendored surface's
-`AllocationResult_Output = AllocationResult_Settled with nextIterationAllocationCid : Optional (ContractId Allocation)`
-returns the allocation created for the next iteration (or `None` when fully
-settled).
+A settle result carries a forward pointer to the allocation created for the next
+iteration:
+
+```daml
+| AllocationResult_Settled
+    with
+      nextIterationAllocationCid : Optional (ContractId Allocation)
+        -- ^ The new allocation created for the next settlement iteration, if any.
+```
+
+It is `None` when the allocation is fully settled. (Historically, an earlier V2
+release exposed no such forward pointer; the merged standard includes it.)
 
 DEX usage:
 
-- `Registry.V2.allocation_settleImpl` populates
-  `AllocationResult_Settled next`, where `next` is the freshly created
-  next-iteration allocation when `nextIterationFunding` is set.
+- `Registry.V2.allocation_settleImpl` returns
+  `AllocationResult_Settled nextCid`, where `nextCid` is the freshly created
+  next-iteration allocation when `nextIterationFunding` is set, and `None`
+  otherwise.
 - `Utils.nextIterationAllocationCids` reads these back out of a
   `SettlementFactory_SettleBatchResult` (order-preserving; `Some` when the
   allocation rolled forward, `None` when fully settled). Partial fills rely on
@@ -110,52 +125,53 @@ DEX usage:
 
 `FinalizedAllocation.extraTransferLegSides : [TransferLegSide]` lets executors
 supply the concrete transfer leg sides to authorize in this settlement
-iteration, on top of the legs fixed at allocation creation. They MUST be empty
-unless the authorizer enabled iterated settlement. The matching
-`Allocation_Settle.extraTransferLegSides` choice argument carries them into the
-settle path.
+iteration, on top of the legs fixed at allocation creation. Per the standard,
+they "MUST be empty unless iterated settlement was enabled by the allocation's
+authorizer." The matching `Allocation_Settle.extraTransferLegSides` choice
+argument carries them into the settle path.
 
 DEX usage:
 
-- `Utils.mkFinalizedAllocation`
-  builds a `FinalizedAllocation` carrying extra leg sides + optional funding;
-  `Utils.finalAllocation` is the settle-as-is form (no extra legs, no next
-  iteration).
-- `OrderMatchExecution` supplies concrete match legs as
-  `extraTransferLegSides` at batch-settlement time (see the prefunded-order tour
-  in [`../guides/builder-guide.md`](../guides/builder-guide.md) and
+- `Utils.mkFinalizedAllocation` builds a `FinalizedAllocation` carrying extra
+  leg sides + optional funding; `Utils.finalAllocation` is the settle-as-is form
+  (no extra legs, no next iteration).
+- `OrderMatchExecution` supplies concrete match legs as `extraTransferLegSides`
+  at batch-settlement time (see the prefunded-order tour in
+  [`../guides/builder-guide.md`](../guides/builder-guide.md) and
   `trading/CantonDex/Dex/OrderMatchExecution.daml`).
 - `Registry.V2.allocation_settleImpl` appends `arg.extraTransferLegSides` to the
-  spec's fixed `transferLegSides` (`allSides = spec.transferLegSides ++ arg.extraTransferLegSides`)
-  and credits receiver-side holdings for the authorizer.
+  spec's fixed `transferLegSides`
+  (`allSides = spec.transferLegSides ++ arg.extraTransferLegSides`) and credits
+  receiver-side holdings for the authorizer.
 - `Registry.V2.settlementFactory_settleBatchImpl` threads each
   `FinalizedAllocation`'s `extraTransferLegSides` and `nextIterationFunding`
   into the per-allocation `Allocation_Settle`.
 
-### Retirement of `Allocation_Adjust`
+### No `Allocation_Adjust` choice
 
-The vendored `AllocationV2.daml` `Allocation` interface exposes exactly three
-state-changing choices: `Allocation_Settle`, `Allocation_Cancel`, and
-`Allocation_Withdraw`. There is no `Allocation_Adjust` choice on the
-V2 surface. Earlier/alternative designs adjusted an allocation's
-authorized amounts in place via a dedicated choice; on this surface that role is
+The `Allocation` interface exposes exactly three state-changing choices —
+`Allocation_Settle`, `Allocation_Cancel`, and `Allocation_Withdraw`. There is no
+`Allocation_Adjust`. Where an alternative design might adjust an allocation's
+authorized amounts in place via a dedicated choice, on this surface that role is
 subsumed by iterated settlement: `Allocation_Settle` carries
 `extraTransferLegSides` and `nextIterationFunding` and emits a next-iteration
 allocation via `nextIterationAllocationCid`, so the funding "adjustment" happens
 as part of settle rather than as a separate choice.
 
-This is why the conservation test was renamed: the former
-`testAllocationAdjustConservation` is succeeded by
+This is why the DEX's conservation test is named for the settle path:
 `testFinalizedAllocationFundingConservation` in
-[`trading-tests/CantonDex/Tests/EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml).
+[`trading-tests/CantonDex/Tests/EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
+checks that funding is conserved across the finalize-and-settle flow.
 
 ## Vendoring
 
-These semantics are part of Token Standard V2 (CIP-0112), now merged into
-`canton-network/splice` `main`. This repo vendors the V2 sources at a pinned
-commit and re-pins as the surface evolves upstream; the pin in
-[`../../vendor/splice/VENDOR_PIN.md`](../../vendor/splice/VENDOR_PIN.md) is the
-authoritative record of exactly what the build targets.
+This repo vendors the Token Standard V2 sources under
+[`vendor/splice/`](../../vendor/splice/). They track the standard as merged into
+`canton-network/splice` `main`; the vendoring exists to pin an exact commit for
+reproducible builds, not because the DEX depends on anything non-standard. The
+pin in [`../../vendor/splice/VENDOR_PIN.md`](../../vendor/splice/VENDOR_PIN.md)
+is the authoritative record of exactly which commit the build compiles against,
+and is re-pinned as the standard's sources advance upstream.
 
 ---
 

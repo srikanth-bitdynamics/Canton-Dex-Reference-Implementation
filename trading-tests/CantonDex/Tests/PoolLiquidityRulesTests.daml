@@ -1,3 +1,8 @@
+-- Executable proof behind the pool-liquidity concept docs. Each script runs a
+-- full add- or remove-liquidity flow and checks that assets land with the right
+-- party, that LP tokens are minted or burned to match, and that unsafe shortcuts
+-- (stale price, expired request, forged or oversized mint, one-party settle) fail.
+
 -- | DvP liquidity at the boundary, against Registry.V2 (holding-tracking +
 -- iterated settlement + mint/burn accounts). Proves:
 --   - atomic add: LP funds base+quote and receives LP tokens in one flow;
@@ -34,6 +39,8 @@ import CantonDex.Lp.Instrument qualified as Lp
 import CantonDex.Registry.V2 qualified as RegV2
 import CantonDex.Trading.Utils qualified as Utils
 
+-- The pool's LP-token identifier: what a provider receives in return for the
+-- base+quote it deposits.
 lpId : Text
 lpId = "BTC-USDC-LP"
 
@@ -54,27 +61,38 @@ data Fixture = Fixture with
 setup : [Party] -> Script Fixture
 setup = setupWithFee 30
 
+-- Stand up the whole fixture at a chosen fee: allocate the parties, create the
+-- one registry, and seed the pool, its state, the LP-token policy, and the rules
+-- contract — everything a test needs before driving an add or remove.
 setupWithFee : Int -> [Party] -> Script Fixture
 setupWithFee feeBps lps = do
+  -- Parties: `operator` runs the pool; `registry` is the token admin. Reusing one
+  -- party as both admin and LP registrar keeps the harness to a single registry.
   operator <- allocateParty "operator"
   registry <- allocateParty "registry"   -- admin AND lpRegistrar
+  -- The single Registry.V2 contract; below it is viewed as both the allocation
+  -- factory and the settlement factory. `lps` are registered so they can allocate.
   reg <- submit registry $ createCmd RegV2.Registry with admin = registry; users = operator :: lps
   let factoryCid : ContractId V2.AllocationFactory = toInterfaceContractId reg
       settleCid : ContractId V2.SettlementFactory = toInterfaceContractId reg
       poolId = "BTC-USDC"
       lpInstrumentId = V2.InstrumentId with admin = registry; id = lpId
+  -- Seed the pool definition: the BTC/USDC pair, its registrar/admin, and fee.
   poolCid <- submit operator $ createCmd Pool with
     poolId; operator; lpRegistrar = registry; admin = registry
     baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId
     feeBps
+  -- Seed the pool's live state empty: no reserves, no LP supply, not yet funded.
   stateCid <- submit operator $ createCmd PS.PoolState with
     poolId; operator; lpRegistrar = registry
     status = PS_Unfunded
     reserves = PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
     totalLpSupply = 0.0; publicReaders = []
+  -- The LP-token policy (mint/burn authority for this pool's LP token), empty.
   policyCid <- submit registry $ createCmd LP.LPTokenPolicy with
     lpRegistrar = registry; operator; lpInstrumentId
     totalSupply = 0.0; active = True
+  -- The rules contract whose Settle* choices drive every add and remove below.
   dvpCid <- submit (actAs [operator, registry]) $
     createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar = registry
   pure Fixture with
@@ -99,6 +117,8 @@ mkAlloc factoryCid party settlement spec inputHoldingCids requestedAt = do
     V2.AllocationInstructionResult_Completed cid -> pure cid
     _ -> abort "allocation must complete"
 
+-- Build a plain allocation spec: who administers it, who authorizes it, the
+-- transfer legs it moves, and whether it is already committed.
 mkSpec : Party -> V2.Account -> [V2.TransferLeg] -> Bool -> V2.AllocationSpecification
 mkSpec admin authorizer legs committed = V2.AllocationSpecification with
   admin; authorizer
@@ -132,6 +152,8 @@ requestAdd fx recipient baseAmount quoteAmount lpAmount settleAt now =
     poolCid = fx.poolCid; recipient; baseAmount; quoteAmount; lpAmount
     requestedAt = now; settleAt
 
+-- The remove-side counterpart of `requestAdd`: the operator posts the request
+-- naming the base/quote amounts to return and how much LP to burn.
 requestRemove
   : Fixture -> Party -> [Decimal] -> [Decimal] -> Decimal -> Optional Time -> Time
   -> Script (ContractId LAR.LiquidityAllocationRequest)
@@ -222,6 +244,10 @@ dvpAddWithLp fx stateCid policyCid lp baseAmount quoteAmount lpAmount now = do
       baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = 0.0
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
 
+-- Happy path: a first add funds an empty pool and mints LP tokens to the
+-- provider, all in one atomic settlement. Asserts the pool turns Active with the
+-- deposited reserves and a matching LP supply, that the operator's two reserve
+-- slices are recorded, and that Alice ends up holding the freshly minted LP token.
 testDvpAddLiquidity : Script ()
 testDvpAddLiquidity = do
   alice <- allocateParty "alice"
@@ -396,6 +422,8 @@ testStaleQuoteRejected = do
       bBaseSpec = depositSpec fx.registry bobAcct baseDepositLeg
       bQuoteSpec = depositSpec fx.registry bobAcct quoteDepositLeg
       bRcptSpec = mkSpec fx.registry bobAcct [lpMintLeg] False
+  -- Fund Bob and build his standard add allocations (two deposits + a mint
+  -- receipt); everything is well-formed here, only the quoted supply is stale.
   bBtc <- mintHolding fx.registry bob "BTC" 1.0
   bUsdc <- mintHolding fx.registry bob "USDC" 20000.0
   bReq <- requestAdd fx bob 1.0 20000.0 100.0 None now

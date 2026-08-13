@@ -1,73 +1,93 @@
-# Pricing and oracle sources
+# Pricing and price sources
 
-## No on-chain price oracle
+This DEX has no price oracle. Every price it can execute is set inside the
+system, so no external feed can move funds on the ledger.
 
-There is no on-chain price oracle in this DEX. Every executable
-price comes from one of four endogenous sources, and the codebase
-contains no integration with Chainlink, Pyth, an attested feed, a TWAP
-window, or any external pricing service.
+## The four price surfaces
 
-## Where each price comes from
+A price here is always one of four things, and each is signed by whoever is
+accountable for it:
 
-| Surface | Price source | Authority |
+| Surface | Price source | Signed by |
 |---|---|---|
-| AMM `Pool` (`PoolRules_Swap`) | Constant-product formula over on-chain reserves: `out = reserveOut * (in * (1 - fee)) / (reserveIn + in * (1 - fee))` | Pool reserves are signed by the `operator`; the swap re-validates against `minOutputAmount`, so the swapper sets their own price floor |
-| `Order` book | Trader's `limitPrice` on the `OrderFundingRequest` | Trader-signed |
-| `Rfq` / `RfqQuote` (Workflow 2) | Dealer-quoted `price` on each `RfqQuote`; the operator's `applyPolicy` ranks but never alters the quoted price | Dealer-signed (quote), trader+operator-signed (accept) |
-| `MatchedTrade` (OTC) | Pre-agreed leg amounts in `transferLegs` | Bilateral, signed by both authorizers |
+| AMM pool (`PoolRules_Swap`) | the constant-product curve over the pool's reserves | operator (reserves); the taker sets a `minOutputAmount` floor |
+| Order book (`OrderFundingRequest`) | the trader's `limitPrice` | the trader |
+| RFQ (`RfqQuote`) | the dealer's quoted `price`; the operator ranks quotes but never rewrites one | dealer (quote); trader + operator (accept) |
+| OTC (`MatchedTrade`) | the leg amounts both sides pre-agreed | both authorizers |
 
-The quote endpoint mirrors the `constantProductOut` helper over current
-reserves; it does not consult any external feed. The operator
-backend's `policy/index.ts rankQuotes` ranks dealer quotes but never
-substitutes a price.
+Only the first is a price the *system* computes; the rest are prices someone
+posted. The rest of this page covers the AMM.
+
+## How the pool prices a swap
+
+The pool is a constant-product AMM: it holds a reserve of each asset and prices
+every swap off the invariant `x · y = k`. A swap pays `Δin` into one reserve and
+takes the `Δout` from the other that keeps the product from decreasing; the
+marginal price is the reserve ratio, and each trade moves that ratio against the
+taker (price impact).
+
+Two things about this implementation matter more than the curve itself:
+
+- **The fee is retained in the pool.** It is charged on the input
+  (`Δin · (1 − fee)` drives the curve) while the full `Δin` still lands in the
+  reserve, so `k` is strictly non-decreasing across a swap. That surplus is what
+  accrues to liquidity providers.
+- **The output is re-derived on the ledger, not quoted by the operator.**
+  `PoolRules_Swap` computes `Δout` from the current reserves inside the choice and
+  settles the taker against that value, so the operator cannot quote one number
+  and settle another. The dApp's quote endpoint runs the same function
+  off-ledger, so preview and settlement agree to the last digit.
+
+The computation is one helper,
+[`constantProductOut`](../../trading/CantonDex/Dex/PoolModel.daml):
+
+```daml
+constantProductOut reserveIn reserveOut feeBps inputAmount =
+  let amountInAfterFee =
+        floorDiv (floorMul inputAmount (intToDecimal (10000 - feeBps))) 10000.0
+  in floorDiv (floorMul amountInAfterFee reserveOut) (reserveIn + amountInAfterFee)
+```
+
+```mermaid
+flowchart LR
+  In["Δin (input)"] -->|"fee retained:<br/>Δin · (1 − fee)"| C{{"x · y = k"}}
+  RI[("reserveIn")] --> C
+  RO[("reserveOut")] --> C
+  C -->|"Δout"| Out["Δout (output)"]
+  C -.->|"reserves move +Δin / −Δout"| P[("new Pool")]
+```
+
+**Rounding is one-directional.** `floorMul` and `floorDiv` round `Δout` down, so
+the pool never pays more than the exact amount and `k` stays non-decreasing even
+after scale-10 `Decimal` rounding. Verified in
+[`PoolRoundingTests.daml`](../../trading-tests/CantonDex/Tests/PoolRoundingTests.daml)
+(a swap never overpays; `k` never decreases) and
+[`PoolStateInvariantTests.daml`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml)
+(reserves stay consistent across a swap).
 
 ## Practical consequences
 
-- Pool prices follow reserves. A pool with stale or thin liquidity
-  will quote stale prices. There is no oracle-backed "fair value"
-  protection; arbitrageurs are the only mechanism that pulls pool
-  prices toward broader-market prices.
-- Order-book prices are whatever traders post. There is no spread
-  policy or reference-price guard on the operator side beyond the
-  fee-model the pair config encodes.
-- RFQ prices are whatever dealers quote. The
-  [PolicyReceipt](../../trading/CantonDex/Dex/PolicyReceipt.daml) records
-  which quote ranked where under which policy version, but does not
-  certify that the chosen price is "good", only that the policy was
-  applied honestly.
-- The fiat estimates the dApp shows next to instrument balances are
-  **live, pool-derived values**, sourced from the operator backend's
-  `/v1/prices` endpoint via the `useAssetPricesUsd` hook
-  ([usePrices.ts](../../app/web/src/hooks/usePrices.ts)). Each quote
-  resolves from pool mid-price (constant-product), then a configured
-  static `PRICES` feed, and falls back to "—" when no source has a
-  price. They are advisory display estimates, deliberately not used for
-  any executable decision.
+- Pool prices track reserves. A thin or stale pool quotes a stale price, and
+  only arbitrage pulls it back; there is no oracle "fair value" guard.
+- Order and RFQ prices are whatever was posted. For RFQ, the
+  [`PolicyReceipt`](../../trading/CantonDex/Dex/PolicyReceipt.daml) records which
+  quote won under which policy version — evidence the ranking was applied
+  honestly, not that the price was good.
 
-## Oracle attachment points
+## Fiat estimates in the dApp
 
-If a future tranche introduces an oracle, the natural attachment
-points are:
-
-1. Slippage / circuit-breaker on `PoolRules_Swap`. Add an
-   `oracleAttestation` argument with a signed price + timestamp; the
-   choice asserts the realized swap price stays within a band of the
-   attested price. The signer would be a separate `oracleAuthority`
-   party in the choice context (production registries already follow
-   this pattern for credential checks, see
-   [registry-integration.md](../guides/registry-integration.md)).
-2. TWAP for compliance reporting. A separate `PoolPriceObservation`
-   template the operator creates after each `PoolRules_Swap`, sampled by an
-   off-chain ingestor. Pure observability, no consensus role.
-3. Fiat-display reference. The dApp's `assets.ts` could call out
-   to a public price API at the edge. This is presentation-only and
-   does not need to be on-ledger.
-
-None of the above are implemented. The current design intentionally
-keeps pricing endogenous so that a malicious external feed cannot move
-on-ledger funds, at the cost of the protections an oracle would
-provide.
+The dollar figures next to balances are advisory: pool mid-price, falling back
+to a static feed and then to "—", served from `/v1/prices`. Display only; never
+an input to settlement.
 
 ---
 
-**Where to read next:** [Architecture](architecture.md) · [Registry Integration](../guides/registry-integration.md) · [All docs](../README.md)
+### Reference: where an oracle would attach
+
+Pricing is endogenous by design, so a compromised feed cannot move funds. If a
+later version added an oracle, the attachment points would be a slippage band on
+`PoolRules_Swap` (a signed price + timestamp from a separate `oracleAuthority`), a
+`PoolPriceObservation` template for TWAP reporting, or an edge-side price API for
+fiat display. None are implemented.
+
+**Where to read next:** [Architecture](architecture.md) · [Workflows](workflows.md) · [Registry integration](../guides/registry-integration.md)

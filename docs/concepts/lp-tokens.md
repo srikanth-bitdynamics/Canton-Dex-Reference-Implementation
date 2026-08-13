@@ -1,105 +1,163 @@
-# LP token versioning strategy
+# LP tokens
 
-## Decision
+An LP token is an ordinary V2 holding whose mint and burn ride the *same*
+atomic settlement that moves the underlying base and quote. There is no
+separate issuance lifecycle — no settle, no mint. One fungible instrument per
+pool, and its value is realised only by redeeming it.
 
-**Canton DEX LP tokens are unversioned.** The LP token `instrumentId` for a
-given pool is derived from the pool's pair (e.g., `BTC-USDC-LP`) and does
-not include a version suffix or per-iteration discriminator.
+## One fungible instrument per pool
 
-## Rationale
+Each pool has exactly one LP instrument, fixed at pool creation as
+`Pool.lpInstrumentId : V2.InstrumentId` (with `admin = lpRegistrar`). Its
+identity and circulating supply live in a small `LPTokenPolicy` that knows
+nothing about the pool — no base, no quote, no reserves, just the instrument id,
+a `totalSupply`, and an `active` flag.
 
-The reference DEX prioritises:
+The token is **unversioned**: the `instrumentId` never carries a version suffix
+or per-iteration discriminator, so two `BTC-USDC-LP` holdings of the same amount
+are interchangeable — no rebase, no per-version balance map. It MUST NOT be
+derived from the pool's contract id, settlement iteration, or status, all of
+which change over a pool's life and would re-version the LP behind holders'
+backs. (Why this matters for wallets and downstream dApps is in
+[Reference](#reference-versioning-and-upgrades).)
 
-1. **Fungibility** — all LP holders for a pool hold the same instrument and
-   can transfer between each other freely. Two `BTC-USDC-LP` holdings of
-   amount X are interchangeable; no rebase, no migration.
-2. **Composability** — other dApps (lending markets, vaults, structured
-   product builders) can treat an LP holding as collateral by checking a
-   single `instrumentId`. They don't need to track per-version balance maps.
-3. **UX simplicity** — the wallet shows one LP balance per pool, not a
-   timeline of versioned slivers.
+## Mint and burn are a sibling of the settlement
 
-## Implications for the pool contract
+Adding and removing liquidity settle through `PoolLiquidityRules` —
+`PoolLiquidityRules_SettleAddLiquidity` and
+`PoolLiquidityRules_SettleRemoveLiquidity`. Each choice is one atomic
+transaction that runs *two* `SettlementFactory_SettleBatch` calls under
+different authorities (a split-admin DvP):
 
-The pool contract template carries `lpInstrumentId : V2.InstrumentId` as a
-static field fixed at pool creation. It MUST NOT be derived from the pool's
-contract id, the current settlement iteration, or the pool's status. Those
-all change over a pool's life and would re-version the LP behind users' backs.
+- the base/quote batch under `pool.admin`, moving the real assets into or out of
+  the operator-custodied reserves;
+- the LP mint/burn batch under `pool.lpRegistrar`, creating or destroying the LP
+  holding.
 
-Concretely:
+A mint and a burn are just transfer legs to and from two reserved accounts whose
+`owner` is `None`. `Registry.V2` recognises exactly these as admin-authorised
+issuance sources (`mintAccount` id `"cip-112/mint"`, `burnAccount` id
+`"cip-112/burn"`), so a leg *from* `mintAccount` is an issuance and a leg *to*
+`burnAccount` is a redemption — [`lpMintLeg` / `lpBurnLeg`](../../trading/CantonDex/Lp/Instrument.daml):
 
-- `PoolLiquidityRules_SettleAddLiquidity` mints `lpInstrumentId` tokens at the pool's
-  current proportional ratio. The minted holdings use the same `instrumentId`
-  as every prior LP minted from this pool.
-- `PoolLiquidityRules_SettleRemoveLiquidity` burns `lpInstrumentId` tokens. The pool
-  does not care which iteration created them.
-- The `LPTokenPolicy` registrar must accept any holding of `lpInstrumentId`
-  for burn: there is no version check.
+```daml
+lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
+  transferLegId = "lp-mint"
+  sender = Utils.mintAccount
+  receiver = recipient
+  amount
+  instrumentId = lpInstrumentId
+  meta = emptyMetadata
 
-## Settlement iterations
+lpBurnLeg _lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
+  transferLegId = "lp-burn"
+  sender = holder
+  receiver = Utils.burnAccount
+  amount
+  instrumentId = lpInstrumentId
+  meta = emptyMetadata
+```
 
-The V2 allocation API introduces `nextIterationAllocationCid` so the pool can hand pool-
-side allocations forward across settlement batches without users re-allocating.
-This is an allocation lifecycle concern, not an instrument-versioning
-concern. The LP holdings users hold are unaffected by allocation iteration.
+Two things about this are non-obvious:
 
-## Fee and rule changes
+- **No settle, no mint.** The mint leg lives in the *same choice* as the deposit
+  legs. Both batches are all-or-nothing together: you cannot receive LP tokens
+  without your base+quote landing in the reserves, and you cannot pull assets out
+  without your LP holding burning. The mint is a sibling of the delivery, not a
+  standalone issuance step that could run on its own.
+- **The mint amount is bounded, not trusted.** The LP receipt carries the
+  operator's off-ledger quote, but the settle recomputes the fair entitlement
+  on-ledger — `sqrt(base·quote)` at first funding, else pro-rata — and rejects a
+  receipt claiming more than that beyond a `1e-6` dust tolerance. The registrar
+  signs the mint; `PoolLiquidityRules` bounds it.
 
-If the admin changes the pool's fee model, the LP instrument stays the same.
-Existing LP holders share in future fees at the new rate. If the change is
-non-trivial and existing LPs should be honoured at old rates, the operator
-must spin up a new pool with a new pair of `lpInstrumentId`. That
-is a deliberate migration, not an incidental rebase.
+```mermaid
+flowchart TB
+  subgraph add["Add — SettleAddLiquidity (one atomic transaction)"]
+    direction LR
+    A1["LP"] -->|"base + quote in"| AR[("pool reserves")]
+    AM(["mintAccount<br/>owner = None"]) -->|"LP-mint leg"| A1
+  end
+  subgraph rem["Remove — SettleRemoveLiquidity (one atomic transaction)"]
+    direction LR
+    RR[("pool reserves")] -->|"pro-rata base + quote out"| R1["holder"]
+    R1 -->|"LP-burn leg"| RB(["burnAccount<br/>owner = None"])
+  end
+```
 
-## Emergency upgrades
+Supply is tracked in two places and kept in lockstep: `LPTokenPolicy.totalSupply`
+and `PoolState.totalLpSupply`. Each settle asserts they already agree, then
+`LPTokenPolicy_RecordMint` / `LPTokenPolicy_RecordBurn` moves the policy's total
+while the same choice rewrites `PoolState` with the matching delta.
 
-If the LP token policy itself needs to be replaced (security fix, choice
-signature change), the upgrade path is a Canton package upgrade: same
-`instrumentId`, new package hash. Holders are unaffected.
+## Value is realised by redemption
 
-## Why one LP instrument per pool
+The LP token never pays a coupon and never rebases. Swap fees stay in the pool's
+reserves (see [Pricing](pricing.md)), so the reserves a fixed LP balance can
+claim grow as the pool trades. Value comes out only on
+`PoolLiquidityRules_SettleRemoveLiquidity`, which burns the holder's LP and pays
+the current pro-rata share of reserves:
 
-- The LP registrar/policy component is the issuer of the LP token for the
-  pool. Fee accrual is reserve growth on the underlying assets, not a separate
-  coupon event that needs to be crystallized into a new instrument version.
-- There is no off-ledger lifecycle event that LP holders need to settle
-  out before continuing to trade. A pool's fee revenue accumulates in its
-  reserves; redeem-by-burn always pays out the current ratio.
+```
+share   = lpTokensToRedeem / knownTotalLpSupply   -- floored
+baseOut  = reserves.baseAmount  · share           -- floored
+quoteOut = reserves.quoteAmount · share            -- floored
+```
 
-## Why this is separate from registry primitive versioning
-
-Some lifecycle-aware registry-side instruments may version when their issuer
-makes a breaking change, e.g., a coupon payment at epoch N that needs to be
-paid into v_N holdings before they roll forward to v_{N+1}. That is a
-fundamentally different shape of problem from the LP token:
-
-- **Registry primitives** have an external issuer who occasionally needs
-  to crystallize an off-ledger event onto the on-chain instrument. One
-  registry-specific pattern is upgrade-on-use inside the transfer/allocation
-  factories, plus a force-upgrade choice for passive holders who never touch
-  their balance.
-- **LP tokens** have the pool's LP registrar/policy as the issuer. The
-  reference LP token has no off-ledger event to crystallize against a passive
-  holder's balance. So upgrade-on-use plus force-upgrade does not apply in this
-  reference: the LP token stays at one stable `instrumentId` for the
-  life of the pool.
-
-That means a wallet, lending market, or vault that consumes registry
-primitives needs to handle upgrade-on-use behavior; the same wallet
-consuming LP tokens does not. The two surfaces look fungible-equivalent
-externally but have different upgrade semantics.
-
-See [CIP-0112](https://github.com/global-synchronizer-foundation/cips/blob/main/cip-0112/cip-0112.md)
-for the canonical V1→V2 compatibility framing: V1 instruments continue
-to exist alongside V2 implementations rather than being bulk-migrated.
-
-## See also
-
-- [Registry Integration](../guides/registry-integration.md) — for how the
-  LP registry config is registered at pool creation in the reference registry,
-  and for the registry-specific force-upgrade pattern some assets may exercise.
-- [Workflows](workflows.md) — for the add/remove-liquidity flow.
+Because the reserves include accrued fees, redeeming a share returns more base
+and quote than backed it at deposit time — that surplus *is* the LP return.
+Rounding is one-directional (`floorDiv`/`floorMul`), so the pool never pays out
+more than the exact share and `x·y = k` stays non-decreasing. A pool that never
+traded returns exactly what went in; there is no off-ledger event a holder must
+crystallise first.
 
 ---
 
-**Where to read next:** [Liquidity & Custody](liquidity-and-custody.md) · [Add an LP or Instrument](../guides/add-lp-or-instrument.md) · [All docs](../README.md)
+## Reference: versioning and upgrades
+
+The single-instrument choice buys three things a versioned LP would cost:
+**fungibility** (all holders of a pool hold one instrument and transfer freely),
+**composability** (a lending market or vault treats an LP holding as collateral
+by checking one `instrumentId`, with no per-version balance map), and **UX
+simplicity** (one LP balance per pool, not a timeline of versioned slivers).
+
+- **Settlement iterations are not versions.** The V2 allocation API uses
+  `nextIterationAllocationCid` so the pool hands pool-side allocations forward
+  across settlement batches without users re-allocating. That is an allocation
+  lifecycle concern; the LP holdings users hold are unaffected.
+- **Fee or rule changes keep the instrument.** Existing LPs simply share future
+  fees at the new rate. Honouring old LPs at old rates means the operator spins
+  up a *new* pool with a new `lpInstrumentId` — a deliberate migration, never an
+  incidental rebase.
+- **Policy upgrades are package upgrades.** Replacing the LP policy itself
+  (security fix, choice-signature change) is a Canton package upgrade: same
+  `instrumentId`, new package hash; holders are unaffected.
+- **Contrast with registry primitives.** A lifecycle-aware registry instrument
+  may version when its external issuer must crystallise an off-ledger event
+  (e.g. a coupon at epoch N paid into `v_N` before rolling to `v_{N+1}`), which
+  needs upgrade-on-use plus a force-upgrade choice for passive holders. The LP
+  token has no such event — its issuer is the pool's `lpRegistrar` and fee
+  accrual is just reserve growth — so it stays at one stable `instrumentId` for
+  the life of the pool. A wallet consuming registry primitives must handle
+  upgrade-on-use; the same wallet consuming LP tokens does not. See
+  [CIP-0112](https://github.com/global-synchronizer-foundation/cips/blob/main/cip-0112/cip-0112.md)
+  for the V1→V2 compatibility framing.
+
+## Tests
+
+- [`DvpMintBurnTests.daml`](../../trading-tests/CantonDex/Tests/DvpMintBurnTests.daml)
+  — `testDvpMintThenBurn` proves the mint/burn *mechanism* in isolation: a mint
+  leg from `mintAccount` credits the recipient, a burn leg to `burnAccount`
+  debits the holder and leaves nothing behind (the owner-`None` account is never
+  credited).
+- [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml)
+  — the same mint/burn as the sibling batch of a real add/remove:
+  `testDvpAddLiquidity` (deposit + LP mint settle atomically),
+  `testDvpRemoveDeliversToHolder` (reserves pay the holder, LP burns),
+  `testAddRejectsOverMint` (a receipt above the on-ledger fair share is
+  rejected), and `testSettleRequiresCoControl` (the settle needs both `operator`
+  and `lpRegistrar`).
+
+---
+
+**Where to read next:** [Liquidity & Custody](liquidity-and-custody.md) · [Pricing](pricing.md) · [Add an LP or Instrument](../guides/add-lp-or-instrument.md) · [All docs](../README.md)

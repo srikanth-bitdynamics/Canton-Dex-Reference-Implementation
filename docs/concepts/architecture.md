@@ -1,460 +1,325 @@
 # Canton DEX Architecture
 
-## Purpose
+Canton DEX keeps market logic — orders, pools, RFQ — in its own Daml contracts,
+but it never moves value itself: every settlement runs through the Token
+Standard V2 (CIP-0112) allocation and batch-settlement APIs, so the exchange has
+no bespoke escrow and no custody path of its own. This page is the map of that
+split. [Non-goals](non-goals.md) records what the reference deliberately leaves
+out, and why.
 
-Canton DEX is a token-standard-native reference DEX for Canton.
+## The three layers
 
-It is intentionally not a generic settlement engine. [Non-goals](non-goals.md)
-collects what the reference leaves out on purpose, and why. The goal is to
-show builders how to build a real exchange directly on top of:
-
-- Token Standard V2 allocations and batch settlement
-- registry-backed holdings whose registries implement the V2 holding,
-  allocation, and settlement APIs
-- Canton privacy, routing, and atomic transaction semantics
-
-## Design inputs
-
-The architecture is based on three concrete upstream inputs.
-
-### 1. TradingAppV2
-
-The `TradingAppV2` example establishes the basic trading pattern we want to
-reuse:
-
-- the application owns trade state such as `OTCTrade`
-- the venue or executor requests per-authorizer allocations
-- allocations are grouped by admin and settled through
-  `SettlementFactory_SettleBatch`
-- cancellation is an application concern, not a hidden wallet concern
-
-That example still contains V1/V2 bridging for compatibility. We can learn from
-that structure without making mixed-mode support the center of this repo.
-
-### 2. Registry workflows
-
-The reference registry in this repository, and the registry workflows used in
-Digital Asset examples, anchor one concrete instrument model:
-
-- a registrar may create an `InstrumentConfiguration`-style contract for each
-  supported instrument
-- holder credentials govern transfer eligibility
-- issuer credentials govern mint and burn eligibility
-- the instrument config can carry external identifiers such as ISIN or CUSIP
-
-Token Standard V2 does not mandate `InstrumentConfiguration` or lifecycle
-contracts (though the token-standard `metadata-v1` API does expose queryable
-instrument properties). A production registry can expose the same V2 holding/allocation
-interfaces with a different internal model. The DEX should therefore treat
-`InstrumentId` and registry-provided choice context as the stable integration
-boundary, not our reference configuration template.
-
-This means the DEX should treat `InstrumentId` as the join key into richer
-instrument semantics instead of hardcoding asset families in the exchange.
-
-### 3. Token Standard V2 allocation surface
-
-The pool design depends on the Token Standard V2 (CIP-0112) allocation
-extensions, now merged into `canton-network/splice` `main`:
-
-- iterated settlement
-- `nextIterationFunding`
-- committed allocations
-- `FinalizedAllocation.extraTransferLegSides`
-- settle results that return next-iteration allocation state
-
-Those changes make it possible to use allocations not only for trade
-reservation but also for long-lived pool inventory.
-
-## Core decisions
-
-1. Token standard first
-   - the DEX should use V2 allocation primitives directly, not hide them behind
-     a generic settlement abstraction
-
-2. DEX contracts own market logic
-   - orders, matched trades, pools, and LP state belong to the application
-
-3. Allocations represent funds, not just approval
-   - bids and asks are backed by allocations
-   - pool inventory is represented by committed and iterated allocations
-
-4. Arbitrary instruments, one registry per pair
-   - any instrument whose registry implements the V2 holding and allocation
-     APIs can be traded, not just "cash vs asset" flows
-   - both legs of a pair share one registry `admin`. `DexPair`, `Order`,
-     `Pool` and `MatchedTrade` each carry a single `admin : Party`, and the
-     standard's `TransferLeg.instrumentId` is bare `Text`, so a leg cannot
-     name its own admin. Pairing instruments from two different registries is
-     therefore not expressible today. See
-     [Registry Integration](../guides/registry-integration.md#what-the-dex-does-not-assume)
-
-5. Instrument lifecycle stays outside DEX logic
-   - bonds, options, escrow obligations, margin-like positions, and LP tokens
-     should remain V2 holdings at the settlement boundary
-   - their lifecycle semantics come from registry-specific contracts, metadata,
-     and choice context, not from DEX templates and not from a Token Standard
-     lifecycle package
-
-6. LP token is first-class
-   - pool shares should be their own instrument and be holdable, transferable,
-     and eventually tradable
-
-7. Workflow-first design
-   - the shape of Daml choices and state transitions matters more than chasing
-     full feature parity with existing AMMs
-
-8. Executor-controlled funds need on-ledger guardrails
-   - once iterated or committed allocations exist, the executor can drive
-     their settlement path
-   - therefore every permitted use of those funds should be validated by Daml
-     contract state and choice logic, not only by an off-ledger service
-
-## System model
-
-```text
-┌──────────────────────────────────────────────────────────────┐
-│                        Client Layer                          │
-│    UI / API clients / market makers / LP operators          │
-└──────────────────────────────┬───────────────────────────────┘
-                               │
-┌──────────────────────────────▼───────────────────────────────┐
-│                  Off-Chain Service Layer                     │
-│  order matching · pool math · quote generation              │
-│  registry lookups · lifecycle automation · observability    │
-└──────────────────────────────┬───────────────────────────────┘
-                               │
-┌──────────────────────────────▼───────────────────────────────┐
-│                    DEX Application Layer                     │
-│  orders · matched trades · pools · LP issuance              │
-│  reserve accounting · fee accounting · cancellations        │
-└──────────────────────────────┬───────────────────────────────┘
-                               │
-┌──────────────────────────────▼───────────────────────────────┐
-│                 Token Standard / Registry Layer              │
-│  HoldingV2 · AllocationV2 · AllocationRequestV2             │
-│  SettlementFactory · registry-specific metadata/context      │
-└──────────────────────────────┬───────────────────────────────┘
-                               │
-┌──────────────────────────────▼───────────────────────────────┐
-│                        Canton Layer                          │
-│   participants · routing · privacy · atomic execution       │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph off["Off-ledger — proposes, no authority over funds"]
+    dapp["dApp + trader / LP wallet"]
+    backend["Operator backend<br/>indexer · matcher · pricing"]
+  end
+  subgraph dex["On-ledger DEX contracts — own market logic"]
+    pools["Pool · PoolState · PoolSlice · PoolRules"]
+    orders["Order · OrderMatchExecution"]
+    otc["Rfq · RfqQuote · MatchedTrade"]
+    lp["Lp.LPTokenPolicy"]
+  end
+  subgraph spine["Token Standard V2 / CIP-0112 — owns value"]
+    reg["Registry.V2<br/>Allocation · SettlementFactory"]
+  end
+  backend -. "drives DEX choices<br/>(operator authority)" .-> dex
+  dapp -. "authors funding allocations<br/>(holder authority)" .-> reg
+  pools & orders & otc & lp -- "SettleBatch" --> reg
 ```
 
-## Workflow-first reading
+Three bands, top to bottom:
 
-Read this architecture through its workflows:
+- **Off-ledger orchestration** has no authority over funds. The operator backend
+  indexes the ledger, matches orders, prices pools, and *proposes* actions. It
+  cannot lock a user's holdings; funds are locked only by an allocation the
+  holder authors under the holder's own authority.
+- **On-ledger DEX contracts** own market logic — price-time priority,
+  cancellation, pool accounting, RFQ ranking — and drive settlement, but they
+  express funds only as Token Standard allocations.
+- **The Token Standard V2 settlement spine** owns value. `Registry.V2`
+  implements the holding, allocation, and settlement interfaces;
+  `SettlementFactory_SettleBatch` is the one primitive that actually transfers
+  anything.
 
-- pair listing
-- OTC / RFQ trade settlement
-- resting order placement and matching
-- pool creation
-- add liquidity and remove liquidity
-- pool swap
-- lifecycle-driven instrument migration
+The trust boundary is the pair of dashed edges crossing into the ledger: the
+operator drives DEX choices under its own authority, but it can neither fund a
+trade nor bypass the validation those choices perform on-ledger. That claim is
+the design's core, and [the executor-control
+constraint](#the-executor-control-constraint) makes it precise.
 
-Those workflows are described in [workflows.md](./workflows.md). The contracts
-should be shaped around those state transitions, not the other way around.
+## What settles value: the Token Standard V2 spine
 
-## On-ledger model
+Every value movement in the DEX reduces to two things: a set of **allocations**
+(funds locked by their owner, pinned to a settlement) and one
+**`SettlementFactory_SettleBatch`** that atomically executes the transfer legs
+those allocations authorize.
 
-### Instrument layer
+Two properties of the V2 allocation surface — the CIP-0112 extensions, now
+merged into `canton-network/splice` `main` — are load-bearing here:
 
-The instrument layer defines what is being traded. Token Standard V2 gives the
-DEX the cross-registry surface (`InstrumentId`, `Holding`, allocations, and
-settlement). Individual registries define the richer semantics behind that
-surface.
+- **Allocations represent funds, not just approval.** A bid, an ask, and each
+  side of pool inventory are all backed by a live allocation whose holdings are
+  actually locked.
+- **Allocations can be committed and iterated.** `committed` keeps LP liquidity
+  from being casually withdrawn; `nextIterationFunding` and
+  `FinalizedAllocation.extraTransferLegSides` let one allocation fund a
+  long-lived position and roll forward across many settlements. That is what
+  makes pool inventory *allocation-native* rather than a custom balance with an
+  escrow bridge behind it.
 
-Reference-registry concepts:
+`Registry.V2` is the reference registry implementing these interfaces for the
+in-script tests, the testnet harness, and the live DEX. It is not privileged:
+any registry that implements the same V2 holding/allocation/settlement APIs can
+back a traded instrument, so the DEX treats `InstrumentId` and registry-supplied
+choice context as the stable integration boundary, not this template. The
+guarantees the DEX relies on are enforced inside `SettlementFactory_SettleBatch`:
+allocation-to-leg coverage (exactly one allocation authorizes each side of each
+leg) and per-instrument sender/receiver balance across the whole batch.
 
-- `InstrumentConfiguration` or an equivalent registry-specific config record
-- registry-managed transfer rules and credentials
-- versioned instrument semantics
-- optional external identifiers such as ISIN or CUSIP
+## The on-ledger DEX contracts
 
-The DEX should not understand a bond, option, or margin position by special
-case. It should understand that it trades an `InstrumentId`, and the registry
-should explain what that instrument means through V2 views, metadata,
-disclosure, and registry-specific choice context.
+Read the app as four contract families, each pairing a market object with the
+allocations that fund it.
 
-### Order and trade layer
+### Pools — four contracts, deliberately split
 
-Orders should be represented by DEX contracts plus allocations.
+A constant-product pool is not one contract but four, split so a swap contends
+on as little state as possible:
 
-A practical model is:
+- `Pool` — immutable configuration: the pair, `feeBps`, and the parties. The
+  stable identifier everything else hangs off.
+- `PoolState` — the hot singleton: aggregate `reserves`, LP supply, status. A
+  swap must read global reserves to price `x*y=k`, so this is the one
+  irreducible serialization point, kept as small as possible.
+- `PoolSlice` — one committed allocation backing one side. Funds are *sharded*
+  across many slices, so add creates a slice (conflicting with nothing) while
+  swap and remove touch only the slices they source.
+- `PoolRules` — the operations (`PoolRules_Swap`, `PoolRules_Pause`,
+  `PoolRules_ReconcileState`). Nonconsuming and operator-signed.
 
-- `Order` or `Quote` stores side, pair, price, remaining quantity, and expiry
-- one or more `V2.Allocation` contracts prove that the order is prefunded
-- a matcher creates `MatchedTrade` or similar application state
-- settlement uses the matched trade plus the referenced allocations
+```daml
+template Pool with
+    poolId : PoolId
+    operator : Party
+    lpRegistrar : Party      -- owns the LP instrument; separate from operator
+    admin : Party            -- asset registrar for base + quote
+    baseInstrumentId : Text  -- id under `admin`; full identity is { admin, id }
+    quoteInstrumentId : Text
+    lpInstrumentId : V2.InstrumentId
+    feeBps : Int             -- swap fee in bps; accrues entirely to LPs
+  where
+    signatory operator
+    observer lpRegistrar
+```
 
-Important nuance:
+The non-obvious part is *why the funds live off the `Pool`*. If reserves and the
+committed allocations sat on one contract, every swap would rewrite the whole
+thing and no two pool operations could ever run concurrently. Instead `reserves`
+on `PoolState` is derived pricing state and the slices are the source of truth
+for funds; `PoolRules_Swap` adjusts only the input slice and the output-side
+covering prefix, with the operator's indexer supplying the ordered slice
+contract ids. Keeping those two views consistent is what
+[the executor-control constraint](#the-executor-control-constraint) guards.
 
-- the order contract is the market object
-- the allocation is the reserved-funds object
+### Orders and matching
 
-That keeps price-time priority and cancellation in app logic while still making
-fund reservation standard-native.
+An `Order` is the market object (side, pair, `limitPrice`, `remainingQty`,
+expiry); a prefunded `V2.Allocation` is the reserved-funds object. Placement
+locks the funding as `nextIterationFunding` with no legs; a match carries the
+concrete legs through `SettleBatch` and rolls the residual budget forward;
+cancel releases the allocation.
 
-### Pool layer
+`OrderMatchExecution_Execute` is where a resting order is defended. It fetches
+both orders and refuses any fill outside their own limit prices, remaining
+quantities, instruments, or bound allocations, so a buggy or malicious
+off-ledger matcher cannot fill an order on terms its owner never agreed to. The
+fill, the roll-forward of both remainders, and the trade record all happen in
+one transaction — the settle archives the very allocations the orders are bound
+to, so a partly-completed match could otherwise strand an order pointing at a
+consumed allocation.
 
-The pool should also be represented by DEX contracts plus allocations.
+### RFQ and OTC block trades
 
-A practical model is:
+`Rfq` is a trader's request to a whitelisted dealer set; each `RfqQuote` is a
+dealer-signed price. `Rfq_Accept` (joint trader + operator) picks a quote,
+records a `PolicyReceipt` — the ranking the operator applied over the quote set
+the trader saw, replayable for audit — and creates a `MatchedTrade`. OTC and RFQ
+both settle via the `TradingAppV2` pattern: request an allocation from each
+authorizer, group settlement by admin, and settle with
+`SettlementFactory_SettleBatch`.
 
-- `Pool` defines the pair, fee model, executor, and accounting policy
-- LP deposits create or refresh pool-managed committed allocations
-- pool reserves are tracked in application state for pricing purposes
-- the actual locked pool funds live in committed and iterated allocations
-- each swap adjusts those allocations, settles them, and rolls forward the
-  next-iteration allocations
+### LP token
 
-Pool inventory should be allocation-native, not a custom internal balance model
-with a different settlement bridge behind it.
+Pool shares are their own Token Standard instrument (`Lp.LPTokenPolicy`), minted
+and burned under DEX rules by the `lpRegistrar` — a party deliberately separate
+from the operator — and holdable like any other V2 instrument. Add- and
+remove-liquidity are delivery-versus-payment: the deposit legs and the LP
+mint/burn settle atomically, each batch under its own registry admin.
 
-### Executor-control constraint
+## The executor-control constraint
 
-The V2 allocation extensions make long-lived, iterated allocations workable for orders and pools,
-but it also raises a control question:
+Committed and iterated allocations are what make long-lived pool and order
+inventory possible — but they also hand the executor (the operator) the ability
+to drive those funds' settlement path. That is safe only because every permitted
+use is validated by on-ledger contract state, not by the off-ledger service.
 
-- once funds sit in committed / iterated allocations, the executor is the party
-  that can drive their settlement path
+Concretely, `PoolState.reserves` is derived and the slices are the truth, so the
+invariant **`reserves == sum of active slice amounts per side`** must hold.
+Every `PoolRules` / `PoolLiquidityRules` choice that rewrites `reserves` asserts,
+inside the choice, that its reserve delta equals the net slice-amount change the
+same choice performs:
 
-That is acceptable only if the DEX application layer constrains what those
-funds may be used for.
+```daml
+    outputSliceDelta = outputLeftover - outputConsumedTotal
+    inputSliceDelta = inputAmount  -- new input slice amount - old
+...
+assertMsg "swap: base reserve delta must equal net base slice delta"
+  (newBaseReserve - state.reserves.baseAmount
+    == (if inputIsBase then inputSliceDelta else outputSliceDelta))
+```
 
-The intended model is:
+These are assertions on the choice's own arithmetic — cheap and contention-free
+— so a later code change cannot silently drift reserves and slices apart. For an
+on-demand global check, the nonconsuming `PoolRules_ReconcileState` fetches the
+full active slice set and asserts the per-side sums equal the reserves exactly
+(see [Reference](#reference-reserves-integrity-in-full)).
 
-- `Order`, `MatchedTrade`, `Pool`, and related app contracts define the exact
-  business state that authorizes a use of funds
-- finalized allocations and `SettlementFactory_SettleBatch` are only used as
-  part of those app-owned workflows
-- the off-chain operator proposes actions, but the ledger-visible contracts
-  validate the quantity, pair, expiry, side, and reserve references being used
+One residual trust boundary remains: `PoolState` is operator-signed, so a
+malicious operator could fabricate a parallel state with arbitrary reserves.
+This reference assumes listing-trust in the operator; production hardening would
+bind state updates to an admin-co-signed `Pool`.
 
-> **Further reading: decentralizing the operator.** This validation logic can
-> itself be decentralized. See the
+## Off-ledger services: what they may and may not do
+
+The operator backend (`services/operator-backend`) does the work a ledger
+cannot:
+
+- a polling **indexer** that projects contracts into queryable state and feeds
+  the ordered slice/order contract ids to the rules choices;
+- an **order matcher** and **pool pricing / quote generation** — the quote math
+  is the same function `PoolRules_Swap` re-derives on-ledger, so preview and
+  settlement agree;
+- registry **choice-context lookup**, and transaction submission with retries
+  behind a small HTTP surface.
+
+The guardrail is structural: the backend has a fixed choice vocabulary and never
+synthesizes DEX state by directly creating or archiving DEX templates — every
+state change goes through a contract choice. Trader-authority writes (place
+order, add liquidity, author a swap's funding allocation) have no HTTP endpoint
+at all; they go through the trader's wallet. The dApp (`app/web`) is a React
+frontend with a wallet-provider boundary that reads ledger state directly and
+calls the backend only for one-shot orchestration.
+
+> **Decentralizing the operator.** The validation logic can itself be
+> decentralized. See the
 > [BitSafe decentralization manager proposal](https://github.com/canton-foundation/canton-dev-fund/blob/main/proposals/2026-05-BitSafe-decentralization-manager.md)
-> for decentralizing the execution of validation logic, the
+> for decentralizing the execution of validation logic, and the
 > [Splice DSO automation architecture](https://docs.canton.network/sdks-tools/api-reference/splice-architecture#decentralized-transaction-validation-and-automation)
-> for decentralizing the off-ledger automation a backend like this drives, and
-> [`RewardAccountingV2.daml`](https://github.com/canton-network/splice/blob/main/daml/splice-amulet/daml/Splice/Amulet/RewardAccountingV2.daml)
-> in Splice for efficiently batching commitments to on-ledger actions.
+> for decentralizing the off-ledger automation a backend like this drives.
 
-This also means we should avoid designs where a routine action touches every
-pool allocation at once. The implementation now follows this for all hot-path
-flows:
+## What proves it end to end
 
-- one prefunded allocation per order
-- a sharded set of committed reserve slices per pool side, each carrying its
-  own allocation CID and tracked amount
-- `PoolRules_Swap` adjusts only the input-side slice and the output-side
-  covering prefix, settles them, and re-wraps the next-iteration allocations;
-  other slices are untouched
-- remove-liquidity settlement (`PoolLiquidityRules_SettleRemoveLiquidity`) walks the
-  slice list from the front, cancels only the slices it needs to cover the
-  redemption, and re-allocates at most ONE boundary slice per side for the
-  leftover; slices beyond the boundary are untouched
-- long-tail maintenance actions such as consolidation or migration stay
-  explicit and exceptional
+- [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
+  — every public workflow settles through the reference registry: pool
+  add-liquidity keeps reserves backed, order placement → operator bind →
+  trader-funded `Order_Fund`, RFQ accept produces a `MatchedTrade` with a
+  derived `PolicyReceipt`, `PoolRules_Swap` end to end, full OTC `MatchedTrade`
+  settle, and atomic order-match roll-forward with match-time limit-price
+  enforcement.
+- [`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)
+  — the settlement spine rejects any batch whose allocations do not cover its
+  legs exactly or whose per-instrument sender/receiver totals do not balance,
+  and proves roll-forward funding stays within real locked backing across
+  iterations.
+- [`PoolStateInvariantTests.daml`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml)
+  — `PoolRules_ReconcileState` holds across a full add → swap → remove
+  lifecycle, and catches an omitted slice, a desynced operator-fabricated
+  `PoolState`, or a slice from a different pool.
 
-The data carrier is the standalone `PoolSlice` contract:
-`{ poolId, operator, side, allocationCid, amount }` (with `operator` the
-signatory). The operator indexer supplies
-ordered slice contract IDs to the rules choices; the immutable `Pool` no
-longer stores an unbounded slice list.
-The slice's `amount` is reconciled with the underlying allocation's funding on
-every choice that touches it.
+---
 
-### Reserves integrity and the pool trust boundary
+## Reference
 
-`PoolState.reserves` is derived pricing state; the slices are the source of
-truth for funds. The invariant `reserves == sum of active slice amounts per
-side` is protected at three levels:
+### Design inputs
 
-- **Per-choice delta conservation, asserted on-ledger.** Every
-  `PoolRules` / `PoolLiquidityRules` choice that rewrites `reserves` asserts
-  inside the choice that its reserve delta equals the net slice-amount change
-  the same choice performs (created slice amounts minus consumed/drained
-  slice amounts). These are assertions on the choice's own arithmetic (cheap
-  and contention-free), so a future code change cannot silently let reserves
-  and slices drift apart.
-- **Global equality, auditable on-ledger on demand.** The nonconsuming
-  `PoolRules_ReconcileState` choice takes the `PoolState` and the full list
-  of active `PoolSlice` contract IDs, verifies every slice belongs to the
-  pool, and asserts the per-side sums equal the reserves exactly. It does not
-  run on the hot path. Completeness of the slice list is the caller's
-  responsibility: an omitted slice understates the sum, so a clean reconcile
+Three concrete upstream inputs shaped the architecture:
+
+- **`TradingAppV2`** — the allocation-request / per-admin
+  `SettlementFactory_SettleBatch` pattern reused for OTC and RFQ. Its V1/V2
+  bridging is not carried over; this repo declares no V1 allocation dependency.
+- **Registry workflows** — anchor the instrument model behind `InstrumentId`:
+  the reference `Registry.V2` uses `InstrumentConfig`, holder/issuer
+  credentials, and optional external ids (ISIN/CUSIP), but a production registry
+  may expose the same V2 interfaces with a different internal model.
+- **The V2 allocation extensions** — iterated settlement,
+  `nextIterationFunding`, committed allocations, and
+  `FinalizedAllocation.extraTransferLegSides` — which let allocations back
+  long-lived pool inventory, not only trade reservation.
+
+Two further principles run through the design: it is **workflow-first** (the
+shape of choices and state transitions matters more than AMM feature parity —
+see [Workflows](workflows.md)), and it trades **arbitrary `InstrumentId` pairs**,
+not hardcoded "cash vs asset" families.
+
+### Reference: reserves integrity in full
+
+The `reserves == sum of active slice amounts per side` invariant is protected at
+three levels:
+
+- **Per-choice delta conservation, asserted on-ledger.** Every choice that
+  rewrites `reserves` asserts its reserve delta equals the net slice-amount
+  change it performs (created slice amounts minus consumed/drained amounts).
+  Cheap and contention-free.
+- **Global equality, auditable on demand.** `PoolRules_ReconcileState` takes the
+  `PoolState` and the full list of active `PoolSlice` ids, verifies each belongs
+  to the pool, and asserts the per-side sums equal the reserves exactly. It runs
+  off the hot path. Completeness of the slice list is the caller's
+  responsibility — an omitted slice understates the sum, so a clean reconcile
   proves `reserves <= sum over all active slices`; pair the call with the
-  indexer's active-slice count to close that gap.
-- **Residual trust boundary.** `PoolState` is operator-signed, so a malicious
-  operator could fabricate a parallel `PoolState` with arbitrary reserves.
-  Listing-trust in the operator is assumed by this reference implementation;
-  production hardening would bind state updates to an admin-co-signed `Pool`.
+  indexer's active-slice count to close the gap.
+- **Residual trust boundary.** `PoolState` is operator-signed, so a clean
+  reconcile is only as trustworthy as the operator's listing. Production
+  hardening would co-sign state updates with an admin-signed `Pool`.
 
-### LP token layer
+### Reference: one registry admin per pair
 
-The DEX should mint its own LP token instrument.
+Both legs of a pair currently share one registry `admin`: `DexPair`, `Order`,
+`Pool`, and `MatchedTrade` each carry a single `admin : Party`, and the
+standard's `TransferLeg.instrumentId` is bare `Text`, so a leg cannot name its
+own admin — the constraint lives in the app-layer templates, not the settlement
+spine. [Non-goals](non-goals.md#one-registry-admin-per-pair) frames it as a
+deliberate limitation; [Registry Integration](../guides/registry-integration.md#what-the-dex-does-not-assume)
+sets out what lifting it would take.
 
-Expected characteristics:
+### Reference: instrument lifecycle stays outside the DEX
 
-- LP token has its own `V2.InstrumentId`; in the reference registry it also has
-  an `InstrumentConfiguration`
-- deposit and withdraw mint and burn LP supply under DEX rules
-- LP positions can be held like any other token-standard instrument
-- the LP instrument definition should explain redemption policy and pool
-  identity
+The standard holding stays minimal (amount, instrument, owner). Richer semantics
+— a bond's CUSIP/maturity/coupon, an option's strike/expiry, an LP token's pool
+identity and redemption policy — are attached by the registry that administers
+the `InstrumentId`, through V2 views, metadata, and choice context, not by DEX
+templates. Token Standard V2 does not standardize lifecycle today, so until a
+registry-level lifecycle API exists it is a registry-specific integration and
+usually a versioning problem: mint a new instrument-config version when stateful
+semantics change, and derive the new instrument identity from it. The traded
+asset stays a standard holding even when its lifecycle is rich.
 
-## Token Standard usage
+### Reference: component and package boundary
 
-### For OTC and RFQ
-
-The `TradingAppV2` pattern is the right starting point:
-
-- create matched trade state in the app
-- request allocations from each authorizer
-- split settlement by admin as required by the token standard
-- settle with `SettlementFactory_SettleBatch`
-- archive or cancel outstanding requests as part of app cleanup
-
-This should be the first runnable path because it proves the core settlement
-story with minimal market-structure complexity.
-
-### For bids and asks
-
-Orders should be prefunded using allocations:
-
-- production-grade resting orders also require V2-style prefunded and
-  adjustable allocation semantics, because the exact matched transfer legs are
-  not known at order placement time
-
-- bid order locks the quote-side asset
-- ask order locks the base-side asset
-- partial fills should either shrink the order while releasing excess funding or
-  roll the funding forward using iterated allocation semantics once available
-
-This gives the order book a clean "resting order equals live reserved funds"
-story.
-
-### For pools
-
-Pool funds require the V2 allocation shape.
-
-The design assumes:
-
-- allocations may be committed so LP liquidity cannot be casually withdrawn
-- allocations may fund future iterations
-- executors may adjust the transfer legs before each swap settlement
-- settlement returns the rolled-forward allocation for the next iteration
-
-Without those semantics, a pool-backed design would drift back toward custom
-escrow or off-ledger reserve tracking, which is exactly what this repo is trying
-to avoid.
-
-## Admin and pairing model
-
-The DEX should support arbitrary trading pairs of `InstrumentId`, but
-allocations still need to respect token-standard admin boundaries.
-
-That implies:
-
-- a trade or swap may need separate allocation tracks per admin
-- the app should group settlement work by admin, as in `TradingAppV2`
-- pool state should store active allocation references in a way that makes
-  admin partitioning explicit
-
-## Rich asset lifecycle model
-
-The standard holding model remains intentionally small:
-
-- amount
-- instrument
-- owner
-
-Richer asset semantics should be attached by the registry that administers the
-`InstrumentId`. In this reference registry that is expressed through
-`InstrumentConfiguration`; other registries may use different contracts and
-metadata while still implementing the same V2 holding/allocation APIs.
-
-Examples:
-
-- a bond config can carry CUSIP, maturity, coupon schedule, and callability
-- an option config can carry strike, expiry, and exercise style
-- an escrow obligation can point to the deal or obligation definition
-- a margin-like position can point to the loan or trade configuration
-- an LP token config can point to the pool and redemption semantics
-
-Lifecycle management is not standardized by Token Standard V2 today. Until a
-registry-level lifecycle API exists, it is a registry-specific integration and
-usually becomes a versioning problem:
-
-- create a new instrument-config version when stateful semantics change
-- encode or derive the new instrument identity from that version
-- use registry-specific facilities to apply lifecycle side effects such as
-  coupon payments, exercise outcomes, or maturity transitions
-
-In other words, a lifecycle-aware registry may take one instrument version in
-and hand back a new version with the lifecycle side effects applied. The DEX
-does not assume this is available for every registry.
-
-The traded asset remains a standard holding even
-when its lifecycle is rich.
-
-## Off-chain services
-
-Off-chain services are still necessary, but their job is narrower than in older
-generic-settlement architectures.
-
-They should focus on:
-
-- order matching and quote generation
-- pool pricing and fee computation
-- registry discovery and choice-context lookup
-- optional registry-specific lifecycle automation for versioned instruments
-- transaction submission, retries, and observability
-
-They should not become the main abstraction for moving value around. The token
-standard remains the settlement substrate.
-
-## Dependency boundary
-
-The reference architecture has a deliberate split:
-
-- OTC and RFQ flows follow the `TradingAppV2` allocation-request and
-  per-admin `SettlementFactory_SettleBatch` pattern, against V2 allocations
-  only (this repo declares no V1 allocation dependency)
-- pool-backed liquidity requires the V2 allocation extensions used by this
-  repo: committed allocations, iterated settlement, extra leg sides, and
-  next-iteration allocation results
-
-If the upstream API shape changes before landing, this repo should preserve the
-same design intent even if field names or result structures move.
-
-## Component boundary
-
-The current implementation separates concerns by module and template:
-
-- `CantonDex.Lp.*` owns the LP-token policy component.
 - `CantonDex.Dex.*` owns pair, order, RFQ, matched-trade, pool, and rules
-  workflows.
-- `CantonDex.Registry.V2` is a reference registry used for tests and demos.
+  workflows; `CantonDex.Lp.*` owns the LP-token policy; `CantonDex.Registry.V2`
+  is the reference registry used for tests and demos.
+- The DAR implements the upstream Token Standard V2 interfaces but does not
+  define custom Daml interfaces decoupling the LP component from the DEX venue; the
+  shared boundary today is the V2 holding/allocation/settlement surface plus
+  explicit template references. A package split or app-facing interface would be
+  a separate step.
+- Pair listing is direct: the operator creates `DexPair` contracts. There is no
+  separate `DexRules` governance contract for pair admission yet, leaving room for forks
+  to add governance or a decentralized rules layer.
 
-The DAR implements upstream Token Standard V2 interfaces, but it does not
-define custom Daml interfaces that decouple the LP-token component from the
-DEX venue component. The shared boundary today is the Token Standard V2
-holding/allocation/settlement surface plus explicit template references inside
-the reference app. A future package split or custom app-facing Daml interface
-would be a separate architecture step, not something this reference currently
-claims.
-
-Pair listing is similarly direct in the current reference: the operator creates
-`DexPair` contracts. There is no separate `DexRules` governance contract for
-pair admission yet. That keeps the reference small, while leaving room for
-forks to add governance, multi-operator approval, or a decentralized rules
-layer.
-
-## Repository shape
+### Reference: repository shape
 
 ```text
 canton-dex/
@@ -477,4 +342,4 @@ canton-dex/
 
 ---
 
-**Where to read next:** [Workflows](workflows.md) · [Liquidity & Custody](liquidity-and-custody.md) · [Glossary](glossary.md) · [All docs](../README.md)
+**Where to read next:** [Workflows](workflows.md) · [Pricing](pricing.md) · [Liquidity & Custody](liquidity-and-custody.md) · [Glossary](glossary.md) · [All docs](../README.md)

@@ -1,123 +1,151 @@
-# LP liquidity custody model
+# Liquidity and custody
 
-This document explains how the reference pool represents LP liquidity and how
-assets cross the pool boundary during add- and remove-liquidity workflows.
+A pool keeps its liquidity in two forms: a `Decimal` reserve figure it prices
+against, and the actual assets, which sit in committed allocations the operator
+holds on the pool's behalf. This page explains where the value physically
+lives, the invariant that ties the two forms together, and why every flow moves
+them as one.
 
-## The model
+## Reserves are accounting; slices are custody
 
-**Operator-custodied between operations, DvP at the boundary.**
+`PoolState.reserves` is a `PoolReserves { baseAmount, quoteAmount }` — two
+`Decimal`s. It is *derived* state: the pool keeps it only so a constant-product
+swap can price against the global totals in a single transaction. It custodies
+nothing.
 
-- Between operations, pool reserves are operator-authored committed
-  `PoolSlice` allocations. Slices are
-  **locality units, not LP entitlement units**: they exist so add/remove/
-  swap touch only the slices they source; a slice does not "belong to" an
-  LP.
-- An LP's entitlement is **pro-rata over the aggregate reserves**
-  (`lpHeld / totalLpSupply × reserves`), sourced from selected slices.
-  This is unchanged from the current pool math.
-- The **boundary** (add / remove) is where assets cross between the LP
-  and the pool, so it is a **delivery-versus-payment settle batch**,
-  symmetric to how Swap already settles delivery to the swapper.
+The assets live on `PoolSlice` contracts — one committed allocation each, one
+side (base or quote) each. A slice pairs a committed `V2.Allocation`, which
+locks real holdings, with a cached `amount`:
 
-Slices are not owned by individual LPs; there is no `PoolSlice.owner`.
+```daml
+template PoolSlice with
+    poolId : PoolId
+    operator : Party
+    side : Side
+      -- ^ Which pool leg (base or quote) this slice funds.
+    allocationCid : ContractId V2.Allocation
+      -- ^ The committed allocation holding this slice's funds.
+    amount : Decimal
+      -- ^ Cached funded amount; reconciled against the allocation by the
+      --   choice that writes the slice.
+  where
+    signatory operator
+```
 
-## Add (DvP at the boundary)
+Two things here are specific to this design:
 
-One Daml transaction, atomic: the LP delivers base+quote into the pool
-and receives LP tokens, or nothing happens.
+- **Slices are locality units, not LP shares.** A slice does not belong to an
+  LP — there is no `PoolSlice.owner`. The `operator` is the sole signatory, and
+  the operator-backend indexer tracks slices by `poolId` and hands the relevant
+  `ContractId`s to each choice. Add creates a *new* slice, which conflicts with
+  nothing; remove and swap touch only the slices they source. So no single hot
+  contract serializes every pool operation — only the small `PoolState` does.
+- **`amount` is a cache, not the source of truth.** The committed allocation
+  holds the funds; `amount` is stored alongside so the rules choices can walk
+  slices without a `fetch` per slice, and it is reconciled against the
+  allocation by the choice that writes the slice. That the committed allocation
+  really locks holdings worth its funding is proved in
+  [`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)
+  (a settle can never move more than the locked backing; a roll-forward carries
+  real locked holdings worth its funding; surplus returns to the authorizer
+  unlocked).
 
-Because token-standard settlement is **admin-scoped** (base/quote under
-`pool.admin`; the LP instrument under `pool.lpRegistrar`), this is **two
-per-admin SettleBatches in the same transaction** (collapses to one only
-if `pool.admin == pool.lpRegistrar`):
+## The invariant: reserves equal the sum of slice funding
 
-- **base/quote batch** (`pool.admin`): the LP's deposit legs
-  (`LP → operator` base+quote) settle into **operator-authored receiver
-  allocations**. `nextIterationFunding = {instrument: amount}` is applied
-  on the `FinalizedAllocation` **at the settle step** (not pre-funded at
-  allocate time, which would trip the coverage check in
-	  `Registry.V2`), matching the pool's slice roll-forward model. The
-  returned next-iteration allocation cids become the new
-  operator-authored `PoolSlice`s.
-- **LP-mint batch** (`pool.lpRegistrar`): the lp-mint leg
-  `mintAccount lpRegistrar → LP` + the LP's receipt allocation; the LP
-  receives freshly-minted LP-token holdings.
+Per instrument, the reserve equals the sum of the active slices' amounts on
+that side: the sum of active base `PoolSlice.amount` equals
+`reserves.baseAmount`, and likewise for quote. The slices are authoritative; the
+reserve is their aggregate. Two on-ledger mechanisms keep the two from drifting:
 
-The settle choice then exercises `LPTokenPolicy_RecordMint` and rewrites
-`PoolState` once with the new reserves + `totalLpSupply`.
+- **Per-choice delta conservation.** Every `PoolRules` / `PoolLiquidityRules`
+  choice that rewrites `reserves` asserts, in that same choice, that its reserve
+  delta equals the net slice-amount change it just performed — for example
+  `PoolLiquidityRules_SettleAddLiquidity` asserts `"add: base reserve delta must
+  equal created base slice amount"`. A code change cannot silently move one
+  without the other.
+- **Global reconciliation.** The nonconsuming `PoolRules_ReconcileState` choice
+  re-derives both side totals from the full active slice set and asserts each
+  equals the recorded reserve (`baseTotal == state.reserves.baseAmount`). It
+  writes no state, so an operator or auditor can run it against a live pool
+  without contending with swaps. Completeness of the slice list is the caller's
+  responsibility — pair the call with the indexer's active-slice count.
 
-## Remove (DvP at the boundary, symmetric to Swap)
+Both are exercised by
+[`PoolStateInvariantTests.daml`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml):
+reconcile stays clean across a full add → swap → remove lifecycle at every
+stage, and fails on an omitted slice, a slice from another pool, or a
+fabricated, desynced `PoolState`.
 
-Compute `baseOut/quoteOut = share × aggregate reserves` (unchanged math);
-draw the covering slice prefix (`drawFromSlices`, oldest-first). Then a
-two-admin settle in one transaction:
+```mermaid
+flowchart TB
+  subgraph PS["PoolState — pricing figure"]
+    R["reserves.baseAmount<br/>reserves.quoteAmount"]
+  end
+  subgraph SL["PoolSlices — where the value lives (signatory: operator)"]
+    BS["base slice(s)<br/>amount + allocationCid"]
+    QS["quote slice(s)<br/>amount + allocationCid"]
+  end
+  BH[("committed V2.Allocation<br/>locked base holdings")]
+  QH[("committed V2.Allocation<br/>locked quote holdings")]
+  R -.->|"= sum of base slice amounts"| BS
+  R -.->|"= sum of quote slice amounts"| QS
+  BS --> BH
+  QS --> QH
+```
 
-- **base/quote batch** (`pool.admin`): legs `pool → holder` base+quote
-  (delivery, exactly like Swap's `pool → swapper`), settled against the
-  holder's pre-created receipt allocations; the sourced slices roll/drain;
-  the boundary slice is re-allocated (operator-authored).
-- **LP-burn batch** (`pool.lpRegistrar`): the lp-burn leg
-  `holder → burnAccount lpRegistrar`, against the holder's burn-sender
-  allocation.
+## Every flow moves holdings and reserves together
 
-Then `LPTokenPolicy_RecordBurn` + a single `PoolState` rewrite. Funds reach
-the holder, not the operator's pool account.
+Because the assets are real committed allocations, moving them is settlement,
+not bookkeeping. Add, remove, and swap each run as a delivery-versus-payment
+`SettlementFactory_SettleBatch` and rewrite `PoolState` once, inside one Daml
+transaction — so holdings and reserves change co-atomically, or nothing changes.
 
-## Choreography & authority
+- **Add.** The LP's base and quote deposits settle into operator-authored
+  receiver allocations, which roll forward (via `nextIterationFunding`) into the
+  two new slices; the registrar mints LP tokens to the LP; `PoolState` is
+  rewritten once with the new reserves and supply. Base/quote settle under
+  `pool.admin` and the LP mint under `pool.lpRegistrar`, so this is two
+  per-admin batches in the same transaction.
+- **Remove** is symmetric to swap: the sourced slices deliver base and quote to
+  the holder (exactly as `PoolRules_Swap` delivers to the swapper), each fully
+  drawn slice drains, the boundary slice re-wraps its leftover, the holder's LP
+  tokens burn, and `PoolState` drops by the same amounts.
+- **Swap** pays the input into one side's slice and delivers the output from the
+  other, updating both reserves in the same choice.
 
-- The holder/LP pre-authors the boundary allocations via a directional
-  `LiquidityAllocationRequest` (implements `V2.AllocationRequest`): for
-  add, base+quote deposit (`pool.admin`, sender-side) + LP-token receipt
-  (`pool.lpRegistrar`, receiver-side); for remove, base+quote receipt
-  (`pool.admin`, receiver-side) + LP-token burn-sender
-  (`pool.lpRegistrar`, sender-side).
-- The settle choices live on a **co-controlled `PoolLiquidityRules`**
-  contract (`{ operator, lpRegistrar }`, `signatory operator,
-  lpRegistrar`, choices `controller operator, lpRegistrar`), not on the
-  operator-only `PoolRules`, which has no `lpRegistrar` visibility. This
-  gives the settle the authority to drive both the operator-signed
-  `PoolState`/`PoolSlice` writes and the lpRegistrar-controlled
-  `LPTokenPolicy`/mint/burn.
+[`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml)
+drives these end to end against the reference registry: an add funds base+quote
+and mints the LP holding in one flow; a remove delivers base+quote to the
+*holder* (not the operator) and burns the LP tokens; a stale supply quote aborts
+the settle.
 
-## Invariants the settle choices enforce
-
-- **Supply sync**: on entry assert `LPTokenPolicy.totalSupply ==
-  PoolState.totalLpSupply`; apply the mint/burn delta; rewrite `PoolState`
-  once with the new supply + reserves. Both trackers move in lockstep and
-  any pre-existing divergence surfaces loudly.
-- **Stale-quote rejection**: `Request*` records only a short deadline
-  (`settleAt`) alongside the expected allocations; the operator
-  re-supplies its off-ledger quote (`knownTotalLpSupply` and slippage
-  bounds such as `minLpTokens` / `minBaseOut` / `minQuoteOut`) as
-  `Settle*` arguments. `Settle*` asserts `knownTotalLpSupply ==
-  PoolState.totalLpSupply` (plus the min bounds) against current
-  `PoolState` and aborts a
-  stale request.
-
-## What does not change
-
-- Pricing / share math (`x*y=k` on aggregate reserves; pro-rata shares).
-- `PoolSlice` shape (still operator-authored, no `owner`).
-- `PoolRules_Swap` (already settles delivery to the swapper).
-- The existing pricing and reserve model. Only the liquidity entrypoints
-  changed: add/remove now run exclusively through the DvP request/settle
-  flow.
-
-## Registry prerequisite
-
-The LP-token mint/burn legs use the special `mintAccount`/`burnAccount`
-(`owner = None`). `Registry.V2` must support them at all three sites that
-currently assume a real owner: the `Allocation` signatory, settlement
-crediting, and the allocate factory. `RealRegistry` already supports
-these semantics.
-
-One more registry-dependent bound: pool slices are **long-lived committed
-allocations**, and some registries cap allocation lifetime: Amulet enforces
-`tokenStandardMaxTTL` (default **90 days**) from Splice 0.6.11. Against such a
-registry the operator must roll slices into fresh allocations before the cap
-expires; see
-[Registry Integration](../guides/registry-integration.md#allocation-lifetime-caps).
+The mint/burn legs and the co-controlled `PoolLiquidityRules` contract are what
+give a settle the authority to touch both the operator-signed slice state and
+the registrar-controlled LP tokens at once; that machinery is covered in
+[LP Tokens](lp-tokens.md).
 
 ---
+
+### Reference / details
+
+- **Residual trust boundary.** `PoolState` is operator-signed, so a malicious
+  operator could fabricate a parallel state contract that overstates reserves.
+  `PoolRules_ReconcileState` catches that against the real slices (the desync
+  case above), but listing-trust in the operator is assumed; production
+  hardening would bind state updates to an admin-co-signed `Pool`.
+- **Slices are long-lived, and some registries cap that.** The committed
+  allocations backing slices persist between operations. A registry may bound
+  allocation lifetime — Amulet enforces `tokenStandardMaxTTL` (default
+  **90 days**) from Splice 0.6.11 — so against such a registry the operator must
+  roll slices into fresh allocations before the cap expires. See
+  [Registry Integration](../guides/registry-integration.md#allocation-lifetime-caps).
+- **Mint/burn accounts.** The LP-token legs use the special
+  `mintAccount`/`burnAccount` (`owner = None`); the registry must support them
+  at the `Allocation` signatory, settlement crediting, and allocate-factory
+  sites. `Registry.V2` already does.
+- **Off-ratio adds don't inflate reserves.** LP tokens are minted against the
+  limiting side, so only the ratio-matched part of a deposit enters the slices;
+  the unmatched excess is refunded to the provider in the same batch and never
+  reaches `reserves`.
 
 **Where to read next:** [LP Tokens](lp-tokens.md) · [Pricing](pricing.md) · [Registry Integration](../guides/registry-integration.md) · [All docs](../README.md)

@@ -1,3 +1,8 @@
+-- Documentation anchor: this suite is the worked proof behind the RFQ
+-- settlement concept. It walks a request-for-quote from a trader's request,
+-- through competing dealer quotes, to a settlement in which each side's own
+-- funds really move -- and pins the two ways bad wiring can strand locked money.
+--
 -- | The RFQ round trip, end to end, against REAL holdings.
 --
 -- WHY THIS IS NOT IN TokenStandardHarnessTests. The harness registry
@@ -50,6 +55,8 @@ import CantonDex.Dex.Rfq
 import CantonDex.Registry.V2 qualified as RegV2
 import CantonDex.Trading.Utils qualified as Utils
 
+-- The single instrument pair every scenario trades: BTC is the base asset,
+-- USDC is the quote asset, and "BTC/USDC" is the label carried on the RFQ.
 base : Text
 base = "BTC"
 
@@ -59,6 +66,8 @@ quote = "USDC"
 pairText : Text
 pairText = "BTC/USDC"
 
+-- Everything a scenario needs to share: the five parties involved and the one
+-- registry contract they all transact against.
 data Fixture = Fixture with
     admin : Party
     operator : Party
@@ -69,13 +78,20 @@ data Fixture = Fixture with
     whitelisted : Party
     regCid : ContractId RegV2.Registry
 
+-- | Stand up a fresh world for one scenario: allocate the parties, create the
+-- reference registry, and mint each party's opening inventory. The scenarios
+-- all start from the Fixture this returns.
 setup : Script Fixture
 setup = do
+  -- The cast: an admin that co-signs every holding, an operator that runs the
+  -- RFQ flow, one trader, and two competing dealers.
   admin <- allocateParty "dex-admin"
   operator <- allocateParty "dex-operator"
   trader <- allocateParty "trader"
   trusted <- allocateParty "dealer-trusted"
   whitelisted <- allocateParty "dealer-whitelisted"
+  -- The production reference registry, with the three trading parties (trader
+  -- plus both dealers) enrolled as users; the operator is not a user.
   regCid <- submit admin $ createCmd RegV2.Registry with
     admin; users = [trader, trusted, whitelisted]
 
@@ -89,6 +105,8 @@ setup = do
 
   pure Fixture with admin; operator; trader; trusted; whitelisted; regCid
 
+-- | Create one unlocked holding of `amount` in the registry, co-signed by the
+-- admin and the owner. This is how every party's starting balance is seeded.
 mint : Party -> Party -> Text -> Decimal -> Script (ContractId RegV2.Holding)
 mint admin owner instrumentId amount =
   submit (actAs [admin, owner]) $ createCmd RegV2.Holding with

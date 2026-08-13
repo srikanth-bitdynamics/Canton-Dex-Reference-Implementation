@@ -1,3 +1,10 @@
+-- What this file proves, in plain terms:
+-- A liquidity pool records how much of each asset it holds (its "reserves").
+-- The real assets sit in separate holding records called "slices". These
+-- tests prove the recorded reserves always equal the sum of the actual
+-- slices, and that the on-ledger reconcile check refuses to pass whenever the
+-- two disagree, so the operator cannot quietly misstate the pool's balance.
+--
 -- | PoolState.reserves integrity.
 --
 -- Drives the on-ledger audit anchor `PoolRules_ReconcileState` against the
@@ -29,9 +36,14 @@ import CantonDex.Registry.V2 qualified as RegV2
 import CantonDex.Tests.PoolLiquidityRulesTests qualified as PLT
 import CantonDex.Trading.Utils qualified as Utils
 
+-- Setup helper: creates the PoolRules contract (the operator's on-ledger audit
+-- rules) that every test below runs its reconcile check through.
 mkRules : PLT.Fixture -> Script (ContractId PRules.PoolRules)
 mkRules fx = submit fx.operator $ createCmd PRules.PoolRules with operator = fx.operator
 
+-- Setup helper: builds the reconcile command. Reconcile re-adds up the given
+-- slices and checks that total against the reserves recorded in the PoolState,
+-- aborting if the two do not match.
 reconcileCmd
   : PLT.Fixture -> ContractId PRules.PoolRules -> ContractId PS.PoolState
   -> [ContractId PSlice.PoolSlice]
@@ -43,10 +55,13 @@ reconcileCmd fx rulesCid stateCid sliceCids =
     poolStateCid = stateCid
     sliceCids
 
+-- Asserts: the recorded reserves stay exactly correct at every point in a
+-- pool's life; reconcile passes cleanly after each stage below.
 -- Full lifecycle: add -> swap (through Registry.V2) -> full remove, with a
 -- clean reconcile after every stage.
 testReconcileAfterAddSwapRemove : Script ()
 testReconcileAfterAddSwapRemove = do
+  -- Two traders and a fresh, empty pool wired to the reconcile rules.
   alice <- allocateParty "alice"
   bob <- allocateParty "bob"
   fx <- PLT.setup [alice, bob]
@@ -62,6 +77,8 @@ testReconcileAfterAddSwapRemove = do
   rec1.quoteTotal === 200000.0
 
   -- Swap: bob swaps 100 USDC -> BTC through the same Registry.V2.
+  -- Register the swap intent, mint bob his 100 USDC, and package that holding
+  -- into an allocation the pool is allowed to draw from during the swap.
   reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid = fx.poolCid; swapper = bob
     inputInstrumentId = "USDC"; inputAmount = 100.0
@@ -89,6 +106,8 @@ testReconcileAfterAddSwapRemove = do
   rec2.quoteTotal === 200100.0
 
   -- Remove: alice redeems the full LP position; the pool drains.
+  -- Describe what alice gets back and gives up: a leg paying out the base
+  -- (BTC), a leg paying out the quote (USDC), and a leg burning her LP tokens.
   let lpAmount = PM.sqrtDecimal 2000000.0
       baseOut = 10.0 - swapRes.amountOut
       quoteOut = 200100.0
@@ -102,6 +121,9 @@ testReconcileAfterAddSwapRemove = do
         transferLegId = "lp-quote-out-0"; sender = opAcct; receiver = aliceAcct
         amount = quoteOut; instrumentId = "USDC"; meta = emptyMetadata
       burnLeg = Lp.lpBurnLeg fx.registry aliceAcct PLT.lpId lpAmount
+  -- Find alice's unlocked LP holding and build the matching allocations: the
+  -- receipts that let the pool pay her the base and quote, plus the sender
+  -- allocation that surrenders her LP tokens to be burned.
   aliceHs <- query @RegV2.Holding alice
   let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == PLT.lpId && not h.locked) aliceHs)
   reqCid <- PLT.requestRemove fx alice [baseOut] [quoteOut] lpAmount None now
@@ -136,6 +158,7 @@ testReconcileAfterAddSwapRemove = do
 -- An incomplete slice list understates the sum and must abort.
 testReconcileFailsOnMissingSlice : Script ()
 testReconcileFailsOnMissingSlice = do
+  -- Seed a pool with 10 BTC / 200000 USDC, so its two slices are known.
   alice <- allocateParty "alice"
   fx <- PLT.setup [alice]
   rulesCid <- mkRules fx
@@ -149,11 +172,13 @@ testReconcileFailsOnMissingSlice = do
 -- trust boundary) is caught by reconcile against the real slices.
 testReconcileCatchesDesyncedReserves : Script ()
 testReconcileCatchesDesyncedReserves = do
+  -- Seed a real pool (10 BTC / 200000 USDC) with two honest slices.
   alice <- allocateParty "alice"
   fx <- PLT.setup [alice]
   rulesCid <- mkRules fx
   now <- getTime
   addRes <- PLT.dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  -- Then hand-build a PoolState that lies about the base reserve (999 BTC).
   badStateCid <- submit fx.operator $ createCmd PS.PoolState with
     poolId = fx.poolId; operator = fx.operator; lpRegistrar = fx.registry
     status = PS_Active
@@ -167,11 +192,13 @@ testReconcileCatchesDesyncedReserves = do
 -- otherwise be inflated to match.
 testReconcileRejectsForeignSlice : Script ()
 testReconcileRejectsForeignSlice = do
+  -- Seed this pool (10 BTC / 200000 USDC) with its two honest slices.
   alice <- allocateParty "alice"
   fx <- PLT.setup [alice]
   rulesCid <- mkRules fx
   now <- getTime
   addRes <- PLT.dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  -- Fabricate a slice that names a different pool ("SOME-OTHER-POOL").
   foreignSliceCid <- submit fx.operator $ createCmd PSlice.PoolSlice with
     poolId = "SOME-OTHER-POOL"
     operator = fx.operator
@@ -190,6 +217,7 @@ testReconcileRejectsForeignSlice = do
 -- failure is attributable to the swapper == pool account.
 testSwapRejectsOperatorAsSwapper : Script ()
 testSwapRejectsOperatorAsSwapper = do
+  -- Seed a pool (10 BTC / 200000 USDC) with alice's liquidity; bob will swap.
   alice <- allocateParty "alice"
   bob <- allocateParty "bob"
   fx <- PLT.setup [alice, bob]

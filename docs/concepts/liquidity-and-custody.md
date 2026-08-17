@@ -124,6 +124,30 @@ give a settle the authority to touch both the operator-signed slice state and
 the registrar-controlled LP tokens at once; that machinery is covered in
 [LP Tokens](lp-tokens.md).
 
+## Worked example: one full cycle
+
+Concrete numbers make the flow easier to hold. Take a fresh `BTC/USDC` pool with
+a 30 bps fee (`feeBps = 30`); every figure is what the on-ledger `Decimal` math
+(scale 10, floored) produces.
+
+1. **Alice funds the pool** with `10.0 BTC` and `200,000.0 USDC`. That creates
+   two slices (one per side) and mints her the first LP supply,
+   `sqrt(10 · 200,000) = 1,414.2135623730` LP. Reserves: `10.0 BTC` /
+   `200,000.0 USDC`.
+2. **Bob swaps `1.0 BTC`.** The fee is taken on the input, so `0.997 BTC` drives
+   the curve: `Δout = floor(0.997 · 200,000 / (10 + 0.997)) = 18,132.2178776029
+   USDC`. The full `1.0 BTC`, fee included, stays in the pool.
+3. **Reserves after the swap:** `11.0 BTC` / `181,867.7821223971 USDC`. The
+   product `x · y` has grown, and that growth is the fee — now owned by the LPs.
+4. **Alice redeems.** She is the only LP, so burning all `1,414.2135623730` LP
+   returns the entire current reserves: `11.0 BTC` + `181,867.7821223971 USDC`.
+   She deposited `10 BTC + 200,000 USDC` and withdrew `11 BTC + 181,867.78 USDC`;
+   the difference is Bob's fee.
+
+[`PoolRoundingTests.daml`](../../trading-tests/CantonDex/Tests/PoolRoundingTests.daml)
+guarantees the pool never pays out more than the exact floored amount, so these
+figures are reproducible on-ledger.
+
 ---
 
 ### Reference / details

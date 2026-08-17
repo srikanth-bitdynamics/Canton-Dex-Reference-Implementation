@@ -26,6 +26,11 @@ in-memory ledger, so you can have the full stack up in a few minutes.
 | `vendor/splice/dars/` | canonical Splice 0.6.12 Token Standard release DARs (committed build inputs) | Daml |
 | `docs/` | architecture, workflows, operator runbook, deployment, this page | — |
 
+> **One-command sanity check.** After installing (below), `bash
+> scripts/e2e-smoke.sh` boots the in-memory backend, exercises every key
+> endpoint, verifies the responses, and exits non-zero on any failure — no Canton
+> participant needed.
+
 ## Prerequisites
 | Tool | Version | For |
 |---|---|---|

@@ -264,6 +264,38 @@ exactly as expected, no locks stranded) and
 `testExpiryBetweenAcceptAndSettleBlocksTheSettle` (past the inherited deadline
 the settle fails and the funds stay locked).
 
+## Contract lifecycles
+
+Two contracts carry an explicit status through their life; the others are created
+and archived in a single step. These are their state machines.
+
+An **order** rests prefunded, matches (possibly in parts), and ends either filled
+or cancelled:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Pending: place (OrderFundingRequest_Bind)
+  Pending --> Funded: Order_Fund (allocation locked)
+  Funded --> PartiallyFilled: OrderMatchExecution_Execute (partial)
+  PartiallyFilled --> PartiallyFilled: further partial fills
+  Funded --> [*]: full fill, SettledTrade
+  PartiallyFilled --> [*]: full fill, SettledTrade
+  Funded --> [*]: Order_Cancel (allocation released)
+  PartiallyFilled --> [*]: Order_Cancel
+```
+
+A **pool** starts empty, becomes tradable once funded, and can be paused for an
+emergency stop:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Unfunded: pool created
+  Unfunded --> Active: first add-liquidity settles
+  Active --> Active: swap / add / remove
+  Active --> Paused: PoolRules_Pause
+  Paused --> Active: PoolRules_Resume
+```
+
 ---
 
 ## Reference

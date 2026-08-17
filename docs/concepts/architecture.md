@@ -319,6 +319,37 @@ asset stays a standard holding even when its lifecycle is rich.
   separate `DexRules` governance contract for pair admission yet, leaving room for forks
   to add governance or a decentralized rules layer.
 
+The internal module dependencies (`CantonDex.*` imports) — `Trading.Utils` is the
+shared base, and the pool, order, and RFQ/OTC clusters are otherwise independent:
+
+```mermaid
+flowchart TD
+  Utils["Trading.Utils"]
+  WC["Trading.WorkflowConstructors"] --> Utils
+  Registry["Registry.V2"] --> Utils
+
+  Pool["Dex.Pool"]
+  PoolState["Dex.PoolState"] --> Pool
+  PoolSlice["Dex.PoolSlice"] --> Pool
+  PoolModel["Dex.PoolModel"] --> Pool
+  PoolExecution["Dex.PoolExecution"] --> PoolModel
+  PoolRules["Dex.PoolRules"] --> PoolExecution
+  PoolRules --> Utils
+  PoolLiquidityRules["Dex.PoolLiquidityRules"] --> PoolExecution
+  PoolLiquidityRules --> LpPolicy["Lp.Policy"]
+  PoolLiquidityRules --> LpInstrument["Lp.Instrument"]
+
+  Order["Dex.Order"] --> WC
+  OrderFundingRequest["Dex.OrderFundingRequest"] --> Order
+  OrderMatchExecution["Dex.OrderMatchExecution"] --> Order
+  OrderMatchExecution --> MatchedTrade
+
+  MatchedTrade["Dex.MatchedTrade"] --> DexPair["Dex.DexPair"]
+  MatchedTrade --> PolicyReceipt["Dex.PolicyReceipt"]
+  MatchedTrade --> Utils
+  Rfq["Dex.Rfq"] --> MatchedTrade
+```
+
 ### Reference: repository shape
 
 ```text

@@ -183,6 +183,24 @@ Whatever you change, keep the layer boundary above intact: DEX contracts own mar
 structure, Token Standard contracts own reservation and settlement, registry
 contracts own asset semantics.
 
+## Your first change
+
+A concrete loop for extending a choice — say, adding an optional referral party
+to a swap:
+
+1. **Edit the Daml.** Append an `Optional` field (e.g. `referral : Optional
+   Party`) to `Pool`, or add a new `PoolRules_SwapWithReferral` choice — see
+   [Upgrade discipline](#upgrade-discipline) for why additions go at the end of
+   the record.
+2. **Build the DAR:** `(cd trading && dpm build)`.
+3. **Run the tests:** `(cd trading-tests && dpm test)`. The suite includes
+   `EndToEndTests.daml::testPoolSwapEndToEnd`, which exercises the full swap path
+   your change touches.
+4. **See it consumed by an external project:**
+   [`examples/stable-pool/`](../../examples/stable-pool/) is a separate Daml
+   package that takes `canton-dex-trading-0.1.4.dar` as a data-dependency, so it
+   shows how a fork builds on the templates without editing them.
+
 ## Upgrade discipline
 
 Keep the templates as small as possible; do not carry compatibility choices "just in

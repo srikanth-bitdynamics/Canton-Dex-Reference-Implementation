@@ -82,6 +82,21 @@ results <- forA (Map.toList batchesByAdmin) $ \(batchAdmin, batch) -> do
   pure (batchAdmin, result)
 ```
 
+## Coming from EVM or Uniswap?
+
+If your mental model is Uniswap on an EVM chain, the table below covers most of
+the surprises. The core shift: a token is not a balance in a shared contract but
+an individual holding contract you own, and a trade is an atomic multi-party
+settlement rather than a call into a router.
+
+| Uniswap / EVM | Canton DEX / Token Standard V2 | Key difference |
+|---|---|---|
+| `IERC20.approve(router, amount)` | `AllocationFactory_Allocate` | Locks specific holding contracts for one named settlement, not an open-ended balance allowance. |
+| Router `swapExactTokensForTokens` | `PoolRules_Swap` + `SettlementFactory_SettleBatch` | The swap settles as one atomic multi-party batch: the input holding and the pool's reserve slice move in a single transaction. |
+| LP balance in the pair contract | `LPTokenPolicy` + fungible LP `Holding`s | LP tokens are first-class V2 holdings in the provider's wallet, minted and burned by DvP, not a mapping entry. |
+| `reserve0` / `reserve1` in the pair | `PoolState` (pricing) + `PoolSlice`s (custody) | Reserves are a `Decimal` accounting figure; the assets live in sharded committed `PoolSlice` allocations, which cut contention between concurrent operations. |
+| Public mempool + global state | Per-party projection | There is no shared readable pool; each party sees only its own legs, and the operator drives settlement without ever holding custody. |
+
 ## The authority boundary
 
 The one idea to carry into every other doc: **the operator never moves a

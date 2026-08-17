@@ -449,6 +449,23 @@ partial / total settlement failure, the wallet relay returns **502**
 indexer- or config-gated routes return a bare-`{ error }` **503** when their
 store is absent.
 
+### On-ledger assertions
+
+The codes above wrap the backend's own validation. A write can also fail inside
+the Daml settlement, where the ledger returns the choice's assertion message.
+The most common ones and how a client should handle them:
+
+| On-ledger assertion | Triggering condition | Suggested handling |
+|---|---|---|
+| `Output below slippage minimum` | the pool price moved against the taker between quote and settle, below the swap's `minOutputAmount` | re-quote and retry, or widen slippage tolerance |
+| `expectedPoolId mismatch (pool config swapped?)` | the referenced pool contract is no longer the active one for the pair | refresh the client's pool cache and rebuild the request |
+| `add: base reserve delta must equal created base slice amount` | reserve and slice arithmetic disagree during a liquidity settle (should be unreachable) | operator alert; run `PoolRules_ReconcileState` |
+| `Allocation_Settle: settlement deadline has passed` | an order or RFQ allocation was settled after its deadline | release the reserved funds with the cancel / withdraw choice |
+| `LP tokens below minimum` | ratio drift on add left the minted LP below the caller's floor | re-quote the deposit at the current pool ratio |
+
+These are the on-ledger messages; the backend surfaces them under a
+`bad_request` or `internal_error` envelope depending on the route.
+
 ---
 
 ## Examples

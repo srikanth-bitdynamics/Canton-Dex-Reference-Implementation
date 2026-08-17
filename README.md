@@ -16,7 +16,7 @@ and runbooks for RFQs, prefunded orders, pools, swaps, and LP tokens.
 
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-blue.svg" alt="License: Apache 2.0" /></a>
-  <a href="https://daml.com"><img src="https://img.shields.io/badge/Daml-3.4.11-orange.svg" alt="Daml SDK 3.4.11" /></a>
+  <a href="https://daml.com"><img src="https://img.shields.io/badge/Daml-3.5.2-orange.svg" alt="Daml SDK 3.5.2" /></a>
   <a href="https://github.com/canton-network/splice"><img src="https://img.shields.io/badge/Canton-Token_Standard_V2-blueviolet.svg" alt="Canton Token Standard V2" /></a>
 </p>
 
@@ -134,7 +134,7 @@ an in-memory ledger and seeded demo data.
 
 - Node.js 24 or newer.
 - npm.
-- Daml SDK 3.4.11 for Daml builds and tests.
+- Daml SDK 3.5.2 (managed by `dpm`) for Daml builds and tests.
 
 ### 1. Install
 

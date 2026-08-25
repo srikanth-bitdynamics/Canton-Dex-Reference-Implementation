@@ -105,8 +105,8 @@ function mkQuote(o: {
 
 // The operator's off-chain ranking is replayed against `policyCmp` in
 // trading/CantonDex/Dex/Rfq.daml, so these pin the chain's ordering, not a
-// plausible one. v2.0 does NOT rank by price: `side` is unused in policy mode
-// because the trader picks among ranked candidates.
+// plausible one. [POLICY] v2.0 does not rank by price or direction; the trader
+// picks from the ranked candidates.
 describe("rankQuotes reproduces the on-ledger policyCmp (v2.0)", () => {
   const now = "2026-01-01T00:00:00Z";
 

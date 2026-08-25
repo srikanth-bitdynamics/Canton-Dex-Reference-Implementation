@@ -6,6 +6,7 @@
 -- which covers the Pool swap iterated-settlement path.
 --
 -- Testing-only. Production code MUST NOT import this module.
+-- Design guide: `docs/reference/testing.md#daml-script-tests`.
 module CantonDex.Testing.MockRegistry where
 
 import DA.Action (when)
@@ -167,13 +168,3 @@ template MockSettlementFactory with
         pure V2.SettlementFactoryView with
           admin
           meta = emptyMetadata
-
-createMockAllocationFactory : Party -> [Party] -> Update (ContractId V2.AllocationFactory)
-createMockAllocationFactory admin users = do
-  cid <- create MockAllocationFactory with admin; users; requireContext = False
-  pure (toInterfaceContractId cid)
-
-createMockSettlementFactory : Party -> [Party] -> Update (ContractId V2.SettlementFactory)
-createMockSettlementFactory admin users = do
-  cid <- create MockSettlementFactory with admin; users; requireContext = False
-  pure (toInterfaceContractId cid)

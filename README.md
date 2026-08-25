@@ -129,8 +129,8 @@ factories instead of a custom off-ledger balance model.
 Knowing Daml is enough to start. Use this path to build the exchange context in
 small steps:
 
-1. Read the [Overview](docs/concepts/overview.md) for five core concepts and one
-   swap explained without assuming exchange knowledge.
+1. Read [Understand the design in 15 minutes](docs/concepts/design-tour.md) for
+   the actors, contracts, authority boundaries, and four settlement flows.
 2. Keep the [Glossary](docs/concepts/glossary.md) open for terms such as holding,
    allocation, DvP, committed funding, and iterated settlement.
 3. Read [Workflow Design](docs/concepts/workflows.md) for the active choices and

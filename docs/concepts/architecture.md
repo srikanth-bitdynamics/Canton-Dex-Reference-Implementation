@@ -3,9 +3,14 @@
 Canton DEX keeps market logic — orders, pools, RFQ — in its own Daml contracts,
 but it never moves value itself: every settlement runs through the Token
 Standard V2 (CIP-0112) allocation and batch-settlement APIs, so the exchange has
-no bespoke escrow and no custody path of its own. This page is the map of that
+no bespoke token-escrow contract; pool custody is expressed through standard
+V2 allocations. This page is the map of that
 split. [Non-goals](non-goals.md) records what the reference deliberately leaves
 out, and why.
+
+If this is your first code read, begin with the
+[15-minute design tour](design-tour.md). It follows one value movement at a time
+and links back into the templates and tests.
 
 ## The three layers
 
@@ -237,10 +242,17 @@ mint/burn settle atomically, each batch under its own registry admin.
 
 Iterated allocations make long-lived pool and order inventory possible.
 Commitment additionally gives the executor an availability guarantee and is
-used for pool slices and deadline-bounded orders. That authority is safe only
-because every permitted use is validated by on-ledger contract state, not by
-the off-ledger service. GTC order funding remains uncommitted so iteration does
-not remove the trader's unilateral withdrawal right.
+used for pool slices and deadline-bounded orders. Pool slices deliberately use
+`committed = true` with no settlement deadline: the operator authorizer cannot
+withdraw them, but the operator is also the settlement executor and can cancel
+them. LP holders have neither authority. This is an explicit operator-custody
+boundary, not a permissionless LP exit. GTC order funding remains uncommitted so
+iteration does not remove the trader's unilateral withdrawal right.
+
+Every permitted settlement use is validated by on-ledger contract state rather
+than accepted from the off-ledger service. The separate availability and exit
+trade-offs are documented in
+[Liquidity and Custody](liquidity-and-custody.md#availability-and-the-lp-exit-boundary).
 
 Concretely, `PoolState.reserves` is derived and the slices are the truth, so the
 invariant **`reserves == sum of active slice amounts per side`** must hold.
@@ -280,6 +292,12 @@ cannot:
   settlement agree;
 - registry **choice-context lookup**, and transaction submission with retries
   behind a small HTTP surface.
+
+The matcher also chooses observation order, match timing, and which eligible
+cross to submit first. Limit-price and allocation checks constrain what can
+settle, but they do not prove fair arrival ordering or prevent censorship,
+front-running, or private reordering. That operator discretion is an explicit
+[non-goal](non-goals.md#fair-ordering-and-private-mev).
 
 The write surface is explicit rather than uniform:
 

@@ -43,6 +43,7 @@ import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
 import { LedgerError } from "../ledger/index.js";
+import { mergeDisclosures } from "../ledger/disclosure.js";
 import * as dec from "../pool/decimal.js";
 import { DealersService } from "../dealers/index.js";
 import { checkAdminAuth, checkOperatorAuth, bearerMatches } from "./auth.js";
@@ -402,10 +403,10 @@ async function routeRequest(
         context: choiceContext.context,
         meta: { values: {} },
       },
-      allocationFactoryDisclosure: [
-        ...factories.disclosure,
-        ...choiceContext.disclosure,
-      ],
+      allocationFactoryDisclosure: mergeDisclosures(
+        factories.disclosure,
+        choiceContext.disclosure,
+      ),
     });
     return;
   }

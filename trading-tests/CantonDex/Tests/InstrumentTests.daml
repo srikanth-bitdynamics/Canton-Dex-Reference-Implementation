@@ -7,6 +7,7 @@
 --   5. Transfer offer → receiver accept
 --   6. Transfer offer with TransferPreapproval (direct delivery)
 --   7. Open issuance: empty issuerRequirements lets anyone mint
+-- Design context: `docs/concepts/design-tour.md#active-and-compatibility-surfaces`.
 module CantonDex.Tests.InstrumentTests where
 
 import DA.Assert
@@ -21,6 +22,7 @@ import CantonDex.Instrument.Transfer qualified as Tx
 
 -- 1. InstrumentConfiguration ---------------------------------------------
 
+-- | Proves the registrar can create the compatibility instrument configuration.
 testInstrumentConfigCreate : Script ()
 testInstrumentConfigCreate = do
   registrar <- allocateParty "registrar"
@@ -37,6 +39,7 @@ testInstrumentConfigCreate = do
 
 -- 2. Open-issuance mint accept --------------------------------------
 
+-- | Proves open issuance creates an unlocked holding for the requestor.
 testMintAcceptOpenIssuance : Script ()
 testMintAcceptOpenIssuance = do
   registrar <- allocateParty "registrar"
@@ -68,6 +71,7 @@ testMintAcceptOpenIssuance = do
 
 -- 3. Gated issuance: missing credentials fail; matching credentials succeed --
 
+-- | Proves gated issuance accepts a matching credential and rejects its absence.
 testMintGatedIssuance : Script ()
 testMintGatedIssuance = do
   registrar <- allocateParty "registrar"
@@ -122,6 +126,7 @@ testMintGatedIssuance = do
 
 -- 4. Burn round-trip: mint, lock, burn -----------------------------------
 
+-- | Proves a locked compatibility holding can be burned by registrar approval.
 testBurnRoundTrip : Script ()
 testBurnRoundTrip = do
   registrar <- allocateParty "registrar"
@@ -169,6 +174,7 @@ testBurnRoundTrip = do
 
 -- 5. Transfer offer / accept --------------------------------------------
 
+-- | Proves offer acceptance consumes the sender holding and pays the receiver.
 testTransferOfferAccept : Script ()
 testTransferOfferAccept = do
   registrar <- allocateParty "registrar"
@@ -215,6 +221,7 @@ testTransferOfferAccept = do
 
 -- 6. Transfer with preapproval ------------------------------------------
 
+-- | Proves receiver preapproval permits direct delivery without offer acceptance.
 testTransferPreapproved : Script ()
 testTransferPreapproved = do
   registrar <- allocateParty "registrar"

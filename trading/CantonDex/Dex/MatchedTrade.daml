@@ -1,5 +1,7 @@
 -- | Matched-trade settlement on the V2 token standard (adapted from the
 -- upstream TradingAppV2, V2-only).
+--
+-- Design guide: `docs/concepts/design-tour.md#rfq-and-otc-settlement`.
 module CantonDex.Dex.MatchedTrade where
 
 import DA.Foldable (forA_)

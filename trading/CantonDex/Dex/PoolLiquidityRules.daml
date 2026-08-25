@@ -3,6 +3,8 @@
 -- The pool stays operator-custodied between operations. Add/remove settle
 -- as DvP: base and quote under `pool.admin`, LP mint/burn under
 -- `pool.lpRegistrar`.
+--
+-- Design guide: `docs/concepts/design-tour.md#liquidity-and-pool-custody`.
 module CantonDex.Dex.PoolLiquidityRules where
 
 import DA.Assert (assertWithinDeadline)
@@ -60,12 +62,15 @@ mkOperatorReceiver operator admin settlement leg requestedAt extraArgs =
          authorizer = poolAccount
          transferLegSides = Utils.legsToSides poolAccount [leg]
          settlementDeadline = None
-         -- Some(empty) (not None) enables iterated settlement with zero initial
-         -- funding: the standard `validateNextIterationArgs` gates on isSome, so
-         -- this lets the settle roll the incoming deposit credits forward into
-         -- the next-iteration (pool slice) allocation. A reference token-standard
-         -- registry rejects None here.
+         -- Some(empty) enables iterated settlement with zero initial funding,
+         -- allowing incoming deposit credits to become the next pool slice.
          nextIterationFunding = Some TextMap.empty
+         -- Pool inventory is a long-lived operator-authored allocation. With no
+         -- deadline, the operator authorizer cannot withdraw it. The operator is
+         -- also the settlement executor and can cancel it through
+         -- `Allocation_Cancel`; an LP holder cannot. This is operator custody,
+         -- not an LP-holder withdrawal right. See the design guide for the exit
+         -- and liveness trade-off.
          committed = True
          meta = emptyMetadata
        requestedAt
@@ -183,7 +188,7 @@ addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount =
       opAcct = Utils.basicAccount operator
       baseLeg = dvpLeg "lp-base-deposit" lpAcct opAcct baseAmount pool.baseInstrumentId
       quoteLeg = dvpLeg "lp-quote-deposit" lpAcct opAcct quoteAmount pool.quoteInstrumentId
-      mintLeg = Lp.lpMintLeg pool.lpRegistrar lpAcct pool.lpInstrumentId.id lpAmount
+      mintLeg = Lp.lpMintLeg lpAcct pool.lpInstrumentId.id lpAmount
   in [ depositSpec pool.admin lpAcct baseLeg
      , depositSpec pool.admin lpAcct quoteLeg
      , Lp.mintReceiptSpec pool.lpRegistrar lpAcct mintLeg ]
@@ -199,7 +204,7 @@ removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount =
         | (i, amt) <- zip [0 .. length amounts - 1] amounts ]
       baseLegs = outLegs "lp-base-out-" pool.baseInstrumentId baseOuts
       quoteLegs = outLegs "lp-quote-out-" pool.quoteInstrumentId quoteOuts
-      burnLeg = Lp.lpBurnLeg pool.lpRegistrar holderAcct pool.lpInstrumentId.id lpBurnAmount
+      burnLeg = Lp.lpBurnLeg holderAcct pool.lpInstrumentId.id lpBurnAmount
   in [ dvpSpec pool.admin holderAcct baseLegs False
      , dvpSpec pool.admin holderAcct quoteLegs False
      , dvpSpec pool.lpRegistrar holderAcct [burnLeg] True ]
@@ -352,7 +357,7 @@ template PoolLiquidityRules with
               [refundLeg "lp-base-refund" pool.baseInstrumentId baseRefund | baseRefund > 0.0]
             quoteRefundLegs =
               [refundLeg "lp-quote-refund" pool.quoteInstrumentId quoteRefund | quoteRefund > 0.0]
-            lpMintLeg = Lp.lpMintLeg lpRegistrar recipientAcct pool.lpInstrumentId.id lpAmount
+            lpMintLeg = Lp.lpMintLeg recipientAcct pool.lpInstrumentId.id lpAmount
 
         opBaseRecv <- exercise baseFactoryCid
           (mkOperatorReceiver operator pool.admin settlement baseDepositLeg requestedAt poolAdminExtraArgs)
@@ -505,7 +510,7 @@ template PoolLiquidityRules with
         let holderAcct = Utils.basicAccount holder
             operatorAcct = Utils.basicAccount operator
             settlement = PM.poolSettlement poolCid operator
-            burnLeg = Lp.lpBurnLeg lpRegistrar holderAcct pool.lpInstrumentId.id lpTokensToRedeem
+            burnLeg = Lp.lpBurnLeg holderAcct pool.lpInstrumentId.id lpTokensToRedeem
             baseDraw = PM.drawFromSlices baseOut baseItems
             quoteDraw = PM.drawFromSlices quoteOut quoteItems
             baseDel = PE.buildSideDelivery "lp-base-out-" operatorAcct holderAcct pool.baseInstrumentId baseDraw

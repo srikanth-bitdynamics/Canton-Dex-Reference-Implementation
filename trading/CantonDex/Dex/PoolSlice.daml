@@ -10,6 +10,8 @@
 -- can walk slices without a `fetch` per slice for the amount. It is
 -- always reconciled against the underlying allocation's funding by the
 -- choice that writes the slice.
+--
+-- Design guide: `docs/concepts/design-tour.md#liquidity-and-pool-custody`.
 module CantonDex.Dex.PoolSlice where
 
 import Splice.Api.Token.AllocationV2 qualified as V2

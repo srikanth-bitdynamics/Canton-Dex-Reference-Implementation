@@ -95,8 +95,11 @@ inspects or rewrites it.
 
 For a **cross-registry** trade, the merge is per admin: the operator groups legs
 by their instrument's admin, fetches each admin's factories and context
-separately, and concatenates the disclosure so every batch carries only its own
-registry's contracts (see [`matched-trade/index.ts`](../../services/operator-backend/src/matched-trade/index.ts),
+separately, and concatenates the disclosures needed by the single transaction.
+Context selection is keyed by admin, never by list position, so every batch
+receives its own registry context. Disclosed contracts are transaction-wide,
+deduplicated by contract id, and have no positional settlement meaning (see
+[`matched-trade/index.ts`](../../services/operator-backend/src/matched-trade/index.ts),
 `MatchedTrade_Settle`). On-ledger the context rides all the way down: the
 registry's `SettlementFactory_SettleBatch` forwards `arg.extraArgs` into each
 `Allocation_Settle` it exercises (see
@@ -109,8 +112,11 @@ registry's `SettlementFactory_SettleBatch` forwards `arg.extraArgs` into each
 back to empty context + no disclosure on a 404;
 [`matched-trade.test.ts`](../../services/operator-backend/test/matched-trade.test.ts)
 — a two-admin settle threads each admin's `extraArgs.context` into its own
-`SettlementBatchV2` and emits the disclosure in
-`[factory-A, context-A, factory-B, context-B]` order.
+`SettlementBatchV2`, includes every required disclosure exactly once, and does
+not assign meaning to disclosure-array order; and
+[`pool.test.ts`](../../services/operator-backend/test/pool.test.ts) — split-admin
+add and remove map distinct pool-admin and LP-registrar contexts to the matching
+choice fields while deduplicating their shared disclosure.
 
 ## Endpoints the operator queries
 

@@ -13,6 +13,7 @@
 --   3. testRfqAcceptProducesMatchedTradeWithReceipt
 --   4. testPoolSwapViaRequestSwap
 --   5. testMatchedTradeFullSettle
+-- Design context: `docs/concepts/design-tour.md`.
 module CantonDex.Tests.EndToEndTests where
 
 import DA.Assert
@@ -196,6 +197,7 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
 -- Depositing 10 BTC and 200,000 USDC activates the pool, records those exact
 -- reserves, and mints sqrt(base*quote) LP shares.
 
+-- | Proves pool creation, first funding, pause, and resume state transitions.
 testPoolFullLifecycle : Script ()
 testPoolFullLifecycle = do
   -- Roles: the venue operator, the LP-share registrar, the token admin, and
@@ -252,6 +254,7 @@ testPoolFullLifecycle = do
 -- specification; it consumes the request. The wallet composes Accept with the
 -- corresponding AllocationFactory_Allocate command in the real trade flow.
 
+-- | Proves accepting a trade allocation request consumes that one-shot request.
 testTradeAllocationRequestAcceptArchivesRequest : Script ()
 testTradeAllocationRequestAcceptArchivesRequest = do
   operator <- allocateParty "operator"
@@ -305,6 +308,7 @@ testTradeAllocationRequestAcceptArchivesRequest = do
 -- The trader, not the operator, locks the funds. The operator can only attach
 -- that allocation to the pending order.
 
+-- | Proves trader funding binds the exact requested allocation to an order.
 testOrderFundingFlow : Script ()
 testOrderFundingFlow = do
   operator <- allocateParty "operator"
@@ -385,6 +389,7 @@ testOrderFundingFlow = do
 -- dealer id), a trade is created, and it carries a signed receipt proving that
 -- ranking. Price is displayed in the receipt but is not a policy sort key.
 
+-- | Proves RFQ acceptance selects a quote and records its policy receipt.
 testRfqAcceptProducesMatchedTradeWithReceipt : Script ()
 testRfqAcceptProducesMatchedTradeWithReceipt = do
   operator <- allocateParty "operator"
@@ -472,6 +477,7 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
 -- The operator expires stale RFQs ---------------------------------------
 --
 -- Only the operator can sweep an RFQ, and only after its deadline.
+-- | Proves RFQ expiry cleanup is operator-only and deadline-gated.
 testRfqExpireOperatorCleanup : Script ()
 testRfqExpireOperatorCleanup = do
   operator <- allocateParty "operator-exp"
@@ -519,6 +525,7 @@ testRfqExpireOperatorCleanup = do
 --   - the head pool allocation is replaced by its next-iteration CID
 --   - other pool allocations on the same side stay untouched
 
+-- | Proves a pool swap settles and rewrites only the consumed reserve slices.
 testPoolSwapEndToEnd : Script ()
 testPoolSwapEndToEnd = do
   operator <- allocateParty "operator-swap"
@@ -608,6 +615,7 @@ testPoolSwapEndToEnd = do
 -- The operator builds the allocation specification, the trader authors that
 -- exact allocation, and PoolRules_Swap settles it against the reserves.
 
+-- | Proves the trader-signed request specification settles without mutation.
 testPoolSwapViaRequestSwap : Script ()
 testPoolSwapViaRequestSwap = do
   operator <- allocateParty "operator-rswap"
@@ -693,6 +701,7 @@ testPoolSwapViaRequestSwap = do
 -- settlement path end-to-end: the operator requests allocations, each side
 -- accepts and locks its own funds, and the operator settles both in one batch.
 
+-- | Proves both matched-trade allocations settle atomically into final holdings.
 testMatchedTradeFullSettle : Script ()
 testMatchedTradeFullSettle = do
   operator <- allocateParty "venue"
@@ -812,6 +821,7 @@ testMatchedTradeFullSettle = do
 -- partial-fill remainder. This focused helper test checks both a partial and a
 -- full fill; RegistryConservationTests proves the corresponding SettleBatch
 -- behavior against real holdings.
+-- | Proves order remainder quantities and reserved funding use exact arithmetic.
 testOrderRemainderFundingArithmetic : Script ()
 testOrderRemainderFundingArithmetic = do
   -- Build accounts from real allocatable parties so the legs route correctly.
@@ -903,6 +913,7 @@ omeExec operator buyerAcct sellerAcct buyOrderCid sellOrderCid
     buyerCommittedFunding = TextMap.empty
     sellerCommittedFunding = TextMap.empty
 
+-- | Proves a match outside either resting order's limit price is rejected.
 testOrderMatchEnforcesLimitPrice : Script ()
 testOrderMatchEnforcesLimitPrice = do
   operator <- allocateParty "ome-op"
@@ -954,6 +965,7 @@ testOrderMatchEnforcesLimitPrice = do
 -- The buyer rests two funded bids. Filling the first while spending the
 -- second's collateral conserves per-instrument totals inside the batch, so
 -- nothing downstream rejects it; only the order/allocation binding does.
+-- | Proves a match cannot substitute another order's funding allocation.
 testOrderMatchRejectsAnotherOrdersAllocation : Script ()
 testOrderMatchRejectsAnotherOrdersAllocation = do
   operator <- allocateParty "ome2-op"
@@ -997,6 +1009,7 @@ testOrderMatchRejectsAnotherOrdersAllocation = do
 --
 -- The order carries the right allocation cid, so only the status gate can
 -- reject it.
+-- | Proves an unfunded pending order cannot enter settlement.
 testOrderMatchRejectsPendingOrder : Script ()
 testOrderMatchRejectsPendingOrder = do
   operator <- allocateParty "ome3-op"
@@ -1041,6 +1054,7 @@ testOrderMatchRejectsPendingOrder = do
 -- and unfillable. Nothing outside this choice may observe that state, so the
 -- choice itself archives the filled orders, rolls each remainder onto the
 -- allocation the settle minted, and records the trade.
+-- | Proves one transaction settles a partial fill and rolls both orders forward.
 testOrderMatchRollsOrdersForwardAtomically : Script ()
 testOrderMatchRollsOrdersForwardAtomically = do
   operator <- allocateParty "ome5-op"
@@ -1102,6 +1116,7 @@ testOrderMatchRollsOrdersForwardAtomically = do
 -- A tiny residual quantity is not recreated when decimal rounding has already
 -- consumed the entire committed budget. Any remainder contract must be backed
 -- by a funded next allocation.
+-- | Proves exhausted backing closes the remainder instead of creating an orphan.
 testOrderMatchClosesRemainderWhenBudgetIsExhausted : Script ()
 testOrderMatchClosesRemainderWhenBudgetIsExhausted = do
   operator <- allocateParty "ome6-op"
@@ -1214,6 +1229,7 @@ markerContext = ExtraArgs with
   meta = emptyMetadata
 
 -- A DvP add succeeds when both factory calls receive their required context.
+-- | Proves add-liquidity threads supplied context into both allocation calls.
 testDvpAddThreadsChoiceContext : Script ()
 testDvpAddThreadsChoiceContext = do
   operator <- allocateParty "operator"
@@ -1233,6 +1249,7 @@ testDvpAddThreadsChoiceContext = do
   state.status === Pool.PS_Active
 
 -- The same factory rejects an allocation when the context is omitted.
+-- | Proves an empty allocation choice context is not silently substituted.
 testDvpAddRejectsEmptyContext : Script ()
 testDvpAddRejectsEmptyContext = do
   operator <- allocateParty "operator"
@@ -1295,6 +1312,7 @@ authorAddAllocations operator factoryCid poolCid dvpCid recipient baseAmount quo
 
 -- Both per-admin contexts supplied: the context-requiring base/quote and LP
 -- batches both settle, pool goes Active.
+-- | Proves split-admin settle sends each registry its own choice context.
 testDvpSettleThreadsBothAdminContexts : Script ()
 testDvpSettleThreadsBothAdminContexts = do
   operator <- allocateParty "operator"
@@ -1326,6 +1344,7 @@ testDvpSettleThreadsBothAdminContexts = do
 
 -- Blanking poolAdminExtraArgs aborts the base/quote batch (its factory
 -- requires context), proving that field feeds the pool.admin batch.
+-- | Proves omitting only pool-admin context aborts the pool-admin batch.
 testDvpSettleRequiresPoolAdminContext : Script ()
 testDvpSettleRequiresPoolAdminContext = do
   operator <- allocateParty "operator"
@@ -1354,6 +1373,7 @@ testDvpSettleRequiresPoolAdminContext = do
 
 -- Blanking lpRegistrarExtraArgs aborts the LP mint batch, proving that
 -- field feeds the pool.lpRegistrar batch.
+-- | Proves omitting only LP-registrar context aborts the LP batch.
 testDvpSettleRequiresLpRegistrarContext : Script ()
 testDvpSettleRequiresLpRegistrarContext = do
   operator <- allocateParty "operator"

@@ -274,6 +274,12 @@ uncommitted and trader-withdrawable at any time. Withdrawing leaves an
 operator-signed `Order` record that may remain visible, but the missing
 allocation makes settlement fail atomically; no funds remain locked.
 
+The operator still controls which visible crossing orders are matched and when
+the resulting transactions are submitted. The choice checks limits, quantities,
+expiry, instruments, and backing, but cannot prove fair intake ordering or stop
+censorship and private reordering among valid fills. This distinction is
+documented as [Fair ordering and private MEV](non-goals.md#fair-ordering-and-private-mev).
+
 Proven in
 [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml) —
 `testOrderMatchEnforcesLimitPrice` (a fill outside `[ask, bid]` is rejected) and

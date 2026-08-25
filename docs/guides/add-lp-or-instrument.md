@@ -64,12 +64,12 @@ The legs are pure constructors in
 [`Lp/Instrument.daml`](../../trading/CantonDex/Lp/Instrument.daml):
 
 ```daml
-lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
+lpMintLeg recipient lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-mint"
   sender = Utils.mintAccount
   receiver = recipient
   ...
-lpBurnLeg _lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
+lpBurnLeg holder lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-burn"
   sender = holder
   receiver = Utils.burnAccount
@@ -207,7 +207,8 @@ Neither pattern ships in the reference. Common designs include:
   and the V2 interface instances. *Proves the register-then-mint path in B and C.*
 - [`Lp/Instrument.daml`](../../trading/CantonDex/Lp/Instrument.daml) — the LP
   mint/burn legs and allocation specs. *Proves how the LP token in A rides the V2
-  allocation surface (mint = leg to `mintAccount`, burn = leg from it).*
+  allocation surface (mint = leg from `mintAccount`, burn = leg to
+  `burnAccount`).*
 - [`Lp/Policy.daml`](../../trading/CantonDex/Lp/Policy.daml) — `LPTokenPolicy`,
   the LP supply component. *Proves LP supply tracking is separate from
   `InstrumentConfig` caps.*

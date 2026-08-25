@@ -3,10 +3,12 @@
 -- credential requirements, and optional external ids. DEX contracts treat
 -- instrumentId as opaque; asset semantics live in the registry.
 --
--- This template is part of a standalone DEX-specific lifecycle sample, not
--- Token Standard V2. Active DEX workflows use `CantonDex.Registry.V2` and
--- portable integrations obtain instrument properties through metadata-v1.
--- The template remains in the deployed package lineage for compatibility.
+-- [COMPAT] This template belongs to a standalone DEX-specific lifecycle sample,
+-- not Token Standard V2. Active DEX workflows use `CantonDex.Registry.V2` and
+-- portable integrations obtain instrument properties through metadata-v1. It
+-- remains callable only for package-lineage compatibility.
+--
+-- Design guide: `docs/concepts/design-tour.md#active-and-compatibility-surfaces`.
 module CantonDex.Instrument.InstrumentConfiguration where
 
 import CantonDex.Instrument.Credentials qualified as Cred

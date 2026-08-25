@@ -1,7 +1,8 @@
--- | Local holding for the standalone lifecycle sample. It does not implement
--- the V2 Holding interface and active DEX workflows use
--- `CantonDex.Registry.V2:Holding` instead. The template remains in the
--- deployed package lineage for smart-upgrade compatibility.
+-- | [COMPAT] Local holding for the standalone lifecycle sample. It does not
+-- implement the V2 Holding interface; active DEX workflows use
+-- `CantonDex.Registry.V2:Holding`. It remains for package lineage.
+--
+-- Design guide: `docs/concepts/design-tour.md#active-and-compatibility-surfaces`.
 module CantonDex.Instrument.Holding where
 
 template Holding with

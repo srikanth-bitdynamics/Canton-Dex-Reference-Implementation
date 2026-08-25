@@ -18,6 +18,8 @@
 -- sender/receiver balance across all legs of the batch. The batch also
 -- enforces the standard's allocation-to-leg coverage: exactly one allocation
 -- authorizes each side of each leg it settles.
+--
+-- Design guide: `docs/concepts/design-tour.md#the-token-standard-settlement-spine`.
 module CantonDex.Registry.V2 where
 
 import DA.Action (foldlA)

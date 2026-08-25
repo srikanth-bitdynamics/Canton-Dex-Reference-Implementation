@@ -2,6 +2,8 @@
 -- allocation with no legs and nextIterationFunding covering the locked
 -- amount; matching carries the concrete legs through SettleBatch; partial
 -- fills roll the next-iteration allocation forward; cancel releases it.
+--
+-- Design guide: `docs/concepts/design-tour.md#prefunded-orders`.
 module CantonDex.Dex.Order where
 
 import DA.Map qualified as Map
@@ -33,12 +35,14 @@ data Order_FundResult = Order_FundResult with
     allocationCid : ContractId V2.Allocation
   deriving (Eq, Show)
 
--- Compatibility-only result type for the retired Order_Adjust choice.
+-- [COMPAT] Result shape retained for package lineage only. The
+-- `Order_Adjust` choice is retired and always rejects.
 data Order_MatchResult = Order_MatchResult with
     adjustedAllocationCid : ContractId V2.Allocation
   deriving (Eq, Show)
 
--- Compatibility-only result type retained with the deployed package lineage.
+-- [COMPAT] Result shape retained for package lineage only. Active matching
+-- returns `OrderMatch_ExecuteResult` from `OrderMatchExecution_Execute`.
 data Order_SettleResult = Order_SettleResult with
     settleResult : V2.SettlementFactory_SettleBatchResult
     remainingOrderCid : Optional (ContractId Order)
@@ -125,9 +129,10 @@ template Order with
         allocationCid : ContractId V2.Allocation
         -- The OrderAllocationRequest this order was bound with. It is consumed
         -- here so it cannot linger as a stale funding request once the order is
-        -- funded (the wallet authors the allocation directly and no longer
-        -- accepts the request). The Optional encoding is retained for package
-        -- compatibility, but current exercises must supply it.
+        -- funded. The wallet authors the allocation directly; this request is
+        -- the correlation record consumed by `Order_Fund`.
+        -- [COMPAT] The Optional encoding is retained for package lineage, but
+        -- every active exercise must supply `Some requestCid`.
         allocationRequestCid : Optional (ContractId OrderAllocationRequest)
       controller operator
       do
@@ -164,15 +169,15 @@ template Order with
           orderCid = newOrderCid
           allocationCid
 
-    -- Compatibility-only choice retained because the deployed package lineage
-    -- cannot remove choices. Matching is fully implemented by
-    -- OrderMatchExecution_Execute; there is no separate adjustment phase.
+    -- [RETIRED] Retained for package lineage and always rejects. Matching is
+    -- implemented by `OrderMatchExecution_Execute`; there is no adjustment
+    -- phase in the active workflow.
     nonconsuming choice Order_Adjust : Order_MatchResult
       with
         matchTransferLegs : [V2.TransferLeg]
         allowFutureIterations : Bool
       controller operator
-      do abort "Order_Adjust is retired; use OrderMatchExecution_Execute"
+      do abort "[RETIRED] Order_Adjust: use OrderMatchExecution_Execute"
 
     choice Order_Cancel : Order_CancelResult
       with
@@ -191,15 +196,14 @@ template Order with
               cancelResult = Some result
               releasedHoldings = result.authorizerHoldingCids
 
-    -- Compatibility-only choice retained because the deployed package lineage
-    -- cannot remove choices. A fill rolls its order forward atomically inside
-    -- OrderMatchExecution_Execute.
+    -- [RETIRED] Retained for package lineage and always rejects. A fill rolls
+    -- its order forward atomically inside `OrderMatchExecution_Execute`.
     choice Order_RecordPartialFill : Optional (ContractId Order)
       with
         filledQty : Decimal
         newAllocationCid : Optional (ContractId V2.Allocation)
       controller operator
-      do abort "Order_RecordPartialFill is retired; use OrderMatchExecution_Execute"
+      do abort "[RETIRED] Order_RecordPartialFill: use OrderMatchExecution_Execute"
 
 -- | Trader-observed request issued by the operator to fund a specific Order.
 -- Its interface view supplies the V2 allocation specification. The current

@@ -2,6 +2,8 @@
 -- market with its execution mode, fee model, accrued maker/taker fee
 -- counters, and active flag. Pair lifecycle changes go through the choices
 -- defined here.
+--
+-- Design guide: `docs/concepts/design-tour.md#pair-and-governance-state`.
 module CantonDex.Dex.DexPair where
 
 import DA.TextMap qualified as TextMap

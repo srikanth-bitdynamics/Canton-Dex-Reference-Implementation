@@ -15,6 +15,7 @@
 --     legs exactly, whether an authorization is missing or superfluous;
 --   * an order-book fill stays inside that backing across iterations, where
 --     the face notional of the unfilled quantity does not.
+-- Design context: `docs/concepts/design-tour.md#the-token-standard-settlement-spine`.
 module CantonDex.Tests.RegistryConservationTests where
 
 import DA.Assert
@@ -46,8 +47,8 @@ data Fixture = Fixture with
     transferCid : ContractId V2.TransferFactory
     settlement : V2.SettlementInfo
 
-setup : Script Fixture
-setup = do
+setup : () -> Script Fixture
+setup () = do
   admin <- allocateParty "registry-admin"
   alice <- allocateParty "alice"
   bob <- allocateParty "bob"
@@ -147,9 +148,10 @@ lockedOf owner iid = do
 
 -- 1. Executor-supplied extra sender leg exceeding the locked backing -------
 
+-- | Proves executor-added sender legs cannot exceed locked backing.
 testExtraLegBeyondBackingRejected : Script ()
 testExtraLegBeyondBackingRejected = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 100.0
   -- The batch itself is balanced (sender 150 == receiver 150), so the
   -- failure isolates the PER-ALLOCATION draw-down check.
@@ -163,9 +165,10 @@ testExtraLegBeyondBackingRejected = do
 
 -- 2. sent + nextIterationFunding exceeding the locked backing --------------
 
+-- | Proves current outflow plus next-iteration funding cannot exceed backing.
 testNextFundingBeyondBackingRejected : Script ()
 testNextFundingBeyondBackingRejected = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 100.0
   let leg = mkLeg "spend-1" fx.alice fx.bob 60.0 "X"
   bobAlloc <- sidedAlloc fx fx.bob [leg]
@@ -177,9 +180,10 @@ testNextFundingBeyondBackingRejected = do
     , Utils.finalAllocation bobAlloc
     ]
 
+-- | Proves a finalized allocation rejects zero-valued continuation funding.
 testFinalizedAllocationRejectsZeroNextFunding : Script ()
 testFinalizedAllocationRejectsZeroNextFunding = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 100.0
   let leg = mkLeg "zero-next" fx.alice fx.bob 40.0 "X"
   bobAlloc <- sidedAlloc fx fx.bob [leg]
@@ -192,9 +196,10 @@ testFinalizedAllocationRejectsZeroNextFunding = do
 
 -- The allocation interface enforces the same positive-side rule when an
 -- executor settles directly rather than through the settlement factory.
+-- | Proves direct allocation settlement rejects zero-valued extra legs.
 testDirectSettleRejectsZeroExtraLeg : Script ()
 testDirectSettleRejectsZeroExtraLeg = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 10.0
   let zeroLeg = mkLeg "zero-extra" fx.alice fx.bob 0.0 "X"
   submitMustFail fx.admin $ exerciseCmd aliceAlloc V2.Allocation_Settle with
@@ -207,9 +212,10 @@ testDirectSettleRejectsZeroExtraLeg = do
 -- 3. Roll-forward carries locked backing; the next iteration settles
 --    within its funding ----------------------------------------------------
 
+-- | Proves iterated settlement creates a next allocation with real locked funds.
 testRollForwardCarriesLockedBacking : Script ()
 testRollForwardCarriesLockedBacking = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 100.0
   let leg1 = mkLeg "iter-1" fx.alice fx.bob 40.0 "X"
   bob1 <- sidedAlloc fx fx.bob [leg1]
@@ -248,9 +254,10 @@ testRollForwardCarriesLockedBacking = do
 
 -- 4. A second settle EXCEEDING the rolled-forward funding fails ------------
 
+-- | Proves a second iteration cannot spend more than rolled funding.
 testSecondIterationCannotExceedFunding : Script ()
 testSecondIterationCannotExceedFunding = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 100.0
   let leg1 = mkLeg "iter-1" fx.alice fx.bob 40.0 "X"
   bob1 <- sidedAlloc fx fx.bob [leg1]
@@ -274,9 +281,10 @@ testSecondIterationCannotExceedFunding = do
 
 -- 5. Surplus backing returns unlocked to the authorizer --------------------
 
+-- | Proves settlement returns unused locked backing as an unlocked holding.
 testSurplusReturnedUnlocked : Script ()
 testSurplusReturnedUnlocked = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 100.0
   let leg = mkLeg "partial-1" fx.alice fx.bob 40.0 "X"
   bobAlloc <- sidedAlloc fx fx.bob [leg]
@@ -304,9 +312,10 @@ testSurplusReturnedUnlocked = do
 -- 6. Batch-level balance: a receiver leg with no matching sender (and no
 --    mint allocation) is an unbacked credit and aborts the batch ----------
 
+-- | Proves batch settlement rejects an unbalanced receiver-side transfer leg.
 testBatchRejectsUnbalancedReceiverLeg : Script ()
 testBatchRejectsUnbalancedReceiverLeg = do
-  fx <- setup
+  fx <- setup ()
   let leg = mkLeg "unbacked-1" fx.alice fx.bob 50.0 "X"
   -- Only the receiver authorizes; sender side appears in no allocation.
   bobAlloc <- sidedAlloc fx fx.bob [leg]
@@ -319,9 +328,10 @@ testBatchRejectsUnbalancedReceiverLeg = do
 -- Both batches below conserve per instrument, so the conservation check passes
 -- and the failure isolates the coverage check.
 
+-- | Proves a batch rejects allocation authorization not used by its legs.
 testBatchRejectsSuperfluousAuthorization : Script ()
 testBatchRejectsSuperfluousAuthorization = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 100.0
   let settled = mkLeg "covered-1" fx.alice fx.bob 40.0 "X"
       unlisted = mkLeg "unlisted-1" fx.alice fx.bob 10.0 "X"
@@ -333,9 +343,10 @@ testBatchRejectsSuperfluousAuthorization = do
     , Utils.finalAllocation bobAlloc
     ]
 
+-- | Proves a batch rejects a transfer leg lacking allocation authorization.
 testBatchRejectsMissingAuthorization : Script ()
 testBatchRejectsMissingAuthorization = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 100.0
   let authorized = mkLeg "covered-1" fx.alice fx.bob 40.0 "X"
       unauthorized = mkLeg "unauthorized-1" fx.alice fx.bob 10.0 "X"
@@ -347,9 +358,10 @@ testBatchRejectsMissingAuthorization = do
     , Utils.finalAllocation bobAlloc
     ]
 
+-- | Proves a batch cannot consume an allocation from another settlement domain.
 testBatchRejectsAllocationFromDifferentSettlement : Script ()
 testBatchRejectsAllocationFromDifferentSettlement = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- prefunded fx fx.alice "X" 100.0
   let leg = mkLeg "wrong-settlement" fx.alice fx.bob 40.0 "X"
       otherSettlement = fx.settlement with id = "another-settlement"
@@ -368,9 +380,10 @@ testBatchRejectsAllocationFromDifferentSettlement = do
 
 -- 7. Allocation_Settle rejects expired allocation deadlines -----------------
 
+-- | Proves an allocation cannot settle after its settlement deadline.
 testExpiredAllocationSettleRejected : Script ()
 testExpiredAllocationSettleRejected = do
-  fx <- setup
+  fx <- setup ()
   aliceAlloc <- expiredPrefunded fx fx.alice "X" 100.0
   let leg = mkLeg "expired-allocation" fx.alice fx.bob 10.0 "X"
   bobAlloc <- sidedAlloc fx fx.bob [leg]
@@ -383,9 +396,10 @@ testExpiredAllocationSettleRejected = do
 -- 8. Allocation withdrawal and cancellation follow the V2 actor/deadline
 --    rules and return holdings under their real instrument ids --------------
 
+-- | Proves only the authorizer can withdraw an uncommitted allocation.
 testUncommittedAllocationWithdrawsOnlyAsAuthorizer : Script ()
 testUncommittedAllocationWithdrawsOnlyAsAuthorizer = do
-  fx <- setup
+  fx <- setup ()
   x <- mintHolding fx fx.alice "X" 40.0
   y <- mintHolding fx fx.alice "Y" 15.0
   let spec = Utils.mkPrefundedAllocationSpecification
@@ -415,9 +429,10 @@ testUncommittedAllocationWithdrawsOnlyAsAuthorizer = do
   unlockedX === [40.0]
   unlockedY === [15.0]
 
+-- | Proves authorizer withdrawal from committed funding is deadline-gated.
 testCommittedAllocationWithdrawsOnlyAfterDeadline : Script ()
 testCommittedAllocationWithdrawsOnlyAfterDeadline = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   hold <- mintHolding fx fx.alice "X" 10.0
   let deadline = addRelTime now (hours 1)
@@ -442,9 +457,10 @@ testCommittedAllocationWithdrawsOnlyAfterDeadline = do
   unlocked <- unlockedOf fx.alice "X"
   unlocked === [10.0]
 
+-- | Proves indefinite commitment blocks withdrawal but preserves executor cancel.
 testCommittedAllocationWithoutDeadlineCannotBeWithdrawn : Script ()
 testCommittedAllocationWithoutDeadlineCannotBeWithdrawn = do
-  fx <- setup
+  fx <- setup ()
   hold <- mintHolding fx fx.alice "X" 10.0
   let spec = V2.AllocationSpecification with
         admin = fx.admin
@@ -468,9 +484,10 @@ testCommittedAllocationWithoutDeadlineCannotBeWithdrawn = do
     extraArgs = emptyExtraArgs
   result.output === V2.AllocationResult_Cancelled
 
+-- | Proves the registry admin can clean up committed funding after expiry only.
 testExpiredAllocationCanBeCancelledByAdmin : Script ()
 testExpiredAllocationCanBeCancelledByAdmin = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   hold <- mintHolding fx fx.alice "X" 10.0
   let deadline = addRelTime now (hours 1)
@@ -510,9 +527,10 @@ testExpiredAllocationCanBeCancelledByAdmin = do
 
 -- 9. TransferFactory_Transfer rejects expired executeBefore -----------------
 
+-- | Proves the transfer factory rejects a request past `executeBefore`.
 testExpiredTransferFactoryRejected : Script ()
 testExpiredTransferFactoryRejected = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   holdingCid <- mintHolding fx fx.alice "X" 10.0
   let transfer = V2.Transfer with
@@ -538,9 +556,10 @@ testExpiredTransferFactoryRejected = do
 -- second allocation at all -- so a market maker gets one live order per
 -- holding contract and has to pre-split its capital by hand.
 
+-- | Proves allocation locks only required notional and returns input change.
 testAllocateLocksOnlyTheNotional : Script ()
 testAllocateLocksOnlyTheNotional = do
-  fx <- setup
+  fx <- setup ()
   -- An over-collateralized input locks only the required amount.
   hold <- mintHolding fx fx.alice "USD" 10000.0
   let spec = Utils.mkPrefundedAllocationSpecification
@@ -554,9 +573,10 @@ testAllocateLocksOnlyTheNotional = do
   unlocked <- unlockedOf fx.alice "USD"
   unlocked === [9991.0]
 
+-- | Proves allocation covers notional across holdings and splits one boundary.
 testAllocateDrawsAcrossHoldingsAndSplitsOnlyTheLast : Script ()
 testAllocateDrawsAcrossHoldingsAndSplitsOnlyTheLast = do
-  fx <- setup
+  fx <- setup ()
   a <- mintHolding fx fx.alice "USD" 5.0
   b <- mintHolding fx fx.alice "USD" 5.0
   let spec = Utils.mkPrefundedAllocationSpecification
@@ -570,9 +590,10 @@ testAllocateDrawsAcrossHoldingsAndSplitsOnlyTheLast = do
   unlocked <- unlockedOf fx.alice "USD"
   unlocked === [3.0]
 
+-- | Proves exact-fit allocation creates no zero-valued change holding.
 testAllocateLeavesAnExactFitUnsplit : Script ()
 testAllocateLeavesAnExactFitUnsplit = do
-  fx <- setup
+  fx <- setup ()
   hold <- mintHolding fx fx.alice "USD" 9.0
   let spec = Utils.mkPrefundedAllocationSpecification
         fx.admin (Utils.basicAccount fx.alice) None
@@ -585,9 +606,10 @@ testAllocateLeavesAnExactFitUnsplit = do
   unlocked <- unlockedOf fx.alice "USD"
   unlocked === []
 
+-- | Proves allocation rejects inputs whose combined balance is insufficient.
 testAllocateStillRejectsInsufficientHoldings : Script ()
 testAllocateStillRejectsInsufficientHoldings = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   hold <- mintHolding fx fx.alice "USD" 5.0
   let spec = Utils.mkPrefundedAllocationSpecification
@@ -598,9 +620,10 @@ testAllocateStillRejectsInsufficientHoldings = do
     inputHoldingCids = [toInterfaceContractId hold]
     actors = [fx.alice]; extraArgs = emptyExtraArgs
 
+-- | Proves allocation rejects malformed negative funding specifications.
 testAllocateRejectsMalformedSpecification : Script ()
 testAllocateRejectsMalformedSpecification = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   let malformed = V2.AllocationSpecification with
         admin = fx.admin
@@ -618,9 +641,10 @@ testAllocateRejectsMalformedSpecification = do
     actors = [fx.alice]
     extraArgs = emptyExtraArgs
 
+-- | Proves allocation actors must exactly match the authorizer account parties.
 testAllocationFactoryRequiresExactAuthorizerActors : Script ()
 testAllocationFactoryRequiresExactAuthorizerActors = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   hold <- mintHolding fx fx.alice "X" 10.0
   let spec = Utils.mkPrefundedAllocationSpecification
@@ -678,6 +702,7 @@ restOrder operator admin trader factoryCid side limitPrice quantity ref = do
     allocationRequestCid = Some bound.allocationRequestCid
   pure (funded.orderCid, allocCid)
 
+-- | Proves GTC order funding stays uncommitted and trader-withdrawable.
 testGtcOrderFundingPreservesTraderExit : Script ()
 testGtcOrderFundingPreservesTraderExit = do
   operator <- allocateParty "gtc-operator"
@@ -737,6 +762,7 @@ execMatch
   -> Decimal -> Decimal -> Script OME.OrderMatch_ExecuteResult
 execMatch = execMatchDeclaring TextMap.empty TextMap.empty
 
+-- | Proves partial fills derive remaining budget from the rolled allocation.
 testPartialFillUsesRolledFundingBudget : Script ()
 testPartialFillUsesRolledFundingBudget = do
   operator <- allocateParty "match-operator"
@@ -786,6 +812,7 @@ testPartialFillUsesRolledFundingBudget = do
 -- Compatibility fields on OrderMatchExecution are operator-authored and must
 -- not control a trader's funding budget. The budget comes from each side's
 -- allocation; arbitrary declared values therefore do not affect settlement.
+-- | Proves compatibility funding fields cannot change the settled budget.
 testCompatibilityFundingFieldsDoNotControlSettlement : Script ()
 testCompatibilityFundingFieldsDoNotControlSettlement = do
   operator <- allocateParty "declared-operator"

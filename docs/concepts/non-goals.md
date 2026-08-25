@@ -18,6 +18,7 @@ and points at the guide or contract where the excluded work would live.
 | A generic settlement engine | The templates encode one DEX's rules — constant-product pricing, price-time order priority, RFQ ranking — not a parameterisable framework | A fork that reuses the allocate-then-`SettleBatch` pattern for its own flows |
 | Cross-registry pairs (two admins) | App-layer templates key each pair on a single `admin : Party`; the settlement spine already allows more | A scoped schema change — [registry integration](../guides/registry-integration.md#known-limitation-one-registry-admin-per-pair) |
 | A production matching engine | The batch matcher shows only the Canton-specific part: a fill re-checked and settled atomically on-ledger | A fork's off-ledger matcher (pro-rata, iceberg, continuous auction) |
+| Fair ordering and MEV resistance | The operator privately observes orders and chooses match timing and submission order | A production sequencing, auction, or independently attested matching design |
 | A rich instrument lifecycle | Token Standard V2 standardizes the holding, not lifecycle; the DEX needs only a holding | The registry that administers the `InstrumentId` — [add an instrument](../guides/add-lp-or-instrument.md) |
 | A privileged reference registry | `Registry.V2` is a convenience so the DEX runs standalone, not the mechanism value settles through | Any conforming TSv2 registry (Amulet, or another) |
 | Self-custody onboarding | The hosted relay is a testnet convenience, not a production wallet integration | The user's own compatible wallet or a deployment-specific delegation/co-submission flow |
@@ -83,6 +84,22 @@ off-ledger matcher cannot settle a fill the traders never agreed to. Proven by
 and `testOrderMatchEnforcesLimitPrice` (`OrderMatchExecution_Execute` refuses a
 fill outside either order's limit price).
 
+## Fair ordering and private MEV
+
+The operator sees submitted orders and RFQs, chooses when to run matching, and
+chooses the order in which eligible settlements reach the ledger. The reference
+matcher applies deterministic best-price-then-time ordering to the snapshot it
+is given, but the ledger cannot prove that the snapshot contained every order or
+that its timestamps reflect a fair public arrival sequence.
+
+The on-ledger checks therefore prevent an invalid fill, not operator censorship,
+front-running, delayed inclusion, or private reordering among otherwise valid
+fills. This is an explicit trust boundary. Production designs can reduce it with
+commit-reveal intake, fixed-window batch auctions, independently witnessed
+sequencing, matcher attestations, threshold-controlled submission, or a public
+append-only order-intake log. Each changes the market and liveness model and is
+outside this settlement-pattern reference.
+
 ## A minimal instrument model
 
 The standard holding model is kept intentionally small. The reference issues
@@ -144,12 +161,22 @@ has no unilateral holder choice that redeems LP tokens against reserve slices.
 The reserves remain represented on-ledger, but the holder cannot complete the
 redemption workflow alone.
 
+The reserve allocation shape makes the consequence concrete:
+`committed = true` and `settlementDeadline = None`, with the operator as both
+authorizer and settlement executor. Under the V2 withdrawal rule, even the
+authorizer cannot use `Allocation_Withdraw`; the operator can still cancel as
+executor. An LP holder can do neither. The missing deadline is therefore not a
+hidden holder lock timeout: it is the reference's deliberate long-lived
+operator-custody model.
+
 That is a deliberate single-operator reference boundary, not a claim of
 trustless custody. A production design must choose its own liveness mechanism,
 such as governed or threshold-controlled execution plus a separately audited
-emergency redemption path. Adding such a path changes pool authority and
-failure semantics and is therefore not hidden inside the reference settlement
-flow.
+emergency redemption path. Merely adding a deadline is insufficient: it would
+give the operator authorizer a future withdrawal path and require a safe slice
+renewal protocol, but it would not give LP holders redemption authority. These
+changes alter pool authority and failure semantics and are not hidden inside the
+reference settlement flow.
 
 ## Operational hardening is out of scope
 

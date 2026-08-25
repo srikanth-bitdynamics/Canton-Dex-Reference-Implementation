@@ -40,9 +40,9 @@ export function rankQuotes(
   // then LATER expiresAt (more time to act), then EARLIER postedAt
   // (first-mover), then a deterministic dealer-party tie-break.
   //
-  // Deliberately NOT ranked by price. `side` is unused in policy mode
-  // on-ledger because the trader picks among ranked candidates. A price key
-  // here would disagree with the on-ledger receipt verification.
+  // [POLICY] Deliberately not ranked by price or direction. The trader picks
+  // among ranked candidates; adding either key would disagree with the
+  // on-ledger receipt verification.
   return [...valid].sort((a, b) => {
     const tierA = a.tier === "TierTrusted" ? 0 : 1;
     const tierB = b.tier === "TierTrusted" ? 0 : 1;

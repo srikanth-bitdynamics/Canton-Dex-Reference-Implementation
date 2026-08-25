@@ -7,6 +7,7 @@ import type { ContractId, DisclosedContract } from "@canton-dex/registry-client"
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
+import { mergeDisclosures } from "../ledger/disclosure.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { recoverCreatedAllocations } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
@@ -568,7 +569,7 @@ export class PoolService {
         actAs: [this.operatorParty],
         readAs: input.swapperAccount.owner ? [input.swapperAccount.owner] : [],
         commandId,
-        disclosure: [...factories.disclosure, ...ctx.disclosure],
+        disclosure: mergeDisclosures(factories.disclosure, ctx.disclosure),
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolRules:PoolRules",
@@ -665,7 +666,10 @@ export class PoolService {
       quoteBinding: result.quoteBinding,
       factoryCid: factories.allocationFactoryCid,
       allocationFactoryExtraArgs: ctx.extraArgs,
-      allocationFactoryDisclosure: [...factories.disclosure, ...ctx.disclosure],
+      allocationFactoryDisclosure: mergeDisclosures(
+        factories.disclosure,
+        ctx.disclosure,
+      ),
     };
   }
 
@@ -858,11 +862,14 @@ export class PoolService {
       lpFactoryCid: lpFactories.allocationFactoryCid,
       depositFactoryExtraArgs: depositContext.extraArgs,
       lpFactoryExtraArgs: lpContext.extraArgs,
-      depositFactoryDisclosure: [
-        ...depositFactories.disclosure,
-        ...depositContext.disclosure,
-      ],
-      lpFactoryDisclosure: [...lpFactories.disclosure, ...lpContext.disclosure],
+      depositFactoryDisclosure: mergeDisclosures(
+        depositFactories.disclosure,
+        depositContext.disclosure,
+      ),
+      lpFactoryDisclosure: mergeDisclosures(
+        lpFactories.disclosure,
+        lpContext.disclosure,
+      ),
     };
   }
 
@@ -895,18 +902,18 @@ export class PoolService {
     // choice context. For the self-registry both contexts are empty.
     //
     // The LP's deposit holdings are `signatory admin, owner`, so the operator
-    // cannot see them; the disclosure has to come from the deposit registry's
-    // choice context. Limited to a co-hosted registry until then.
+    // cannot see them. Registry discovery supplies the transaction-wide
+    // disclosures needed to validate the nested choices.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-add-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
-        disclosure: [
-          ...depositFactories.disclosure,
-          ...lpFactories.disclosure,
-          ...depositContext.disclosure,
-          ...lpContext.disclosure,
-        ],
+        disclosure: mergeDisclosures(
+          depositFactories.disclosure,
+          lpFactories.disclosure,
+          depositContext.disclosure,
+          lpContext.disclosure,
+        ),
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
@@ -1020,11 +1027,14 @@ export class PoolService {
       lpFactoryCid: lpFactories.allocationFactoryCid,
       depositFactoryExtraArgs: depositContext.extraArgs,
       lpFactoryExtraArgs: lpContext.extraArgs,
-      depositFactoryDisclosure: [
-        ...depositFactories.disclosure,
-        ...depositContext.disclosure,
-      ],
-      lpFactoryDisclosure: [...lpFactories.disclosure, ...lpContext.disclosure],
+      depositFactoryDisclosure: mergeDisclosures(
+        depositFactories.disclosure,
+        depositContext.disclosure,
+      ),
+      lpFactoryDisclosure: mergeDisclosures(
+        lpFactories.disclosure,
+        lpContext.disclosure,
+      ),
     };
   }
 
@@ -1056,19 +1066,19 @@ export class PoolService {
     // pool.lpRegistrar — each carries its own registry choice context.
     // For the self-registry both contexts are empty.
     //
-    // The LP's deposit holdings are `signatory admin, owner`, so the operator
-    // cannot see them; the disclosure has to come from the deposit registry's
-    // choice context. Limited to a co-hosted registry until then.
+    // The holder's allocations can reference contracts the operator cannot
+    // see. Registry discovery supplies the transaction-wide disclosures needed
+    // to validate the nested choices.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-remove-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
-        disclosure: [
-          ...depositFactories.disclosure,
-          ...lpFactories.disclosure,
-          ...depositContext.disclosure,
-          ...lpContext.disclosure,
-        ],
+        disclosure: mergeDisclosures(
+          depositFactories.disclosure,
+          lpFactories.disclosure,
+          depositContext.disclosure,
+          lpContext.disclosure,
+        ),
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",

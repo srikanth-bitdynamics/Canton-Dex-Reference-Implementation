@@ -2,6 +2,7 @@
 -- favour, so a swap, a deposit, or a withdrawal can never quietly pay out more
 -- than it should. Each script below pins down one rounding rule with worked
 -- numbers, showing the exact case where naive `*` and `/` would leak value.
+-- Design context: `docs/concepts/pricing.md`.
 
 -- | Pool payouts round DOWN, so the constant product never falls. `Decimal` is
 -- `Numeric 10`, so a payout cannot be floored once computed — the flooring has
@@ -23,6 +24,7 @@ import CantonDex.Trading.Utils qualified as Utils
 
 -- Division rounds DOWN: `floorDiv` never returns more than the true quotient
 -- (plain `/` can round the last digit up), yet leaves exact quotients as-is.
+-- | Proves `floorDiv` never exceeds the exact quotient.
 testFloorDivStaysBelowExactQuotient : Script ()
 testFloorDivStaysBelowExactQuotient = do
   -- 7000 / 1007 = 6.95134061569016…, which `/` rounds UP.
@@ -37,6 +39,7 @@ testFloorDivStaysBelowExactQuotient = do
 -- Multiplication rounds DOWN: `floorMul` never returns more than the true
 -- product (plain `*` can round the last digit up), yet leaves exact products
 -- untouched.
+-- | Proves `floorMul` never exceeds the exact product.
 testFloorMulStaysBelowExactProduct : Script ()
 testFloorMulStaysBelowExactProduct = do
   -- 0.0000000002 * 0.75 = 0.00000000015 exactly, which `*` rounds UP.
@@ -56,6 +59,7 @@ testFloorMulStaysBelowExactProduct = do
 -- product. Ceiling the quotient and then the product hands back the divisor's
 -- ulp multiplied by the far reserve, so the unmatched excess is absorbed
 -- unrefunded — the donation the refund path exists to prevent.
+-- | Proves ratio matching conservatively refunds rounding residue.
 testRatioMatchedDepositRoundsOnce : Script ()
 testRatioMatchedDepositRoundsOnce = do
   -- A pool weighted far toward quote (1000 base : 10 billion quote).
@@ -76,6 +80,7 @@ testRatioMatchedDepositRoundsOnce = do
   pure ()
 
 -- A full redemption still drains the pool exactly rather than stranding an ulp.
+-- | Proves redeeming the full LP supply drains both reserves exactly.
 testFullRedemptionShareIsExact : Script ()
 testFullRedemptionShareIsExact = do
   -- The sole holder redeems everything: their share is total supply / supply.
@@ -94,6 +99,7 @@ testFullRedemptionShareIsExact = do
 -- A zero-fee pool has no fee slack to absorb a rounding error. 7 USDC into a
 -- 1000/1000 pool prices at 7000/1007, whose rounded quotient sits above the
 -- exact one — paying that out drops base*quote below k.
+-- | Proves swap output rounding cannot reduce the constant product.
 testSwapOutputRoundsDownToKeepConstantProduct : Script ()
 testSwapOutputRoundsDownToKeepConstantProduct = do
   -- Parties: alice supplies the pool's liquidity, bob is the trader.

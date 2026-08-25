@@ -12,14 +12,8 @@ import CantonDex.Trading.Utils qualified as Utils
 
 -- | Standard mint/burn accounts. `Registry.V2` recognizes exactly these as
 -- admin-authorized mint/burn sources.
-mintAccount : Party -> V2.Account
-mintAccount _lpRegistrar = Utils.mintAccount
-
-burnAccount : Party -> V2.Account
-burnAccount _lpRegistrar = Utils.burnAccount
-
-lpMintLeg : Party -> V2.Account -> Text -> Decimal -> V2.TransferLeg
-lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
+lpMintLeg : V2.Account -> Text -> Decimal -> V2.TransferLeg
+lpMintLeg recipient lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-mint"
   sender = Utils.mintAccount
   receiver = recipient
@@ -27,8 +21,8 @@ lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
   instrumentId = lpInstrumentId
   meta = emptyMetadata
 
-lpBurnLeg : Party -> V2.Account -> Text -> Decimal -> V2.TransferLeg
-lpBurnLeg _lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
+lpBurnLeg : V2.Account -> Text -> Decimal -> V2.TransferLeg
+lpBurnLeg holder lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-burn"
   sender = holder
   receiver = Utils.burnAccount
@@ -50,13 +44,10 @@ mkSpec admin authorizer leg = V2.AllocationSpecification with
 -- Mint: registrar authors the sender side, recipient the receiver side.
 -- Burn: holder authors the sender side, registrar the receiver side.
 mintSenderSpec : Party -> V2.TransferLeg -> V2.AllocationSpecification
-mintSenderSpec lpRegistrar leg = mkSpec lpRegistrar (mintAccount lpRegistrar) leg
+mintSenderSpec lpRegistrar leg = mkSpec lpRegistrar Utils.mintAccount leg
 
 mintReceiptSpec : Party -> V2.Account -> V2.TransferLeg -> V2.AllocationSpecification
 mintReceiptSpec lpRegistrar recipient leg = mkSpec lpRegistrar recipient leg
 
-burnSenderSpec : Party -> V2.Account -> V2.TransferLeg -> V2.AllocationSpecification
-burnSenderSpec lpRegistrar holder leg = mkSpec lpRegistrar holder leg
-
 burnReceiptSpec : Party -> V2.TransferLeg -> V2.AllocationSpecification
-burnReceiptSpec lpRegistrar leg = mkSpec lpRegistrar (burnAccount lpRegistrar) leg
+burnReceiptSpec lpRegistrar leg = mkSpec lpRegistrar Utils.burnAccount leg

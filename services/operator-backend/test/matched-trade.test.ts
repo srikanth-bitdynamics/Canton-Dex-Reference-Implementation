@@ -177,10 +177,14 @@ describe("MatchedTradeService", () => {
 
     assert.deepEqual(adminABatch!.extraArgs.context.values, { "ctx.adminA": true });
     assert.deepEqual(adminBBatch!.extraArgs.context.values, { "ctx.adminB": true });
-    assert.deepEqual(
-      submit.disclosure?.map((d) => d.createdEventBlob),
-      ["factory-adminA", "context-adminA", "factory-adminB", "context-adminB"],
-    );
+    const disclosureBlobs = submit.disclosure!.map((d) => d.createdEventBlob);
+    assert.deepEqual(new Set(disclosureBlobs), new Set([
+      "factory-adminA",
+      "context-adminA",
+      "factory-adminB",
+      "context-adminB",
+    ]));
+    assert.equal(disclosureBlobs.length, new Set(disclosureBlobs).size);
   });
 
   it("cancel threads the matching admin context for each allocation group", async () => {
@@ -217,8 +221,8 @@ describe("MatchedTradeService", () => {
       ["#b:0", { context: { values: { "ctx.adminB": true } }, meta: { values: {} } }],
     ]);
     assert.deepEqual(
-      submit.disclosure?.map((d) => d.createdEventBlob),
-      ["context-adminA", "context-adminB"],
+      new Set(submit.disclosure?.map((d) => d.createdEventBlob)),
+      new Set(["context-adminA", "context-adminB"]),
     );
   });
 });

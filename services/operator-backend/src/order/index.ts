@@ -5,6 +5,7 @@ import type { ContractId } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
+import { mergeDisclosures } from "../ledger/disclosure.js";
 import { LedgerSubmitter, type SubmitRequest } from "../ledger/index.js";
 import {
   recoverCreatedAllocations,
@@ -182,7 +183,7 @@ export class OrderService {
       // Cancellation may release holdings visible only to the owner and
       // registry admin, so include the registry's choice context and disclosure.
       commandId: `order-cancel:${orderCid}`,
-      disclosure: [...factories.disclosure, ...ctx.disclosure],
+      disclosure: mergeDisclosures(factories.disclosure, ctx.disclosure),
       command: {
         kind: "exercise",
         templateId: "CantonDex.Dex.Order:Order",
@@ -326,7 +327,7 @@ export class OrderService {
             commandId: `order-match:${matchId}`,
             // Factory + choice-context disclosure for the registry's own
             // contracts.
-            disclosure: [...factories.disclosure, ...ctx.disclosure],
+            disclosure: mergeDisclosures(factories.disclosure, ctx.disclosure),
             command: {
               kind: "createAndExercise",
               templateId:
@@ -346,9 +347,8 @@ export class OrderService {
                 sellOrderCid: sell.cid,
                 buyerAllocationCid: buy.allocationCid,
                 sellerAllocationCid: sell.allocationCid,
-                // Ignored by the choice, retained for upgrade compatibility.
-                // The budget is read off each side's own allocation, so the
-                // operator declares nothing here.
+                // [COMPAT] These fields are retained for package lineage and
+                // ignored by the choice. Each budget comes from its allocation.
                 buyerCommittedFunding: {},
                 sellerCommittedFunding: {},
               },

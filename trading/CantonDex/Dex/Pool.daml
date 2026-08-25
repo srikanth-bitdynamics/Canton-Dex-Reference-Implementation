@@ -3,6 +3,8 @@
 -- Mutable pool data lives on `PoolState` and `PoolSlice`. Pool operations
 -- live on `PoolRules`. This contract is the stable identifier that ties
 -- those pieces together.
+--
+-- Design guide: `docs/concepts/design-tour.md#liquidity-and-pool-custody`.
 module CantonDex.Dex.Pool where
 
 import Splice.Api.Token.HoldingV2 qualified as V2

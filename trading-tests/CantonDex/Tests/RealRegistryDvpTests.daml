@@ -3,6 +3,7 @@
 -- contract. LP mint and burn use `Registry.V2`, which supports the owner=None
 -- mint account and requires no choice context. The tests prove that each
 -- admin's context reaches its own settlement batch.
+-- Design context: `docs/concepts/design-tour.md#cross-registry-settlement`.
 module CantonDex.Tests.RealRegistryDvpTests where
 
 import DA.Assert
@@ -189,7 +190,7 @@ authorAdd fx lp baseAmount quoteAmount now = do
       quoteLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
         amount = quoteAmount; instrumentId = "Y"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.lpRegistrar lpAcct lpId lpAmount
+      lpMintLeg = Lp.lpMintLeg lpAcct lpId lpAmount
   reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid = fx.poolCid; recipient = lp; baseAmount; quoteAmount; lpAmount
     requestedAt = now; settleAt = None
@@ -237,6 +238,7 @@ addSettle fx lp now = do
 -- A DvP add settles across both registries when the base/quote batch receives
 -- the TestTokenV2 context. The pool becomes active, its reserves are backed by
 -- allocations, and the LP receives newly minted LP tokens.
+-- | Proves cross-registry add-liquidity settles deposits and LP mint atomically.
 testRealRegistryDvpAddSettles : Script ()
 testRealRegistryDvpAddSettles = do
   lp <- allocateParty "lp"
@@ -255,6 +257,7 @@ testRealRegistryDvpAddSettles = do
 
 -- Without poolAdminExtraArgs, the context-requiring base/quote factory rejects
 -- the missing `testTokenV2/tokenRules` value before settlement.
+-- | Proves a context-requiring upstream registry rejects missing choice context.
 testRealRegistryDvpRejectsMissingContext : Script ()
 testRealRegistryDvpRejectsMissingContext = do
   lp <- allocateParty "lp"
@@ -272,6 +275,7 @@ testRealRegistryDvpRejectsMissingContext = do
 
 -- An off-ratio add takes only the ratio-matched part of the deposit. The
 -- upstream registry returns the unmatched remainder as an unlocked holding.
+-- | Proves cross-registry add refunds off-ratio excess as unlocked holdings.
 testRealRegistryDvpAddRefundsOffRatioExcess : Script ()
 testRealRegistryDvpAddRefundsOffRatioExcess = do
   lp <- allocateParty "lp"
@@ -293,7 +297,7 @@ testRealRegistryDvpAddRefundsOffRatioExcess = do
       quoteLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
         amount = quoteAmount; instrumentId = "Y"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.lpRegistrar lpAcct lpId lpAmount
+      lpMintLeg = Lp.lpMintLeg lpAcct lpId lpAmount
   TT2.mint fx.ttReg lpAcct "X" baseAmount
   TT2.mint fx.ttReg lpAcct "Y" quoteAmount
   reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
@@ -335,6 +339,7 @@ testRealRegistryDvpAddRefundsOffRatioExcess = do
 -- After funding the pool, the holder redeems the full position. TestTokenV2
 -- delivers base and quote from the pool slices, and the reference registry burns
 -- the LP tokens.
+-- | Proves cross-registry remove pays reserves and burns LP tokens atomically.
 testRealRegistryDvpRemoveSettles : Script ()
 testRealRegistryDvpRemoveSettles = do
   alice <- allocateParty "lp"
@@ -351,7 +356,7 @@ testRealRegistryDvpRemoveSettles = do
       quoteOutLeg = V2.TransferLeg with
         transferLegId = "lp-quote-out-0"; sender = opAcct; receiver = aliceAcct
         amount = 200000.0; instrumentId = "Y"; meta = emptyMetadata
-      burnLeg = Lp.lpBurnLeg fx.lpRegistrar aliceAcct lpId lpAmount
+      burnLeg = Lp.lpBurnLeg aliceAcct lpId lpAmount
   -- alice's LP holding, to lock for the burn (on our registry).
   aliceHs <- query @RegV2.Holding alice
   let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) aliceHs)
@@ -405,6 +410,7 @@ testRealRegistryDvpRemoveSettles = do
 --   3. operator settles via PoolRules_Swap against its SettlementFactory,
 --      threading the per-admin context and disclosures.
 -- The assertions cover reserve movement and the receiver's output holding.
+-- | Proves a signed swap moves real holdings through the upstream registry.
 testRealRegistryDvpSwapSettles : Script ()
 testRealRegistryDvpSwapSettles = do
   bob <- allocateParty "lp"      -- LP/funder
@@ -579,6 +585,7 @@ twoAdminSubmitOptions t =
 -- admin's legs, each batch covers them exactly and the trade settles across
 -- both registries in one transaction. The rejected attempts commit nothing, so
 -- the same allocations settle in the last phase.
+-- | Proves a two-admin matched trade settles each admin's exact leg subset.
 testMatchedTradeSettlesPerAdminLegSubsets : Script ()
 testMatchedTradeSettlesPerAdminLegSubsets = do
   alice <- allocateParty "alice"

@@ -3,9 +3,10 @@
 -- one selected holding equal to `amount`; backend/wallet code handles
 -- off-chain holding selection before submission.
 --
--- This is a standalone DEX-specific lifecycle sample. Active DEX workflows
--- use `CantonDex.Registry.V2`; these templates remain only because the
--- deployed package lineage cannot remove existing templates.
+-- [COMPAT] Standalone DEX-specific lifecycle sample. Active DEX workflows use
+-- `CantonDex.Registry.V2`; these templates remain for package lineage.
+--
+-- Design guide: `docs/concepts/design-tour.md#active-and-compatibility-surfaces`.
 module CantonDex.Instrument.Burn where
 
 import CantonDex.Instrument.Credentials qualified as Cred

@@ -41,7 +41,7 @@ issuance sources (`mintAccount` id `"cip-112/mint"`, `burnAccount` id
 `burnAccount` is a redemption — [`lpMintLeg` / `lpBurnLeg`](../../trading/CantonDex/Lp/Instrument.daml):
 
 ```daml
-lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
+lpMintLeg recipient lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-mint"
   sender = Utils.mintAccount
   receiver = recipient
@@ -49,7 +49,7 @@ lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
   instrumentId = lpInstrumentId
   meta = emptyMetadata
 
-lpBurnLeg _lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
+lpBurnLeg holder lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-burn"
   sender = holder
   receiver = Utils.burnAccount

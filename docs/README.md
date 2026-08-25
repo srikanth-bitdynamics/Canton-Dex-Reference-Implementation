@@ -5,9 +5,9 @@ Network: Daml contracts, an operator backend, a React dApp with a CIP-0103
 wallet boundary, tests, and operator runbooks, covering RFQs, prefunded
 orders, constant-product pools, swaps, and LP tokens.
 
-New here? **[Start with Getting Started](getting-started.md)**: it takes you
-from a clone to the full stack running locally (no Canton participant needed).
-For the ideas behind the design, read the **[Overview](concepts/overview.md)**.
+New here? Read **[Understand the design in 15 minutes](concepts/design-tour.md)**,
+then use **[Getting Started](getting-started.md)** to run the full stack locally
+without a Canton participant.
 
 > **Standards note.** This reference implements the Canton Network Token
 > Standard **V2 (CIP-0112)** — the privacy/performance/accounting revision of
@@ -23,8 +23,8 @@ For the ideas behind the design, read the **[Overview](concepts/overview.md)**.
 | I want to… | Read, in order |
 |---|---|
 | **Run it locally** | [Getting Started](getting-started.md) |
-| **Learn DEX and TSv2 from Daml** | [Overview](concepts/overview.md) → [Glossary](concepts/glossary.md) → [Workflows](concepts/workflows.md) → [Builder Guide](guides/builder-guide.md) |
-| **Understand the design** | [Overview](concepts/overview.md) → [Architecture](concepts/architecture.md) → [Workflows](concepts/workflows.md) |
+| **Learn DEX and TSv2 from Daml** | [15-minute Design Tour](concepts/design-tour.md) → [Glossary](concepts/glossary.md) → [Workflows](concepts/workflows.md) → [Builder Guide](guides/builder-guide.md) |
+| **Understand the design** | [15-minute Design Tour](concepts/design-tour.md) → [Architecture](concepts/architecture.md) → [Workflows](concepts/workflows.md) |
 | **Build on / extend it** | [Getting Started](getting-started.md) → [Builder Guide](guides/builder-guide.md) → [HTTP API](reference/http-api.md) |
 | **Operate a venue** | [Deployment](guides/deployment.md) → [Operator Guide](guides/operator-guide.md) → [Operator Runbook](guides/operator-runbook.md) |
 | **Integrate a registry** | [Registry Integration](guides/registry-integration.md) → [Choice Context](guides/choice-context.md) → [Allocation Surface](reference/allocation-surface.md) |
@@ -47,6 +47,7 @@ lookup (reference).
 ### Concepts — understand the design
 | Page | Audience | What it explains |
 |---|---|---|
+| **[15-minute Design Tour](concepts/design-tour.md)** | Daml developer, reviewer | The shortest code-backed path through actors, contracts, authority, custody, and all four settlement flows. |
 | [Overview](concepts/overview.md) | Everyone | What the DEX is, the trust model, and how it maps onto Token Standard V2. |
 | [Architecture](concepts/architecture.md) | Builder, integrator | The system model, component boundaries, and executor-authority constraints. |
 | [Workflows](concepts/workflows.md) | Builder, integrator | The venue workflows, the actor model, and the design principles behind them. |

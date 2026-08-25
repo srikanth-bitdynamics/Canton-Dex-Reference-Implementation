@@ -53,7 +53,7 @@ Each theme below closes with the test that pins the fix.
 ### Amounts are served at ledger precision
 
 Amounts must reach the client as exact decimal strings at ledger scale, never
-re-floated through IEEE-754. The fills feed no longer routes deltas through
+re-floated through IEEE-754. The fills feed routes deltas directly through
 `parseFloat().toFixed`; `/v1/swaps` serves the exact stored strings; and
 `/v1/instruments` reports each instrument's `decimals` so a client can learn
 scale from the API. Existing projection rows can be reindexed after an upgrade.

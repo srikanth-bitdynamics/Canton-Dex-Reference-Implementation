@@ -3,6 +3,8 @@
 -- concrete leg sides + residual funding, and one settle batch consumes them.
 -- The same transaction rolls both orders forward onto the allocations the
 -- settle minted and writes the settled-trade record.
+--
+-- Design guide: `docs/concepts/design-tour.md#prefunded-orders`.
 module CantonDex.Dex.OrderMatchExecution where
 
 import DA.TextMap qualified as TextMap
@@ -123,9 +125,10 @@ template OrderMatchExecution with
     buyerAllocationCid : ContractId V2.Allocation
     sellerAllocationCid : ContractId V2.Allocation
     buyerCommittedFunding : Utils.Funding
-      -- ^ Unused, retained for upgrade compatibility. Each side's budget is
-      --   read from its own allocation below, never from the caller.
+      -- ^ [COMPAT] Retained for package lineage and ignored. Each side's budget
+      --   is read from its allocation, never from this operator-authored field.
     sellerCommittedFunding : Utils.Funding
+      -- ^ [COMPAT] Same as `buyerCommittedFunding`: retained and ignored.
   where
     signatory operator
 

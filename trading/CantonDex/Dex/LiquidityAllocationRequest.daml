@@ -1,4 +1,6 @@
 -- | Wallet-facing request for the allocations used in liquidity DvP flows.
+--
+-- Design guide: `docs/concepts/design-tour.md#liquidity-and-pool-custody`.
 module CantonDex.Dex.LiquidityAllocationRequest where
 
 import DA.Map qualified as Map

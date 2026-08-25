@@ -4,6 +4,7 @@
 -- tests prove the recorded reserves always equal the sum of the actual
 -- slices, and that the on-ledger reconcile check refuses to pass whenever the
 -- two disagree, so the operator cannot quietly misstate the pool's balance.
+-- Design context: `docs/concepts/design-tour.md#liquidity-and-pool-custody`.
 --
 -- | PoolState.reserves integrity.
 --
@@ -59,6 +60,7 @@ reconcileCmd fx rulesCid stateCid sliceCids =
 -- pool's life; reconcile passes cleanly after each stage below.
 -- Full lifecycle: add -> swap (through Registry.V2) -> full remove, with a
 -- clean reconcile after every stage.
+-- | Proves reserve reconciliation succeeds after add, swap, and remove.
 testReconcileAfterAddSwapRemove : Script ()
 testReconcileAfterAddSwapRemove = do
   -- Two traders and a fresh, empty pool wired to the reconcile rules.
@@ -127,7 +129,7 @@ testReconcileAfterAddSwapRemove = do
       quoteOutLeg = V2.TransferLeg with
         transferLegId = "lp-quote-out-0"; sender = opAcct; receiver = aliceAcct
         amount = quoteOut; instrumentId = "USDC"; meta = emptyMetadata
-      burnLeg = Lp.lpBurnLeg fx.registry aliceAcct PLT.lpId lpAmount
+      burnLeg = Lp.lpBurnLeg aliceAcct PLT.lpId lpAmount
   -- Find alice's unlocked LP holding and build the matching allocations: the
   -- receipts that let the pool pay her the base and quote, plus the sender
   -- allocation that surrenders her LP tokens to be burned.
@@ -163,6 +165,7 @@ testReconcileAfterAddSwapRemove = do
   rec3.quoteTotal === 0.0
 
 -- An incomplete slice list understates the sum and must abort.
+-- | Proves reconciliation rejects an incomplete active-slice set.
 testReconcileFailsOnMissingSlice : Script ()
 testReconcileFailsOnMissingSlice = do
   -- Seed a pool with 10 BTC / 200000 USDC, so its two slices are known.
@@ -177,6 +180,7 @@ testReconcileFailsOnMissingSlice = do
 
 -- A desynced PoolState (operator CAN fabricate one — it is the documented
 -- trust boundary) is caught by reconcile against the real slices.
+-- | Proves reconciliation detects PoolState reserves that disagree with slices.
 testReconcileCatchesDesyncedReserves : Script ()
 testReconcileCatchesDesyncedReserves = do
   -- Seed a real pool (10 BTC / 200000 USDC) with two honest slices.
@@ -197,6 +201,7 @@ testReconcileCatchesDesyncedReserves = do
 
 -- A slice from a different pool must be rejected even when the sums would
 -- otherwise be inflated to match.
+-- | Proves reconciliation rejects a slice belonging to another pool.
 testReconcileRejectsForeignSlice : Script ()
 testReconcileRejectsForeignSlice = do
   -- Seed this pool (10 BTC / 200000 USDC) with its two honest slices.
@@ -222,6 +227,7 @@ testReconcileRejectsForeignSlice = do
 -- to balance. The guard fails it loudly instead of producing an opaque
 -- conservation error. Every other parameter is a well-formed swap, so the
 -- failure is attributable to the swapper == pool account.
+-- | Proves the operator account cannot trade against its own pool inventory.
 testSwapRejectsOperatorAsSwapper : Script ()
 testSwapRejectsOperatorAsSwapper = do
   -- Seed a pool (10 BTC / 200000 USDC) with alice's liquidity; bob will swap.

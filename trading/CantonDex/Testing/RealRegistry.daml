@@ -1,7 +1,8 @@
--- | Compatibility-only holding-tracking test registry. New value-movement tests
--- use `CantonDex.Registry.V2` or the upstream `TestTokenV2_RegistryV2` fixture.
--- This module remains in the published package lineage but is not an active DEX
--- registry and must not be used by production integrations.
+-- | [COMPAT] Holding-tracking test registry retained for package lineage. Active
+-- value-movement tests use `CantonDex.Registry.V2` or the upstream
+-- `TestTokenV2_RegistryV2` fixture. Production integrations must not use this
+-- module.
+-- Design guide: `docs/concepts/design-tour.md#active-and-compatibility-surfaces`.
 module CantonDex.Testing.RealRegistry where
 
 import DA.Foldable (forA_)
@@ -49,19 +50,6 @@ template RealHolding with
         a <- create this with amount = splitAmount
         b <- create this with amount = amount - splitAmount
         pure (a, b)
-
--- | Sender-side outflow for an owner on one instrument (locked-sum check).
-ownerOutflowFor : Party -> [V2.TransferLeg] -> Text -> Decimal
-ownerOutflowFor owner legs instrumentId =
-  foldl
-    (\acc leg ->
-      if leg.instrumentId == instrumentId &&
-         leg.sender.owner == Some owner &&
-         leg.receiver.owner /= Some owner
-        then acc + leg.amount
-        else acc)
-    0.0
-    legs
 
 template RealAllocation with
     admin : Party
@@ -176,8 +164,6 @@ template RealRegistry with
             -- leg direction at settle (sender None = mint, receiver None = burn).
             isSpecialAcct = isNone spec.authorizer.owner
             authorizerOwner = if isSpecialAcct then admin else Utils.accountOwner spec.authorizer
-        let sendSides =
-              filter (\side -> side.side == V2.SenderSide) spec.transferLegSides
         lockedCids <- do
           hs <- forA arg.inputHoldingCids $ \ifaceCid -> do
             let cid : ContractId RealHolding = coerceContractId ifaceCid
@@ -185,15 +171,14 @@ template RealRegistry with
             archive cid
             create h with locked = True
           pure hs
-        -- HARNESS LIMITATION: send-side coverage is NOT validated here — a
-        -- deliberate no-op that trusts the caller (also why mint "locks
-        -- nothing" works). A production registry MUST enforce per-instrument
+        -- HARNESS LIMITATION: send-side coverage is NOT validated here; the
+        -- fixture trusts the caller (also why mint "locks nothing" works). A
+        -- production registry MUST enforce per-instrument
         -- coverage; "tests pass" does not mean coverage is validated.
         -- The production reference `CantonDex.Registry.V2` enforces coverage
         -- at allocate time AND at settle time (draw-down + roll-forward
         -- backing + batch-level sender/receiver balance); this harness
         -- enforces none of that.
-        forA_ sendSides $ \_side -> pure ()
         now <- getTime
         allocationCid <- create RealAllocation with
           admin
@@ -250,8 +235,3 @@ template RealRegistry with
         pure V2.SettlementFactoryView with
           admin
           meta = emptyMetadata
-
-createRealRegistry : Party -> [Party] -> Update (ContractId V2.AllocationFactory, ContractId V2.SettlementFactory)
-createRealRegistry admin users = do
-  cid <- create RealRegistry with admin; users
-  pure (toInterfaceContractId cid, toInterfaceContractId cid)

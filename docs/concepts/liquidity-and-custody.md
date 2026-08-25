@@ -161,13 +161,18 @@ co-signed by the operator and LP registrar. Consequently:
 - routine redemption requires both operator and registrar availability;
 - a holder cannot withdraw a reserve slice through `Allocation_Withdraw`,
   because the holder is not that allocation's authorizer;
-- the committed reserve allocations have no holder deadline that turns into a
-  unilateral redemption right.
+- each slice is `committed = true` with `settlementDeadline = None`, so the V2
+  withdrawal rule also prevents its operator authorizer from using
+  `Allocation_Withdraw`;
+- the operator is the settlement executor and can cancel a reserve allocation,
+  while the LP holder cannot cancel or withdraw it.
 
 This single-operator liveness dependency is intentional in the reference and
 is not suitable as an unstated production custody assumption. A production
 fork should add its chosen governed/threshold execution and emergency-exit
-model, then audit that model separately. See [Non-goals](non-goals.md#lp-redemption-has-an-explicit-liveness-dependency).
+model, then audit that model separately. Giving slices a deadline alone would
+not create an LP-holder exit; it would create an operator withdrawal and slice
+renewal problem. See [Non-goals](non-goals.md#lp-redemption-has-an-explicit-liveness-dependency).
 
 ---
 

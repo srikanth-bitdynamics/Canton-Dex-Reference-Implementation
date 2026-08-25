@@ -196,7 +196,7 @@ A concrete loop for extending a choice — say, adding an optional referral part
 to a swap:
 
 1. **Edit the Daml.** Append an `Optional` field (e.g. `referral : Optional
-   Party`) to `Pool`, or add a new `PoolRules_SwapWithReferral` choice — see
+   Party`) to `Pool`, or add a clearly named referral choice to `PoolRules` — see
    [Upgrade discipline](#upgrade-discipline) for why additions go at the end of
    the record.
 2. **Build the DAR:** `(cd trading && dpm build)`.

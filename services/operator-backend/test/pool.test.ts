@@ -16,22 +16,57 @@ import type {
   LedgerEvent,
 } from "../src/ledger/index.js";
 import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
-import type { LPTokenPolicy, Pool, LiquidityAllocationAcceptanceContract } from "../src/types.js";
+import type {
+  ChoiceContextRef,
+  ContractId,
+  DisclosedContract,
+  FactoryRefs,
+} from "@canton-dex/registry-client";
+import type {
+  LPTokenPolicy,
+  Pool,
+  LiquidityAllocationAcceptanceContract,
+  Party,
+} from "../src/types.js";
 
 class StubRegistry extends RegistryClient {
   constructor() {
     super({ baseUrl: "http://stub" });
   }
-  override async getFactories() {
+  override async getFactories(_admin: Party): Promise<FactoryRefs> {
     return {
       allocationFactoryCid: "#alloc:0" as ContractId<"AllocationFactory">,
       settlementFactoryCid: "#settle:0" as ContractId<"SettlementFactory">,
-      disclosure: [] as never[],
+      disclosure: [],
     };
   }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
+  override async getChoiceContext(_admin: Party): Promise<ChoiceContextRef> {
     return { context: { values: {} }, disclosure: [] };
+  }
+}
+
+function disclosed(contractId: string): DisclosedContract {
+  return {
+    contractId,
+    templateId: "Registry:Rules",
+    createdEventBlob: `blob:${contractId}`,
+  };
+}
+
+class PerAdminRegistry extends StubRegistry {
+  override async getFactories(admin: Party): Promise<FactoryRefs> {
+    return {
+      allocationFactoryCid: `#alloc:${admin}` as ContractId<"AllocationFactory">,
+      settlementFactoryCid: `#settle:${admin}` as ContractId<"SettlementFactory">,
+      disclosure: [disclosed("#shared-rules"), disclosed(`#factory:${admin}`)],
+    };
+  }
+
+  override async getChoiceContext(admin: Party): Promise<ChoiceContextRef> {
+    return {
+      context: { values: { [`ctx.${admin}`]: true } },
+      disclosure: [disclosed("#shared-rules"), disclosed(`#context:${admin}`)],
+    };
   }
 }
 
@@ -439,7 +474,7 @@ describe("PoolService DvP liquidity", () => {
   it("settleAddLiquidity is co-signed and threads requestCid + both registries' factories + per-admin contexts", async () => {
     const pool = mkPool(0, 0);
     const ledger = new CapturingLedger(pool, mkLpPolicy());
-    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+    const svc = new PoolService(ledger, new PerAdminRegistry(), "op" as never);
 
     await svc.settleAddLiquidity({
       poolCid: pool.contractId,
@@ -469,13 +504,29 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.acceptanceCid, null, "no acceptance evidence on the direct path");
     assert.equal(cmd.argument.lpBaseDepositCid, "#b:0");
     assert.equal(cmd.argument.lpReceiptCid, "#r:0");
-    assert.ok(cmd.argument.baseFactoryCid, "base/quote factory present");
-    assert.ok(cmd.argument.lpFactoryCid, "LP factory present");
-    assert.ok(cmd.argument.lpSettleCid, "LP settlement factory present");
+    assert.equal(cmd.argument.baseFactoryCid, "#alloc:ad");
+    assert.equal(cmd.argument.lpFactoryCid, "#alloc:lp");
+    assert.equal(cmd.argument.baseQuoteSettleCid, "#settle:ad");
+    assert.equal(cmd.argument.lpSettleCid, "#settle:lp");
     // Split-admin contexts threaded separately, not collapsed.
-    assert.ok(cmd.argument.poolAdminExtraArgs, "pool.admin choice context threaded");
-    assert.ok(cmd.argument.lpRegistrarExtraArgs, "lpRegistrar choice context threaded");
+    assert.deepEqual(cmd.argument.poolAdminExtraArgs, {
+      context: { values: { "ctx.ad": true } },
+      meta: { values: {} },
+    });
+    assert.deepEqual(cmd.argument.lpRegistrarExtraArgs, {
+      context: { values: { "ctx.lp": true } },
+      meta: { values: {} },
+    });
     assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");
+    const disclosureIds = ledger.lastSubmit!.disclosure!.map((d) => d.contractId);
+    assert.deepEqual(new Set(disclosureIds), new Set([
+      "#shared-rules",
+      "#factory:ad",
+      "#factory:lp",
+      "#context:ad",
+      "#context:lp",
+    ]));
+    assert.equal(disclosureIds.length, new Set(disclosureIds).size);
   });
 
   it("settleAddLiquidity binds to acceptance evidence when no live request is supplied", async () => {
@@ -653,7 +704,7 @@ describe("PoolService DvP liquidity", () => {
   it("settleRemoveLiquidity derives slice cids itself + co-signs", async () => {
     const pool = mkSlicedPool();
     const ledger = new CapturingLedger(pool, mkLpPolicy());
-    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+    const svc = new PoolService(ledger, new PerAdminRegistry(), "op" as never);
 
     await svc.settleRemoveLiquidity({
       poolCid: pool.contractId,
@@ -680,9 +731,24 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.requestCid, "#req:1");
     assert.equal(cmd.argument.holderBurnSenderCid, "#burn:0");
     // Split-admin contexts threaded separately, not collapsed.
-    assert.ok(cmd.argument.poolAdminExtraArgs, "pool.admin choice context threaded");
-    assert.ok(cmd.argument.lpRegistrarExtraArgs, "lpRegistrar choice context threaded");
+    assert.deepEqual(cmd.argument.poolAdminExtraArgs, {
+      context: { values: { "ctx.ad": true } },
+      meta: { values: {} },
+    });
+    assert.deepEqual(cmd.argument.lpRegistrarExtraArgs, {
+      context: { values: { "ctx.lp": true } },
+      meta: { values: {} },
+    });
     assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");
+    const disclosureIds = ledger.lastSubmit!.disclosure!.map((d) => d.contractId);
+    assert.deepEqual(new Set(disclosureIds), new Set([
+      "#shared-rules",
+      "#factory:ad",
+      "#factory:lp",
+      "#context:ad",
+      "#context:lp",
+    ]));
+    assert.equal(disclosureIds.length, new Set(disclosureIds).size);
   });
 
   it("prefers the LP policy whose supply matches the pool state", async () => {

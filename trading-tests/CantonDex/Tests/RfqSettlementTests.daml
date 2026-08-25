@@ -26,6 +26,7 @@
 --      `settlementDeadline`, and Allocation_Settle aborts once it passes. An
 --      RFQ that expires between accept and settle cannot settle; its allocations
 --      remain available to the executor's cancellation path.
+-- Design context: `docs/concepts/design-tour.md#rfq-and-otc-settlement`.
 module CantonDex.Tests.RfqSettlementTests where
 
 import DA.Assert
@@ -71,8 +72,8 @@ data Fixture = Fixture with
 -- | Stand up a fresh world for one scenario: allocate the parties, create the
 -- reference registry, and mint each party's opening inventory. The scenarios
 -- all start from the Fixture this returns.
-setup : Script Fixture
-setup = do
+setup : () -> Script Fixture
+setup () = do
   -- The cast: an admin that co-signs every holding, an operator that runs the
   -- RFQ flow, one trader, and two competing dealers.
   admin <- allocateParty "dex-admin"
@@ -249,10 +250,10 @@ acceptAndSettle fx rfq accepted considered = do
     settleTrade fx res.tradeCid trade.transferLegs allocs reqs
   pure (settled, res)
 
--- | RFQ_Buy: the dealer delivers base, the trader delivers quote.
+-- | Proves an accepted buy RFQ exchanges real base and quote holdings atomically.
 testRfqBuySettlesAgainstRealHoldings : Script ()
 testRfqBuySettlesAgainstRealHoldings = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   let size = 0.01
       price = 93400.0
@@ -298,9 +299,10 @@ testRfqBuySettlesAgainstRealHoldings = do
 
 -- | RFQ_Sell: the mirror. The dealer sends quote, so its allocation must be
 -- funded with quote rather than base.
+-- | Proves an accepted sell RFQ funds quote and settles real holdings atomically.
 testRfqSellSettlesAgainstRealHoldings : Script ()
 testRfqSellSettlesAgainstRealHoldings = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   let size = 0.02
       price = 93300.0
@@ -335,9 +337,10 @@ testRfqSellSettlesAgainstRealHoldings = do
 -- and Allocation_Settle rejects a settlement after that deadline. The rejected
 -- settlement leaves the allocations locked for the executor's cancellation
 -- path.
+-- | Proves an RFQ trade cannot settle after its inherited deadline.
 testExpiryBetweenAcceptAndSettleBlocksTheSettle : Script ()
 testExpiryBetweenAcceptAndSettleBlocksTheSettle = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   let expiresAt = addRelTime now (minutes 10)
   (rfq, qTight, qWide) <- compose fx RFQ_Buy 0.01 expiresAt
@@ -369,9 +372,10 @@ testExpiryBetweenAcceptAndSettleBlocksTheSettle = do
 -- Rfq_Accept validates every considered quote before consuming the RFQ. A
 -- lapsed quote therefore rejects the entire accept command; the backend filters
 -- the considered set against its clock before submission.
+-- | Proves acceptance rejects a candidate set containing a lapsed quote.
 testOneLapsedQuoteAbortsTheAccept : Script ()
 testOneLapsedQuoteAbortsTheAccept = do
-  fx <- setup
+  fx <- setup ()
   now <- getTime
   let rfqId = "rfq-lapsed"
       rfqExpiry = addRelTime now (hours 1)

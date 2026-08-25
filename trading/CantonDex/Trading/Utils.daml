@@ -49,13 +49,6 @@ accountParties account =
     Some provider | provider /= ownerParty -> [ownerParty, provider]
     _ -> [ownerParty]
 
-allocationAdmin : V2.AllocationSpecification -> Party
-allocationAdmin allocation = allocation.admin
-
-filterLegsForAccount : HoldingV2.Account -> [V2.TransferLeg] -> [V2.TransferLeg]
-filterLegsForAccount account =
-  filter (\leg -> leg.sender == account || leg.receiver == account)
-
 splitLegsByAuthorizer : [V2.TransferLeg] -> Map.Map HoldingV2.Account [V2.TransferLeg]
 splitLegsByAuthorizer legs = Map.fromListWithR (++) $ do
   leg <- legs
@@ -119,12 +112,6 @@ receiverSide leg = V2.TransferLegSide with
   amount = leg.amount
   instrumentId = leg.instrumentId
   meta = leg.meta
-
--- | Both sides of a leg, each paired with the account that must authorize it.
--- This is the authorization a settlement batch has to find, exactly once, in
--- the allocations it settles.
-legSidesWithAuthorizer : V2.TransferLeg -> [(HoldingV2.Account, V2.TransferLegSide)]
-legSidesWithAuthorizer leg = [(leg.sender, senderSide leg), (leg.receiver, receiverSide leg)]
 
 -- | Project a leg into the authorizer's side, or None if it is neither end.
 --

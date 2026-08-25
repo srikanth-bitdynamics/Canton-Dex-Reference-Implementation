@@ -1,4 +1,6 @@
 -- | Operational rules for one pool venue.
+--
+-- Design guide: `docs/concepts/design-tour.md#signed-pool-swaps`.
 module CantonDex.Dex.PoolRules where
 
 import DA.Foldable (forA_)
@@ -231,7 +233,7 @@ template PoolRules with
         assertMsg "swap: unexpected next-iteration allocation count"
           (length nextIterCids == 2 + length draw.fullyConsumed + boundaryCount)
         let inputNextCid = case nextIterCids of
-              (_swapper :: Some inNext :: _) -> inNext
+              (_ :: Some inNext :: _) -> inNext
               _ -> error "swap: pool input slice must produce a next-iteration allocation"
 
         forA_ outDel.drainedSliceCids archive

@@ -1,9 +1,10 @@
 // MatchedTrade flow.
 
-import type { ContractId } from "@canton-dex/registry-client";
+import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
+import { mergeDisclosures } from "../ledger/disclosure.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import type { Party, V2TransferLeg } from "../types.js";
@@ -83,7 +84,7 @@ export class MatchedTradeService {
         context: { values: Record<string, unknown> };
         meta: { values: Record<string, unknown> };
       };
-      disclosure: unknown[];
+      disclosure: DisclosedContract[];
     }> = [];
     for (const [admin, batch] of input.batchesByAdmin) {
       const [factories, ctx] = await Promise.all([
@@ -95,7 +96,7 @@ export class MatchedTradeService {
         batch,
         factoryCid: factories.settlementFactoryCid,
         extraArgs: ctx.extraArgs,
-        disclosure: [...factories.disclosure, ...ctx.disclosure],
+        disclosure: mergeDisclosures(factories.disclosure, ctx.disclosure),
       });
     }
 
@@ -104,11 +105,10 @@ export class MatchedTradeService {
         actAs: [this.operatorParty],
         // The settle archives holdings that are `signatory admin, owner`,
         // which the operator cannot see. `admin` is the instrument's registry
-        // admin, so the disclosure has to come from that registry's
-        // per-allocation choice context, not from readAs. Until
-        // registry-client serves it, this needs a co-hosted registry.
+        // admin, so registry discovery supplies the transaction-wide
+        // disclosures needed to validate every per-admin batch.
         commandId: `mt-settle:${input.tradeCid}`,
-        disclosure: adminEntries.flatMap((e) => e.disclosure as never),
+        disclosure: mergeDisclosures(...adminEntries.map((e) => e.disclosure)),
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.MatchedTrade:MatchedTrade",
@@ -117,16 +117,10 @@ export class MatchedTradeService {
           argument: {
             // `batchesByAdmin : Map.Map Party SettlementBatchV2` is a Daml
             // GenMap, whose JSON encoding is an ARRAY of [key, value] pairs.
-            // An object encodes a TextMap, which this is not -- that is why
-            // this choice had never once decoded. And SettlementBatchV2 is a
-            // plain record, not the vendored upstream variant: no `tag`, and
-            // the field is `allocations` of V2.FinalizedAllocation, not
-            // `allocationCids`. `transferLegs` is `Optional [TransferLeg]`,
-            // which encodes as the bare array for Some and null for None --
-            // and the choice rejects None.
-            //
-            // The encoding below is the one proven against the live
-            // participant in scripts/testnet-v2registry-trade.ts.
+            // An object would encode a TextMap. `SettlementBatchV2` is a plain
+            // record with `allocations` of `V2.FinalizedAllocation` and no
+            // variant tag. `transferLegs` is `Optional [TransferLeg]`, encoded
+            // as the bare array for Some; the choice rejects None.
             batchesByAdmin: adminEntries.map((e) => [
               e.admin,
               {
@@ -150,7 +144,7 @@ export class MatchedTradeService {
 
   async cancel(input: MatchedTradeCancelInput): Promise<unknown> {
     const adminEntries: Array<{
-      disclosure: unknown[];
+      disclosure: DisclosedContract[];
       allocationsToCancel: Array<
         [
           ContractId<"Allocation">,
@@ -174,7 +168,7 @@ export class MatchedTradeService {
         actAs: [this.operatorParty],
         // Same visibility constraint as the settle.
         commandId: `mt-cancel:${input.tradeCid}`,
-        disclosure: adminEntries.flatMap((e) => e.disclosure as never),
+        disclosure: mergeDisclosures(...adminEntries.map((e) => e.disclosure)),
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.MatchedTrade:MatchedTrade",

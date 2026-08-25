@@ -1,7 +1,10 @@
 -- | Trader-initiated order placement. The trader signs intent; the operator's
--- _Bind creates the Order (Pending) plus an OrderAllocationRequest the trader
+-- `OrderFundingRequest_Bind` creates the pending `Order` and an
+-- `OrderAllocationRequest` the trader
 -- uses to author the funding allocation. Order_Fund validates and binds that
 -- allocation, then the order is Funded and live.
+--
+-- Design guide: `docs/concepts/design-tour.md#prefunded-orders`.
 module CantonDex.Dex.OrderFundingRequest where
 
 import Splice.Api.Token.AllocationV2 qualified as V2

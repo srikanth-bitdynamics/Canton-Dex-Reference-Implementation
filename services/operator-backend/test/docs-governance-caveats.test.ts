@@ -25,7 +25,7 @@ describe("governance and decomposition disclosures", () => {
       assert.match(
         read(rel),
         /no separate `?DexRules`?[^.]{0,30}contract/i,
-        `${rel} no longer states that there is no DexRules contract. Pools have ` +
+        `${rel} must state that there is no DexRules contract. Pools have ` +
           "PoolRules for operation; nothing governs creation. Keep it disclosed.",
       );
     }
@@ -36,8 +36,7 @@ describe("governance and decomposition disclosures", () => {
       assert.match(
         read(rel),
         /does not define custom Daml interfaces|no custom Daml interfaces/i,
-        `${rel} no longer states that the DEX defines no Daml interfaces of ` +
-          "its own. That was a direct review question; keep the answer visible.",
+        `${rel} must state that the DEX defines no Daml interfaces of its own.`,
       );
     }
   });

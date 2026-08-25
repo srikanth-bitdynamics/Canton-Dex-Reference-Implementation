@@ -2,17 +2,19 @@
 -- allocation with no legs and nextIterationFunding covering the locked
 -- amount; matching carries the concrete legs through SettleBatch; partial
 -- fills roll the next-iteration allocation forward; cancel releases it.
+--
+-- Design guide: `docs/concepts/design-tour.md#prefunded-orders`.
 module CantonDex.Dex.Order where
 
 import DA.Map qualified as Map
-import DA.Optional (fromSomeNote)
+import DA.Optional (isSome)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
-import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
+import Splice.TokenStandard.Utils qualified as TSUtils
 
 import CantonDex.Trading.Utils qualified as Utils
 import CantonDex.Trading.WorkflowConstructors qualified as WC
@@ -33,10 +35,14 @@ data Order_FundResult = Order_FundResult with
     allocationCid : ContractId V2.Allocation
   deriving (Eq, Show)
 
+-- [COMPAT] Result shape retained for package lineage only. The
+-- `Order_Adjust` choice is retired and always rejects.
 data Order_MatchResult = Order_MatchResult with
     adjustedAllocationCid : ContractId V2.Allocation
   deriving (Eq, Show)
 
+-- [COMPAT] Result shape retained for package lineage only. Active matching
+-- returns `OrderMatch_ExecuteResult` from `OrderMatchExecution_Execute`.
 data Order_SettleResult = Order_SettleResult with
     settleResult : V2.SettlementFactory_SettleBatchResult
     remainingOrderCid : Optional (ContractId Order)
@@ -47,23 +53,45 @@ data Order_CancelResult = Order_CancelResult with
     releasedHoldings : TextMap.TextMap [ContractId V2.Holding]
   deriving (Eq, Show)
 
--- Small local record carrying a settlement reference as a field, expanded
--- into SettlementInfo at the construction boundary (the V2 API inlined the
--- old Reference type's id/cid onto SettlementInfo).
+-- Local representation of the settlement id and optional originating contract.
 data SettlementRef = SettlementRef with
     id : Text
     cid : Optional AnyContractId
   deriving (Eq, Show)
 
-makeOrderRef : ContractId Order -> SettlementRef
-makeOrderRef orderCid = SettlementRef with
-  id = "DexOrder"
-  cid = Some (coerceContractId orderCid)
-
 makeOrderRefFromText : Text -> SettlementRef
 makeOrderRefFromText refId = SettlementRef with
   id = "DexOrder-" <> refId
   cid = None
+
+-- All orders for one operator, registry, and instrument pair share a
+-- settlement domain. Buy and sell allocations can therefore be settled in
+-- the same V2 batch, while allocations from another venue or pair cannot.
+orderBookSettlement
+  : Party -> Party -> Text -> Text -> V2.SettlementInfo
+orderBookSettlement operator admin baseInstrumentId quoteInstrumentId =
+  V2.SettlementInfo with
+    executors = [operator]
+    id = "CantonDex/OrderBook/" <> show (operator, admin, baseInstrumentId, quoteInstrumentId)
+    cid = None
+    meta = emptyMetadata
+
+orderFundingSpecification
+  : Party -> Party -> Text -> Decimal -> Optional Time
+  -> V2.AllocationSpecification
+orderFundingSpecification admin trader lockInstrumentId lockAmount expiry =
+  V2.AllocationSpecification with
+    admin
+    authorizer = Utils.basicAccount trader
+    transferLegSides = []
+    settlementDeadline = expiry
+    nextIterationFunding = Some (TextMap.fromList [(lockInstrumentId, lockAmount)])
+    -- A committed allocation without a deadline cannot be withdrawn by its
+    -- authorizer. Expiring orders remain committed until their deadline; GTC
+    -- orders stay uncommitted so the trader retains a unilateral exit if the
+    -- venue becomes unavailable.
+    committed = isSome expiry
+    meta = emptyMetadata
 
 template Order with
     operator : Party
@@ -96,28 +124,44 @@ template Order with
     -- call the factory: the trader authors the allocation (so their holdings
     -- fund it) directly against the factory, and the operator binds the
     -- resulting cid here, Pending -> Funded.
-    nonconsuming choice Order_Fund : Order_FundResult
+    choice Order_Fund : Order_FundResult
       with
         allocationCid : ContractId V2.Allocation
         -- The OrderAllocationRequest this order was bound with. It is consumed
         -- here so it cannot linger as a stale funding request once the order is
-        -- funded (the wallet authors the allocation directly and no longer
-        -- accepts the request). Optional for backward compatibility; when
-        -- supplied it MUST target this order.
+        -- funded. The wallet authors the allocation directly; this request is
+        -- the correlation record consumed by `Order_Fund`.
+        -- [COMPAT] The Optional encoding is retained for package lineage, but
+        -- every active exercise must supply `Some requestCid`.
         allocationRequestCid : Optional (ContractId OrderAllocationRequest)
       controller operator
       do
         assertMsg "Order must be in Pending status to fund" (status == OS_Pending)
         case allocationRequestCid of
-          None -> pure ()
+          None -> abort "Order_Fund requires allocationRequestCid"
           Some reqCid -> do
             req <- fetch reqCid
             assertMsg "OrderAllocationRequest does not target this order"
               ( req.orderRef == settlementRef
                   && req.trader == trader
                   && req.operator == operator )
+            allocation <- fetch allocationCid
+            let allocationView = view allocation
+                requestSettlement = optional
+                  (V2.SettlementInfo with
+                    executors = [operator]
+                    id = req.orderRef.id
+                    cid = req.orderRef.cid
+                    meta = emptyMetadata)
+                  identity
+                  req.allocationSettlement
+                expectedSpec = orderFundingSpecification
+                  admin trader req.lockInstrumentId req.lockAmount req.expiry
+            assertMsg "Order funding allocation belongs to a different settlement"
+              (allocationView.settlement == requestSettlement)
+            assertMsg "Order funding allocation does not match the request"
+              (allocationView.allocation == expectedSpec)
             archive reqCid
-        archive self
         newOrderCid <- create this with
           status = OS_Funded
           allocationCid = Some allocationCid
@@ -125,25 +169,15 @@ template Order with
           orderCid = newOrderCid
           allocationCid
 
+    -- [RETIRED] Retained for package lineage and always rejects. Matching is
+    -- implemented by `OrderMatchExecution_Execute`; there is no adjustment
+    -- phase in the active workflow.
     nonconsuming choice Order_Adjust : Order_MatchResult
       with
         matchTransferLegs : [V2.TransferLeg]
         allowFutureIterations : Bool
       controller operator
-      do
-        -- No separate adjust step: the match's legs travel to SettleBatch via
-        -- FinalizedAllocation.extraTransferLegSides. This validates state and
-        -- returns the existing allocation cid unchanged.
-        assertMsg "Order must be Funded or PartiallyFilled to match" $
-          status == OS_Funded || status == OS_PartiallyFilled
-        let allocCid = fromSomeNote "Order has no allocation to match" allocationCid
-        -- Assert the bound allocation is still live before handing its cid to
-        -- the match flow: a fetch of an archived/consumed contract aborts, so
-        -- this rejects a stale (cancelled/settled) allocation cid.
-        _ <- fetch allocCid
-        let _ = (matchTransferLegs, allowFutureIterations)
-        pure Order_MatchResult with
-          adjustedAllocationCid = allocCid
+      do abort "[RETIRED] Order_Adjust: use OrderMatchExecution_Execute"
 
     choice Order_Cancel : Order_CancelResult
       with
@@ -162,20 +196,19 @@ template Order with
               cancelResult = Some result
               releasedHoldings = result.authorizerHoldingCids
 
-    -- Unused, retained for upgrade compatibility. A fill rolls its order
-    -- forward inside OrderMatchExecution_Execute; recording one separately
-    -- leaves the order bound to the allocation that settle already archived.
+    -- [RETIRED] Retained for package lineage and always rejects. A fill rolls
+    -- its order forward atomically inside `OrderMatchExecution_Execute`.
     choice Order_RecordPartialFill : Optional (ContractId Order)
       with
         filledQty : Decimal
         newAllocationCid : Optional (ContractId V2.Allocation)
       controller operator
-      do abort "Order_RecordPartialFill is retired; use OrderMatchExecution_Execute"
+      do abort "[RETIRED] Order_RecordPartialFill: use OrderMatchExecution_Execute"
 
 -- | Trader-observed request issued by the operator to fund a specific Order.
--- The trader accepts (AllocationRequest_Accept, archiving self) and composes
--- AllocationFactory_Allocate in the same transaction; the resulting cid is
--- handed to Order_Fund.
+-- Its interface view supplies the V2 allocation specification. The current
+-- dApp authors that allocation directly; Order_Fund receives its cid and
+-- consumes this request as the workflow's correlation record.
 template OrderAllocationRequest with
     operator : Party
     trader : Party
@@ -185,6 +218,7 @@ template OrderAllocationRequest with
     lockAmount : Decimal
     expiry : Optional Time
     requestedAt : Time
+    allocationSettlement : Optional V2.SettlementInfo
   where
     signatory operator
     observer trader
@@ -192,23 +226,18 @@ template OrderAllocationRequest with
     interface instance V2.AllocationRequest for OrderAllocationRequest where
       view = V2.AllocationRequestView with
         originalRequestCid = None
-        settlement = V2.SettlementInfo with
-          executors = [operator]
-          id = orderRef.id
-          cid = orderRef.cid
-          meta = emptyMetadata
+        settlement = optional
+          (V2.SettlementInfo with
+            executors = [operator]
+            id = orderRef.id
+            cid = orderRef.cid
+            meta = emptyMetadata)
+          identity
+          allocationSettlement
         allocations =
           -- Prefunded: no legs at request time; the trader locks lockAmount as
           -- next-iteration funding, concrete legs travel with the match flow.
-          [ V2.AllocationSpecification with
-              admin
-              authorizer = Utils.basicAccount trader
-              transferLegSides = []
-              settlementDeadline = expiry
-              nextIterationFunding = Some (TextMap.fromList [(lockInstrumentId, lockAmount)])
-              committed = True
-              meta = emptyMetadata
-          ]
+          [orderFundingSpecification admin trader lockInstrumentId lockAmount expiry]
         requestedAt
         settleAt = expiry
         availableActions = Map.fromList
@@ -221,14 +250,14 @@ template OrderAllocationRequest with
       allocationRequest_rejectExtraObservers = \_ -> []
       allocationRequest_withdrawExtraObservers = \_ -> []
 
-      allocationRequest_acceptImpl = \self _arg -> do
-        archive self
+      allocationRequest_acceptImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors [[trader]]
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
 
-      allocationRequest_rejectImpl = \self _arg -> do
-        archive self
+      allocationRequest_rejectImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors [[trader]]
         pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
 
-      allocationRequest_withdrawImpl = \self _arg -> do
-        archive self
+      allocationRequest_withdrawImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors [[operator]]
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata

@@ -75,8 +75,8 @@ data EnrichedFactoryChoice t ch = EnrichedFactoryChoice with
   disclosures : Disclosures'
 
 
--- | A set of disclosures. Used to work around the fact that duplicate disclosures for the
--- same contract are not allowed.
+-- | A disclosure set keyed by contract id, which removes duplicates before
+-- submission because duplicate disclosures for one contract are invalid.
 data Disclosures' = Disclosures' with
     disclosures : Map.Map Api.Token.MetadataV1.AnyContractId Disclosure
 

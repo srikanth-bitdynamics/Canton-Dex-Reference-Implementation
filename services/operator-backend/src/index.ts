@@ -9,7 +9,7 @@
 //     across the modules.
 //   - The set is exactly:
 //       Rfq_Accept
-//       Order_Fund, Order_Adjust, Order_Cancel
+//       Order_Fund, Order_Cancel
 //       OrderFundingRequest_Bind
 //       PoolRules_Swap
 //       PoolLiquidityRules_RequestAddLiquidity, PoolLiquidityRules_SettleAddLiquidity
@@ -74,7 +74,7 @@ export class OperatorBackend {
       cfg.registry,
       cfg.operatorParty,
     );
-    this.admin = new AdminService(cfg.ledger, cfg.registry, cfg.operatorParty);
+    this.admin = new AdminService(cfg.ledger, cfg.operatorParty);
     this.pricing = new PriceService([
       new PoolPriceSource(() => this.pool.listActive()),
       new StaticPriceSource(process.env.PRICES),

@@ -133,22 +133,8 @@ export interface PolicyReceipt {
 
 export interface TransactionEvent {
   id: string;
-  type:
-    | 'Swap'
-    | 'OrderPlace'
-    | 'OrderFill'
-    | 'AddLiquidity'
-    | 'RemoveLiquidity'
-    | 'Trade'
-    | 'Rfq';
+  type: 'Swap';
   timestamp: string;
   details: string;
-  status: 'Pending' | 'Settled' | 'Failed' | 'Cancelled';
-  amounts: { asset: string; amount: number }[];
-  // Optional policy receipt context surfaced from RFQ-derived trades.
-  tradeCid?: string;
-  policyCid?: string;
-  policyVer?: string;
-  rank?: number;
-  considered?: number;
+  status: 'Settled';
 }

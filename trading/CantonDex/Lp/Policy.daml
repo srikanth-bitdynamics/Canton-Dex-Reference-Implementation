@@ -2,6 +2,8 @@
 -- instrument identity and its circulating supply; it knows nothing about
 -- pools (no base/quote/pool references). The liquidity venue drives mint/burn
 -- through the record choices below.
+--
+-- Design guide: `docs/concepts/design-tour.md#liquidity-and-pool-custody`.
 module CantonDex.Lp.Policy where
 
 import Splice.Api.Token.HoldingV2 qualified as V2

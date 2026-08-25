@@ -43,6 +43,7 @@ import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
 import { LedgerError } from "../ledger/index.js";
+import { mergeDisclosures } from "../ledger/disclosure.js";
 import * as dec from "../pool/decimal.js";
 import { DealersService } from "../dealers/index.js";
 import { checkAdminAuth, checkOperatorAuth, bearerMatches } from "./auth.js";
@@ -151,7 +152,7 @@ export interface HttpServerConfig {
   /** Allowlist of actAs parties the wallet relay may forward for. */
   walletRelayParties?: string[];
   /**
-   * HS256 secret for per-caller party binding (finding B-2). When set, write
+   * HS256 secret for per-caller party binding. When set, write
    * routes that act on behalf of a trader require an X-Caller-Token JWT whose
    * `sub` is the caller's party, and reject any request whose subject party is
    * not the caller's own. Unset = binding disabled (single trusted backend).
@@ -280,7 +281,7 @@ export function startHttpServer(
         return;
       }
       if (e instanceof RfqAuthError) {
-        // Per-caller binding mismatch on a fetch-bound RFQ route (B-2).
+        // Per-caller binding mismatch on a fetch-bound RFQ route.
         reqLog.warn("request rejected", { status: 403, code: "forbidden", error: e.message });
         respondJson(res, 403, { error: e.message, code: "forbidden", requestId });
         return;
@@ -344,7 +345,7 @@ async function routeRequest(
   const adminToken = cfg.adminToken;
   const ledgerUrl = cfg.ledgerUrl;
   const ledgerToken = cfg.ledgerToken;
-  // Per-caller party binding config (finding B-2): secret + optional audience.
+  // Per-caller party binding config: secret + optional audience.
   const callerAuth: CallerAuthConfig = {
     callerJwtSecret: cfg.callerJwtSecret,
     callerJwtAudience: cfg.callerJwtAudience,
@@ -402,10 +403,10 @@ async function routeRequest(
         context: choiceContext.context,
         meta: { values: {} },
       },
-      allocationFactoryDisclosure: [
-        ...factories.disclosure,
-        ...choiceContext.disclosure,
-      ],
+      allocationFactoryDisclosure: mergeDisclosures(
+        factories.disclosure,
+        choiceContext.disclosure,
+      ),
     });
     return;
   }
@@ -452,40 +453,22 @@ async function routeRequest(
     return;
   }
 
-  if (method === "GET" && path === "/v1/credentials") {
-    const holder = url.searchParams.get("holder");
-    if (!holder) {
-      respondJson(res, 400, { error: "missing ?holder=" });
-      return;
-    }
-    const creds = await backend.ledger.query<{ holder: string }>({
-      templateId: "CantonDex.Instrument.Credentials:Credential",
-      observingParty: backend.operatorParty,
-    });
-    respondJson(res, 200, creds.filter((c) => c.holder === holder));
-    return;
-  }
-
   if (method === "GET" && path === "/v1/instruments") {
-    // Instrument metadata. The reference registry carries decimals on
-    // Registry.V2 `InstrumentConfig` and isin/cusip/description on
-    // `InstrumentConfiguration`; query both and merge by instrumentId, then
-    // fall back to the instruments referenced by active pools so the endpoint
+    // Instrument metadata comes from Registry.V2 `InstrumentConfig`, with a
+    // fallback to instruments referenced by active pools so the endpoint
     // is populated even before any config is registered (e.g. the demo).
     // `symbol` is the instrument id. Optional `?ids=BTC,USDC` filters.
     const idsParam = url.searchParams.get("ids");
     const ids = idsParam
       ? idsParam.split(",").map((s) => s.trim()).filter(Boolean)
       : null;
-    // Both config templates are `signatory admin` with no observers, so the
-    // operator cannot see either. Querying as the operator returned nothing
-    // and every field fell back to null. Read as the parties that sign them,
-    // and merge -- the lpRegistrar signs the LP-token configs.
+    // InstrumentConfig is `signatory admin` with no observers. Read as the
+    // configured admins; the lpRegistrar signs LP-token configs.
     //
     // This only reaches instruments issued by a registry this deployment
     // hosts. Metadata for a foreign registry's instrument comes from that
-    // registry's off-ledger metadata-v1 API, which registry-client does not
-    // implement yet; those instruments still report null here.
+    // registry's off-ledger metadata-v1 API, which this registry-client does
+    // not implement; those instruments still report null here.
     const q = async <T>(templateId: string): Promise<T[]> => {
       const parties = [
         cfg.context.admin,
@@ -504,15 +487,14 @@ async function routeRequest(
       }
       return out;
     };
-    const cfgs = await q<{ instrumentId: string; decimals?: number | string }>(
-      "CantonDex.Registry.V2:InstrumentConfig",
-    );
-    const confs = await q<{
+    const cfgs = await q<{
       instrumentId: string;
+      decimals?: number | string;
       isin?: string | null;
       cusip?: string | null;
-      description?: string;
-    }>("CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration");
+    }>(
+      "CantonDex.Registry.V2:InstrumentConfig",
+    );
     type Instrument = {
       instrumentId: string;
       symbol: string;
@@ -536,12 +518,8 @@ async function routeRequest(
       // guard drops it silently.
       const d = typeof c.decimals === "string" ? Number(c.decimals) : c.decimals;
       if (typeof d === "number" && Number.isInteger(d)) e.decimals = d;
-    }
-    for (const c of confs) {
-      const e = put(c.instrumentId);
-      e.isin = c.isin ?? e.isin;
-      e.cusip = c.cusip ?? e.cusip;
-      e.description = c.description ?? e.description;
+      e.isin = c.isin ?? null;
+      e.cusip = c.cusip ?? null;
     }
     for (const p of await backend.pool.listActive()) {
       put(p.baseInstrumentId);
@@ -985,8 +963,8 @@ async function routeRequest(
       respondJson(res, 503, { error: "indexer disabled" });
       return;
     }
-    // Scoped like /v1/rfq and /v1/rfq/history: a row names both parties to a
-    // settled trade, so the unfiltered sweep is admin-only.
+    // A row names both parties to an accepted RFQ or settled order fill, so
+    // the unfiltered sweep is admin-only.
     const trader = url.searchParams.get("trader");
     if (!trader && !(adminToken && bearerMatches(req.headers["authorization"], adminToken))) {
       throw new HttpError(
@@ -1128,8 +1106,8 @@ async function routeRequest(
       respondJson(res, 503, { error: "indexer disabled" });
       return;
     }
-    // Scoped like /v1/rfq: a settled row names the trader, the pair, the
-    // winning dealer and that dealer's rank, so the unfiltered sweep is
+    // Scoped like /v1/rfq: a lifecycle row names the trader, pair, and (after
+    // acceptance) the winning dealer and rank, so the unfiltered sweep is
     // admin-only.
     const trader = url.searchParams.get("trader");
     if (!trader && !(adminToken && bearerMatches(req.headers["authorization"], adminToken))) {
@@ -1160,7 +1138,7 @@ async function routeRequest(
     const raw = await readValidatedJson<unknown>(req, "POST /v1/swaps/quote", callerAuth);
     // Pool reference: `poolCid` is canonical (the pool ContractId). `poolId` is
     // accepted for compatibility and resolves EITHER the ContractId OR the
-    // logical pool id (e.g. "BTC-USDC"), removing the old field-name trap.
+    // logical pool id (e.g. "BTC-USDC").
     const body = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
     const poolRef =
       typeof body.poolCid === "string" && body.poolCid
@@ -1224,7 +1202,7 @@ async function routeRequest(
   const rfqCancelMatch = path.match(/^\/v1\/rfq\/([^/]+)\/cancel$/);
   if (method === "POST" && rfqCancelMatch) {
     const rfqCid = decodeURIComponent(rfqCancelMatch[1]!);
-    // Per-caller binding (B-2, Low residual #1): cancel acts as the fetched
+    // Per-caller binding: cancel acts as the fetched
     // RFQ's trader, so the body-map binding can't cover it. Resolve the caller
     // (fail-closed when the secret is set) and let the service compare it to
     // the RFQ's trader — stops an operator-token holder griefing any RFQ.
@@ -1479,10 +1457,9 @@ async function routeRequest(
 // `routeKey` is "${method} ${path}". Throws ValidationError (→ 400) on a
 // malformed amount / party / cid / missing required field, and an HttpError
 // (401/403) when per-caller party binding is enabled and the caller is not the
-// route's subject party (finding B-2).
-// Load an owner's holdings across the V2 registry Holding and the legacy
-// instrument Holding templates, merged and filtered to that owner. Shared by
-// GET /v1/holdings and GET /v1/balances.
+// route's subject party.
+// Load an owner's V2 registry holdings. Shared by GET /v1/holdings and
+// GET /v1/balances.
 async function loadHoldings(
   backend: OperatorBackend,
   owner: string,
@@ -1500,10 +1477,7 @@ async function loadHoldings(
       return [];
     }
   };
-  const holdings = [
-    ...(await load("CantonDex.Registry.V2:Holding")),
-    ...(await load("CantonDex.Instrument.Holding:Holding")),
-  ];
+  const holdings = await load("CantonDex.Registry.V2:Holding");
   return holdings.filter((h) => h.owner === owner);
 }
 
@@ -1529,7 +1503,7 @@ async function readValidatedJson<T>(
 /**
  * Resolve the verified caller party for a route whose subject lives on-ledger
  * (RFQ accept/cancel act as the fetched RFQ's `trader`, which the body-map
- * binding cannot reach — finding B-2, Low residual #1). Returns undefined when
+ * binding cannot reach). Returns undefined when
  * binding is disabled (no secret), so the service skips the check. When binding
  * is ON it is fail-closed: a missing/invalid caller token throws 401, and the
  * returned party is handed to the service, which compares it to the fetched

@@ -138,8 +138,7 @@ describe("SdkProvider", () => {
     const provider = new SdkProvider("#canton-dex-trading");
     await provider.connect();
     expect(provider.getStatus().kind).toBe("connected");
-    // The SDK emits a StatusEvent with the flag nested under .connection — the
-    // bug read e.isConnected (always undefined) and never transitioned.
+    // The SDK exposes connection state under StatusEvent.connection.
     sdk.statusListeners[0]!({ connection: { isConnected: false } });
     expect(provider.getStatus().kind).toBe("disconnected");
   });
@@ -200,9 +199,8 @@ describe("SdkProvider", () => {
     await provider.connect();
     await provider.disconnect();
     await provider.connect();
-    // disconnect() now tears down + nulls the listeners, so the second connect
-    // re-subscribes. Before the fix, wireEvents() was skipped and the provider
-    // stayed deaf to status/account events against the new client.
+    // A disconnect removes the old listeners; reconnecting must subscribe the
+    // replacement client to status and account events.
     expect(sdk.statusListeners.length).toBe(2);
     expect(sdk.removeOnStatusChanged).toHaveBeenCalled();
   });

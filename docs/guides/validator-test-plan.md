@@ -9,13 +9,13 @@ to corroborate the manual check, not to replace the sign-off.
 
 ## Goals
 
-1. Confirm all wallet provider paths (Token Standard, WalletConnect,
-   Direct, Mock) connect against a real participant.
-2. Verify every trader-authority intent translates correctly into
-   on-ledger V2 Token Standard transactions.
-3. Confirm operator-driven flows (RFQ accept, PoolRules_Swap, order
-   binding/funding, remove-liquidity) settle through the
-   AllocationFactory + SettlementFactory.
+1. Confirm each wallet provider enabled for the deployment connects against a
+   real participant; development-only providers are checked separately.
+2. Verify each wallet intent translates correctly into on-ledger Token Standard
+   V2 transactions.
+3. Confirm operator-driven settlement flows use AllocationFactory +
+   SettlementFactory, and separately verify that hosted RFQ relay parties are
+   explicitly authorized.
 4. Validate indexer + history endpoints reflect on-ledger state.
 5. Stress-test idempotency and graceful shutdown.
 
@@ -44,9 +44,8 @@ bash scripts/e2e-smoke.sh              # boots the dev backend, curls every endp
 ```
 
 - [`run-local-daml-tests.sh`](../../scripts/run-local-daml-tests.sh) — builds
-  `canton-dex-trading` and runs the `trading-tests` and `stable-pool` suites.
-  Proves the DAR you are about to upload compiles and its conservation and
-  invariant tests hold.
+  `canton-dex-trading` and runs the `trading-tests` suite. Proves the DAR you
+  are about to upload compiles and its conservation and invariant tests hold.
 - [`e2e-smoke.sh`](../../scripts/e2e-smoke.sh) — starts the backend on an
   in-memory ledger and curls the read endpoints, a swap quote, the order book,
   the price feed, and the admin auth gate, printing `==> All smoke checks
@@ -215,15 +214,7 @@ wallet — run them to corroborate the manual checks below, each proving one sea
 - [ ] After expiry, `sweepExpired` cancels stale RFQs (verify via
       logs after manually setting an RFQ's expiry in the past)
 
-## Phase 6 — Credentials enforcement
-
-- [ ] Configure an instrument with `holderRequirements` (e.g., a
-      KYC credential)
-- [ ] Trader without the credential attempts to trade → backend rejects
-      OR CredentialStatus banner shows the missing claim
-- [ ] Issue the credential via the registry; trader retries → succeeds
-
-## Phase 7 — Resilience
+## Phase 6 — Resilience
 
 - [ ] Send SIGTERM to backend; logs show graceful shutdown
       (indexer stop → http close → db close)
@@ -233,14 +224,14 @@ wallet — run them to corroborate the manual checks below, each proving one sea
 - [ ] Submit malformed JSON to `/v1/swaps/quote` → 400 with `code: bad_request`
 - [ ] Submit oversized body (>1 MiB) → 413 with `code: payload_too_large`
 
-## Phase 8 — Observability
+## Phase 7 — Observability
 
 - [ ] Every request log line has `requestId`, `method`, `path`,
       `status`, `durationMs`
 - [ ] Every error log line goes to stderr (verify by redirecting)
 - [ ] `X-Request-Id` header echoed back when supplied; generated otherwise
 
-## Phase 9 — Frontend regression
+## Phase 8 — Frontend validation
 
 - [ ] Error boundary triggered by throwing in a child component
       surfaces the retry card without taking down the page shell
@@ -248,7 +239,7 @@ wallet — run them to corroborate the manual checks below, each proving one sea
 - [ ] Page refresh after disconnect → no auto-reconnect, clean
       "Connect Wallet" state
 
-## Phase 10 — Docker compose deployment
+## Phase 9 — Docker compose deployment
 
 - [ ] `docker-compose up` brings both services up
 - [ ] Frontend at port 80 proxies `/v1/*` to backend

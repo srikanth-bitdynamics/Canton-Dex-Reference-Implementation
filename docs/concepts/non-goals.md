@@ -18,9 +18,11 @@ and points at the guide or contract where the excluded work would live.
 | A generic settlement engine | The templates encode one DEX's rules — constant-product pricing, price-time order priority, RFQ ranking — not a parameterisable framework | A fork that reuses the allocate-then-`SettleBatch` pattern for its own flows |
 | Cross-registry pairs (two admins) | App-layer templates key each pair on a single `admin : Party`; the settlement spine already allows more | A scoped schema change — [registry integration](../guides/registry-integration.md#known-limitation-one-registry-admin-per-pair) |
 | A production matching engine | The batch matcher shows only the Canton-specific part: a fill re-checked and settled atomically on-ledger | A fork's off-ledger matcher (pro-rata, iceberg, continuous auction) |
+| Fair ordering and MEV resistance | The operator privately observes orders and chooses match timing and submission order | A production sequencing, auction, or independently attested matching design |
 | A rich instrument lifecycle | Token Standard V2 standardizes the holding, not lifecycle; the DEX needs only a holding | The registry that administers the `InstrumentId` — [add an instrument](../guides/add-lp-or-instrument.md) |
 | A privileged reference registry | `Registry.V2` is a convenience so the DEX runs standalone, not the mechanism value settles through | Any conforming TSv2 registry (Amulet, or another) |
-| Self-custody onboarding | The hosted relay is a testnet convenience while DA Utilities lacks TSv2 support | The user's own wallet (PartyLayer / dapp-sdk), once the validator supports V2 |
+| Self-custody onboarding | The hosted relay is a testnet convenience, not a production wallet integration | The user's own compatible wallet or a deployment-specific delegation/co-submission flow |
+| Trustless LP emergency redemption | Reserve slices are operator-authored and removal is co-controlled by the operator and LP registrar | A production pool-governance and emergency-exit design |
 | Operational hardening | HA, secrets management, and a rate-limited gateway are an operator's deployment decisions | Whoever runs an instance — [operator runbook](../guides/operator-runbook.md) |
 | Production off-ledger services | The on-ledger contracts are the specification; the backend and indexer are one implementation of the surface around them | The integrator's own service — [architecture](architecture.md#off-ledger-services-what-they-may-and-may-not-do) |
 
@@ -82,13 +84,29 @@ off-ledger matcher cannot settle a fill the traders never agreed to. Proven by
 and `testOrderMatchEnforcesLimitPrice` (`OrderMatchExecution_Execute` refuses a
 fill outside either order's limit price).
 
+## Fair ordering and private MEV
+
+The operator sees submitted orders and RFQs, chooses when to run matching, and
+chooses the order in which eligible settlements reach the ledger. The reference
+matcher applies deterministic best-price-then-time ordering to the snapshot it
+is given, but the ledger cannot prove that the snapshot contained every order or
+that its timestamps reflect a fair public arrival sequence.
+
+The on-ledger checks therefore prevent an invalid fill, not operator censorship,
+front-running, delayed inclusion, or private reordering among otherwise valid
+fills. This is an explicit trust boundary. Production designs can reduce it with
+commit-reveal intake, fixed-window batch auctions, independently witnessed
+sequencing, matcher attestations, threshold-controlled submission, or a public
+append-only order-intake log. Each changes the market and liveness model and is
+outside this settlement-pattern reference.
+
 ## A minimal instrument model
 
 The standard holding model is kept intentionally small. The reference issues
 exactly one lifecycle-bearing instrument — the LP token — as a token-standard
 instrument with its own registrar and DvP mint/burn
 (`trading/CantonDex/Lp/Instrument.daml`). Token Standard V2 standardizes the
-holding, not lifecycle: it does not mandate `InstrumentConfiguration` or a rich
+holding, not lifecycle: it does not mandate an instrument-configuration or rich
 lifecycle, and the reference does not assume one exists for every registry.
 Anything richer — a bond's maturity and coupon, a vested or dividend-paying token
 — is attached by the registry that administers the `InstrumentId`, not by DEX
@@ -106,8 +124,8 @@ does not assume its own registry is present, nor that every registry exposes the
 same conveniences. [architecture.md](architecture.md#what-settles-value-the-token-standard-v2-spine)
 and [registry-integration.md](../guides/registry-integration.md) set out exactly
 what a registry must provide. On the public testnet the pair's assets happen to be
-issued by this registry, but the flows are written to work against Amulet or any
-other conforming registry just as well.
+issued by this registry. Integrating another conforming registry also requires
+its factory discovery, choice context, disclosures, and metadata endpoint.
 
 ## The hosted testnet is a demo surface, not a wallet
 
@@ -118,22 +136,47 @@ self-custody: the walletless connect options are marked **DEV** and are never
 preselected in a testnet or production build
 ([using-the-dapp.md](../guides/using-the-dapp.md#connecting-a-wallet)). A real user
 brings their own wallet (PartyLayer or the dapp-sdk) and signs for themselves; the
-hosted relay exists only so the milestone flows can be exercised from a browser
-without one. The whole `/v1/testnet/*` relay surface and the faucet's per-IP party
-quota, and why each was added, are documented in
+hosted relay exists only so the reference flows can be exercised from a browser
+without one. The `/v1/testnet/*` relay surface and the faucet's per-IP party
+quota are documented in
 [ecosystem-feedback.md](../reference/ecosystem-feedback.md).
 
 **Current deployment status.** On the public testnet at
 `testnet-dex.bitdynamics.cc`, every tester is onboarded as a hosted party on the
 operator's (BitDynamics) validator, and every traded asset (`dBTC`, `dUSD`, and the
 pool's LP token) is issued locally by the deployment's own Token Standard V2
-registry. This is a bridge: external participants cannot yet bring their own Token
-Standard V2 party and assets because the general-purpose validator and wallet
-tooling (DA Utilities) does not yet support Token Standard V2. When that support
-ships, users connect their own participant's party and trade their own V2 assets
-through PartyLayer or the dapp-sdk, and the hosted onboarding is retired. The code
-path for that is already the intended one; the hosted relay is the only piece
-specific to this interim.
+registry. This deployment choice does not change the application boundary:
+self-custodial users connect through a compatible wallet and registry, while a
+hosted party authorizes only the allowlisted demo operations exposed by the
+relay. Registry choice context and disclosures still determine whether a given
+external instrument can participate in a settlement.
+
+## LP redemption has an explicit liveness dependency
+
+LP holders own the LP-token claim, not the reserve allocations referenced by
+`PoolSlice`. A routine removal exercises
+`PoolLiquidityRules_SettleRemoveLiquidity`, which requires both the pool
+operator and LP registrar. If either party becomes unavailable, this reference
+has no unilateral holder choice that redeems LP tokens against reserve slices.
+The reserves remain represented on-ledger, but the holder cannot complete the
+redemption workflow alone.
+
+The reserve allocation shape makes the consequence concrete:
+`committed = true` and `settlementDeadline = None`, with the operator as both
+authorizer and settlement executor. Under the V2 withdrawal rule, even the
+authorizer cannot use `Allocation_Withdraw`; the operator can still cancel as
+executor. An LP holder can do neither. The missing deadline is therefore not a
+hidden holder lock timeout: it is the reference's deliberate long-lived
+operator-custody model.
+
+That is a deliberate single-operator reference boundary, not a claim of
+trustless custody. A production design must choose its own liveness mechanism,
+such as governed or threshold-controlled execution plus a separately audited
+emergency redemption path. Merely adding a deadline is insufficient: it would
+give the operator authorizer a future withdrawal path and require a safe slice
+renewal protocol, but it would not give LP holders redemption authority. These
+changes alter pool authority and failure semantics and are not hidden inside the
+reference settlement flow.
 
 ## Operational hardening is out of scope
 

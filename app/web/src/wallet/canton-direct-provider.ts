@@ -127,8 +127,8 @@ export class CantonDirectProvider implements WalletProvider {
       throw new Error("canton-direct: not connected");
     }
     if (intent.kind === "add-liquidity" || intent.kind === "remove-liquidity") {
-      // Operator-relay path cannot surface the created allocation cids the
-      // DvP /settle needs; LP DvP requires a CIP-0103 wallet (SDK provider).
+      // This provider cannot surface the created allocation cids required by
+      // the LP settle endpoint.
       throw new LiquidityAllocationUnsupportedError(this.id);
     }
     // The Direct provider forwards the intent verbatim to the operator

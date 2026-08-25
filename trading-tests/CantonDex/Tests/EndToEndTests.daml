@@ -1,24 +1,19 @@
--- What this file proves, in plain terms:
+-- | Workflow-integration tests against MockRegistry.
 --
--- These scripts drive the whole exchange front-to-back against a stand-in
--- ("mock") token registry, so a reader can watch each concept actually
--- happen: funding a liquidity pool, funding and matching orders, accepting
--- dealer quotes, and settling trades. Two properties matter throughout --
--- money is never created or destroyed as trades settle, and every step is
--- taken by the party actually allowed to take it. If these pass, the pieces
--- fit together and those two guarantees hold.
+-- This suite proves DEX contract choreography: which party may take each step,
+-- which contracts are consumed or created, and how pool, order, RFQ, and OTC
+-- state advances. MockRegistry does not model holdings, so this file does NOT
+-- prove value conservation. Tests backed by real holdings live in
+-- PoolLiquidityRulesTests, RegistryConservationTests, RfqSettlementTests, and
+-- RealRegistryDvpTests.
 --
--- | End-to-end Daml Script tests of the full DEX workflows against the
--- MockRegistry:
---
---   1. Pool funding keeps reserves backed; LP supply records via DvP add.
---   2. Order funding: trader-signed -> operator-bound -> trader-accepted.
---   3. TradeAllocationRequest accept returns (no abort).
---   4. RFQ accept produces a MatchedTrade with a derived PolicyReceipt.
---   5. PoolRules_Swap end-to-end through the mock registry.
---
--- The mock doesn't model holdings (tests pass empty inputHoldingCids), and
--- joint-authority flows (e.g. PoolRules_Swap) use a multi-party submit.
+-- Suggested reading order:
+--   1. testPoolFullLifecycle
+--   2. testOrderFundingFlow
+--   3. testRfqAcceptProducesMatchedTradeWithReceipt
+--   4. testPoolSwapViaRequestSwap
+--   5. testMatchedTradeFullSettle
+-- Design context: `docs/concepts/design-tour.md`.
 module CantonDex.Tests.EndToEndTests where
 
 import DA.Assert
@@ -45,7 +40,6 @@ import CantonDex.Dex.OrderFundingRequest qualified as OFR
 import CantonDex.Dex.OrderMatchExecution qualified as OME
 import CantonDex.Dex.Pool qualified as Pool
 import CantonDex.Dex.PoolState qualified as PState
-import CantonDex.Dex.PoolSlice qualified as PSlice
 import CantonDex.Dex.PoolRules qualified as PRules
 import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
@@ -58,16 +52,15 @@ import CantonDex.Testing.MockRegistry qualified as Mock
 
 -- Create the split pool contracts the operator uses for swap + DvP
 -- liquidity, plus the LP policy.
-setupPool
-  : Party -> Party -> Party
-  -> Script
-       ( Pool.PoolId
-       , ContractId Pool.Pool
-       , ContractId PState.PoolState
-       , ContractId PRules.PoolRules
-       , ContractId Dvp.PoolLiquidityRules
-       , ContractId LP.LPTokenPolicy
-       )
+data PoolSetup = PoolSetup with
+    setupPoolId : Pool.PoolId
+    setupPoolCid : ContractId Pool.Pool
+    setupStateCid : ContractId PState.PoolState
+    setupRulesCid : ContractId PRules.PoolRules
+    setupLiquidityRulesCid : ContractId Dvp.PoolLiquidityRules
+    setupPolicyCid : ContractId LP.LPTokenPolicy
+
+setupPool : Party -> Party -> Party -> Script PoolSetup
 setupPool operator lpRegistrar admin = do
   -- One BTC/USDC pool. The pool mints its own "BTC-USDC-LP" share token to
   -- liquidity providers, issued by the LP registrar. Fee is 0.30% (30 bps).
@@ -106,7 +99,13 @@ setupPool operator lpRegistrar admin = do
     lpInstrumentId
     totalSupply = 0.0
     active = True
-  pure (poolId, poolCid, stateCid, rulesCid, dvpCid, policyCid)
+  pure PoolSetup with
+    setupPoolId = poolId
+    setupPoolCid = poolCid
+    setupStateCid = stateCid
+    setupRulesCid = rulesCid
+    setupLiquidityRulesCid = dvpCid
+    setupPolicyCid = policyCid
 
 -- Stand up the stand-in token registry: an allocation factory (which turns a
 -- request to set aside funds into a locked allocation) and a settlement
@@ -193,13 +192,12 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
       poolAdminExtraArgs = extraArgs
       lpRegistrarExtraArgs = extraArgs
 
--- 1. DvP add on an Unfunded pool keeps reserves backed ------------------
+-- DvP add activates an unfunded pool ------------------------------------
 --
--- Asserts: depositing 10 BTC and 200,000 USDC into an empty pool turns it
--- Active, records exactly those reserves, and mints LP shares equal to
--- sqrt(base*quote). Why it matters: the reported balances always match what
--- was actually put in -- the pool is fully backed.
+-- Depositing 10 BTC and 200,000 USDC activates the pool, records those exact
+-- reserves, and mints sqrt(base*quote) LP shares.
 
+-- | Proves pool creation, first funding, pause, and resume state transitions.
 testPoolFullLifecycle : Script ()
 testPoolFullLifecycle = do
   -- Roles: the venue operator, the LP-share registrar, the token admin, and
@@ -213,7 +211,12 @@ testPoolFullLifecycle = do
   -- Stand up the mock registry and an empty BTC/USDC pool, then have Alice
   -- deposit through the honest DvP path.
   (factoryCid, _settleCid) <- setupRegistries admin [operator, lpRegistrar, alice]
-  (poolId, poolCid, stateCid, _rulesCid, dvpCid, policyCid) <- setupPool operator lpRegistrar admin
+  setup <- setupPool operator lpRegistrar admin
+  let poolId = setup.setupPoolId
+      poolCid = setup.setupPoolCid
+      stateCid = setup.setupStateCid
+      dvpCid = setup.setupLiquidityRulesCid
+      policyCid = setup.setupPolicyCid
   initRes <- dvpFundPool
     operator
     lpRegistrar
@@ -244,25 +247,24 @@ testPoolFullLifecycle = do
 
   pure ()
 
--- 2. TradeAllocationRequest accept now returns (no abort) ---------------
+-- Accepting a trade allocation request consumes it ----------------------
 --
--- Asserts: when the trader accepts a request to set aside funds for a trade,
--- the request completes cleanly and archives itself. Why it matters: this
--- accept step used to abort ("registry-specific wiring"); this pins that it
--- now succeeds so the settlement flow can proceed.
+-- A TradeAllocationRequest implements the standard V2 AllocationRequest
+-- interface. Accept is the holder's acknowledgement of the allocation
+-- specification; it consumes the request. The wallet composes Accept with the
+-- corresponding AllocationFactory_Allocate command in the real trade flow.
 
-testTradeAllocationRequestAccept : Script ()
-testTradeAllocationRequestAccept = do
+-- | Proves accepting a trade allocation request consumes that one-shot request.
+testTradeAllocationRequestAcceptArchivesRequest : Script ()
+testTradeAllocationRequestAcceptArchivesRequest = do
   operator <- allocateParty "operator"
   admin <- allocateParty "admin"
   alice <- allocateParty "alice"
   bob <- allocateParty "bob"
   now <- getTime
 
-  (factoryCid, _) <- setupRegistries admin [operator, alice, bob]
-
-  -- Build the request: one leg moving 10 BTC from Alice to Bob, with the
-  -- operator named as the executor allowed to settle it.
+  -- Arrange: one requested leg moves 10 BTC from Alice to Bob, with the
+  -- operator as settlement executor.
   let aliceAccount = Utils.basicAccount alice
       bobAccount = Utils.basicAccount bob
       leg = V2.TransferLeg with
@@ -286,29 +288,27 @@ testTradeAllocationRequestAccept = do
     transferLegs = [leg]
     requestedAt = now
 
-  -- Alice exercises Accept via the V2 interface choice. This used to
-  -- abort with "registry-specific wiring". Now it returns clean.
+  -- Act: Alice accepts through the standard interface.
   let reqIfaceCid : ContractId V2.AllocationRequest = toInterfaceContractId reqCid
   acceptRes <- submit alice $ exerciseCmd reqIfaceCid V2.AllocationRequest_Accept with
     actors = [alice]
     extraArgs = emptyExtraArgs
-  -- Result is opaque (just meta); the success is "we got here without aborting"
+  -- Assert: Accept returns the request metadata and consumes the request.
   acceptRes.meta === emptyMetadata
-
-  -- Request is gone (acceptImpl archived self).
   None <- queryContractId alice reqCid
 
   pure ()
 
--- 3. Order funding flow with correct trader authority -------------------
+-- The trader funds a pending order --------------------------------------
 --
--- Asserts the full path from "I want to place an order" to a funded order:
--- the trader requests, the operator binds it into a Pending order plus a
--- funding request, the trader (as her own wallet) locks the cash, and the
--- operator attaches that money and consumes the request. Ends Funded with the
--- funding request gone. Why it matters: the trader's own authority pays for
--- and backs the order, and no stray funding request is left dangling.
+-- Contract transitions under test:
+--   OrderFundingRequest --Bind--> Pending Order + OrderAllocationRequest
+--   trader --Allocate--> committed V2.Allocation
+--   Pending Order --Fund--> Funded Order (request consumed)
+-- The trader, not the operator, locks the funds. The operator can only attach
+-- that allocation to the pending order.
 
+-- | Proves trader funding binds the exact requested allocation to an order.
 testOrderFundingFlow : Script ()
 testOrderFundingFlow = do
   operator <- allocateParty "operator"
@@ -318,7 +318,7 @@ testOrderFundingFlow = do
 
   (factoryCid, _) <- setupRegistries admin [operator, alice]
 
-  -- Alice creates an OrderFundingRequest (she pays the traffic).
+  -- Arrange: Alice asks to place a bid for 0.5 BTC at 60,000 USDC.
   reqCid <- submit alice $ createCmd OFR.OrderFundingRequest with
     operator
     trader = alice
@@ -330,56 +330,66 @@ testOrderFundingFlow = do
     quantity = 0.5
     expiry = Some (addRelTime now (hours 1))
 
-  -- Operator binds: produces both Order (Pending) and OrderAllocationRequest.
+  -- Act 1: the operator turns the intent into a pending market object and a
+  -- standard allocation request describing the required funding.
   bindRes <- submit operator $ exerciseCmd reqCid OFR.OrderFundingRequest_Bind with
     settlementRef = "ord-test-1"
 
-  -- Verify both contracts exist.
+  -- Assert the intermediate state before any funds are locked.
   Some order <- queryContractId operator bindRes.orderCid
   order.status === Order.OS_Pending
-  Some _allocReq <- queryContractId operator bindRes.allocationRequestCid
+  Some allocReq <- queryContractId operator bindRes.allocationRequestCid
 
-  -- New single-command flow: Alice does NOT accept the OrderAllocationRequest
-  -- (CIP-0103 prepareExecute allows only one command, so the wallet authors the
-  -- funding allocation directly under HER authority via the factory). The
-  -- request is left live and is consumed by the operator's Order_Fund below.
+  -- Act 2: Alice's wallet authors the committed funding allocation under her
+  -- own authority. The request remains live as the correlation record until
+  -- the operator binds the resulting allocation.
   let aliceAccount = Utils.basicAccount alice
-      orderRef = order.settlementRef
-      lockedFunding = TextMap.fromList [("USDC", 0.5 * 60000.0)]
-      settlement = V2.SettlementInfo with
-        executors = [operator]
-        id = orderRef.id
-        cid = orderRef.cid
-        meta = emptyMetadata
-      allocateArg = WC.mkPrefundedAllocationFactoryAllocate
-        admin aliceAccount settlement order.expiry lockedFunding now [] [alice] emptyExtraArgs
+      settlement = fromSome allocReq.allocationSettlement
+      specification = Order.orderFundingSpecification
+        admin alice allocReq.lockInstrumentId allocReq.lockAmount
+        allocReq.expiry
+      allocateArg = V2.AllocationFactory_Allocate with
+        settlement
+        allocation = specification
+        requestedAt = now
+        inputHoldingCids = []
+        actors = [alice]
+        extraArgs = emptyExtraArgs
 
   instrResult <- submit alice $ exerciseCmd factoryCid allocateArg
   case instrResult.output of
     V2.AllocationInstructionResult_Completed allocCid -> do
-      -- Operator binds the trader-funded allocation onto the order and consumes
-      -- the OrderAllocationRequest so it cannot linger after funding.
+      -- Funding without the request correlation is rejected; otherwise the
+      -- request would remain live after the order becomes funded.
+      submitMustFail operator $ exerciseCmd bindRes.orderCid Order.Order_Fund with
+        allocationCid = allocCid
+        allocationRequestCid = None
+      -- Act 3: the operator binds Alice's allocation. Order_Fund consumes both
+      -- the pending order and its allocation request, then creates the funded
+      -- successor.
       fundRes <- submit operator $ exerciseCmd bindRes.orderCid Order.Order_Fund with
         allocationCid = allocCid
         allocationRequestCid = Some bindRes.allocationRequestCid
       Some funded <- queryContractId operator fundRes.orderCid
       funded.status === Order.OS_Funded
-      assertMsg "allocationCid populated" (isSome funded.allocationCid)
+      funded.allocationCid === Some allocCid
+      pendingGone <- queryContractId operator bindRes.orderCid
+      assertMsg "pending Order consumed by Order_Fund" (isNone pendingGone)
       reqGone <- queryContractId operator bindRes.allocationRequestCid
       assertMsg "OrderAllocationRequest consumed by Order_Fund" (isNone reqGone)
     _ -> abort "Mock factory should complete immediately"
 
   pure ()
 
--- 4. RFQ accept produces a MatchedTrade with a real PolicyReceipt -------
+-- RFQ acceptance records the ranking decision ---------------------------
 --
 -- RFQ = request-for-quote: the trader asks dealers to bid, then accepts one.
 -- Asserts that when three dealers quote and the trader accepts, the winner is
--- picked by the stated policy (trusted dealers first, then best price, then
--- earliest), a trade is created, and it carries a signed receipt proving that
--- ranking. Why it matters: the choice of counterparty is auditable, not
--- arbitrary -- here the cheapest overall quote loses to a trusted one.
+-- ranked by the stated policy (trusted tier, later expiry, earlier posting,
+-- dealer id), a trade is created, and it carries a signed receipt proving that
+-- ranking. Price is displayed in the receipt but is not a policy sort key.
 
+-- | Proves RFQ acceptance selects a quote and records its policy receipt.
 testRfqAcceptProducesMatchedTradeWithReceipt : Script ()
 testRfqAcceptProducesMatchedTradeWithReceipt = do
   operator <- allocateParty "operator"
@@ -405,9 +415,8 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
     whitelist = [orca, jump, galaxy]
     createdAt = now
 
-  -- Three dealers post quotes. Galaxy is the cheapest but only whitelisted;
-  -- Jump and Orca are trusted, and Jump is the cheaper of the two -- so the
-  -- policy should rank Jump first.
+  -- Three dealers post quotes. Trusted dealers rank above whitelisted dealers;
+  -- Jump and Orca have equal expiry, so Jump's earlier posting ranks first.
   quoteOrca <- submit orca $ createCmd Rfq.RfqQuote with
     dealer = orca
     trader = alice
@@ -440,9 +449,8 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
 
   -- Alice + operator jointly exercise Rfq_Accept (operator's authority
   -- is needed because the resulting MatchedTrade is operator-signed).
-  -- Accept Jump's quote: it's the cheapest TRUSTED, so under the
-  -- documented policy (trusted-first, then price, then earliest) Jump
-  -- ranks #1 even though Galaxy has a marginally lower price.
+  -- Accept Jump's quote. It ranks first by tier and posting time even though
+  -- Galaxy has a marginally lower price.
   acceptRes <- submit (actAs [alice, operator]) $
     exerciseCmd rfqCid Rfq.Rfq_Accept with
       acceptedQuoteCid = quoteJump
@@ -466,14 +474,10 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
 
   pure ()
 
--- 5. Rfq_Expire: operator-authority cleanup of an expired RFQ. Rfq_Cancel is
--- trader-controlled, so this is the only path that works once external
--- wallets hold trader authority.
+-- The operator expires stale RFQs ---------------------------------------
 --
--- Asserts the operator can sweep away an expired RFQ, but only after its
--- deadline, and that the trader cannot use this path at all. Why it matters:
--- stale quote requests get cleaned up by the venue without letting either
--- side expire something early.
+-- Only the operator can sweep an RFQ, and only after its deadline.
+-- | Proves RFQ expiry cleanup is operator-only and deadline-gated.
 testRfqExpireOperatorCleanup : Script ()
 testRfqExpireOperatorCleanup = do
   operator <- allocateParty "operator-exp"
@@ -509,14 +513,11 @@ testRfqExpireOperatorCleanup = do
   remaining <- queryContractId operator rfqCid
   remaining === None
 
--- 6. PoolRules_Swap end-to-end through the mock registry ------------------
+-- PoolRules_Swap updates pool inventory ---------------------------------
 --
--- Trader pre-funds a swap by creating their own prefunded allocation
--- via the mock factory; operator drives PoolRules_Swap which adjusts both
+-- Trader authorizes the exact two-sided allocation via the mock factory;
+-- operator drives PoolRules_Swap which adjusts both
 -- pool allocations + the trader allocation and batch-settles them.
---
--- Why it matters: a trade against the pool moves reserves the right way and
--- only touches the slice it consumes, leaving the rest of the pool intact.
 --
 -- Verifies:
 --   - the swap completes without error
@@ -524,6 +525,7 @@ testRfqExpireOperatorCleanup = do
 --   - the head pool allocation is replaced by its next-iteration CID
 --   - other pool allocations on the same side stay untouched
 
+-- | Proves a pool swap settles and rewrites only the consumed reserve slices.
 testPoolSwapEndToEnd : Script ()
 testPoolSwapEndToEnd = do
   operator <- allocateParty "operator-swap"
@@ -536,7 +538,13 @@ testPoolSwapEndToEnd = do
   (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
 
   -- Fund the pool through the live DvP add path.
-  (poolId, poolCid, stateCid, rulesCid, dvpCid, policyCid) <- setupPool operator lpRegistrar admin
+  setup <- setupPool operator lpRegistrar admin
+  let poolId = setup.setupPoolId
+      poolCid = setup.setupPoolCid
+      stateCid = setup.setupStateCid
+      rulesCid = setup.setupRulesCid
+      dvpCid = setup.setupLiquidityRulesCid
+      policyCid = setup.setupPolicyCid
   initRes <- dvpFundPool
     operator
     lpRegistrar
@@ -553,18 +561,21 @@ testPoolSwapEndToEnd = do
     now
     emptyExtraArgs
 
-  -- Bob creates a prefunded swap allocation (100 USDC -> BTC).
-  -- Settlement reference matches the pool's so the legs can be settled.
   let bobAccount = Utils.basicAccount bob
-      swapSettlement = V2.SettlementInfo with
-        executors = [operator]
-        id = "DexPool"
-        cid = Some (coerceContractId poolCid)
-        meta = emptyMetadata
-      -- Prefunded: empty legs, nextIterationFunding holds the swap input
-      bobFunding = TextMap.fromList [("USDC", 100.0)]
-      bobAllocateArg = WC.mkPrefundedAllocationFactoryAllocate
-        admin bobAccount swapSettlement None bobFunding now [] [bob] emptyExtraArgs
+      quoteBinding = Some (PRules.SwapQuoteBinding with
+        expectedPoolId = poolId
+        poolStateCid = initRes.poolStateCid
+        inputSliceCid = initRes.quoteSliceCid
+        outputSliceCids = [initRes.baseSliceCid]
+        minOutputAmount = 0.0)
+  reqRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+    poolCid
+    swapper = bob
+    inputInstrumentId = "USDC"
+    inputAmount = 100.0
+    quoteBinding
+  let bobAllocateArg = WC.mkAllocationFactoryAllocate
+        reqRes.settlement reqRes.allocationSpec now [] [bob] emptyExtraArgs
 
   bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
   bobAllocationCid <- case bobInstr.output of
@@ -586,6 +597,7 @@ testPoolSwapEndToEnd = do
     outputSliceCids = [initRes.baseSliceCid]
     factoryCid = settleCid
     extraArgs = emptyExtraArgs
+    quoteBinding = reqRes.quoteBinding
 
   -- Verify reserves moved.
   Some state <- queryContractId operator swapRes.poolStateCid
@@ -598,14 +610,12 @@ testPoolSwapEndToEnd = do
   assertMsg "swap produced output" (swapRes.amountOut > 0.0)
   pure ()
 
--- 6b. Pool swap via PoolRules_RequestSwap (the on-screen DvP path) --------
+-- PoolRules_RequestSwap produces a settleable allocation spec ------------
 --
--- Same as testPoolSwapEndToEnd, but the swapper's allocation spec is built
--- by the operator's PoolRules_RequestSwap choice (the dApp
--- POST /v1/pools/swap/request path) rather than hand-constructed. Proves
--- PoolRules_RequestSwap emits a spec that PoolRules_Swap settles end-to-end
--- (reserves move).
+-- The operator builds the allocation specification, the trader authors that
+-- exact allocation, and PoolRules_Swap settles it against the reserves.
 
+-- | Proves the trader-signed request specification settles without mutation.
 testPoolSwapViaRequestSwap : Script ()
 testPoolSwapViaRequestSwap = do
   operator <- allocateParty "operator-rswap"
@@ -617,7 +627,13 @@ testPoolSwapViaRequestSwap = do
 
   (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
 
-  (poolId, poolCid, stateCid, rulesCid, dvpCid, policyCid) <- setupPool operator lpRegistrar admin
+  setup <- setupPool operator lpRegistrar admin
+  let poolId = setup.setupPoolId
+      poolCid = setup.setupPoolCid
+      stateCid = setup.setupStateCid
+      rulesCid = setup.setupRulesCid
+      dvpCid = setup.setupLiquidityRulesCid
+      policyCid = setup.setupPolicyCid
   initRes <- dvpFundPool
     operator
     lpRegistrar
@@ -634,13 +650,19 @@ testPoolSwapViaRequestSwap = do
     now
     emptyExtraArgs
 
-  -- Operator builds the swapper's prefunded allocation spec via the new
-  -- choice (mirrors the dApp's POST /v1/pools/swap/request).
+  -- Operator builds the swapper's allocation specification, mirroring the
+  -- dApp's POST /v1/pools/swap/request call.
   reqRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid
     swapper = bob
     inputInstrumentId = "USDC"
     inputAmount = 100.0
+    quoteBinding = Some (PRules.SwapQuoteBinding with
+      expectedPoolId = poolId
+      poolStateCid = initRes.poolStateCid
+      inputSliceCid = initRes.quoteSliceCid
+      outputSliceCids = [initRes.baseSliceCid]
+      minOutputAmount = 0.0)
 
   -- Bob (the wallet) authors that exact spec via the allocation factory.
   let bobAccount = Utils.basicAccount bob
@@ -665,6 +687,7 @@ testPoolSwapViaRequestSwap = do
     outputSliceCids = [initRes.baseSliceCid]
     factoryCid = settleCid
     extraArgs = emptyExtraArgs
+    quoteBinding = reqRes.quoteBinding
 
   Some state <- queryContractId operator swapRes.poolStateCid
   assertMsg "base reserve decreased" (state.reserves.baseAmount < 10.0)
@@ -672,14 +695,13 @@ testPoolSwapViaRequestSwap = do
   assertMsg "swap via RequestSwap produced output" (swapRes.amountOut > 0.0)
   pure ()
 
--- 7. Full MatchedTrade lifecycle: request → accept → settle -------------
+-- A bilateral MatchedTrade settles atomically ---------------------------
 --
 -- Verifies the OTC (over-the-counter, dealt directly not via the order book)
 -- settlement path end-to-end: the operator requests allocations, each side
--- accepts and locks its own funds, and the operator settles both in one
--- batch. Why it matters: a bilateral trade settles atomically with each
--- party's own authority behind its leg.
+-- accepts and locks its own funds, and the operator settles both in one batch.
 
+-- | Proves both matched-trade allocations settle atomically into final holdings.
 testMatchedTradeFullSettle : Script ()
 testMatchedTradeFullSettle = do
   operator <- allocateParty "venue"
@@ -764,6 +786,13 @@ testMatchedTradeFullSettle = do
         (c :: _) -> c
         [] -> error "bob request missing"
 
+  let aliceReqIface : ContractId V2.AllocationRequest =
+        toInterfaceContractId aliceReqCid
+  submitMustFail (actAs [bob] <> readAs [operator]) $
+    exerciseCmd aliceReqIface V2.AllocationRequest_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+
   aliceAllocCid <- mkAlloc alice aliceReqCid
   bobAllocCid <- mkAlloc bob bobReqCid
 
@@ -786,20 +815,15 @@ testMatchedTradeFullSettle = do
   Map.size settleResult.resultsByAdmin === 1
   pure ()
 
--- 8. Iterated SettleBatch enforces funding conservation -----------------
+-- Partial fills carry only unspent funding ------------------------------
 --
--- Conservation for finalized allocations is enforced during
--- SettlementFactory_SettleBatch when extraTransferLegSides and
--- nextIterationFunding are submitted together.
-
--- Conservation invariant for the order-match remainder funding: the residual
--- next-iteration funding rolled forward to a partially-filled order equals the
--- committed budget the order locked minus what the fill spent. Equivalently,
--- committed == spent + residual on the locked instrument (nothing is created
--- or destroyed). Checked here for a partial fill (residual > 0) and an exact
--- full fill (residual drops to None) on both the buy and sell sides.
-testFinalizedAllocationFundingConservation : Script ()
-testFinalizedAllocationFundingConservation = do
+-- The matcher carries only the unspent portion of each allocation into a
+-- partial-fill remainder. This focused helper test checks both a partial and a
+-- full fill; RegistryConservationTests proves the corresponding SettleBatch
+-- behavior against real holdings.
+-- | Proves order remainder quantities and reserved funding use exact arithmetic.
+testOrderRemainderFundingArithmetic : Script ()
+testOrderRemainderFundingArithmetic = do
   -- Build accounts from real allocatable parties so the legs route correctly.
   alice <- allocateParty "ome-buyer"
   bob <- allocateParty "ome-seller"
@@ -833,7 +857,7 @@ testFinalizedAllocationFundingConservation = do
   OME.remainderFunding sellerAcct sellerBudget fullLegs === None
   pure ()
 
--- 8b. OrderMatchExecution enforces the limit price at match time (D-1) -----
+-- Order matching enforces both limit prices -----------------------------
 --
 -- A resting bid @ 100 and ask @ 90 cross; any cleared price must sit in
 -- [90, 100]. OrderMatchExecution_Execute fetches both orders and refuses a
@@ -889,6 +913,7 @@ omeExec operator buyerAcct sellerAcct buyOrderCid sellOrderCid
     buyerCommittedFunding = TextMap.empty
     sellerCommittedFunding = TextMap.empty
 
+-- | Proves a match outside either resting order's limit price is rejected.
 testOrderMatchEnforcesLimitPrice : Script ()
 testOrderMatchEnforcesLimitPrice = do
   operator <- allocateParty "ome-op"
@@ -935,11 +960,12 @@ testOrderMatchEnforcesLimitPrice = do
   length res.settleResult.allocationSettleResults === 2
   pure ()
 
--- 8c. The spent allocations must be the ones the orders are bound to --------
+-- A match can spend only the allocations bound to its orders ------------
 --
 -- The buyer rests two funded bids. Filling the first while spending the
 -- second's collateral conserves per-instrument totals inside the batch, so
 -- nothing downstream rejects it; only the order/allocation binding does.
+-- | Proves a match cannot substitute another order's funding allocation.
 testOrderMatchRejectsAnotherOrdersAllocation : Script ()
 testOrderMatchRejectsAnotherOrdersAllocation = do
   operator <- allocateParty "ome2-op"
@@ -979,10 +1005,11 @@ testOrderMatchRejectsAnotherOrdersAllocation = do
   length res.settleResult.allocationSettleResults === 2
   pure ()
 
--- 8d. A pending order cannot be recorded as filled -------------------------
+-- Pending orders cannot be matched --------------------------------------
 --
 -- The order carries the right allocation cid, so only the status gate can
 -- reject it.
+-- | Proves an unfunded pending order cannot enter settlement.
 testOrderMatchRejectsPendingOrder : Script ()
 testOrderMatchRejectsPendingOrder = do
   operator <- allocateParty "ome3-op"
@@ -1020,13 +1047,14 @@ testOrderMatchRejectsPendingOrder = do
   length res.settleResult.allocationSettleResults === 2
   pure ()
 
--- 8e. The settle and the orders it fills move in one transaction ------------
+-- Settlement and order roll-forward are atomic -------------------------
 --
 -- The settle archives both funding allocations, so an order left behind
 -- pointing at one is uncancellable (Order_Cancel exercises the archived cid)
 -- and unfillable. Nothing outside this choice may observe that state, so the
 -- choice itself archives the filled orders, rolls each remainder onto the
 -- allocation the settle minted, and records the trade.
+-- | Proves one transaction settles a partial fill and rolls both orders forward.
 testOrderMatchRollsOrdersForwardAtomically : Script ()
 testOrderMatchRollsOrdersForwardAtomically = do
   operator <- allocateParty "ome5-op"
@@ -1083,18 +1111,14 @@ testOrderMatchRollsOrdersForwardAtomically = do
        fillQty = 4.0; fillPrice = 95.0)]
   pure ()
 
--- 8f. A fill that spends the whole budget closes out the residual quantity ---
+-- Exhausting the funding budget closes the order ------------------------
 --
--- The committed budget and the fill's spend are both 10dp round-half-even
--- products, so they collide on a PARTIAL fill: a bid for 1000 base @ 0.000001
--- commits 0.0010000000 quote, and filling 999.99996 of it spends
--- 0.00099999996 — which rounds back up to the same 0.0010000000. The residual
--- budget is empty while 0.00004 base is still unfilled. Rolling that quantity
--- forward would leave a live, matchable order with no allocation behind it,
--- and every later matching run would abort on it. The budget really is spent,
--- so the residual quantity is closed out rather than created unbacked.
-testOrderMatchClosesUnbackedRemainder : Script ()
-testOrderMatchClosesUnbackedRemainder = do
+-- A tiny residual quantity is not recreated when decimal rounding has already
+-- consumed the entire committed budget. Any remainder contract must be backed
+-- by a funded next allocation.
+-- | Proves exhausted backing closes the remainder instead of creating an orphan.
+testOrderMatchClosesRemainderWhenBudgetIsExhausted : Script ()
+testOrderMatchClosesRemainderWhenBudgetIsExhausted = do
   operator <- allocateParty "ome6-op"
   admin <- allocateParty "ome6-admin"
   buyer <- allocateParty "ome6-bid"
@@ -1154,25 +1178,19 @@ testOrderMatchClosesUnbackedRemainder = do
   liveOrders === []
   pure ()
 
--- The DEX threads registry choice context through to the token-standard
--- factory choices rather than hardcoding an empty one, proven with a
--- context-requiring mock factory: DvP add succeeds only when the caller
--- supplies the marker context.
+-- Choice-context fixture ------------------------------------------------
+-- The mock factories can require a marker in their choice context. This makes
+-- context forwarding observable without depending on an external registry.
+data ContextPoolFixture = ContextPoolFixture with
+    fixturePoolId : Pool.PoolId
+    fixturePoolCid : ContractId Pool.Pool
+    fixtureStateCid : ContractId PState.PoolState
+    fixtureLiquidityRulesCid : ContractId Dvp.PoolLiquidityRules
+    fixturePolicyCid : ContractId LP.LPTokenPolicy
+    fixtureAllocationFactoryCid : ContractId V2.AllocationFactory
+    fixtureSettlementFactoryCid : ContractId V2.SettlementFactory
 
--- Same empty-pool setup as above, but the mock factories can be put in
--- "requireContext" mode -- they refuse to act unless the caller passes a
--- marker in the choice context. Used to prove the DEX forwards that context.
-mkPoolFixture
-  : Party -> Party -> Party -> Bool
-  -> Script
-       ( Pool.PoolId
-       , ContractId Pool.Pool
-       , ContractId PState.PoolState
-       , ContractId Dvp.PoolLiquidityRules
-       , ContractId LP.LPTokenPolicy
-       , ContractId V2.AllocationFactory
-       , ContractId V2.SettlementFactory
-       )
+mkPoolFixture : Party -> Party -> Party -> Bool -> Script ContextPoolFixture
 mkPoolFixture operator lpRegistrar admin requireContext = do
   factory <- submit admin $ createCmd Mock.MockAllocationFactory with
     admin; users = [operator, lpRegistrar]; requireContext
@@ -1194,40 +1212,54 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId = lpId
     totalSupply = 0.0; active = True
-  pure (poolId, poolCid, stateCid, dvpCid, policyCid, toInterfaceContractId factory, toInterfaceContractId settle)
+  pure ContextPoolFixture with
+    fixturePoolId = poolId
+    fixturePoolCid = poolCid
+    fixtureStateCid = stateCid
+    fixtureLiquidityRulesCid = dvpCid
+    fixturePolicyCid = policyCid
+    fixtureAllocationFactoryCid = toInterfaceContractId factory
+    fixtureSettlementFactoryCid = toInterfaceContractId settle
 
--- The marker the context-requiring mock factories look for: a single flag in
--- the choice context. Supplying it is what makes those factories act.
+-- Marker required by a context-enabled mock factory.
 markerContext : ExtraArgs
 markerContext = ExtraArgs with
   context = ChoiceContext with
     values = TextMap.fromList [(Mock.dexChoiceContextKey, AV_Bool True)]
   meta = emptyMetadata
 
--- Asserts: with the marker context supplied, a DvP add against the
--- context-requiring factory succeeds and the pool goes Active. Why it
--- matters: the DEX actually passes the registry's required context through
--- (it doesn't quietly send an empty one).
+-- A DvP add succeeds when both factory calls receive their required context.
+-- | Proves add-liquidity threads supplied context into both allocation calls.
 testDvpAddThreadsChoiceContext : Script ()
 testDvpAddThreadsChoiceContext = do
   operator <- allocateParty "operator"
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   now <- getTime
-  (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  fixture <- mkPoolFixture operator lpRegistrar admin True
+  let poolId = fixture.fixturePoolId
+      poolCid = fixture.fixturePoolCid
+      stateCid = fixture.fixtureStateCid
+      dvpCid = fixture.fixtureLiquidityRulesCid
+      policyCid = fixture.fixturePolicyCid
+      factoryCid = fixture.fixtureAllocationFactoryCid
+      settleCid = fixture.fixtureSettlementFactoryCid
   res <- dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid policyCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
   Some state <- queryContractId operator res.poolStateCid
   state.status === Pool.PS_Active
 
--- The mirror image: with the marker omitted, the context-requiring factory
--- refuses the allocation. Confirms the check above is real, not vacuous.
+-- The same factory rejects an allocation when the context is omitted.
+-- | Proves an empty allocation choice context is not silently substituted.
 testDvpAddRejectsEmptyContext : Script ()
 testDvpAddRejectsEmptyContext = do
   operator <- allocateParty "operator"
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   now <- getTime
-  (_poolId, poolCid, _stateCid, dvpCid, _policyCid, factoryCid, _settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  fixture <- mkPoolFixture operator lpRegistrar admin True
+  let poolCid = fixture.fixturePoolCid
+      dvpCid = fixture.fixtureLiquidityRulesCid
+      factoryCid = fixture.fixtureAllocationFactoryCid
   reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid; recipient = lpRegistrar
     baseAmount = 10.0; quoteAmount = 200000.0
@@ -1243,13 +1275,12 @@ testDvpAddRejectsEmptyContext = do
       actors = [lpRegistrar]
       extraArgs = emptyExtraArgs
 
--- Per-admin choice context ----------------------------------------------
+-- Each registry admin receives its own choice context -------------------
 --
--- The DvP settle runs two per-authority batches in one transaction:
+-- The DvP settle runs two per-admin batches in one transaction:
 -- base/quote under pool.admin, LP mint/burn under pool.lpRegistrar. Each
--- batch must carry ITS OWN registry choice context. Driven through the
--- token-standard MockRegistry in context-requiring mode (the way upstream
--- TradingAppV2 is tested), these prove poolAdminExtraArgs and
+-- batch must carry its own registry choice context. Driven through the
+-- context-requiring MockRegistry, these prove poolAdminExtraArgs and
 -- lpRegistrarExtraArgs are wired to distinct batches: blanking either one
 -- aborts only that batch's allocate/settle.
 
@@ -1281,13 +1312,21 @@ authorAddAllocations operator factoryCid poolCid dvpCid recipient baseAmount quo
 
 -- Both per-admin contexts supplied: the context-requiring base/quote and LP
 -- batches both settle, pool goes Active.
+-- | Proves split-admin settle sends each registry its own choice context.
 testDvpSettleThreadsBothAdminContexts : Script ()
 testDvpSettleThreadsBothAdminContexts = do
   operator <- allocateParty "operator"
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   now <- getTime
-  (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  fixture <- mkPoolFixture operator lpRegistrar admin True
+  let poolId = fixture.fixturePoolId
+      poolCid = fixture.fixturePoolCid
+      stateCid = fixture.fixtureStateCid
+      dvpCid = fixture.fixtureLiquidityRulesCid
+      policyCid = fixture.fixturePolicyCid
+      factoryCid = fixture.fixtureAllocationFactoryCid
+      settleCid = fixture.fixtureSettlementFactoryCid
   (reqCid, baseCid, quoteCid, receiptCid) <-
     authorAddAllocations operator factoryCid poolCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
   let settleAdd poolAdminCtx lpRegistrarCtx =
@@ -1305,13 +1344,21 @@ testDvpSettleThreadsBothAdminContexts = do
 
 -- Blanking poolAdminExtraArgs aborts the base/quote batch (its factory
 -- requires context), proving that field feeds the pool.admin batch.
+-- | Proves omitting only pool-admin context aborts the pool-admin batch.
 testDvpSettleRequiresPoolAdminContext : Script ()
 testDvpSettleRequiresPoolAdminContext = do
   operator <- allocateParty "operator"
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   now <- getTime
-  (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  fixture <- mkPoolFixture operator lpRegistrar admin True
+  let poolId = fixture.fixturePoolId
+      poolCid = fixture.fixturePoolCid
+      stateCid = fixture.fixtureStateCid
+      dvpCid = fixture.fixtureLiquidityRulesCid
+      policyCid = fixture.fixturePolicyCid
+      factoryCid = fixture.fixtureAllocationFactoryCid
+      settleCid = fixture.fixtureSettlementFactoryCid
   (reqCid, baseCid, quoteCid, receiptCid) <-
     authorAddAllocations operator factoryCid poolCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
   submitMustFail (actAs [operator, lpRegistrar]) $
@@ -1326,13 +1373,21 @@ testDvpSettleRequiresPoolAdminContext = do
 
 -- Blanking lpRegistrarExtraArgs aborts the LP mint batch, proving that
 -- field feeds the pool.lpRegistrar batch.
+-- | Proves omitting only LP-registrar context aborts the LP batch.
 testDvpSettleRequiresLpRegistrarContext : Script ()
 testDvpSettleRequiresLpRegistrarContext = do
   operator <- allocateParty "operator"
   lpRegistrar <- allocateParty "lp-registrar"
   admin <- allocateParty "admin"
   now <- getTime
-  (poolId, poolCid, stateCid, dvpCid, policyCid, factoryCid, settleCid) <- mkPoolFixture operator lpRegistrar admin True
+  fixture <- mkPoolFixture operator lpRegistrar admin True
+  let poolId = fixture.fixturePoolId
+      poolCid = fixture.fixturePoolCid
+      stateCid = fixture.fixtureStateCid
+      dvpCid = fixture.fixtureLiquidityRulesCid
+      policyCid = fixture.fixturePolicyCid
+      factoryCid = fixture.fixtureAllocationFactoryCid
+      settleCid = fixture.fixtureSettlementFactoryCid
   (reqCid, baseCid, quoteCid, receiptCid) <-
     authorAddAllocations operator factoryCid poolCid dvpCid lpRegistrar 10.0 200000.0 now markerContext
   submitMustFail (actAs [operator, lpRegistrar]) $

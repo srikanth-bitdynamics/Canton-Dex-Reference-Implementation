@@ -182,7 +182,7 @@ if (e2eEnabled) {
     assert.equal(
       result.receipt.acceptedDealer,
       dealerJump,
-      "Jump should be accepted (cheapest trusted)",
+      "Jump should be accepted as the policy-ranked quote",
     );
     assert.equal(result.receipt.acceptedRank, 1);
     assert.equal(result.receipt.consideredCount, 2);
@@ -198,9 +198,6 @@ if (e2eEnabled) {
     const list = await backend.rfq.list();
     assert.ok(Array.isArray(list.rfqs));
     assert.ok(Array.isArray(list.quotes));
-    // The previous test created at least one Rfq + two RfqQuote
-    // contracts; some may have been consumed by Rfq_Accept. The
-    // important invariant is that the query path works.
   });
 
   test("Canton E2E: rfq.cancel archives an open Rfq", async () => {

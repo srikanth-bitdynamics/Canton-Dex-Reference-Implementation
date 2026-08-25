@@ -37,9 +37,11 @@ Two things here are specific to this design:
 - **Slices are locality units, not LP shares.** A slice does not belong to an
   LP — there is no `PoolSlice.owner`. The `operator` is the sole signatory, and
   the operator-backend indexer tracks slices by `poolId` and hands the relevant
-  `ContractId`s to each choice. Add creates a *new* slice, which conflicts with
-  nothing; remove and swap touch only the slices they source. So no single hot
-  contract serializes every pool operation — only the small `PoolState` does.
+  `ContractId`s to each choice. Remove and swap touch only the slices they
+  source, so the slice set does not have to travel through one growing state
+  contract. All reserve-changing operations still serialize on the small
+  `PoolState`; slices reduce state size and settlement input, not that global
+  pricing dependency.
 - **`amount` is a cache, not the source of truth.** The committed allocation
   holds the funds; `amount` is stored alongside so the rules choices can walk
   slices without a `fetch` per slice, and it is reconciled against the
@@ -66,9 +68,10 @@ reserve is their aggregate. Two on-ledger mechanisms keep the two from drifting:
 - **Global reconciliation.** The nonconsuming `PoolRules_ReconcileState` choice
   re-derives both side totals from the full active slice set and asserts each
   equals the recorded reserve (`baseTotal == state.reserves.baseAmount`). It
-  writes no state, so an operator or auditor can run it against a live pool
-  without contending with swaps. Completeness of the slice list is the caller's
-  responsibility — pair the call with the indexer's active-slice count.
+  writes no state and is intended for off-hot-path checks. A concurrent pool
+  update may invalidate its reads, in which case the caller retries. Completeness
+  of the slice list is the caller's responsibility — pair the call with the
+  indexer's active-slice count.
 
 Both are exercised by
 [`PoolStateInvariantTests.daml`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml):
@@ -148,15 +151,40 @@ a 30 bps fee (`feeBps = 30`); every figure is what the on-ledger `Decimal` math
 guarantees the pool never pays out more than the exact floored amount, so these
 figures are reproducible on-ledger.
 
+## Availability and the LP exit boundary
+
+The atomic remove flow protects correctness when it runs; it does not make
+redemption permissionless. An LP holder owns LP tokens, while reserve
+allocations are authored for the pool operator and the remove-rules contract is
+co-signed by the operator and LP registrar. Consequently:
+
+- routine redemption requires both operator and registrar availability;
+- a holder cannot withdraw a reserve slice through `Allocation_Withdraw`,
+  because the holder is not that allocation's authorizer;
+- each slice is `committed = true` with `settlementDeadline = None`, so the V2
+  withdrawal rule also prevents its operator authorizer from using
+  `Allocation_Withdraw`;
+- the operator is the settlement executor and can cancel a reserve allocation,
+  while the LP holder cannot cancel or withdraw it.
+
+This single-operator liveness dependency is intentional in the reference and
+is not suitable as an unstated production custody assumption. A production
+fork should add its chosen governed/threshold execution and emergency-exit
+model, then audit that model separately. Giving slices a deadline alone would
+not create an LP-holder exit; it would create an operator withdrawal and slice
+renewal problem. See [Non-goals](non-goals.md#lp-redemption-has-an-explicit-liveness-dependency).
+
 ---
 
 ### Reference / details
 
-- **Residual trust boundary.** `PoolState` is operator-signed, so a malicious
-  operator could fabricate a parallel state contract that overstates reserves.
-  `PoolRules_ReconcileState` catches that against the real slices (the desync
-  case above), but listing-trust in the operator is assumed; production
-  hardening would bind state updates to an admin-co-signed `Pool`.
+- **Residual trust boundary.** `PoolState`, `PoolSlice`, and the reserve
+  allocation account are operator-controlled. A malicious operator could
+  fabricate a parallel state or cancel reserve allocations; an unavailable
+  operator can block LP redemption. `PoolRules_ReconcileState` detects
+  accounting drift against live slices, but it does not provide governance or
+  liveness. Production hardening must replace this single-party boundary with
+  the deployment's governed execution and emergency-exit design.
 - **Slices are long-lived, and some registries cap that.** The committed
   allocations backing slices persist between operations. A registry may bound
   allocation lifetime — Amulet enforces `tokenStandardMaxTTL` (default

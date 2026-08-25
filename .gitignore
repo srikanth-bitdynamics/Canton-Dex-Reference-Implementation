@@ -4,12 +4,13 @@ dist/
 node_modules/
 *.tsbuildinfo
 
-# OS / editor / agent harness
+# OS, editor, and local browser-test output
 .DS_Store
 .vscode/
 .idea/
 *.swp
-.claude/
+.playwright-mcp/
+artifacts/
 
 # Secrets & local config
 .env
@@ -33,5 +34,3 @@ services/*/data/
 *.bak.*
 *.orig
 *.log
-
-.refactor-archive/

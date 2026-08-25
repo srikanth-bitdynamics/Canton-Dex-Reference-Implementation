@@ -19,7 +19,6 @@ in-memory ledger, so you can have the full stack up in a few minutes.
 |---|---|---|
 | `trading/` | `canton-dex-trading` Daml package — pool/swap/LP, orders, RFQ, matched-trade, reference V2 registry | Daml 3.5 |
 | `trading-tests/` | in-script test suites for the Daml core | Daml |
-| `examples/stable-pool/` | a separate consumer of the package (reuse proof) | Daml |
 | `services/operator-backend/` | operator HTTP API, JSON-LAPI driver, idempotency, indexer, recovery; in-memory dev ledger | TypeScript / Node |
 | `app/web/` | the dApp — Trade / Pools / Orders / RFQ / Portfolio / Admin + wallet layer | TypeScript / React / Vite |
 | `scripts/` | build, smoke, registry-bootstrap, and LocalNet/testnet drivers | bash / ts-node |
@@ -57,8 +56,7 @@ Token Standard DARs) and runs the suites. Or by hand:
 
 ```bash
 (cd trading              && dpm build)      # produces canton-dex-trading-0.1.4.dar
-(cd trading-tests        && dpm test)       # expect: 72 scripts "ok"
-(cd examples/stable-pool && dpm test)       # expect: 3 "ok"  (reuse proof)
+(cd trading-tests        && dpm test)       # every script should report "ok"
 ```
 This exercises the V2-native templates (pool/swap/LP, orders, RFQ,
 matched-trade), the reference registry (`Registry/V2.daml`) implementing V2
@@ -97,17 +95,10 @@ DEX_DEV_OPEN=1 npm run dev
 ```
 
 `DEX_DEV_OPEN=1` opens the operator-write gate **and** (because the dev server
-seeds bare-hint parties like `trader-demo`) auto-relaxes party validation, so
-the seeded demo data passes writes out of the box. Example demo swap:
-
-```bash
-curl -s -X POST http://localhost:8080/v1/pools/swap \
-  -H 'content-type: application/json' \
-  -d '{"poolCid":"#2:0","swapperAccount":{"owner":"trader-demo"},
-       "inputInstrumentId":"BTC","inputAmount":"0.1","minOutputAmount":"0",
-       "swapperAllocationCid":"#synthetic:0"}'
-# → { "amountOut": "1974.31...", ... }  and pool reserves move to 10.1 / 198025.68
-```
+seeds bare-hint parties like `trader-demo`) auto-relaxes party validation. It
+does not emulate wallet signatures or fabricate V2 allocations: allocation-
+backed writes return `501 not_supported` on the in-memory ledger. Use the local
+Canton flow below to exercise a real swap, order, or liquidity settlement.
 
 Demo-mode flags (in-memory dev server only; never set in production):
 
@@ -118,14 +109,13 @@ Demo-mode flags (in-memory dev server only; never set in production):
 | `DEX_DEV_WALLET_RELAY=1` | enable the dev wallet-relay endpoint |
 | `DEX_OPERATOR_API_TOKEN` | require this bearer token on writes instead of the open bypass |
 
-> The **two-step** swap (`/v1/pools/swap/request` → allocate → settle) needs a
-> real Canton participant; the in-memory ledger returns **501 `not_supported`**
-> for it. Use the single-step `/v1/pools/swap` above for the demo.
+> A swap is always `/v1/pools/swap/request` → wallet-authorized allocation →
+> `/v1/pools/swap`. There is no synthetic single-step settlement path.
 
 Tests + typecheck:
 ```bash
 npm run typecheck      # tsc, clean
-npm test               # node:test, 100 pass / 0 fail / 1 skip
+npm test               # node:test
 ```
 
 ---
@@ -145,7 +135,7 @@ wallet.
 
 Tests:
 ```bash
-npm test                        # vitest, ~58 pass
+npm test                        # vitest
 ```
 
 ### Wallet options (set in `app/web/.env.local`)
@@ -166,10 +156,10 @@ Backend API base is `VITE_API_BASE` (default `http://localhost:8080`).
 |---|---|
 | `run-local-daml-tests.sh` | build the DAR + run the Daml test suites |
 | `e2e-smoke.sh` | quick end-to-end smoke across the stack |
-| `bootstrap-registry.ts` | create reference-registry `InstrumentConfiguration` for BTC/USDC/ETH and LP instruments, plus the lpRegistrar's `Registry.V2` (required before any liquidity move) and, if configured, a minting registry |
+| `bootstrap-registry.ts` | create the asset-admin and LP-registrar `Registry.V2` contracts and register configured instruments |
 | `localnet-dvp-e2e.ts` | LP add / swap / remove DvP round-trip on a LocalNet (`npm run localnet:dvp-e2e` from the backend) |
 | `testnet-v2registry-trade.ts` | drive a V2 registry trade against a testnet participant |
-| `build-vendored-token-standard.sh` | (re)build the vendored TSv2 DARs |
+| `fetch-splice-dars.sh` | refresh the committed TSv2 DARs from a Splice release |
 | `build-trading-surface.sh` | build the `canton-dex-trading` surface |
 | `deploy-testnet.sh` | upload the DAR + seed a pair/pool on a testnet participant |
 
@@ -178,21 +168,10 @@ Backend API base is `VITE_API_BASE` (default `http://localhost:8080`).
 ## Running the full test suite
 | Component | Command | Expected |
 |---|---|---|
-| Daml core | `cd trading-tests && dpm test` | 72 ok |
-| Daml reuse example | `cd examples/stable-pool && dpm test` | 3 ok |
-| Backend | `cd services/operator-backend && npm run typecheck && npm test` | clean; ~77 pass |
-| dApp | `cd app/web && npm test` | ~58 pass |
+| Daml core | `bash scripts/run-local-daml-tests.sh` | every script reports `ok` |
+| Backend | `cd services/operator-backend && npm run typecheck && npm test` | clean |
+| dApp | `cd app/web && npm test` | clean |
 | End-to-end (in-memory) | `bash scripts/e2e-smoke.sh` | green |
-
-### Milestone verification
-For the Dev Fund milestone reviewers, the same commands map to the deliverables:
-
-| Milestone | What it covers | Verify with |
-|---|---|---|
-| **M1** — Daml core on Token Standard V2 | templates, reference V2 registry, DvP + conservation | `dpm test` in `trading-tests` (72 ok) + `examples/stable-pool` (3 ok) |
-| **M2** — operator backend + dApp + wallet | HTTP API + logic; UI; wallet handoff | backend `npm test` (~77), dApp `npm test` (~58) + open :5173; `npm run localnet:dvp-e2e` for the LP→swap→remove round-trip |
-
----
 
 ## Optional: run against a real Canton ledger
 The dev backend is in-memory. To run on real Canton:
@@ -212,7 +191,6 @@ The dev backend is in-memory. To run on real Canton:
 | dApp can’t reach backend (CORS) | start backend with `ALLOWED_ORIGINS=http://localhost:5173` |
 | dev relay wallet needs a party | set `VITE_CANTON_DEFAULT_PARTY=trader-demo` (dev only) |
 | `dpm: command not found` | install DPM (see prerequisites link) and re-open the shell |
-| Daml CLI prints a "DPM" deprecation warning on every build | informational only; `daml build` remains the supported path for this repo |
 | stale `node_modules` after branch switch | `rm -rf node_modules && npm ci` |
 
 See also: [Overview](concepts/overview.md), [Architecture](concepts/architecture.md),

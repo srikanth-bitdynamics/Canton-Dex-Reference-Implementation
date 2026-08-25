@@ -84,8 +84,8 @@ describe("rfq_history under the trader filter", () => {
 
 describe("v8 backfill", () => {
   it("recovers the trader on rows written without one", () => {
-    // Simulate the pre-fix database: open row has the trader, terminal row
-    // does not, and the migration has not yet run.
+    // Seed the schema state the v8 migration accepts: the open row has the
+    // trader and the terminal row must inherit it.
     const p = join(dir, "old.db");
     const seed = openDb(p);
     const version = seed.pragma("user_version", { simple: true }) as number;

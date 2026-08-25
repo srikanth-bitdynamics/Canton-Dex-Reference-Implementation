@@ -91,33 +91,23 @@ export function composeCommands(
   ctx: ComposeContext,
 ): ComposedCommands {
   switch (intent.kind) {
-    case "accept-allocation-request": return composeAcceptAllocationRequest(intent, ctx);
+    case "fund-order":                return composeFundOrder(intent, ctx);
     case "place-order":                return composePlaceOrder(intent, ctx);
     case "request-swap":               return composeRequestSwap(intent, ctx);
     case "split-holding":              return composeSplitHolding(intent, ctx);
     case "merge-holdings":             return composeMergeHoldings(intent, ctx);
     case "add-liquidity":              return composeAddLiquidity(intent, ctx);
     case "remove-liquidity":           return composeRemoveLiquidity(intent, ctx);
-    case "post-rfq-quote":             return composePostRfqQuote(intent, ctx);
-    case "accept-rfq":                 return composeAcceptRfq(intent, ctx);
   }
 }
 
-function composeAcceptAllocationRequest(
-  intent: Extract<WalletIntent, { kind: "accept-allocation-request" }>,
+function composeFundOrder(
+  intent: Extract<WalletIntent, { kind: "fund-order" }>,
   ctx: ComposeContext,
 ): ComposedCommands {
-  assertFactoryReady(intent.factoryCid, "accept-allocation-request");
-  // Single command: author the funding allocation only. We deliberately do NOT
-  // also exercise AllocationRequest_Accept on the request, because Canton's
-  // interactive-submission path (CIP-0103 wallets) rejects a prepared
-  // transaction carrying more than one command ("FAILED_TO_PREPARE_TRANSACTION:
-  // Preparing multiple commands is currently not supported"), so a 2-command
-  // submit fails outright. The operator's Order_Fund then consumes the
-  // OrderAllocationRequest (it takes the request cid + archives it), so the
-  // request does not linger after the order is funded.
+  assertFactoryReady(intent.factoryCid, "fund-order");
   return {
-    commandId: `alloc-accept-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
+    commandId: `order-fund-${intent.settlement.id}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [
       allocateCmd(
@@ -160,8 +150,8 @@ function composePlaceOrder(
   };
 }
 
-// Swap (DvP): author the single prefunded/iterated input allocation the
-// operator's PoolRules_RequestSwap named, locking the trader's input holdings.
+// Swap (DvP): author the terminal allocation that contains the exact input and
+// output sides returned by PoolRules_RequestSwap, locking the trader's input.
 // The created Allocation cid is read back from the submit result (like LP DvP)
 // and fed to the operator settle (PoolRules_Swap). No intermediate request contract.
 function composeRequestSwap(
@@ -249,8 +239,8 @@ function composeAddLiquidity(
   if (intent.allocations.length !== 3) {
     throw new Error(`add-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
   }
-  // Single top-level command (CIP-0103 prepareExecute allows only one): the
-  // standard BatchingUtilityV2 accepts the request and authors all three
+  // One top-level command: the standard BatchingUtilityV2 accepts the request
+  // and authors all three
   // allocations (base deposit, quote deposit, LP receipt) — leaving the same
   // acceptance receipt the stock accept flow does — inside one Daml
   // transaction. Holdings PARALLEL to the request's [base, quote, LP].
@@ -268,8 +258,8 @@ const BATCHING_UTILITY_TID =
   "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.BatchingUtilityV2:BatchingUtility";
 
 // Build the single CreateAndExercise of the standard BatchingUtilityV2 shared
-// by add (deposits) and remove (receipts + burn): ONE top-level command
-// (CIP-0103 allows exactly one) creates the utility, accepts the request, and
+// by add (deposits) and remove (receipts + burn): one top-level command creates
+// the utility, accepts the request, and
 // authors every allocation the request names. Holdings are threaded through
 // the utility's holding map — keyed by (admin, authorizer account), then
 // instrument id — and the registry locks only what each allocation needs,
@@ -390,65 +380,10 @@ function composeRemoveLiquidity(
   ]);
 }
 
-function composePostRfqQuote(
-  intent: Extract<WalletIntent, { kind: "post-rfq-quote" }>,
-  ctx: ComposeContext,
-): ComposedCommands {
-  return {
-    commandId: `rfq-quote-${intent.rfqId}-${ctx.now().getTime()}`,
-    actAs: [ctx.party],
-    commands: [{
-      CreateCommand: {
-        templateId: tid(ctx.packagePrefix, "CantonDex.Dex.Rfq:RfqQuote"),
-        createArguments: {
-          dealer: ctx.party,
-          trader: intent.trader,
-          operator: intent.operator,
-          rfqId: intent.rfqId,
-          price: intent.price,
-          expiresAt: intent.expiresAt,
-          postedAt: intent.postedAt,
-          tier: intent.tier,
-        },
-      },
-    }],
-  };
-}
-
-// Rfq_Accept is controller trader+operator. Joint authority means the
-// trader's wallet alone can't authorize this; the operator co-sign has
-// to come from elsewhere. Fail at compose time if operator is missing.
-function composeAcceptRfq(
-  intent: Extract<WalletIntent, { kind: "accept-rfq" }>,
-  ctx: ComposeContext,
-): ComposedCommands {
-  if (!intent.operator) {
-    throw new Error("accept-rfq: operator party is required (joint trader+operator authority).");
-  }
-  return {
-    commandId: `rfq-accept-${shortCid(intent.rfqCid)}-${ctx.now().getTime()}`,
-    actAs: [ctx.party, intent.operator],
-    commands: [{
-      ExerciseCommand: {
-        templateId: tid(ctx.packagePrefix, "CantonDex.Dex.Rfq:Rfq"),
-        contractId: intent.rfqCid,
-        choice: "Rfq_Accept",
-        choiceArgument: {
-          acceptedQuoteCid: intent.acceptedQuoteCid,
-          consideredQuoteCids: intent.consideredQuoteCids,
-          admin: intent.admin,
-          currentTime: ctx.now().toISOString(),
-          signature: null,
-        },
-      },
-    }],
-  };
-}
-
 /** Intents whose follow-up step needs the wallet-authored allocation cid. */
 export function isAllocationAuthoringIntent(intent: WalletIntent): boolean {
   return (
-    intent.kind === "accept-allocation-request" ||
+    intent.kind === "fund-order" ||
     intent.kind === "add-liquidity" ||
     intent.kind === "remove-liquidity" ||
     intent.kind === "request-swap"
@@ -469,7 +404,7 @@ function expectedAllocationCount(intent: WalletIntent): number {
     case "remove-liquidity":
       return 3;
     case "request-swap":
-    case "accept-allocation-request":
+    case "fund-order":
       return 1;
     default:
       return 0;
@@ -521,7 +456,7 @@ export function extractCreatedAllocationCids(
  * Pull the `LiquidityAllocationAcceptance` evidence cid out of a submit result
  * (created by AllocationRequest_Accept in the canonical LP flow). The operator
  * settle binds to this when the live request has been consumed. Undefined if
- * the submission did not produce one (e.g. legacy direct-allocation flow).
+ * the submission used the direct-allocation mode and produced no receipt.
  */
 export function extractLiquidityAcceptanceCid(tx: {
   createdEvents?: CreatedEvent[];

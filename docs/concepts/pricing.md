@@ -10,7 +10,7 @@ accountable for it:
 
 | Surface | Price source | Signed by |
 |---|---|---|
-| AMM pool (`PoolRules_Swap`) | the constant-product curve over the pool's reserves | operator (reserves); the taker sets a `minOutputAmount` floor |
+| AMM pool (`PoolRules_Swap`) | the constant-product curve over the pool's reserves | operator (reserve snapshot); trader (exact input and output sides after checking `minOutputAmount`) |
 | Order book (`OrderFundingRequest`) | the trader's `limitPrice` | the trader |
 | RFQ (`RfqQuote`) | the dealer's quoted `price`; the operator ranks quotes but never rewrites one | dealer (quote); trader + operator (accept) |
 | OTC (`MatchedTrade`) | the leg amounts both sides pre-agreed | both authorizers |
@@ -32,11 +32,15 @@ Two things about this implementation matter more than the curve itself:
   (`Δin · (1 − fee)` drives the curve) while the full `Δin` still lands in the
   reserve, so `k` is strictly non-decreasing across a swap. That surplus is what
   accrues to liquidity providers.
-- **The output is re-derived on the ledger, not quoted by the operator.**
-  `PoolRules_Swap` computes `Δout` from the current reserves inside the choice and
-  settles the taker against that value, so the operator cannot quote one number
-  and settle another. The dApp's quote endpoint runs the same function
-  off-ledger, so preview and settlement agree to the last digit.
+- **The trader signs the exact output authority.** `PoolRules_RequestSwap`
+  computes `Δout`, binds the current `PoolState` and selected slices, and returns
+  a specification containing both the trader's input sender side and every
+  output receiver side. The dApp verifies the binding and minimum, then the
+  wallet signs the exact legs. `PoolRules_Swap` re-derives `Δout` on-ledger and
+  accepts the allocation only if the snapshot and exact legs still match, so
+  the operator cannot quote one number and settle another. The dApp's quote
+  endpoint runs the same function off-ledger, so preview and settlement agree
+  to the last digit.
 
 The computation is one helper,
 [`constantProductOut`](../../trading/CantonDex/Dex/PoolModel.daml):

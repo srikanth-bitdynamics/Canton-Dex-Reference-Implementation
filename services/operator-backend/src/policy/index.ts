@@ -40,10 +40,9 @@ export function rankQuotes(
   // then LATER expiresAt (more time to act), then EARLIER postedAt
   // (first-mover), then a deterministic dealer-party tie-break.
   //
-  // Deliberately NOT ranked by price. `side` is unused in policy mode
-  // on-ledger -- the trader picks among ranked candidates -- and a price key
-  // here would order quotes differently from the chain, which is exactly the
-  // divergence that invalidated every receipt before v2.0.
+  // [POLICY] Deliberately not ranked by price or direction. The trader picks
+  // among ranked candidates; adding either key would disagree with the
+  // on-ledger receipt verification.
   return [...valid].sort((a, b) => {
     const tierA = a.tier === "TierTrusted" ? 0 : 1;
     const tierB = b.tier === "TierTrusted" ? 0 : 1;
@@ -107,11 +106,9 @@ export function buildReceipt(args: {
 // The `signature` field is an off-chain *replay digest*, not the
 // trust anchor — origin authenticity is established on-ledger by the
 // MatchedTrade signatory (PolicyReceipt.signedBy == venue, enforced by the
-// Daml `ensure`). On-ledger the string is stored opaquely (it is never
-// recomputed), so off-chain we are free to upgrade the digest to a keyed
-// HMAC-SHA256 when DEX_RECEIPT_HMAC_KEY is configured; otherwise we keep the
-// historical unkeyed SHA-256 so existing digest-parity holds. Either way the
-// digest only proves the receipt inputs were not tampered with in transit.
+// Daml `ensure`). On-ledger the string is stored opaquely. A configured
+// DEX_RECEIPT_HMAC_KEY selects HMAC-SHA256; otherwise the reference uses plain
+// SHA-256. The digest only detects changes to the receipt inputs in transit.
 export function signReceipt(r: Omit<PolicyReceipt, "signature">): string {
   const canonical = JSON.stringify({
     policyHash: r.policyHash,

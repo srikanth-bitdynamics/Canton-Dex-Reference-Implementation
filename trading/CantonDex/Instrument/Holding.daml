@@ -1,6 +1,8 @@
--- | Registry-side Holding in the local namespace (so supply changes are easy to
--- reason about). Production registries expose holdings through V2.Holding;
--- tests move this local template through MockRegistry.
+-- | [COMPAT] Local holding for the standalone lifecycle sample. It does not
+-- implement the V2 Holding interface; active DEX workflows use
+-- `CantonDex.Registry.V2:Holding`. It remains for package lineage.
+--
+-- Design guide: `docs/concepts/design-tour.md#active-and-compatibility-surfaces`.
 module CantonDex.Instrument.Holding where
 
 template Holding with

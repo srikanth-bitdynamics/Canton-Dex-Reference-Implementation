@@ -23,9 +23,8 @@ export function PortfolioPage() {
     enabled: !!party,
   });
 
-  // Activity feed: derive from the indexer's on-ledger swap history. (The
-  // indexer records pool-reserve deltas, not the swapper party, so this is
-  // pool-wide swap activity; the feed was previously an unwired stub.)
+  // The indexer records pool-reserve deltas rather than swapper identity, so
+  // this feed shows pool-wide swap activity.
   const { data: swaps } = useQuery({
     queryKey: ['swaps', 'activity'],
     queryFn: async () => {
@@ -60,10 +59,6 @@ export function PortfolioPage() {
       timestamp: new Date(s.ts).toISOString(),
       details: `${fmt(paid, 4)} ${s.inputInstrumentId} → ${fmt(received)} ${s.outputInstrumentId}`,
       status: 'Settled',
-      amounts: [
-        { asset: s.inputInstrumentId, amount: -paid },
-        { asset: s.outputInstrumentId, amount: received },
-      ],
     };
   });
 

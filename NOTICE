@@ -16,17 +16,18 @@ the vendored directories):
 - vendor/splice/
     Source: https://github.com/canton-network/splice
     License: vendor/splice/LICENSE
-    Purpose: shared Daml/Splice utilities consumed by Canton-Dex during
-    development. Snapshot of the main branch at the time of vendoring.
+    Purpose: Token Standard API packages, test fixtures, and source references
+    consumed by Canton-Dex. The exact release is recorded in
+    vendor/splice/VENDOR_PIN.md.
 
 Token Standard V2 / CIP-0112 surface (`splice-api-token-*-v2` packages)
-is included as compiled DAR artefacts under
-`vendor/splice/token-standard/`; the source these were built from is in
-the snapshot above.
+is included as compiled DAR artefacts under `vendor/splice/dars/`; readable
+upstream source is retained under `vendor/splice/token-standard/`.
 
 ================================================================================
 Acknowledgements
 ================================================================================
 
-The matched-trade settlement pattern follows the shape established by
-the upstream `TradingAppV2` reference (link in README.md).
+The matched-trade settlement pattern follows the shape established by the
+upstream `TradingAppV2` reference retained at
+vendor/splice/token-standard/examples/splice-token-test-trading-app-v2/.

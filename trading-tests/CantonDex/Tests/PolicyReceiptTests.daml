@@ -12,16 +12,14 @@
 --   8. mkTradeSettlementInfo on a trade with a receipt produces metadata
 --      containing the expected dex.policy.* keys
 --   9. mkTradeSettlementInfo on a trade with no receipt produces empty meta
+-- Design context: `docs/concepts/design-tour.md#rfq-and-otc-settlement`.
 module CantonDex.Tests.PolicyReceiptTests where
 
-import DA.Assert
-import DA.Optional (isSome, isNone)
+import DA.Optional (isNone)
 import DA.TextMap qualified as TextMap
 
 import Daml.Script
 
-import Splice.Api.Token.HoldingV2 qualified as V2
-import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
 import CantonDex.Dex.MatchedTrade qualified as MT
@@ -49,6 +47,7 @@ mkValidReceipt venue ranked acceptedDealer acceptedRank now =
 
 -- 1. Encoding test ----------------------------------------------------------
 
+-- | Proves a receipt encodes its header and ranked-dealer rows in metadata.
 testPolicyReceiptValuesShape : Script ()
 testPolicyReceiptValuesShape = do
   venue <- allocateParty "venue"
@@ -81,6 +80,7 @@ testPolicyReceiptValuesShape = do
 
 -- 2. Fold preserves existing keys -------------------------------------------
 
+-- | Proves adding receipt metadata preserves unrelated existing metadata.
 testFoldPreservesExistingKeys : Script ()
 testFoldPreservesExistingKeys = do
   venue <- allocateParty "venue"
@@ -101,6 +101,7 @@ testFoldPreservesExistingKeys = do
     TextMap.lookup "dex.policy.version" out.values == Some "v1.4"
   pure ()
 
+-- | Proves folding an absent receipt leaves metadata unchanged.
 testFoldNoneIsIdentity : Script ()
 testFoldNoneIsIdentity = do
   let pre = emptyMetadata with values = TextMap.fromList [("custom.key", "carry-me")]
@@ -110,6 +111,7 @@ testFoldNoneIsIdentity = do
 
 -- 3. isWellFormed rejects malformed receipts --------------------------------
 
+-- | Proves receipt validation rejects inconsistent counts, ranks, and winners.
 testIsWellFormed : Script ()
 testIsWellFormed = do
   venue <- allocateParty "venue"
@@ -147,6 +149,7 @@ testIsWellFormed = do
 
 -- 4-7. MatchedTrade ensure clauses ------------------------------------------
 
+-- | Proves a bilateral matched trade may omit an RFQ policy receipt.
 testMatchedTradeWithNoReceipt : Script ()
 testMatchedTradeWithNoReceipt = do
   venue <- allocateParty "venue"
@@ -160,6 +163,7 @@ testMatchedTradeWithNoReceipt = do
   Some _ <- queryContractId venue cid
   pure ()
 
+-- | Proves a venue-signed well-formed policy receipt is accepted.
 testMatchedTradeWithGoodReceipt : Script ()
 testMatchedTradeWithGoodReceipt = do
   venue <- allocateParty "venue"
@@ -177,6 +181,7 @@ testMatchedTradeWithGoodReceipt = do
   Some _ <- queryContractId venue cid
   pure ()
 
+-- | Proves a receipt signed by a party other than the venue is rejected.
 testMatchedTradeRejectsWrongSigner : Script ()
 testMatchedTradeRejectsWrongSigner = do
   venue <- allocateParty "venue"
@@ -195,6 +200,7 @@ testMatchedTradeRejectsWrongSigner = do
     policyReceipt = Some r
   pure ()
 
+-- | Proves a structurally malformed policy receipt cannot enter a trade.
 testMatchedTradeRejectsMalformed : Script ()
 testMatchedTradeRejectsMalformed = do
   venue <- allocateParty "venue"
@@ -217,6 +223,7 @@ testMatchedTradeRejectsMalformed = do
 -- mkTradeSettlementInfo is a pure helper, so we exercise it by constructing
 -- a trade record (without creating it on-ledger) and inspecting the result.
 
+-- | Proves settlement metadata carries the accepted RFQ policy receipt.
 testSettlementInfoCarriesReceipt : Script ()
 testSettlementInfoCarriesReceipt = do
   venue <- allocateParty "venue"
@@ -241,6 +248,7 @@ testSettlementInfoCarriesReceipt = do
     TextMap.lookup "dex.policy.ranked.1.tier" info.meta.values == Some "trusted"
   pure ()
 
+-- | Proves non-RFQ settlement metadata stays empty when no receipt exists.
 testSettlementInfoEmptyWithoutReceipt : Script ()
 testSettlementInfoEmptyWithoutReceipt = do
   venue <- allocateParty "venue"
@@ -256,7 +264,3 @@ testSettlementInfoEmptyWithoutReceipt = do
   assertMsg "no policy keys when receipt absent" $
     isNone (TextMap.lookup "dex.policy.version" info.meta.values)
   pure ()
-
--- Useful import guard
-_unused : Optional (ContractId V2.Allocation) -> Bool
-_unused = isSome

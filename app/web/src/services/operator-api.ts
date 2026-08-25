@@ -1,6 +1,7 @@
 // Typed client for the operator backend HTTP API. The dApp uses this
-// to compose orchestration calls; trader-authority actions go through
-// `wallet/handoff.ts` instead.
+// to compose orchestration calls. Allocation-backed trader actions go
+// through `wallet/handoff.ts`; hosted RFQ routes are the documented relay
+// exception.
 
 export type Party = string;
 export type ContractId<_T> = string;
@@ -18,6 +19,14 @@ export interface DisclosedContract {
   // Canton's JSON Ledger API disclosed-contract field (was mis-named `payloadBlob`).
   createdEventBlob: string;
   synchronizerId?: string;
+}
+
+export interface SwapQuoteBinding {
+  expectedPoolId: string;
+  poolStateCid: ContractId<"PoolState">;
+  inputSliceCid: ContractId<"PoolSlice">;
+  outputSliceCids: ContractId<"PoolSlice">[];
+  minOutputAmount: Decimal;
 }
 
 export interface PoolSlice {
@@ -105,18 +114,18 @@ export class OperatorApi {
     return this.post("/v1/swaps/quote", req);
   }
 
-  // Operator builds (in Daml) the swapper's prefunded input-allocation spec +
-  // settlement; the wallet authors that spec, then swap() settles with the
-  // created allocation cid. The spec/settlement are opaque pass-through wire
-  // objects here — the wallet (commands.ts) consumes their typed shape.
+  // Operator builds the exact two-sided allocation against one pool snapshot;
+  // the wallet authorizes it and swap() settles that same quote binding.
   async requestSwap(req: {
     poolCid: ContractId<"Pool">;
     swapper: Party;
     inputInstrumentId: string;
     inputAmount: Decimal;
+    minOutputAmount: Decimal;
   }): Promise<{
     allocationSpec: unknown;
     settlement: unknown;
+    quoteBinding: SwapQuoteBinding;
     factoryCid: ContractId<"AllocationFactory">;
     allocationFactoryExtraArgs: V2ExtraArgs;
     allocationFactoryDisclosure: DisclosedContract[];
@@ -130,6 +139,7 @@ export class OperatorApi {
     inputInstrumentId: string;
     inputAmount: Decimal;
     minOutputAmount: Decimal;
+    quoteBinding: SwapQuoteBinding;
     // Either the explicit created cid, or an updateId for operator-discovery.
     swapperAllocationCid?: ContractId<"Allocation">;
     updateId?: string;
@@ -185,6 +195,8 @@ export class OperatorApi {
   }): Promise<{
     orderCid: ContractId<"Order">;
     allocationRequestCid: ContractId<"OrderAllocationRequest">;
+    settlement: unknown;
+    allocationSpec: unknown;
   }> {
     return this.post("/v1/orders/bind", req);
   }

@@ -1,13 +1,15 @@
 -- | Reference registry implementing the Token Standard V2 holding, allocation,
 -- settlement, transfer-instruction, and transfer-event interfaces, plus this
--- repo's registry-specific InstrumentConfig / Credential machinery. One
+-- repo's registry-specific InstrumentConfig and claim-shape example. One
 -- reference registry serves the in-script tests, the testnet harness, and the
 -- live DEX.
 --
 -- Authority: holdings sign admin+owner; allocations sign admin+authorizer
 -- (admin alone for the owner-None mint/burn accounts); transfers sign
--- admin+sender. Mint/burn/allocate/transfer enforce the InstrumentConfig
--- credential requirements (empty list = open access).
+-- admin+sender. Mint and burn compare configured issuer requirements with
+-- caller-supplied claim values; they do not verify Credential contract ids.
+-- Holder requirements are metadata only. Use empty requirement lists unless a
+-- production registry replaces this placeholder with issuer-authorized checks.
 --
 -- Conservation: settle enforces per-allocation draw-down
 -- (sent + next-iteration funding <= locked backing + receiver credits),
@@ -16,16 +18,15 @@
 -- sender/receiver balance across all legs of the batch. The batch also
 -- enforces the standard's allocation-to-leg coverage: exactly one allocation
 -- authorizes each side of each leg it settles.
+--
+-- Design guide: `docs/concepts/design-tour.md#the-token-standard-settlement-spine`.
 module CantonDex.Registry.V2 where
 
-import DA.Action (foldlA, when, unless)
+import DA.Action (foldlA)
 import DA.Foldable (forA_)
-import DA.List (unique)
 import DA.Map qualified as Map
-import DA.Optional (fromOptional, isSome)
-import DA.Set qualified as Set
+import DA.Optional (catOptionals, fromOptional, isSome)
 import DA.TextMap qualified as TextMap
-import DA.Time
 
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV2 qualified as V2
@@ -33,13 +34,16 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.TransferInstructionV2 qualified as V2
 import Splice.Api.Token.TransferEventsV2 qualified as TransferEventsV2
+import Splice.TokenStandard.Utils qualified as TSUtils
 
 import CantonDex.Trading.Utils qualified as Utils
 
 
 -- Credentials -------------------------------------------------------------
 
--- | An issuer-signed claim that `holder` satisfies `(property, value)`.
+-- | Example issuer-signed credential contract. Registry_Mint and Registry_Burn
+-- currently receive claim values rather than fetching this contract, so this
+-- template is not a production authorization mechanism.
 template Credential with
     issuer : Party
     holder : Party
@@ -55,7 +59,8 @@ data CredentialRequirement = CredentialRequirement with
     value : Text
   deriving (Eq, Show, Ord)
 
--- | True when `party` satisfies every requirement; empty list = open access.
+-- | Compare supplied claim values with every requirement; empty = open access.
+-- This checks shape and equality only, not ledger provenance.
 verifyCredentials
   : Party -> [CredentialRequirement] -> [Credential] -> Bool
 verifyCredentials party reqs claims =
@@ -71,8 +76,8 @@ verifyCredentials party reqs claims =
 
 -- InstrumentConfig --------------------------------------------------------
 
--- | Per-instrument issuance policy owned by the admin: supply cap,
--- precision, holder/issuer credential requirements, external ids.
+-- | Per-instrument registry config owned by the admin: supply cap, precision,
+-- placeholder holder/issuer requirement records, and external ids.
 template InstrumentConfig with
     admin : Party
     instrumentId : Text
@@ -186,7 +191,8 @@ template Allocation with
         createdAt
         numIterations
         expiresAt = spec.settlementDeadline
-        availableActions = Map.empty
+        availableActions =
+          TSUtils.allocationV2_availableActionsDefault settlement.executors spec
         meta = emptyMetadata
 
       allocation_settleExtraObservers _ = []
@@ -220,21 +226,23 @@ template Allocation with
       -- sender legs are the only legitimate unbacked source, a burn's
       -- receiver legs the sink).
       allocation_settleImpl self arg = do
+        assertMsg "Allocation_Settle: invalid settlement descriptor"
+          (TSUtils.isValidSettlementInfoV2 settlement)
+        assertMsg "Allocation_Settle: invalid allocation specification"
+          (TSUtils.isValidAllocationSpecificationV2 (const True) spec)
         case spec.settlementDeadline of
           None -> pure ()
           Some deadline -> do
             now <- getTime
             assertMsg "Allocation_Settle: settlement deadline has passed" (now <= deadline)
-        let expectedActors = settlement.executors ++ [admin]
-        unless (all (\p -> p `elem` arg.actors) expectedActors) $
-          abort "Allocation_Settle: missing required actor (executors + admin)"
-        -- Executor-supplied extras / roll-forward are only legal when the
-        -- authorizer authored the allocation iterated-enabled (V2 standard:
-        -- "MUST NOT be set unless iterated settlement was enabled").
-        when (not (null arg.extraTransferLegSides) || isSome arg.nextIterationFunding) $
-          assertMsg
-            "Allocation_Settle: extra legs / next-iteration funding require an iterated-enabled allocation"
-            (isSome spec.nextIterationFunding)
+        TSUtils.checkActors arg.actors [admin :: settlement.executors]
+        -- Validate iterated-settlement authority and positive extra legs /
+        -- funding with the same utility used by the reference registry.
+        TSUtils.validateNextIterationArgs
+          "Allocation_Settle"
+          (isSome spec.nextIterationFunding)
+          arg.extraTransferLegSides
+          arg.nextIterationFunding
         let allSides = spec.transferLegSides ++ arg.extraTransferLegSides
             next = fromOptional TextMap.empty arg.nextIterationFunding
             sumSides s = TextMap.fromListWithR (+)
@@ -243,14 +251,10 @@ template Allocation with
             received = sumSides V2.ReceiverSide
             lookup0 : TextMap.TextMap Decimal -> Text -> Decimal
             lookup0 m iid = fromOptional 0.0 (TextMap.lookup iid m)
-        forA_ (TextMap.toList next) $ \(iid, amt) ->
-          assertMsg
-            ("Allocation_Settle: next-iteration funding must be positive for " <> iid)
-            (amt > 0.0)
-        nextLockedCids <- case spec.authorizer.owner of
+        (nextLockedCids, authorizerHoldingCids) <- case spec.authorizer.owner of
           None ->
             -- Mint/burn special account: locks nothing, is credited nothing.
-            pure []
+            pure ([], TextMap.empty)
           Some authorizerOwner -> do
             lockedAmts <- forA lockedHoldings $ \cid -> do
               h <- fetch cid
@@ -264,24 +268,29 @@ template Allocation with
                 (n <= lookup0 available iid)
             -- Net credit to the authorizer (receiver credits + any surplus of
             -- the locked backing), unlocked, one holding per instrument.
-            forA_ (TextMap.toList available) $ \(iid, avail) -> do
+            changeEntries <- catOptionals <$> forA (TextMap.toList available) (\(iid, avail) -> do
               let change = avail - lookup0 needed iid
-              when (change > 0.0) $ do
-                _ <- create Holding with
+              if change > 0.0 then do
+                cid <- create Holding with
                   admin
                   owner = authorizerOwner
                   instrumentId = iid
                   amount = change
                   locked = False
-                pure ()
+                pure (Some (iid, [toInterfaceContractId cid]))
+              else pure None)
             -- Fresh LOCKED backing for the rolled-forward allocation.
-            forA (TextMap.toList next) $ \(iid, amt) ->
+            nextLockedCids <- forA (TextMap.toList next) $ \(iid, amt) ->
               create Holding with
                 admin
                 owner = authorizerOwner
                 instrumentId = iid
                 amount = amt
                 locked = True
+            pure
+              ( nextLockedCids
+              , TextMap.fromListWithR (++) changeEntries
+              )
         archive self
         forA_ lockedHoldings $ \cid -> archive cid
         nextCid <- case arg.nextIterationFunding of
@@ -297,45 +306,40 @@ template Allocation with
             pure (Some (toInterfaceContractId cid))
         pure V2.AllocationResult with
           output = V2.AllocationResult_Settled nextCid
-          authorizerHoldingCids = TextMap.empty
+          authorizerHoldingCids
           meta = emptyMetadata
 
-      -- Cancel / withdraw both release the locked holdings unlocked.
+      -- Cancel and withdraw release the locked holdings. Their actor and
+      -- deadline rules mirror the Token Standard V2 utility defaults.
       allocation_cancelImpl self arg = do
-        released <- forA lockedHoldings $ \cid -> do
-          h <- fetch cid
-          archive cid
-          create h with locked = False
-        archive self
-        pure V2.AllocationResult with
-          output = V2.AllocationResult_Cancelled
-          authorizerHoldingCids =
-            if null released
-              then TextMap.empty
-              else TextMap.fromList
-                     [ (instrumentIdOf released, map toInterfaceContractId released)
-                     ]
-          meta = emptyMetadata
+        TSUtils.allocationV2_cancelDefaultImpl
+          (toInterface @V2.Allocation this)
+          self
+          arg
+          (do
+            released <- releaseLockedHoldings lockedHoldings
+            pure (released, emptyMetadata))
 
       allocation_withdrawImpl self arg = do
-        released <- forA lockedHoldings $ \cid -> do
-          h <- fetch cid
-          archive cid
-          create h with locked = False
-        archive self
+        TSUtils.archiveAndCheckActors self arg.actors
+          [[TSUtils.accountPrincipal admin spec.authorizer]]
+        TSUtils.ensureWithdrawIsAllowed spec
+        released <- releaseLockedHoldings lockedHoldings
         pure V2.AllocationResult with
           output = V2.AllocationResult_Withdrawn
-          authorizerHoldingCids =
-            if null released
-              then TextMap.empty
-              else TextMap.fromList
-                     [ (instrumentIdOf released, map toInterfaceContractId released)
-                     ]
+          authorizerHoldingCids = released
           meta = emptyMetadata
 
-instrumentIdOf : [ContractId Holding] -> Text
-instrumentIdOf [] = ""
-instrumentIdOf _ = "held"  -- specific id not needed by callers today
+releaseLockedHoldings
+  : [ContractId Holding]
+  -> Update (TextMap.TextMap [ContractId V2.Holding])
+releaseLockedHoldings holdingCids = do
+  released <- forA holdingCids $ \cid -> do
+    holding <- fetch cid
+    archive cid
+    unlockedCid <- create holding with locked = False
+    pure (holding.instrumentId, [toInterfaceContractId unlockedCid])
+  pure (TextMap.fromListWithR (++) released)
 
 
 -- TransferInstruction (peer-to-peer) --------------------------------------
@@ -380,8 +384,7 @@ template TransferInstruction with
       transferInstruction_withdrawExtraObservers _ = []
 
       transferInstruction_acceptImpl self arg = do
-        assertMsg "receiver + admin must accept" $
-          receiver `elem` arg.actors && admin `elem` arg.actors
+        TSUtils.archiveAndCheckActors self arg.actors [[receiver, admin]]
         h <- fetch lockedHoldingCid
         archive lockedHoldingCid
         receiverHoldingCid <- create Holding with
@@ -390,30 +393,27 @@ template TransferInstruction with
           instrumentId
           amount
           locked = False
-        archive self
         pure V2.TransferInstructionResult with
           output = V2.TransferInstructionResult_Completed with
             receiverHoldingCids = [toInterfaceContractId receiverHoldingCid]
           senderChangeCids = []
           meta = emptyMetadata
 
-      transferInstruction_rejectImpl self _arg = do
+      transferInstruction_rejectImpl self arg = do
+        TSUtils.archiveAndCheckActors self arg.actors [[receiver]]
         h <- fetch lockedHoldingCid
         archive lockedHoldingCid
         senderUnlocked <- create h with locked = False
-        archive self
         pure V2.TransferInstructionResult with
           output = V2.TransferInstructionResult_Failed
           senderChangeCids = [toInterfaceContractId senderUnlocked]
           meta = emptyMetadata
 
       transferInstruction_withdrawImpl self arg = do
-        assertMsg "sender + admin must withdraw" $
-          sender `elem` arg.actors && admin `elem` arg.actors
+        TSUtils.archiveAndCheckActors self arg.actors [[sender, admin]]
         h <- fetch lockedHoldingCid
         archive lockedHoldingCid
         senderUnlocked <- create h with locked = False
-        archive self
         pure V2.TransferInstructionResult with
           output = V2.TransferInstructionResult_Failed
           senderChangeCids = [toInterfaceContractId senderUnlocked]
@@ -517,6 +517,10 @@ template Registry with
 
       transferFactory_transferImpl _self arg = do
         let transfer = arg.transfer
+        TSUtils.checkActors arg.actors
+          [[TSUtils.accountPrincipal admin transfer.sender]]
+        assertMsg "TransferFactory: invalid transfer"
+          (TSUtils.isValidTransferV2 transfer)
         let senderOwner = Utils.accountOwner transfer.sender
         let receiverOwner = Utils.accountOwner transfer.receiver
         now <- getTime
@@ -565,6 +569,12 @@ template Registry with
 
       allocationFactory_allocateImpl _self arg = do
         let spec = arg.allocation
+        TSUtils.checkActors arg.actors
+          [[TSUtils.accountPrincipal admin spec.authorizer]]
+        assertMsg "AllocationFactory: invalid settlement descriptor"
+          (TSUtils.isValidSettlementInfoV2 arg.settlement)
+        assertMsg "AllocationFactory: invalid allocation specification"
+          (TSUtils.isValidAllocationSpecificationV2 (const True) spec)
         assertMsg "AllocationFactory: spec admin must match registry"
           (spec.admin == admin)
         -- A mint/burn allocation names a special account (`owner = None`)
@@ -579,8 +589,6 @@ template Registry with
                 isBurn = Utils.isBurnAccount spec.authorizer
             assertMsg "owner-None authorizer must be the standard mint/burn account"
               (isMint || isBurn)
-            assertMsg "mint/burn allocation must be admin-authorized"
-              (admin `elem` arg.actors)
             assertMsg "mint/burn allocation must lock no holdings"
               (null arg.inputHoldingCids)
             let sideOk side =
@@ -686,6 +694,9 @@ template Registry with
           meta = emptyMetadata
 
       settlementFactory_settleBatchImpl _self arg = do
+        TSUtils.checkActors arg.actors [arg.settlement.executors]
+        assertMsg "SettleBatch: invalid settlement descriptor"
+          (TSUtils.isValidSettlementInfoV2 arg.settlement)
         -- Allocation_Settle.actors must include the executors AND the admin;
         -- the factory (signed by admin) expands the list when the caller
         -- passed only the executors.
@@ -693,41 +704,15 @@ template Registry with
               if admin `elem` arg.actors
                 then arg.actors
                 else admin :: arg.actors
-        assertMsg "SettleBatch: transfer leg ids must be unique"
-          (unique (map (.transferLegId) arg.transferLegs))
-        forA_ arg.transferLegs $ \leg ->
-          assertMsg
-            ("SettleBatch: transfer leg amount must be positive for " <> leg.transferLegId)
-            (leg.amount > 0.0)
-
-        -- A transfer leg names no admin of its own; the standard pins a batch
-        -- to one registry by requiring every allocation in it to name that
-        -- registry's admin, and the coverage check below then ties every leg
-        -- to those allocations.
-        authorizedSides <- fmap concat $ forA arg.allocations $ \finalized -> do
-          v <- view <$> fetch finalized.allocationCid
-          assertMsg "SettleBatch: allocation admin must match the settlement factory admin"
-            (v.allocation.admin == admin)
-          pure
-            [ (v.allocation.authorizer, side)
-            | side <- v.allocation.transferLegSides ++ finalized.extraTransferLegSides
-            ]
-
-        -- Allocation-to-leg coverage: every side of every leg in the batch is
-        -- authorized by exactly one allocation, and no allocation authorizes a
-        -- side the batch does not settle.
-        assertMsg "SettleBatch: an authorization is allocated twice in the batch"
-          (unique [ (auth, s.transferLegId, s.side) | (auth, s) <- authorizedSides ])
-        let requiredAuths = Set.fromList (concatMap Utils.legSidesWithAuthorizer arg.transferLegs)
-            allocatedAuths = Set.fromList authorizedSides
-            missing = requiredAuths `Set.difference` allocatedAuths
-            superfluous = allocatedAuths `Set.difference` requiredAuths
-        assertMsg
-          ("SettleBatch: missing allocation authorizations " <> show (Set.toList missing))
-          (Set.null missing)
-        assertMsg
-          ("SettleBatch: superfluous allocation authorizations " <> show (Set.toList superfluous))
-          (Set.null superfluous)
+        -- Use the standard utility for settlement/admin matching, positive
+        -- finalized arguments, uniqueness, and exact allocation-to-leg
+        -- coverage. This registry adds only the conservation check below.
+        validatedAllocations <- TSUtils.fetchAndValidateAllocations admin arg
+        let authorizedSides =
+              [ (allocationView.allocation.authorizer, side)
+              | (_, allocationView) <- validatedAllocations
+              , side <- allocationView.allocation.transferLegSides
+              ]
 
         -- Batch-level conservation, which the standard does not require: per
         -- instrument, sender-side and receiver-side totals across ALL legs of
@@ -764,20 +749,3 @@ template Registry with
         pure V2.SettlementFactory_SettleBatchResult with
           allocationSettleResults = results
           meta = emptyMetadata
-
-
--- | Boot a Registry and return it as Transfer/Allocation/Settlement factories.
-createRegistry
-  : Party -> [Party]
-  -> Update ( ContractId Registry
-            , ContractId V2.TransferFactory
-            , ContractId V2.AllocationFactory
-            , ContractId V2.SettlementFactory )
-createRegistry admin users = do
-  cid <- create Registry with admin; users
-  pure
-    ( cid
-    , toInterfaceContractId cid
-    , toInterfaceContractId cid
-    , toInterfaceContractId cid
-    )

@@ -2,6 +2,8 @@
 -- market with its execution mode, fee model, accrued maker/taker fee
 -- counters, and active flag. Pair lifecycle changes go through the choices
 -- defined here.
+--
+-- Design guide: `docs/concepts/design-tour.md#pair-and-governance-state`.
 module CantonDex.Dex.DexPair where
 
 import DA.TextMap qualified as TextMap
@@ -72,7 +74,7 @@ template DexPair with
 
     -- Record fees for one matched trade (sender = taker, receiver = maker);
     -- bumps both accrual counters at their respective bps.
-    nonconsuming choice DexPair_RecordMatchedTrade : ContractId DexPair
+    choice DexPair_RecordMatchedTrade : ContractId DexPair
       with
         legNotionals : TextMap.TextMap Decimal
           -- ^ Notional touched per instrument id by the matched trade.
@@ -94,7 +96,6 @@ template DexPair with
                 in TextMap.insert iid (cur + fee) acc)
               curTaker
               (TextMap.toList legNotionals)
-        archive self
         create this with
           accumulatedMakerFees = Some bumpedMaker
           accumulatedTakerFees = Some bumpedTaker

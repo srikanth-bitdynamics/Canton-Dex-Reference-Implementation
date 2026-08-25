@@ -133,7 +133,7 @@ describe("indexer: classifying a PoolState rotation", () => {
     const rows = kinds();
     assert.equal(rows.length, 1);
     assert.equal(rows[0]!.kind, "add_liquidity");
-    // Both reserves up: previously served as a swap.
+    // Both reserves increase, so this rotation is an add rather than a swap.
     assert.ok(parseFloat(rows[0]!.baseDelta) > 0);
     assert.ok(parseFloat(rows[0]!.quoteDelta) > 0);
   });
@@ -154,8 +154,7 @@ describe("indexer: classifying a PoolState rotation", () => {
   });
 
   it("calls a removal a remove even when supply is unreadable", async () => {
-    // Fallback path. Testing only that the deltas agree in sign, without
-    // testing which sign, labelled every removal an add.
+    // Fallback path: both reserve deltas are negative, so this is a removal.
     await step(1);
     ledger.state = {
       contractId: "#state:1",

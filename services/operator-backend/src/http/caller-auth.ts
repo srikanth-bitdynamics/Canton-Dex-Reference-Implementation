@@ -3,7 +3,7 @@
 // The operator bearer token (checkOperatorAuth) authenticates the *backend
 // client* — but on its own it lets any holder name an arbitrary party as the
 // subject of a write the operator then performs on that party's behalf
-// (finding B-2: "shared operator token can still name any well-formed party").
+// of.
 //
 // This module adds the missing binding: a per-caller JWT, carried in a
 // dedicated header (X-Caller-Token), whose `sub` claim is the caller's Canton
@@ -13,11 +13,11 @@
 // for themselves, never for a party they do not control.
 //
 // The token is HS256-signed with a shared secret (DEX_CALLER_JWT_SECRET),
-// matching the Splice / LocalNet unsafe-JWT convention (sub = party id). HS256
+// matching the LocalNet JWT convention (`sub` = party id). HS256
 // is verified here with node's built-in crypto — no new dependency.
 //
 // Binding is OFF unless DEX_CALLER_JWT_SECRET is configured, so existing
-// trusted single-backend deployments are unchanged; multi-tenant deployments
+// trusted single-backend deployments can omit it; multi-tenant deployments
 // turn it on to get per-trader authorization. When ON it is fail-closed: a
 // trader-subject route with no/!invalid caller token is rejected.
 

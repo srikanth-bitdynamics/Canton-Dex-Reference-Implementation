@@ -1,4 +1,4 @@
-// Per-caller party binding (finding B-2): a trader-subject write route, when a
+// Per-caller party binding: a trader-subject write route, when a
 // caller-JWT secret is configured, must require an X-Caller-Token whose `sub`
 // equals the route's subject party, and reject anything else.
 
@@ -63,7 +63,7 @@ describe("verifyHs256", () => {
     const past = Math.floor(Date.now() / 1000) - 60;
     assert.equal(verifyHs256(signHs256({ sub: ALICE, exp: past }), SECRET), null);
   });
-  it("rejects a token with no exp by default (Low residual #2)", () => {
+  it("rejects a token with no exp by default", () => {
     // Build a token whose payload deliberately has no exp claim.
     const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
     const body = b64url(JSON.stringify({ sub: ALICE }));
@@ -73,7 +73,7 @@ describe("verifyHs256", () => {
     // ...but accepted when exp is explicitly not required.
     assert.equal(verifyHs256(noExp, SECRET, { requireExp: false })?.sub, ALICE);
   });
-  it("enforces the audience claim when configured (Low residual #2)", () => {
+  it("enforces the audience claim when configured", () => {
     const aud = "canton-dex-operator";
     // No aud in token → rejected when an audience is required.
     assert.equal(verifyHs256(signHs256({ sub: ALICE }), SECRET, { audience: aud }), null);

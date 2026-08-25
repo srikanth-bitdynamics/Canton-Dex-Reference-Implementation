@@ -113,7 +113,6 @@ factories instead of a custom off-ledger balance model.
 | Single-hop swaps | Implemented | Trader allocation plus `PoolRules_Swap` settlement |
 | Wallet handoff | Implemented | Token Standard, PartyLayer, CIP-0103-style, WalletConnect, Direct Canton, and Mock providers |
 | Operator backend | Implemented | HTTP API, JSON Ledger API driver, idempotency, indexing, and recovery |
-| Stable-pool extension | Example | Separate Daml project consuming the DEX DAR |
 
 ## Who Should Use It?
 
@@ -124,6 +123,22 @@ factories instead of a custom off-ledger balance model.
 | Wallet team | You can validate submit flows against a working dApp |
 | Operator | You get deployment, observability, cleanup, and recovery patterns |
 | Auditor or evaluator | You can inspect authority boundaries and settlement choreography |
+
+## New To DEX, AMM, Or Token Standard V2?
+
+Knowing Daml is enough to start. Use this path to build the exchange context in
+small steps:
+
+1. Read [Understand the design in 15 minutes](docs/concepts/design-tour.md) for
+   the actors, contracts, authority boundaries, and four settlement flows.
+2. Keep the [Glossary](docs/concepts/glossary.md) open for terms such as holding,
+   allocation, DvP, committed funding, and iterated settlement.
+3. Read [Workflow Design](docs/concepts/workflows.md) for the active choices and
+   state transitions behind swaps, liquidity, orders, and RFQs.
+4. Follow the [Quick Start](#quick-start) and repeat those flows with the seeded
+   local data.
+5. Use the [Builder Guide](docs/guides/builder-guide.md) when you are ready to
+   change contracts or add a workflow.
 
 ## Quick Start
 
@@ -189,9 +204,13 @@ For a real Canton participant or testnet validator, start with:
 - [`docs/guides/validator-test-plan.md`](docs/guides/validator-test-plan.md)
   for a full live-validation checklist.
 
-The operator backend signs operator-authority commands only. Trader-authority
-commands, such as order funding, swap allocation creation, and LP add/remove
-allocations, must go through a wallet or another user-authorized submitter.
+Self-custodial value flows keep trader authority in the wallet: order funding,
+swap allocation creation, and LP add/remove allocations never require the
+operator to act as the trader. The hosted demo's RFQ routes are an explicit
+exception: they require the backend's ledger user to be authorized for the
+hosted trader party, and `Rfq_Accept` also requires the operator. External
+deployments should provide those authorities through their own wallet,
+delegation, or co-submission design.
 
 ## Repository Layout
 
@@ -202,7 +221,6 @@ allocations, must go through a wallet or another user-authorized submitter.
 | [`services/operator-backend/`](services/operator-backend/) | Operator HTTP API, ledger submission, indexing, idempotency, pricing, and recovery |
 | [`services/registry-client/`](services/registry-client/) | Registry context and factory discovery client |
 | [`app/web/`](app/web/) | React frontend and wallet-provider boundary |
-| [`examples/stable-pool/`](examples/stable-pool/) | Example Daml project that consumes the DEX DAR |
 | [`scripts/`](scripts/) | Build, bootstrap, deployment, and smoke-test helpers |
 | [`docs/`](docs/) | Architecture, workflows, guides, runbooks, and API reference |
 | [`vendor/splice/`](vendor/splice/) | Vendored Token Standard packages used by this reference |
@@ -235,11 +253,11 @@ The boundary is intentionally strict:
 - DEX contracts own market state and workflow validation.
 - Token Standard contracts own asset reservation and settlement.
 - Registries own instrument semantics and choice context. The reference
-  registry uses `InstrumentConfiguration`, but Token Standard V2 does not
-  require that exact template.
-- Wallets own trader-authority submissions.
-- The operator backend orchestrates and settles only commands it is authorized
-  to submit.
+  registry uses its own `InstrumentConfig`, but Token Standard V2 does not
+  require a configuration template.
+- Wallets own trader-authored allocation submissions in self-custodial flows.
+- The operator backend submits administrative and settlement commands. Its
+  hosted RFQ relay is a documented demo exception, not a self-custodial path.
 
 The Daml package separates LP-token policy, venue workflows, and the reference
 registry by module/template. It implements upstream Token Standard V2
@@ -258,7 +276,7 @@ Read [`docs/concepts/architecture.md`](docs/concepts/architecture.md) and
 | Orders | [`docs/concepts/workflows.md`](docs/concepts/workflows.md) | `OrderFundingRequest`, `Order`, `OrderAllocationRequest`, `OrderMatchExecution` |
 | Pools and swaps | [`docs/concepts/liquidity-and-custody.md`](docs/concepts/liquidity-and-custody.md) | `Pool`, `PoolState`, `PoolSlice`, `PoolRules` |
 | Add/remove liquidity | [`docs/concepts/liquidity-and-custody.md`](docs/concepts/liquidity-and-custody.md) | `PoolLiquidityRules`, `LiquidityAllocationRequest`, `LPTokenPolicy` |
-| LP instruments | [`docs/guides/add-lp-or-instrument.md`](docs/guides/add-lp-or-instrument.md) | `LPTokenPolicy`, reference-registry instrument config |
+| LP and custom instruments | [`docs/guides/add-lp-or-instrument.md`](docs/guides/add-lp-or-instrument.md) | `LPTokenPolicy`, `InstrumentConfig`, registry extension boundary |
 | Choice context | [`docs/guides/choice-context.md`](docs/guides/choice-context.md) | Registry factories and Token Standard choices |
 
 ## Wallet Support
@@ -278,14 +296,14 @@ PartyLayer live-validation steps are documented in
 ## Development Commands
 
 ```bash
-# Build vendored Token Standard DARs
-bash scripts/build-vendored-token-standard.sh
+# Refresh Token Standard DARs from a Splice release (optional)
+bash scripts/fetch-splice-dars.sh 0.6.12
 
 # Build the DEX Daml package
 bash scripts/build-trading-surface.sh
 
-# Run Daml tests
-(cd trading-tests && daml test)
+# Build the Daml package and run every Daml test project
+bash scripts/run-local-daml-tests.sh
 
 # Run backend checks
 (cd services/operator-backend && npm run typecheck && npm test)
@@ -307,11 +325,9 @@ the privacy, performance, and traditional-accounting revision of the base token
 standard (**CIP-0056**) — and uses the **CIP-0103** dApp standard for
 trader-authorized wallet submissions.
 
-Token Standard V2 has **merged into `canton-network/splice` `main`** and becomes
-the network default from **mid-July 2026**. The vendored V2 sources under
-[`vendor/splice/`](vendor/splice/) are pinned to a specific upstream commit,
-recorded in [`vendor/splice/VENDOR_PIN.md`](vendor/splice/VENDOR_PIN.md); the
-repo re-pins as the surface stabilizes on `main`. The pool relies on
+The build consumes the released Splice Token Standard DARs committed under
+[`vendor/splice/dars/`](vendor/splice/dars/). Their release and provenance are
+recorded in [`vendor/splice/VENDOR_PIN.md`](vendor/splice/VENDOR_PIN.md). The pool relies on
 iterated-settlement and committed-allocation semantics — the exact surface it
 depends on is documented in
 [Allocation Surface](docs/reference/allocation-surface.md).

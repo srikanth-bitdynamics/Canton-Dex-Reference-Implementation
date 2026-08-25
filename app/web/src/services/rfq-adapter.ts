@@ -1,6 +1,4 @@
-// Adapter from on-ledger Rfq / RfqQuote shapes to the RfqPage UI
-// shape. Keeps the page rendering logic stable while swapping the data
-// source from `rfq-mock.ts` to `/v1/rfq` reads.
+// Adapter from on-ledger Rfq / RfqQuote shapes to the RFQ page model.
 
 import type {
   LedgerRfq,

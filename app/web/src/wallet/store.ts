@@ -25,11 +25,8 @@ interface WalletStore {
   listProviders(): { id: WalletProviderId; label: string }[];
 }
 
-// Single active status subscription. `connect` previously subscribed per
-// attempt and only unsubscribed on a `disconnected` status, so repeated
-// connects / provider switches / errors leaked listeners. We keep one
-// handle here and tear down the previous subscription before installing a new
-// one (and on error).
+// Keep exactly one provider-status subscription and replace it when the active
+// wallet changes.
 let activeUnsubscribe: (() => void) | null = null;
 
 function clearActiveSubscription(): void {

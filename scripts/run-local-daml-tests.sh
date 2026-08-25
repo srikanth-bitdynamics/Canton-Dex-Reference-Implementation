@@ -12,8 +12,3 @@ bash "$ROOT_DIR/scripts/build-trading-surface.sh"
   cd "$ROOT_DIR/trading-tests"
   dpm test
 )
-
-(
-  cd "$ROOT_DIR/examples/stable-pool"
-  dpm test
-)

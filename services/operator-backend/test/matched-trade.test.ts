@@ -96,11 +96,8 @@ describe("MatchedTradeService", () => {
 
     await svc.settle({
       tradeCid: "#trade:0" as ContractId<"MatchedTrade">,
-      // Empty on purpose: the settle fetches and archives every cid passed
-      // here as its FIRST act, and a counterparty that authored via
-      // AllocationRequest_Accept has already archived its own request. The
-      // old fixture passed "#req:0" and asserted the broken shape around it,
-      // so this suite was green while the choice could not decode at all.
+      // Accepted allocation requests have already been consumed. Settlement
+      // binds to the resulting allocations, so there are no live request cids.
       allocationRequestCids: [],
       batchesByAdmin: new Map<Party, SettlementBatchV2>([
         [
@@ -180,10 +177,14 @@ describe("MatchedTradeService", () => {
 
     assert.deepEqual(adminABatch!.extraArgs.context.values, { "ctx.adminA": true });
     assert.deepEqual(adminBBatch!.extraArgs.context.values, { "ctx.adminB": true });
-    assert.deepEqual(
-      submit.disclosure?.map((d) => d.createdEventBlob),
-      ["factory-adminA", "context-adminA", "factory-adminB", "context-adminB"],
-    );
+    const disclosureBlobs = submit.disclosure!.map((d) => d.createdEventBlob);
+    assert.deepEqual(new Set(disclosureBlobs), new Set([
+      "factory-adminA",
+      "context-adminA",
+      "factory-adminB",
+      "context-adminB",
+    ]));
+    assert.equal(disclosureBlobs.length, new Set(disclosureBlobs).size);
   });
 
   it("cancel threads the matching admin context for each allocation group", async () => {
@@ -220,8 +221,8 @@ describe("MatchedTradeService", () => {
       ["#b:0", { context: { values: { "ctx.adminB": true } }, meta: { values: {} } }],
     ]);
     assert.deepEqual(
-      submit.disclosure?.map((d) => d.createdEventBlob),
-      ["context-adminA", "context-adminB"],
+      new Set(submit.disclosure?.map((d) => d.createdEventBlob)),
+      new Set(["context-adminA", "context-adminB"]),
     );
   });
 });

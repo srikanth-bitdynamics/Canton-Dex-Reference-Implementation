@@ -1,10 +1,11 @@
 # Issuing a new LP token or lifecycle-rich instrument
 
-Most assets on this DEX need no new Daml. You register an instrument in the
-reference registry and mint it; the DEX treats the resulting `instrumentId` as
-opaque. This page gives five escalating recipes — from the LP token you already
-get for free, up to a custom vesting wrapper — and marks clearly where you leave
-the reference registry and start writing your own templates.
+Plain fungible assets need no new DEX Daml: register an instrument in a
+compatible registry and mint it, and the DEX treats its `InstrumentId` as
+opaque. Gated issuance and lifecycle behavior are different: Token Standard V2
+does not define them, and the included credential verifier is only a shape
+example. This page marks where the runnable reference ends and a custom registry
+or application begins.
 
 ## Two layers you build on
 
@@ -16,13 +17,14 @@ different registry can publish different config and credentials and still
 implement the same V2 `Holding`, `AllocationFactory`, and `SettlementFactory`
 interfaces.
 
-So a "lifecycle-rich" instrument in this repo is a per-instrument
-[`InstrumentConfig`](../../trading/CantonDex/Registry/V2.daml) plus optional
-issuer-signed `Credential`s the minter must present. `InstrumentConfig` can encode:
+The reference registry's
+[`InstrumentConfig`](../../trading/CantonDex/Registry/V2.daml) can encode:
 
 - **supply caps** (`supplyCap`; enforced by `InstrumentConfig_BumpSupply`)
-- **issuance credentials** (`issuerRequirements : [CredentialRequirement]`) — who is allowed to mint
-- **holder credentials** (`holderRequirements`) — recorded for downstream policy
+- **issuer requirement records** (`issuerRequirements`) — compared by the
+  placeholder claim matcher, not suitable for production authorization
+- **holder requirement records** (`holderRequirements`) — metadata only in the
+  reference registry; allocation and transfer choices do not enforce them
 - **decimals** for display precision
 - **external ids** (`isin`, `cusip`)
 
@@ -36,9 +38,9 @@ reference-registry behavior, not a Token Standard requirement.
 |---|---|---|
 | An LP token for a pool | [A](#a-vanilla-lp-token--already-built) | none — the add-liquidity DvP mints it |
 | A plain fungible base/quote asset | [B](#b-a-fresh-base-or-quote-instrument) | none — register + `Registry_Mint` |
-| A whitelisted / accredited-only asset | [C](#c-gated-issuance-credential-required) | none — attach credential requirements |
-| A token that unlocks over time | [D](#d-vested-lp-custom-lifecycle) | a wrapper template in your fork |
-| A token that pays dividends | [E](#e-dividend-paying-instrument) | a distribution script or claim template |
+| A whitelisted / accredited-only asset | [C](#c-gated-issuance-requires-a-real-verifier) | yes — integrate a registry that verifies issuer-authorized evidence |
+| A token that unlocks over time | [D](#d-vested-lp-custom-lifecycle) | yes — custom registry or application workflow |
+| A token that pays dividends | [E](#e-dividend-paying-instrument) | yes — custom distribution or claim workflow |
 
 ## A. Vanilla LP token — already built
 
@@ -62,12 +64,12 @@ The legs are pure constructors in
 [`Lp/Instrument.daml`](../../trading/CantonDex/Lp/Instrument.daml):
 
 ```daml
-lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
+lpMintLeg recipient lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-mint"
   sender = Utils.mintAccount
   receiver = recipient
   ...
-lpBurnLeg _lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
+lpBurnLeg holder lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-burn"
   sender = holder
   receiver = Utils.burnAccount
@@ -148,110 +150,38 @@ forA_ supplyCap $ \cap ->
   assertMsg ("mint exceeds supply cap " <> show cap) (next <= cap)
 ```
 
-## C. Gated issuance (credential-required)
+## C. Gated issuance requires a real verifier
 
-For a security token or whitelisted-investor asset, attach an issuer credential
-requirement. `Registry_Mint` checks `issuerRequirements` against the **minting
-admin** — this is the credential the admin must hold to be allowed to issue:
+The reference `InstrumentConfig` records `holderRequirements` and
+`issuerRequirements`, but its `verifyCredentials` helper compares
+caller-supplied records. It does not fetch issuer-signed contracts and must not
+be used as an authorization boundary.
 
-```daml
-let credsOk =
-      null config.issuerRequirements ||
-      verifyCredentials admin config.issuerRequirements issuerClaims
-assertMsg "issuer credentials not satisfied for mint" credsOk
-```
+A gated instrument therefore needs a registry integration that:
 
-`verifyCredentials` matches each requirement on `issuer`, `property`, `value`,
-and `holder == admin`, so `issuerClaims` carries `Credential` **records** (those
-four fields), not contract ids:
+1. resolves credential evidence controlled by the declared issuer;
+2. verifies the subject, property, value, expiry, and revocation state;
+3. enforces holder eligibility in allocation and transfer choices, not only at
+   mint time; and
+4. returns any required evidence through registry choice context and disclosed
+   contracts.
 
-```ts
-// 1. Credential issuer signs a Credential naming the admin as holder
-const credCid = await ledger.submit({
-  actAs: [credentialIssuer],
-  command: {
-    kind: 'create',
-    templateId: 'CantonDex.Registry.V2:Credential',
-    argument: { issuer: credentialIssuer, holder: admin, property: 'accredited-investor', value: 'true' },
-  },
-});
-
-// 2. Register with the requirement
-const configCid = await ledger.submit({
-  actAs: [admin],
-  command: {
-    kind: 'exercise',
-    templateId: 'CantonDex.Registry.V2:Registry',
-    contractId: registryCid,
-    choice: 'Registry_RegisterInstrument',
-    argument: {
-      instrumentId: 'PRIVATE-EQUITY',
-      decimals: 0,
-      supplyCap: '1000000.0',
-      holderRequirements: [],
-      issuerRequirements: [{ issuer: credentialIssuer, property: 'accredited-investor', value: 'true' }],
-      isin: null,
-      cusip: null,
-    },
-  },
-});
-
-// 3. Mint, supplying the matching claim record
-await ledger.submit({
-  actAs: [admin, alice],
-  command: {
-    kind: 'exercise',
-    templateId: 'CantonDex.Registry.V2:Registry',
-    contractId: registryCid,
-    choice: 'Registry_Mint',
-    argument: {
-      configCid,
-      owner: alice,
-      amount: '100.0',
-      issuerClaims: [{ issuer: credentialIssuer, holder: admin, property: 'accredited-investor', value: 'true' }],
-    },
-  },
-});
-```
-
-If the claim is missing, wrong-issuer, or held by anyone other than the minting
-admin, the mint rejects. `holderRequirements` is recorded on the config for
-downstream policy; the mint itself checks `issuerRequirements` only.
-
-> The reference `verifyCredentials` accepts party-issued claims at face value —
-> production **must** replace it with a real credential lookup. See the module
-> note in [`Instrument/Credentials.daml`](../../trading/CantonDex/Instrument/Credentials.daml).
+Those rules remain behind the V2 registry boundary. The DEX continues to trade
+the resulting `InstrumentId` without embedding credential policy in orders or
+pools.
 
 ## D. Vested LP (custom lifecycle)
 
-Token Standard V2 has no first-class vesting. The pattern is a custom template
-that owns or gates a V2 holding until a cliff passes. The following is an
-**illustrative example — it is not in the repo**; write it in your fork:
-
-```daml
--- EXAMPLE (not shipped): a wrapper that gates transfer until a cliff.
-template VestedLP with
-    holder : Party
-    admin : Party
-    underlying : ContractId V2.Holding   -- the LP holding, held locked
-    cliffAt : Time
-  where
-    signatory admin, holder
-    choice VestedLP_Claim : ContractId V2.Holding
-      controller holder
-      do
-        now <- getTime
-        assertMsg "not yet cliff" (now >= cliffAt)
-        ...                                -- release the underlying via TransferInstruction
-```
-
-The `underlying` holding stays locked until `VestedLP_Claim` releases it. It is
-still a V2 `Holding` under the wrapper, so it can appear in balance reads; the
-wrapper only gates the transfer.
+Token Standard V2 has no first-class vesting. A production design must decide
+whether vesting is enforced by the asset registry's transfer/allocation rules or
+by a separate application contract that controls when a holder may request a
+standard transfer. In either design, specify the authority that can release the
+asset, how cancellation and revocation work, and how wallets discover the
+claimable amount. This repository does not ship or validate such a workflow.
 
 ## E. Dividend-paying instrument
 
-Neither pattern ships in the reference; both are straightforward in a fork:
+Neither pattern ships in the reference. Common designs include:
 
 1. **Admin-pushed distribution** — a script queries current holders (the
    `Holding` ACS filtered by `instrumentId`) and creates pro-rata payout
@@ -277,22 +207,19 @@ Neither pattern ships in the reference; both are straightforward in a fork:
   and the V2 interface instances. *Proves the register-then-mint path in B and C.*
 - [`Lp/Instrument.daml`](../../trading/CantonDex/Lp/Instrument.daml) — the LP
   mint/burn legs and allocation specs. *Proves how the LP token in A rides the V2
-  allocation surface (mint = leg to `mintAccount`, burn = leg from it).*
+  allocation surface (mint = leg from `mintAccount`, burn = leg to
+  `burnAccount`).*
 - [`Lp/Policy.daml`](../../trading/CantonDex/Lp/Policy.daml) — `LPTokenPolicy`,
   the LP supply component. *Proves LP supply tracking is separate from
   `InstrumentConfig` caps.*
-- [`Instrument/Credentials.daml`](../../trading/CantonDex/Instrument/Credentials.daml)
-  — the credential primitive and `verifyCredentials`. *Proves the C gate — and
-  flags that the check is a placeholder.*
-- [`DvpMintBurnTests.daml`](../../trading-tests/CantonDex/Tests/DvpMintBurnTests.daml)
-  — `testDvpMintThenBurn` mints 100 LP to Alice then burns it. *Proves a mint
-  credits the receiver and a burn leaves nothing behind, not even a stray locked
-  holding.* `testHarnessDoesNotGateMintAuthorization` documents that the shipped
-  test registry does not enforce mint authorization — production registries do.
-- [`InstrumentTests.daml`](../../trading-tests/CantonDex/Tests/InstrumentTests.daml)
-  — config, credential-gated mint, and burn over the request-workflow templates.
-  *Proves open vs. gated issuance: `testMintGatedIssuance` rejects a mint whose
-  credential is absent.*
+- [`Registry/V2.daml`](../../trading/CantonDex/Registry/V2.daml) also contains
+  the reference credential primitive and `verifyCredentials`; the latter is an
+  explicit example placeholder, not production credential verification.
+- [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml)
+  — `testDvpAddLiquidity` proves deposit and LP mint settle atomically;
+  `testDvpRemoveDeliversToHolder` proves a partial burn returns the proportional
+  reserves and leaves the unredeemed LP balance unlocked; and
+  `testMintRequiresAdmin` proves a non-admin cannot author the mint side.
 
 ---
 

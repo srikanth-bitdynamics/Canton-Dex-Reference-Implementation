@@ -1,5 +1,9 @@
 -- | Mint request workflow: the requestor signs, the registrar accepts (creating
 -- a Holding) or rejects, and the requestor may cancel before acceptance.
+-- [COMPAT] Standalone DEX-specific lifecycle sample. Active DEX workflows mint
+-- through `CantonDex.Registry.V2`; this template remains for package lineage.
+--
+-- Design guide: `docs/concepts/design-tour.md#active-and-compatibility-surfaces`.
 module CantonDex.Instrument.Mint where
 
 import CantonDex.Instrument.Credentials qualified as Cred

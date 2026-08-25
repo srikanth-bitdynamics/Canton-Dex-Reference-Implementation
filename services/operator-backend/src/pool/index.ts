@@ -7,6 +7,7 @@ import type { ContractId, DisclosedContract } from "@canton-dex/registry-client"
 import { RegistryClient } from "@canton-dex/registry-client";
 
 import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
+import { mergeDisclosures } from "../ledger/disclosure.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { recoverCreatedAllocations } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
@@ -41,11 +42,12 @@ export interface PoolSwapInput {
   inputInstrumentId: string;
   inputAmount: Decimal;
   minOutputAmount: Decimal;
+  quoteBinding: PoolSwapQuoteBinding;
   // Explicit created cid (dApp-return path). Omitted on the operator-discovery
   // path, where `updateId` is supplied and the operator recovers it.
   swapperAllocationCid?: ContractId<"Allocation">;
   // Operator-discovery path (updateId-only wallet, e.g. PartyLayer): the
-  // swapper's single input allocation is recovered from the tree.
+  // swapper's signed two-sided allocation is recovered from the tree.
   updateId?: string | null;
   // Optional client-supplied idempotency key. When present the swap
   // commandId is derived from it; otherwise the commandId is derived
@@ -114,21 +116,30 @@ function contentHash(parts: unknown): string {
     .slice(0, 16);
 }
 
-// The wallet-facing request for a swap: the operator builds (in Daml) the
-// single prefunded/iterated input allocation the swapper must author before
-// the swap can settle. Creates nothing on-ledger — PoolRules_Swap consumes the
-// resulting allocation cid directly — so there is no requestCid to thread.
+// The wallet-facing request for a swap: Daml builds one terminal allocation
+// containing the exact input and output sides for a specific pool snapshot.
+// Creates nothing on-ledger; the wallet authors the returned specification.
 export interface PoolRequestSwapInput {
   poolCid: ContractId<"Pool">;
   swapper: Party;
   inputInstrumentId: string;
   inputAmount: Decimal;
+  minOutputAmount: Decimal;
+}
+
+export interface PoolSwapQuoteBinding {
+  expectedPoolId: string;
+  poolStateCid: ContractId<"PoolState">;
+  inputSliceCid: ContractId<"PoolSlice">;
+  outputSliceCids: ContractId<"PoolSlice">[];
+  minOutputAmount: Decimal;
 }
 
 export interface PoolRequestSwapResult {
   // The on-ledger spec the wallet authors via AllocationFactory_Allocate.
   allocationSpec: V2AllocationSpecification;
   settlement: V2SettlementInfo;
+  quoteBinding: PoolSwapQuoteBinding;
   // The pool-admin allocation factory the swapper allocates under.
   factoryCid: ContractId<"AllocationFactory">;
   allocationFactoryExtraArgs: RegistryExtraArgs;
@@ -187,9 +198,8 @@ export interface PoolRequestAddLiquidityResult extends LiquidityMatch {
 
 export interface PoolSettleAddLiquidityInput {
   poolCid: ContractId<"Pool">;
-  // The settle binds to EITHER the live request (legacy direct-allocation
-  // flow) OR the acceptance evidence (canonical accept flow, where accept
-  // consumed the request). Exactly one is supplied.
+  // Bind settlement to either a live request (direct-allocation integration)
+  // or the receipt left when a wallet accepts and consumes that request.
   requestCid?: ContractId<"LiquidityAllocationRequest"> | null;
   acceptanceCid?: ContractId<"LiquidityAllocationAcceptance"> | null;
   recipient: Party;
@@ -491,7 +501,24 @@ export class PoolService {
 
   async swap(input: PoolSwapInput): Promise<unknown> {
     const pool = await this.fetchPool(input.poolCid);
-    // Operator-discovery: recover the single swap input allocation from the tree
+    const binding = input.quoteBinding;
+    if (!binding || !Array.isArray(binding.outputSliceCids)) {
+      throw new LedgerError("validation", "swap: quoteBinding is required", false);
+    }
+    if (binding.expectedPoolId !== pool.poolId) {
+      throw new LedgerError("validation", "swap: quote belongs to a different pool", false);
+    }
+    if (binding.poolStateCid !== pool.poolStateCid) {
+      throw new LedgerError(
+        "contention",
+        "swap: pool changed after the quote; request a fresh quote and allocation",
+        true,
+      );
+    }
+    if (dec.parseDecimal(binding.minOutputAmount) !== dec.parseDecimal(input.minOutputAmount)) {
+      throw new LedgerError("validation", "swap: slippage minimum differs from quote", false);
+    }
+    // Operator-discovery: recover the signed swap allocation from the tree
     // when the wallet returned only an updateId.
     let swapperAllocationCid = input.swapperAllocationCid;
     if (input.updateId) {
@@ -512,12 +539,16 @@ export class PoolService {
     const inputIsBase = input.inputInstrumentId === pool.baseInstrumentId;
     const inputSlices = inputIsBase ? pool.baseSlices : pool.quoteSlices;
     const outputSlices = inputIsBase ? pool.quoteSlices : pool.baseSlices;
-    const headInput = inputSlices[0];
-    if (!headInput) throw new Error("pool has no input-side slice");
-    const amountOut = dec.parseDecimal(
-      this.computeQuote(pool, input.inputInstrumentId, input.inputAmount),
-    );
-    const outputSliceCids = selectCoveringPrefix(outputSlices, amountOut);
+    if (!inputSlices.some((slice) => slice.contractId === binding.inputSliceCid)) {
+      throw new LedgerError("contention", "swap: quoted input slice is no longer active", true);
+    }
+    const activeOutputCids = new Set(outputSlices.map((slice) => slice.contractId));
+    if (
+      binding.outputSliceCids.length === 0 ||
+      binding.outputSliceCids.some((cid) => !activeOutputCids.has(cid))
+    ) {
+      throw new LedgerError("contention", "swap: quoted output slices are no longer active", true);
+    }
     // Deterministic, replay-safe commandId: computed ONCE here,
     // outside the retry closure, from a client key or the request content.
     const swapKey =
@@ -528,6 +559,7 @@ export class PoolService {
         inputInstrumentId: input.inputInstrumentId,
         inputAmount: input.inputAmount,
         minOutputAmount: input.minOutputAmount,
+        quoteBinding: binding,
         swapperAllocationCid,
         updateId: input.updateId ?? null,
       });
@@ -537,7 +569,7 @@ export class PoolService {
         actAs: [this.operatorParty],
         readAs: input.swapperAccount.owner ? [input.swapperAccount.owner] : [],
         commandId,
-        disclosure: [...factories.disclosure, ...ctx.disclosure],
+        disclosure: mergeDisclosures(factories.disclosure, ctx.disclosure),
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolRules:PoolRules",
@@ -546,28 +578,54 @@ export class PoolService {
           argument: {
             expectedPoolId: pool.poolId,
             poolCid: input.poolCid,
-            poolStateCid: pool.poolStateCid,
+            poolStateCid: binding.poolStateCid,
             swapperAccount: input.swapperAccount,
             inputInstrumentId: input.inputInstrumentId,
             inputAmount: input.inputAmount,
             minOutputAmount: input.minOutputAmount,
             swapperAllocationCid,
-            inputSliceCid: headInput.contractId,
-            outputSliceCids,
+            inputSliceCid: binding.inputSliceCid,
+            outputSliceCids: binding.outputSliceCids,
             factoryCid: factories.settlementFactoryCid,
             extraArgs: ctx.extraArgs,
+            quoteBinding: binding,
           },
         },
       }),
     );
   }
 
-  // Build the swapper's input allocation spec + settlement descriptor (in
-  // Daml, via the nonconsuming PoolRules_RequestSwap), so the wallet authors a
-  // spec that exactly matches what PoolRules_Swap settles against. Returns the
-  // pool-admin allocation factory the wallet allocates under.
+  // Build the exact two-sided allocation and snapshot binding in Daml so the
+  // wallet authorizes precisely what PoolRules_Swap later settles.
   async requestSwap(input: PoolRequestSwapInput): Promise<PoolRequestSwapResult> {
     const pool = await this.fetchPool(input.poolCid);
+    if (
+      input.inputInstrumentId !== pool.baseInstrumentId &&
+      input.inputInstrumentId !== pool.quoteInstrumentId
+    ) {
+      throw new LedgerError("validation", "swap: input instrument is not in the pool", false);
+    }
+    const inputIsBase = input.inputInstrumentId === pool.baseInstrumentId;
+    const inputSlices = inputIsBase ? pool.baseSlices : pool.quoteSlices;
+    const outputSlices = inputIsBase ? pool.quoteSlices : pool.baseSlices;
+    const inputSlice = inputSlices[0];
+    if (!inputSlice) throw new LedgerError("validation", "swap: pool has no input liquidity", false);
+    const amountOut = dec.parseDecimal(
+      this.computeQuote(pool, input.inputInstrumentId, input.inputAmount),
+    );
+    if (amountOut <= 0n) {
+      throw new LedgerError("validation", "swap: output rounds to zero", false);
+    }
+    if (amountOut < dec.parseDecimal(input.minOutputAmount)) {
+      throw new LedgerError("validation", "swap: quoted output is below the slippage minimum", false);
+    }
+    const quoteBinding: PoolSwapQuoteBinding = {
+      expectedPoolId: pool.poolId,
+      poolStateCid: pool.poolStateCid,
+      inputSliceCid: inputSlice.contractId,
+      outputSliceCids: selectCoveringPrefix(outputSlices, amountOut),
+      minOutputAmount: input.minOutputAmount,
+    };
     const [factories, ctx] = await Promise.all([
       this.registry.getFactories(pool.admin),
       this.choiceContext(pool.admin),
@@ -575,12 +633,15 @@ export class PoolService {
     const result = await this.ledger.submit<{
       settlement: V2SettlementInfo;
       allocationSpec: V2AllocationSpecification;
+      quoteBinding: PoolSwapQuoteBinding | null;
     }>({
       actAs: [this.operatorParty],
       commandId: `pool-swap-req:${input.poolCid}:${contentHash({
         swapper: input.swapper,
         inputInstrumentId: input.inputInstrumentId,
         inputAmount: input.inputAmount,
+        minOutputAmount: input.minOutputAmount,
+        quoteBinding,
       })}`,
       command: {
         kind: "exercise",
@@ -592,15 +653,23 @@ export class PoolService {
           swapper: input.swapper,
           inputInstrumentId: input.inputInstrumentId,
           inputAmount: input.inputAmount,
+          quoteBinding,
         },
       },
     });
+    if (!result.quoteBinding) {
+      throw new LedgerError("validation", "swap: on-ledger request omitted quote binding", false);
+    }
     return {
       allocationSpec: result.allocationSpec,
       settlement: result.settlement,
+      quoteBinding: result.quoteBinding,
       factoryCid: factories.allocationFactoryCid,
       allocationFactoryExtraArgs: ctx.extraArgs,
-      allocationFactoryDisclosure: [...factories.disclosure, ...ctx.disclosure],
+      allocationFactoryDisclosure: mergeDisclosures(
+        factories.disclosure,
+        ctx.disclosure,
+      ),
     };
   }
 
@@ -793,11 +862,14 @@ export class PoolService {
       lpFactoryCid: lpFactories.allocationFactoryCid,
       depositFactoryExtraArgs: depositContext.extraArgs,
       lpFactoryExtraArgs: lpContext.extraArgs,
-      depositFactoryDisclosure: [
-        ...depositFactories.disclosure,
-        ...depositContext.disclosure,
-      ],
-      lpFactoryDisclosure: [...lpFactories.disclosure, ...lpContext.disclosure],
+      depositFactoryDisclosure: mergeDisclosures(
+        depositFactories.disclosure,
+        depositContext.disclosure,
+      ),
+      lpFactoryDisclosure: mergeDisclosures(
+        lpFactories.disclosure,
+        lpContext.disclosure,
+      ),
     };
   }
 
@@ -830,18 +902,18 @@ export class PoolService {
     // choice context. For the self-registry both contexts are empty.
     //
     // The LP's deposit holdings are `signatory admin, owner`, so the operator
-    // cannot see them; the disclosure has to come from the deposit registry's
-    // choice context. Limited to a co-hosted registry until then.
+    // cannot see them. Registry discovery supplies the transaction-wide
+    // disclosures needed to validate the nested choices.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-add-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
-        disclosure: [
-          ...depositFactories.disclosure,
-          ...lpFactories.disclosure,
-          ...depositContext.disclosure,
-          ...lpContext.disclosure,
-        ],
+        disclosure: mergeDisclosures(
+          depositFactories.disclosure,
+          lpFactories.disclosure,
+          depositContext.disclosure,
+          lpContext.disclosure,
+        ),
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
@@ -955,11 +1027,14 @@ export class PoolService {
       lpFactoryCid: lpFactories.allocationFactoryCid,
       depositFactoryExtraArgs: depositContext.extraArgs,
       lpFactoryExtraArgs: lpContext.extraArgs,
-      depositFactoryDisclosure: [
-        ...depositFactories.disclosure,
-        ...depositContext.disclosure,
-      ],
-      lpFactoryDisclosure: [...lpFactories.disclosure, ...lpContext.disclosure],
+      depositFactoryDisclosure: mergeDisclosures(
+        depositFactories.disclosure,
+        depositContext.disclosure,
+      ),
+      lpFactoryDisclosure: mergeDisclosures(
+        lpFactories.disclosure,
+        lpContext.disclosure,
+      ),
     };
   }
 
@@ -991,19 +1066,19 @@ export class PoolService {
     // pool.lpRegistrar — each carries its own registry choice context.
     // For the self-registry both contexts are empty.
     //
-    // The LP's deposit holdings are `signatory admin, owner`, so the operator
-    // cannot see them; the disclosure has to come from the deposit registry's
-    // choice context. Limited to a co-hosted registry until then.
+    // The holder's allocations can reference contracts the operator cannot
+    // see. Registry discovery supplies the transaction-wide disclosures needed
+    // to validate the nested choices.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-remove-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
-        disclosure: [
-          ...depositFactories.disclosure,
-          ...lpFactories.disclosure,
-          ...depositContext.disclosure,
-          ...lpContext.disclosure,
-        ],
+        disclosure: mergeDisclosures(
+          depositFactories.disclosure,
+          lpFactories.disclosure,
+          depositContext.disclosure,
+          lpContext.disclosure,
+        ),
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",

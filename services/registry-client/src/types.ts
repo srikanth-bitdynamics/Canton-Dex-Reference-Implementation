@@ -1,52 +1,10 @@
-// Shapes that mirror the on-ledger registry contracts. Fields come
-// straight from the Daml templates in trading/CantonDex/Instrument/.
-// JSON form follows daml-lf JSON serialization (Decimal as string).
+// Registry HTTP response shapes. A registry may use any on-ledger templates as
+// long as its API returns these validated integration fields.
 
 export type Party = string;
 export type ContractId<_T> = string & { readonly __brand: unique symbol };
 export type Decimal = string;
 export type Time = string;
-
-export interface CredentialRequirement {
-  issuer: Party;
-  property: string;
-  value: string;
-}
-
-export interface InstrumentConfiguration {
-  contractId: ContractId<"InstrumentConfiguration">;
-  admin: Party;
-  instrumentId: string;
-  holderRequirements: CredentialRequirement[];
-  issuerRequirements: CredentialRequirement[];
-  isin: string | null;
-  cusip: string | null;
-  description: string;
-}
-
-export interface Credential {
-  contractId: ContractId<"Credential">;
-  issuer: Party;
-  holder: Party;
-  property: string;
-  value: string;
-}
-
-export interface Holding {
-  contractId: ContractId<"Holding">;
-  admin: Party;
-  owner: Party;
-  instrumentId: string;
-  amount: Decimal;
-  locked: boolean;
-}
-
-export interface TransferPreapproval {
-  contractId: ContractId<"TransferPreapproval">;
-  receiver: Party;
-  admin: Party;
-  instrumentIds: string[];
-}
 
 export interface FactoryRefs {
   allocationFactoryCid: ContractId<"AllocationFactory">;
@@ -58,9 +16,7 @@ export interface DisclosedContract {
   contractId: string;
   templateId: string;
   contractKeyHash?: string;
-  // Canton's JSON Ledger API disclosed-contract field: the base64 created-event
-  // blob, threaded verbatim into the ledger submission's `disclosedContracts`.
-  // (Was mis-named `payloadBlob`, which Canton ignores.)
+  /** Base64 created event passed to the Ledger API as a disclosed contract. */
   createdEventBlob: string;
   synchronizerId?: string;
 }
@@ -77,13 +33,10 @@ export interface ChoiceContextRef {
 }
 
 export type RegistryErrorKind =
-  | "config-not-found"
-  | "credential-missing"
   | "factory-stale"
-  | "preapproval-revoked"
   | "transport"
   | "auth"
-  // Response did not match the declared shape (runtime validation, R-1).
+  // The response did not match the declared integration shape.
   | "malformed";
 
 export class RegistryError extends Error {

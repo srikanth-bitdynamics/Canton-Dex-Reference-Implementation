@@ -3,12 +3,12 @@
 -- registry (our DexRegistry over MockRegistry) through MatchedTrade ->
 -- per-authorizer allocation accept -> MatchedTrade_Settle, and verify the
 -- batch settles and the trade + requests are archived.
+-- Design context: `docs/concepts/design-tour.md#the-token-standard-settlement-spine`.
 module CantonDex.Tests.TokenStandardHarnessTests where
 
 import DA.Assert
 import DA.List (head)
 import DA.Map qualified as Map
-import DA.TextMap qualified as TextMap
 
 import Daml.Script
 
@@ -25,9 +25,9 @@ import Splice.Testing.TokenStandard.RegistryApiV2
 
 import CantonDex.Dex.MatchedTrade qualified as MT
 import CantonDex.Trading.Utils qualified as Utils
-import CantonDex.Trading.WorkflowConstructors qualified as WC
 import CantonDex.TokenStandardHarness.DexRegistry qualified as DexReg
 
+-- | Proves matched-trade requests and settlement compose with the TSv2 harness.
 testMatchedTradeViaTokenStandardRegistry : Script ()
 testMatchedTradeViaTokenStandardRegistry = do
   venue <- allocateParty "venue-ts"

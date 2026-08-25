@@ -1,16 +1,6 @@
-// Pool status on the wire.
-//
-// A real participant returns the raw Daml constructor, "PS_Active". types.ts
-// declares `"Unfunded" | "Active" | "Paused"`, and the in-memory dev server
-// already emits the short form — so the two disagreed, and only the dApp
-// survived, by stripping the prefix in the frontend. Any other client written
-// against the published type saw zero tradable pools. An external integrator's
-// adapter filtered out the deployment's only pool on its first run.
-//
-// The normalisation belongs on the ledger read path (mirroring the OS_ strip
-// in OrderService.listOpen), NOT in the HTTP layer and NOT on the write path:
-// AdminService submits `status: "PS_Unfunded"` as a PoolState create argument,
-// and those are ledger-bound.
+// A participant returns raw Daml constructors such as `PS_Active`, while the
+// public API exposes `Unfunded | Active | Paused`. Normalize on the ledger read
+// path only: create arguments remain ledger-bound and retain the `PS_` prefix.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

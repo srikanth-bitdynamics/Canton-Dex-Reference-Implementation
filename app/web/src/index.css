@@ -13,9 +13,9 @@
 
 /* === Visual system ==========================================================
  *
- * Legacy token names used across components are aliased onto the design
- * system's semantic variables, so `var(--red)` and `bg-surface-card` both
- * resolve to the same Bitdynamics tokens. Structure comes from 1px
+ * Shared token aliases map component styles onto the design system's semantic
+ * variables, so `var(--red)` and `bg-surface-card` resolve to the same palette.
+ * Structure comes from 1px
  * hairlines, wide-caps micro-labels, and mono data values — not shadows,
  * gradients, or pills.
  * ============================================================================ */
@@ -364,7 +364,7 @@
   .activity-row {
     @apply grid items-center px-4 py-2 text-xs;
     border-bottom: 1px solid var(--border-subtle);
-    grid-template-columns: 60px 80px 1fr 100px 90px;
+    grid-template-columns: 60px 80px 1fr 90px;
     gap: 12px;
   }
   .activity-row .time {

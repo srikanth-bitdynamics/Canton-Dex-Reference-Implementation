@@ -1,6 +1,7 @@
--- | Rejection paths the end-to-end tests don't cover: zero/negative mint and
--- burn amounts (ensure clauses), and mint-accept failing on instrumentId
--- mismatch or missing issuer credentials.
+-- | Rejection paths for the standalone `CantonDex.Instrument` lifecycle
+-- sample: zero/negative mint and burn amounts, instrument mismatch, and
+-- missing issuer credentials. Active DEX workflows use `Registry.V2` instead.
+-- Design context: `docs/concepts/design-tour.md#active-and-compatibility-surfaces`.
 module CantonDex.Tests.EdgeCaseTests where
 
 import Daml.Script
@@ -25,11 +26,12 @@ mkConfig registrar instrumentId issuerRequirements description =
     cusip = None
     description
 
+-- | Proves the compatibility mint request rejects a zero amount at creation.
 testMintRejectsZeroAmount : Script ()
 testMintRejectsZeroAmount = do
   registrar <- allocateParty "registrar"
   alice <- allocateParty "alice"
-  _cfg <- mkConfig registrar "BTC" [] "test"
+  mkConfig registrar "BTC" [] "test"
   submitMustFail alice $ createCmd Mint.MintRequest with
     requestor = alice
     admin = registrar
@@ -38,6 +40,7 @@ testMintRejectsZeroAmount = do
     reference = "zero"
   pure ()
 
+-- | Proves the compatibility mint request rejects a negative amount.
 testMintRejectsNegativeAmount : Script ()
 testMintRejectsNegativeAmount = do
   registrar <- allocateParty "registrar"
@@ -50,6 +53,7 @@ testMintRejectsNegativeAmount = do
     reference = "neg"
   pure ()
 
+-- | Proves the compatibility burn request rejects a zero amount.
 testBurnRejectsZeroAmount : Script ()
 testBurnRejectsZeroAmount = do
   registrar <- allocateParty "registrar"
@@ -69,6 +73,7 @@ testBurnRejectsZeroAmount = do
     lockedHoldingCid = holdingCid
   pure ()
 
+-- | Proves mint acceptance cannot substitute another instrument configuration.
 testMintAcceptRejectsInstrumentIdMismatch : Script ()
 testMintAcceptRejectsInstrumentIdMismatch = do
   registrar <- allocateParty "registrar"
@@ -85,6 +90,7 @@ testMintAcceptRejectsInstrumentIdMismatch = do
     issuerClaims = []
   pure ()
 
+-- | Proves gated mint acceptance requires the configured issuer credential.
 testMintAcceptRejectsMissingCredential : Script ()
 testMintAcceptRejectsMissingCredential = do
   registrar <- allocateParty "registrar"

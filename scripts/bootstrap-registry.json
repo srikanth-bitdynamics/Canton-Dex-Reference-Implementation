@@ -1,9 +1,8 @@
 {
   "instruments": [
-    { "instrumentId": "BTC", "description": "Demo Bitcoin" },
-    { "instrumentId": "USDC", "description": "Demo USD Coin" },
-    { "instrumentId": "ETH", "description": "Demo Ether" }
+    { "instrumentId": "BTC" },
+    { "instrumentId": "USDC" },
+    { "instrumentId": "ETH" }
   ],
-  "lpInstruments": ["BTC-USDC-LP", "ETH-USDC-LP"],
-  "credentials": []
+  "lpInstruments": ["BTC-USDC-LP", "ETH-USDC-LP"]
 }

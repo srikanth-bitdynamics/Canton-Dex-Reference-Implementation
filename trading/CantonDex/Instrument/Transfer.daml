@@ -1,6 +1,11 @@
 -- | Transfer offer/accept/reject/withdraw plus TransferPreapproval. Two paths:
 -- offer/accept (sender locks, receiver accepts) and direct (a receiver
 -- preapproval lets the sender deliver without an explicit accept).
+-- [COMPAT] Standalone DEX-specific lifecycle sample, not the Token Standard
+-- transfer-instruction surface. Active DEX workflows use
+-- `CantonDex.Registry.V2`; these templates remain for package lineage.
+--
+-- Design guide: `docs/concepts/design-tour.md#active-and-compatibility-surfaces`.
 module CantonDex.Instrument.Transfer where
 
 import CantonDex.Instrument.Credentials qualified as Cred

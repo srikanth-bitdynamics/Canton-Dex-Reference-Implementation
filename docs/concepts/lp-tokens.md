@@ -41,7 +41,7 @@ issuance sources (`mintAccount` id `"cip-112/mint"`, `burnAccount` id
 `burnAccount` is a redemption — [`lpMintLeg` / `lpBurnLeg`](../../trading/CantonDex/Lp/Instrument.daml):
 
 ```daml
-lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
+lpMintLeg recipient lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-mint"
   sender = Utils.mintAccount
   receiver = recipient
@@ -49,7 +49,7 @@ lpMintLeg _lpRegistrar recipient lpInstrumentId amount = V2.TransferLeg with
   instrumentId = lpInstrumentId
   meta = emptyMetadata
 
-lpBurnLeg _lpRegistrar holder lpInstrumentId amount = V2.TransferLeg with
+lpBurnLeg holder lpInstrumentId amount = V2.TransferLeg with
   transferLegId = "lp-burn"
   sender = holder
   receiver = Utils.burnAccount
@@ -132,28 +132,20 @@ simplicity** (one LP balance per pool, not a timeline of versioned slivers).
 - **Policy upgrades are package upgrades.** Replacing the LP policy itself
   (security fix, choice-signature change) is a Canton package upgrade: same
   `instrumentId`, new package hash; holders are unaffected.
-- **Contrast with registry primitives.** A lifecycle-aware registry instrument
-  may version when its external issuer must crystallise an off-ledger event
-  (e.g. a coupon at epoch N paid into `v_N` before rolling to `v_{N+1}`), which
-  needs upgrade-on-use plus a force-upgrade choice for passive holders. The LP
-  token has no such event — its issuer is the pool's `lpRegistrar` and fee
-  accrual is just reserve growth — so it stays at one stable `instrumentId` for
-  the life of the pool. A wallet consuming registry primitives must handle
-  upgrade-on-use; the same wallet consuming LP tokens does not. See
+- **Registry-specific lifecycle is separate.** Token Standard V2 does not
+  standardize instrument lifecycle transitions. The reference LP token needs no
+  such extension: its registrar is fixed, fees accrue through reserve growth,
+  and one stable `InstrumentId` identifies the pool share. See
   [CIP-0112](https://github.com/global-synchronizer-foundation/cips/blob/main/cip-0112/cip-0112.md)
-  for the V1→V2 compatibility framing.
+  for the standard interfaces this implementation uses.
 
 ## Tests
 
-- [`DvpMintBurnTests.daml`](../../trading-tests/CantonDex/Tests/DvpMintBurnTests.daml)
-  — `testDvpMintThenBurn` proves the mint/burn *mechanism* in isolation: a mint
-  leg from `mintAccount` credits the recipient, a burn leg to `burnAccount`
-  debits the holder and leaves nothing behind (the owner-`None` account is never
-  credited).
 - [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml)
-  — the same mint/burn as the sibling batch of a real add/remove:
+  — mint/burn as the sibling batch of a real add/remove:
   `testDvpAddLiquidity` (deposit + LP mint settle atomically),
-  `testDvpRemoveDeliversToHolder` (reserves pay the holder, LP burns),
+  `testDvpRemoveDeliversToHolder` (partial redemption pays reserves, burns the
+  redeemed amount, and preserves the holder's unlocked LP remainder),
   `testAddRejectsOverMint` (a receipt above the on-ledger fair share is
   rejected), and `testSettleRequiresCoControl` (the settle needs both `operator`
   and `lpRegistrar`).

@@ -95,8 +95,11 @@ inspects or rewrites it.
 
 For a **cross-registry** trade, the merge is per admin: the operator groups legs
 by their instrument's admin, fetches each admin's factories and context
-separately, and concatenates the disclosure so every batch carries only its own
-registry's contracts (see [`matched-trade/index.ts`](../../services/operator-backend/src/matched-trade/index.ts),
+separately, and concatenates the disclosures needed by the single transaction.
+Context selection is keyed by admin, never by list position, so every batch
+receives its own registry context. Disclosed contracts are transaction-wide,
+deduplicated by contract id, and have no positional settlement meaning (see
+[`matched-trade/index.ts`](../../services/operator-backend/src/matched-trade/index.ts),
 `MatchedTrade_Settle`). On-ledger the context rides all the way down: the
 registry's `SettlementFactory_SettleBatch` forwards `arg.extraArgs` into each
 `Allocation_Settle` it exercises (see
@@ -109,8 +112,11 @@ registry's `SettlementFactory_SettleBatch` forwards `arg.extraArgs` into each
 back to empty context + no disclosure on a 404;
 [`matched-trade.test.ts`](../../services/operator-backend/test/matched-trade.test.ts)
 — a two-admin settle threads each admin's `extraArgs.context` into its own
-`SettlementBatchV2` and emits the disclosure in
-`[factory-A, context-A, factory-B, context-B]` order.
+`SettlementBatchV2`, includes every required disclosure exactly once, and does
+not assign meaning to disclosure-array order; and
+[`pool.test.ts`](../../services/operator-backend/test/pool.test.ts) — split-admin
+add and remove map distinct pool-admin and LP-registrar contexts to the matching
+choice fields while deduplicating their shared disclosure.
 
 ## Endpoints the operator queries
 
@@ -118,11 +124,8 @@ Per registry, the operator backend fetches:
 
 | Example lookup                             | Returns                                   | Used by |
 |--------------------------------------------|-------------------------------------------|---------|
-| `GET /registry/instrument-config/:id`      | reference-registry `InstrumentConfiguration`, or equivalent registry config, plus disclosure | Order, Pool, MatchedTrade, Rfq |
-| `GET /registry/credentials?holder=:p`      | reference-registry `Credential[]`, or equivalent authorization evidence, for that party | MintRequest_Accept, TransferOffer_Accept |
 | `GET /registry/factories/:admin`           | `(AllocationFactory, SettlementFactory)` CIDs + disclosure | `PoolRules_Swap`, matched-trade settle |
 | `GET /registry/choice-context/:admin`      | `ChoiceContextRef` (`context` + disclosure) | Pool, MatchedTrade, any registry-touching token-standard choice |
-| `GET /registry/preapprovals?receiver=:p&admin=:a` | reference-registry `TransferPreapproval[]`, or equivalent preapproval evidence, for that receiver | TransferOffer_AcceptPreapproved |
 
 These endpoints are examples for this reference implementation. A production
 registry may use different paths, payloads, or discovery mechanisms as long as
@@ -132,23 +135,16 @@ required by the registry's Token Standard V2 choices. The operator-backend's
 
 ## Disclosure retrieval and caching
 
-The `registry-client` owns five caches, keyed and refreshed as follows:
+The `registry-client` owns two caches:
 
-1. Registry config CIDs and their explicit-disclosure payloads, keyed by
-   `InstrumentId`, when the registry provides config contracts.
-2. Allocation/Settlement factory CIDs (plus disclosure) per admin. Stale on admin
+1. Allocation/Settlement factory CIDs (plus disclosure) per admin. Stale on admin
    re-publish, when the registry archives + recreates.
-3. Choice-context refs per admin, honouring `choiceContextTtlMs`.
-4. Reference-registry `TransferPreapproval` CIDs, keyed by `(receiver, admin)`,
-   when the registry supports preapproval contracts.
-5. Credentials or equivalent authorization evidence, keyed by `holder` — a short
-   TTL (`credentialsTtlMs`, default 60 s) because credentials can be revoked.
+2. Choice-context refs per admin, honouring `choiceContextTtlMs` when configured.
 
-Only the credentials and choice-context caches carry a TTL; the config, factory,
-and preapproval caches hold their entries until they are flushed. The client
-exposes `invalidateAll()` for a full flush after a known archive or re-publish.
-There is no registry-side event stream driving invalidation, so a co-hosted
-registry (or an explicit flush) is what keeps a non-TTL cache honest.
+The factory cache holds entries until it is flushed. The client exposes
+`invalidateAll()` for a full flush after a known factory archive or re-publish.
+There is no registry-side event stream driving invalidation, so an integration
+must explicitly flush the cache when its registry republishes factories.
 
 Registry responses are never trusted via a bare cast: `fetchJson` runs each
 payload through a shape validator and raises `RegistryError("malformed", ...)` on
@@ -158,14 +154,12 @@ a mismatch (see [`registry-client/src/validate.ts`](../../services/registry-clie
 
 | Failure | Recovery |
 |---|---|
-| Stale registry config/disclosure CID (archived since cache fetch) | Refetch and retry once |
-| Missing credential for required claim | Surface to the wallet UI; operator does not synthesize credentials |
 | Factory CID stale | Refetch from `factories/:admin`; backoff on repeated failures |
-| Preapproval revoked between fetch and submit | Fall back to offer/accept flow |
+| Choice-context disclosure stale | Flush the registry client, refetch, and retry once |
 | Settlement batch rejected by factory | Cancel the trade, surface to operator monitoring |
 
 The `registry-client` module raises a typed `RegistryError` — with a `kind`
-(`config-not-found`, `factory-stale`, `auth`, `transport`, `malformed`, …) and a
+(`factory-stale`, `auth`, `transport`, or `malformed`) and a
 `retryable` flag — so the calling code path can recover correctly.
 
 ## Reference: choice-context-bearing arguments
@@ -237,42 +231,14 @@ Required inputs:
 - `extraArgs.context` — registry-supplied choice context for the
   settlement admin. Self-registries may return empty context.
 
-### Reference-registry mint accept
+### Registry administration is separate
 
-`MintRequest_Accept`
-
-Required inputs:
-- `configCid : ContractId InstrumentConfiguration` — fetched from the
-  registry-client for the reference registry. Other registries may require a
-  different disclosed config contract or no config contract at all.
-- `issuerClaims : [Credential]` — fetched from the credentials
-  endpoint, keyed by the requestor's party. Empty list iff the config's
-  `issuerRequirements` is empty (open issuance).
-
-### Reference-registry burn accept
-
-`BurnRequest_Accept`
-
-Same shape as Mint accept.
-
-### Reference-registry transfer accept
-
-`TransferOffer_Accept`
-
-Required inputs:
-- `configCid : ContractId InstrumentConfiguration` — reference-registry config.
-- `senderClaims : [Credential]` — sender's reference-registry holder claims.
-- `receiverClaims : [Credential]` — receiver's reference-registry holder claims.
-
-### Reference-registry transfer accept (preapproved)
-
-`TransferOffer_AcceptPreapproved`
-
-Required inputs:
-- `preapprovalCid : ContractId TransferPreapproval` — fetched via
-  preapprovals endpoint.
-- `configCid : ContractId InstrumentConfiguration` — reference-registry config.
-- `senderClaims : [Credential]` — sender's holder claims.
+The DEX does not mint, burn, or transfer base/quote holdings through custom app
+choices. The reference registry's `Registry_Mint` and `Registry_Burn` choices
+are bootstrap/admin utilities; peer-to-peer transfers use the standard
+`V2.TransferFactory` and `V2.TransferInstruction` interfaces. A different
+registry may require choice context for those operations, but that context is
+not part of a DEX settlement request.
 
 ---
 

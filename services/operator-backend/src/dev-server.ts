@@ -69,7 +69,7 @@ function registerHandlers(
     observers: [operator, admin],
   }));
   ledger.registerCreateHandler(
-    "CantonDex.Instrument.Holding:Holding",
+    "CantonDex.Registry.V2:Holding",
     (payload) => ({
       // Operator is included so the dApp's /v1/holdings route (which
       // queries with observingParty = operator) sees trader holdings.
@@ -346,7 +346,7 @@ async function seed(
       commandId: `seed-holding-${trader}-${instrumentId}`,
       command: {
         kind: "create",
-        templateId: "CantonDex.Instrument.Holding:Holding",
+        templateId: "CantonDex.Registry.V2:Holding",
         argument: {
           admin,
           owner: trader,

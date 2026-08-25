@@ -26,6 +26,28 @@ class StubRegistry extends RegistryClient {
 const FUNDING_TEMPLATE =
   "abcdef:CantonDex.Dex.OrderFundingRequest:OrderFundingRequest";
 const ALLOCATION_TEMPLATE = "abcdef:CantonDex.Registry.V2:Allocation";
+const BIND_SETTLEMENT = {
+  executors: ["op"],
+  id: "DexOrderBook:admin:BTC:USDC",
+  cid: null,
+  meta: { values: {} },
+};
+const BIND_SPEC = {
+  admin: "admin",
+  authorizer: { owner: "trader", provider: null, id: "" },
+  transferLegSides: [{
+    transferLegId: "order-funding",
+    side: "SenderSide",
+    otherside: { owner: null, provider: null, id: "" },
+    amount: "1.0",
+    instrumentId: "USDC",
+    meta: { values: {} },
+  }],
+  settlementDeadline: null,
+  nextIterationFunding: null,
+  committed: false,
+  meta: { values: {} },
+};
 
 // Records the last submitted command and serves a fixed transaction tree for
 // operator-discovery.
@@ -34,7 +56,12 @@ class CapturingLedger implements LedgerSubmitter {
   treeEvents: Array<{ contractId: string; templateId: string }> = [];
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.lastSubmit = req;
-    return { orderCid: "#order:0", allocationRequestCid: "#areq:0" } as R;
+    return {
+      orderCid: "#order:0",
+      allocationRequestCid: "#areq:0",
+      settlement: BIND_SETTLEMENT,
+      allocationSpec: BIND_SPEC,
+    } as R;
   }
   async treeCreatedEvents() {
     return this.treeEvents;
@@ -58,7 +85,7 @@ describe("OrderService.bind", () => {
     const ledger = new CapturingLedger();
     const svc = new OrderService(ledger, new StubRegistry(), "op" as never);
 
-    await svc.bind({
+    const result = await svc.bind({
       fundingRequestCid: "00abc" as ContractId<"OrderFundingRequest">,
       settlementRef: "ref-1",
     });
@@ -67,6 +94,8 @@ describe("OrderService.bind", () => {
     assert.equal(cmd.kind, "exercise");
     assert.equal(cmd.choice, "OrderFundingRequest_Bind");
     assert.equal(cmd.contractId, "00abc");
+    assert.deepEqual(result.settlement, BIND_SETTLEMENT);
+    assert.deepEqual(result.allocationSpec, BIND_SPEC);
   });
 
   it("recovers the OrderFundingRequest cid from an updateId (operator-discovery)", async () => {

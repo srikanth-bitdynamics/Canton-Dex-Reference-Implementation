@@ -5,19 +5,18 @@
 -- rankedDealers is computed from the quote set the trader saw, so the
 -- operator's published policy can be replayed for audit.
 --
--- The ranking policy is currently hard-coded (see applyPolicy); production
+-- The ranking policy is currently hard-coded (see policyCmp); production
 -- should make it a first-class contract the receipt hashes. The MatchedTrade
 -- created here is operator-signed, so accept is submitted as [trader, operator].
+--
+-- Design guide: `docs/concepts/design-tour.md#rfq-and-otc-settlement`.
 module CantonDex.Dex.Rfq where
 
 import DA.Foldable (forA_)
 import DA.List qualified as List
 import DA.Text qualified as Text
-import DA.TextMap qualified as TextMap
-import DA.Time
 
 import Splice.Api.Token.AllocationV2 qualified as V2
-import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
 import CantonDex.Dex.MatchedTrade qualified as MT
@@ -117,7 +116,7 @@ template Rfq with
 
         -- Rank the (cid, quote) pairs so identity stays attached through the
         -- policy sort; the accepted rank is then looked up by cid.
-        let rankedPairs = applyPolicyPairs side consideredPairs
+        let rankedPairs = applyPolicyPairs consideredPairs
             n = length rankedPairs
             indexed = zip rankedPairs [1..n]
             acceptedRank = case List.find (\((cid, _), _) -> cid == acceptedQuoteCid) indexed of
@@ -236,8 +235,8 @@ template RfqQuote with
 
 -- | Operator ranking policy v2.0, sort chain: trusted tier first, then later
 -- expiresAt (more time to act), then earlier postedAt (first-mover), then a
--- deterministic dealer-party-id tie-break. `side` is unused in policy mode
--- (the trader picks among ranked candidates) but kept for the other UI modes.
+-- deterministic dealer-party-id tie-break. [POLICY] Buy/sell direction does
+-- not change these policy criteria; `side` is active in the other UI modes.
 policyCmp : RfqQuote -> RfqQuote -> Ordering
 policyCmp a b =
   let tierA = if a.tier == TierTrusted then 0 else 1
@@ -254,13 +253,10 @@ policyCmp a b =
          c -> c
        c -> c
 
-applyPolicy : RfqSide -> [RfqQuote] -> [RfqQuote]
-applyPolicy _side quotes = List.sortBy policyCmp quotes
-
--- | Same ranking as applyPolicy, but keeps each quote's contract id attached
--- so the accepted quote can be identified by cid after the sort.
-applyPolicyPairs : RfqSide -> [(ContractId RfqQuote, RfqQuote)] -> [(ContractId RfqQuote, RfqQuote)]
-applyPolicyPairs _side pairs = List.sortBy (\x y -> policyCmp x._2 y._2) pairs
+-- | Rank quotes while retaining each contract id for consumption and receipt
+-- construction.
+applyPolicyPairs : [(ContractId RfqQuote, RfqQuote)] -> [(ContractId RfqQuote, RfqQuote)]
+applyPolicyPairs = List.sortBy (\x y -> policyCmp x._2 y._2)
 
 -- | Split "BASE/QUOTE"; returns ("","") on malformed input.
 splitPair : Text -> (Text, Text)

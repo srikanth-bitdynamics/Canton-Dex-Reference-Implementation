@@ -1,7 +1,6 @@
 // Operator-controlled administrative actions.
 
 import type { ContractId } from "@canton-dex/registry-client";
-import { RegistryClient } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
@@ -36,7 +35,6 @@ export interface CreatePoolInput {
 export class AdminService {
   constructor(
     private readonly ledger: LedgerSubmitter,
-    private readonly _registry: RegistryClient,
     private readonly operatorParty: Party,
   ) {}
 

@@ -1,4 +1,6 @@
 -- | Wallet-facing request for the allocations used in liquidity DvP flows.
+--
+-- Design guide: `docs/concepts/design-tour.md#liquidity-and-pool-custody`.
 module CantonDex.Dex.LiquidityAllocationRequest where
 
 import DA.Map qualified as Map
@@ -6,6 +8,7 @@ import DA.Map qualified as Map
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.MetadataV1
+import Splice.TokenStandard.Utils qualified as TSUtils
 
 template LiquidityAllocationRequest with
     operator : Party
@@ -36,45 +39,28 @@ template LiquidityAllocationRequest with
       allocationRequest_rejectExtraObservers = \_ -> []
       allocationRequest_withdrawExtraObservers = \_ -> []
 
-      -- Token Standard V2 requires `AllocationRequest_Accept` to consume the
-      -- request (the choice is `nonconsuming` only so the implementation
-      -- chooses *how* to consume). A stock wallet (e.g. Amulet) calls accept
-      -- when it authors the allocations, so settle can no longer bind to the
-      -- request. Before consuming, we therefore leave an operator-visible
-      -- `LiquidityAllocationAcceptance` receipt carrying the request's
-      -- validation terms; the settle binds to that in the stock-wallet flow.
-      -- (The legacy direct-allocation flow never calls accept and binds to the
-      -- still-live request instead.) Reject/withdraw simply consume.
+      -- Accept consumes the request and leaves an operator-visible receipt
+      -- carrying the terms that settlement must validate. Direct-allocation
+      -- integrations may instead leave the request live and bind settlement
+      -- to it. Reject and withdraw consume without creating evidence.
       allocationRequest_acceptImpl = \self arg -> do
-        -- TSv2 requires implementations to check the actors so a merely-visible
-        -- party (e.g. the operator) can't consume the request with its own
-        -- actor list. Only the targeted lp/holder may accept.
-        assertMsg "accept actors must be exactly the request lp" (arg.actors == [lp])
+        TSUtils.archiveAndCheckActors self arg.actors [[lp]]
         acceptedAt <- getTime
         create LiquidityAllocationAcceptance with
           operator; lp; settlement; allocations; settleAt; acceptedAt
           originalRequestCid = coerceContractId self
-        archive self
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
       allocationRequest_rejectImpl = \self arg -> do
-        assertMsg "reject actors must be exactly the request lp" (arg.actors == [lp])
-        archive self
+        TSUtils.archiveAndCheckActors self arg.actors [[lp]]
         pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
       allocationRequest_withdrawImpl = \self arg -> do
-        -- Withdraw is the executor's action (the operator drives settlement).
-        assertMsg "withdraw actors must be exactly the operator" (arg.actors == [operator])
-        archive self
+        TSUtils.archiveAndCheckActors self arg.actors [[operator]]
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
 
--- Operator-visible evidence that the LP/holder accepted the request and
--- authored the allocations. Created by `AllocationRequest_Accept` immediately
--- before the request is consumed, so the DvP settle can bind to it once the
--- request itself is gone. Carries the same validation terms the live request
--- would have supplied (party, settlement, expected specs, deadline). Discover it
--- operator-side by `originalRequestCid` (globally unique) — or, on the
--- updateId path, recover it directly from the accept transaction's update tree
--- alongside the created allocations. (`(lp, settlement)` is NOT a unique key:
--- `poolSettlement` uses a constant settlement id per pool.)
+-- Operator-visible evidence created by `AllocationRequest_Accept`. It preserves
+-- the party, settlement, allocation specifications, and deadline after the
+-- request is consumed. The backend correlates it by `originalRequestCid` or
+-- recovers it from the accept transaction together with the allocations.
 template LiquidityAllocationAcceptance with
     operator : Party
     lp : Party
@@ -83,9 +69,8 @@ template LiquidityAllocationAcceptance with
     settleAt : Optional Time
     acceptedAt : Time
     originalRequestCid : ContractId LiquidityAllocationRequest
-      -- ^ The consumed request's cid — a globally-unique, stable correlation
-      -- key the operator discovers this evidence by. (settlement.id alone is
-      -- not unique: `poolSettlement` uses a constant id per pool.)
+      -- ^ Stable correlation key for the consumed request. Settlement ids are
+      -- not unique because a pool reuses its settlement descriptor.
   where
     signatory operator
     observer lp

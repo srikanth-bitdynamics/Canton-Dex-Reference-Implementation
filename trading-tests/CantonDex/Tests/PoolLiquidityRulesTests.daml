@@ -12,6 +12,7 @@
 --
 -- To keep the harness to one registry we use admin == lpRegistrar (the
 -- two per-admin batches collapse to one); the choice still issues both.
+-- Design context: `docs/concepts/design-tour.md#liquidity-and-pool-custody`.
 module CantonDex.Tests.PoolLiquidityRulesTests where
 
 import DA.Assert
@@ -30,7 +31,6 @@ import Splice.Util.Token.Wallet.BatchingUtilityV2 qualified as BU
 
 import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState qualified as PS
-import CantonDex.Dex.PoolSlice qualified as PSlice
 import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
 import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
@@ -140,7 +140,7 @@ depositSpec admin authorizer leg =
   (mkSpec admin authorizer [leg] True) with nextIterationFunding = Some TextMap.empty
 
 -- Operator creates the directional LiquidityAllocationRequest the LP/holder
--- accepts; `Settle*` is bound to it (3b.0). The choice builds the canonical
+-- accepts; each settle is bound to that request. The choice builds the canonical
 -- specs on-ledger from these scalars; the tests author matching allocations
 -- via their local `mkSpec` (byte-identical, since admin == lpRegistrar ==
 -- registry here).
@@ -184,7 +184,7 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
         if knownSupply == 0.0 then PM.sqrtDecimal (baseAmount * quoteAmount)
         else min ((baseAmount * knownSupply) / reserveBase)
                  ((quoteAmount * knownSupply) / reserveQuote)
-      lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
+      lpMintLeg = Lp.lpMintLeg lpAcct lpId lpAmount
       baseSpec = depositSpec fx.registry lpAcct baseDepositLeg
       quoteSpec = depositSpec fx.registry lpAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
@@ -206,8 +206,8 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
       baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = knownSupply
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
 
--- First-funding add with an EXPLICIT receipt LP amount (overriding the
--- fair-share quote) — used to exercise the symmetric dust bound.
+-- First-funding add with an explicit receipt amount, allowing a test to place
+-- the requested mint immediately above or below the symmetric dust bound.
 dvpAddWithLp
   : Fixture -> ContractId PS.PoolState -> ContractId LP.LPTokenPolicy -> Party
   -> Decimal -> Decimal -> Decimal -> Time
@@ -222,7 +222,7 @@ dvpAddWithLp fx stateCid policyCid lp baseAmount quoteAmount lpAmount now = do
       quoteDepositLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
         amount = quoteAmount; instrumentId = "USDC"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
+      lpMintLeg = Lp.lpMintLeg lpAcct lpId lpAmount
       baseSpec = depositSpec fx.registry lpAcct baseDepositLeg
       quoteSpec = depositSpec fx.registry lpAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
@@ -248,6 +248,7 @@ dvpAddWithLp fx stateCid policyCid lp baseAmount quoteAmount lpAmount now = do
 -- provider, all in one atomic settlement. Asserts the pool turns Active with the
 -- deposited reserves and a matching LP supply, that the operator's two reserve
 -- slices are recorded, and that Alice ends up holding the freshly minted LP token.
+-- | Proves add-liquidity atomically deposits both assets and mints LP holdings.
 testDvpAddLiquidity : Script ()
 testDvpAddLiquidity = do
   alice <- allocateParty "alice"
@@ -279,6 +280,7 @@ testDvpAddLiquidity = do
 -- Off-ratio add: LP tokens are minted against the limiting side, so the
 -- unmatched remainder of the other leg must NOT reach the reserves — it is
 -- refunded to the provider in the same settlement.
+-- | Proves an off-ratio deposit refunds excess instead of donating it.
 testDvpAddOffRatioRefundsExcess : Script ()
 testDvpAddOffRatioRefundsExcess = do
   alice <- allocateParty "alice"
@@ -332,37 +334,35 @@ testDvpAddOffRatioRefundsExcess = do
   carolUnlocked "USDC" === []
   pure ()
 
--- Remove (full redemption): base+quote are delivered to the HOLDER and the
--- LP tokens are burned. Full redemption keeps the burn clean (the whole LP
--- holding is consumed; partial-burn change is a documented harness follow-up).
+-- Partial redemption: the holder receives a pro-rata share of both reserves,
+-- the redeemed LP amount burns, and the unredeemed LP balance stays unlocked.
+-- | Proves remove-liquidity pays the holder and burns only redeemed LP tokens.
 testDvpRemoveDeliversToHolder : Script ()
 testDvpRemoveDeliversToHolder = do
   alice <- allocateParty "alice"
   fx <- setup [alice]
   now <- getTime
-  addRes <- dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
-  let lpAmount = PM.sqrtDecimal 2000000.0
+  addRes <- dvpAdd fx fx.stateCid fx.policyCid alice 10.0 1000.0 0.0 0.0 0.0 now
+  let lpAmount = 100.0
+      lpToRedeem = 40.0
       aliceAcct = Utils.basicAccount alice
       opAcct = Utils.basicAccount fx.operator
       settlement = PM.poolSettlement fx.poolCid fx.operator
-      -- Full redemption consumes the single init slice fully → per-slice
-      -- leg index 0 ("lp-base-out-0" / "lp-quote-out-0").
       baseOutLeg = V2.TransferLeg with
         transferLegId = "lp-base-out-0"; sender = opAcct; receiver = aliceAcct
-        amount = 10.0; instrumentId = "BTC"; meta = emptyMetadata
+        amount = 4.0; instrumentId = "BTC"; meta = emptyMetadata
       quoteOutLeg = V2.TransferLeg with
         transferLegId = "lp-quote-out-0"; sender = opAcct; receiver = aliceAcct
-        amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
-      burnLeg = Lp.lpBurnLeg fx.registry aliceAcct lpId lpAmount
+        amount = 400.0; instrumentId = "USDC"; meta = emptyMetadata
+      burnLeg = Lp.lpBurnLeg aliceAcct lpId lpToRedeem
 
-  -- alice's LP holding (to lock for the burn).
   aliceHs <- query @RegV2.Holding alice
   let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) aliceHs)
 
   let baseReceiptSpec = mkSpec fx.registry aliceAcct [baseOutLeg] False
       quoteReceiptSpec = mkSpec fx.registry aliceAcct [quoteOutLeg] False
       burnSpec = mkSpec fx.registry aliceAcct [burnLeg] True
-  reqCid <- requestRemove fx alice [10.0] [200000.0] lpAmount None now
+  reqCid <- requestRemove fx alice [4.0] [400.0] lpToRedeem None now
   baseReceipt <- mkAlloc fx.factoryCid alice settlement baseReceiptSpec [] now
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec [toInterfaceContractId lpHoldCid] now
@@ -372,7 +372,7 @@ testDvpRemoveDeliversToHolder = do
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
       requestCid = Some reqCid; acceptanceCid = None
-      holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
+      holder = alice; lpTokensToRedeem = lpToRedeem; knownTotalLpSupply = lpAmount
       minBaseOut = 0.0; minQuoteOut = 0.0
       baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
       holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
@@ -382,24 +382,32 @@ testDvpRemoveDeliversToHolder = do
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
 
-  -- Pool drained; alice holds the returned base+quote, LP tokens gone.
+  -- Reserves, slices, and LP supply all retain the same 60% remainder.
   Some state <- queryContractId fx.operator remRes.poolStateCid
-  state.reserves.baseAmount === 0.0
-  state.reserves.quoteAmount === 0.0
-  state.status === PS_Unfunded
-  remRes.baseReturned === 10.0
-  remRes.quoteReturned === 200000.0
+  state.reserves.baseAmount === 6.0
+  state.reserves.quoteAmount === 600.0
+  state.totalLpSupply === 60.0
+  state.status === PS_Active
+  remRes.baseReturned === 4.0
+  remRes.quoteReturned === 400.0
+  Some baseSliceCid <- pure remRes.boundaryBaseSliceCid
+  Some quoteSliceCid <- pure remRes.boundaryQuoteSliceCid
+  Some baseSlice <- queryContractId fx.operator baseSliceCid
+  Some quoteSlice <- queryContractId fx.operator quoteSliceCid
+  baseSlice.amount === 6.0
+  quoteSlice.amount === 600.0
   after <- query @RegV2.Holding alice
-  let lpLeft = filter (\(_, h) -> h.instrumentId == lpId && h.owner == alice) after
+  let lpLeft = filter (\(_, h) -> h.instrumentId == lpId && h.owner == alice && not h.locked) after
       btcOut = filter (\(_, h) -> h.instrumentId == "BTC" && h.owner == alice && not h.locked) after
       usdcOut = filter (\(_, h) -> h.instrumentId == "USDC" && h.owner == alice && not h.locked) after
-  length lpLeft === 0
-  assertMsg "alice received BTC back" (any (\(_, h) -> h.amount == 10.0) btcOut)
-  assertMsg "alice received USDC back" (any (\(_, h) -> h.amount == 200000.0) usdcOut)
+  [h.amount | (_, h) <- lpLeft] === [60.0]
+  assertMsg "alice received BTC back" (any (\(_, h) -> h.amount == 4.0) btcOut)
+  assertMsg "alice received USDC back" (any (\(_, h) -> h.amount == 400.0) usdcOut)
   pure ()
 
 -- The settle re-checks the quote against current state: a knownTotalLpSupply
 -- that disagrees with PoolState aborts.
+-- | Proves settlement rejects a liquidity quote built from stale PoolState.
 testStaleQuoteRejected : Script ()
 testStaleQuoteRejected = do
   alice <- allocateParty "alice"
@@ -418,7 +426,7 @@ testStaleQuoteRejected = do
       quoteDepositLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = bobAcct; receiver = opAcct
         amount = 20000.0; instrumentId = "USDC"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.registry bobAcct lpId 100.0
+      lpMintLeg = Lp.lpMintLeg bobAcct lpId 100.0
       bBaseSpec = depositSpec fx.registry bobAcct baseDepositLeg
       bQuoteSpec = depositSpec fx.registry bobAcct quoteDepositLeg
       bRcptSpec = mkSpec fx.registry bobAcct [lpMintLeg] False
@@ -445,6 +453,7 @@ testStaleQuoteRejected = do
 
 -- The settle choices are co-controlled (operator, lpRegistrar): the
 -- operator alone cannot drive them.
+-- | Proves both operator and LP registrar must authorize liquidity settlement.
 testSettleRequiresCoControl : Script ()
 testSettleRequiresCoControl = do
   alice <- allocateParty "alice"
@@ -471,7 +480,8 @@ testSettleRequiresCoControl = do
 
 -- Multi-slice remove: two adds create two slices per side; a full
 -- redemption draws across BOTH (per-slice delivery legs), proving the
--- list-based draw (P1) rather than single-slice-only.
+-- ordered covering-prefix draw rather than a single-slice-only path.
+-- | Proves a withdrawal can draw an ordered prefix of multiple reserve slices.
 testDvpMultiSliceRemove : Script ()
 testDvpMultiSliceRemove = do
   alice <- allocateParty "alice"
@@ -498,7 +508,7 @@ testDvpMultiSliceRemove = do
       qLeg1 = V2.TransferLeg with
         transferLegId = "lp-quote-out-1"; sender = opAcct; receiver = aliceAcct
         amount = 100000.0; instrumentId = "USDC"; meta = emptyMetadata
-      burnLeg = Lp.lpBurnLeg fx.registry aliceAcct lpId total
+      burnLeg = Lp.lpBurnLeg aliceAcct lpId total
 
   -- Alice's two LP holdings (both locked for the burn).
   aliceHs <- query @RegV2.Holding alice
@@ -541,9 +551,10 @@ testDvpMultiSliceRemove = do
   length lpLeft === 0
   pure ()
 
--- P0 guard: a non-admin cannot forge a mint allocation. The factory's
+-- A non-admin cannot forge a mint allocation. The factory's
 -- owner-None branch requires `admin `elem` actors`, and the choice is
 -- `controller actors`, so a non-admin can't author one.
+-- | Proves a non-admin cannot author the registry mint allocation.
 testMintRequiresAdmin : Script ()
 testMintRequiresAdmin = do
   mallory <- allocateParty "mallory"
@@ -551,7 +562,7 @@ testMintRequiresAdmin = do
   now <- getTime
   let malloryAcct = Utils.basicAccount mallory
       settlement = PM.poolSettlement fx.poolCid fx.operator
-      forgedMintLeg = Lp.lpMintLeg fx.registry malloryAcct lpId 1000.0
+      forgedMintLeg = Lp.lpMintLeg malloryAcct lpId 1000.0
       -- authorizer = the standard mint account; mallory tries to author it.
       forgedSpec = Lp.mintSenderSpec fx.registry forgedMintLeg
   submitMustFail mallory $ exerciseCmd fx.factoryCid V2.AllocationFactory_Allocate with
@@ -559,11 +570,12 @@ testMintRequiresAdmin = do
     inputHoldingCids = []; actors = [mallory]; extraArgs = emptyExtraArgs
   pure ()
 
--- P1 (ledger-anchored deadline): the settle reads the deadline from the
+-- The settle reads the deadline from the
 -- LP's accepted allocation, NOT from a caller-supplied argument. An
 -- allocation whose `settlementDeadline` is already in the past must be
 -- rejected regardless of what the caller passes. This proves the expiry
 -- check is bound to ledger state.
+-- | Proves add-liquidity rejects a deposit allocation past its deadline.
 testExpiredAddRejected : Script ()
 testExpiredAddRejected = do
   alice <- allocateParty "alice"
@@ -579,7 +591,7 @@ testExpiredAddRejected = do
       quoteDepositLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId (PM.sqrtDecimal 2000000.0)
+      lpMintLeg = Lp.lpMintLeg aliceAcct lpId (PM.sqrtDecimal 2000000.0)
   baseHold <- mintHolding fx.registry alice "BTC" 10.0
   quoteHold <- mintHolding fx.registry alice "USDC" 200000.0
   -- The QUOTE-deposit allocation carries an already-expired deadline; the
@@ -612,6 +624,7 @@ testExpiredAddRejected = do
 -- Symmetric to the add case, on the remove side: a past deadline on a
 -- holder receipt allocation (NOT the burn-sender) must still abort the
 -- settle, proving all holder-authored allocations are deadline-checked.
+-- | Proves remove-liquidity checks every holder-authored allocation deadline.
 testExpiredRemoveRejected : Script ()
 testExpiredRemoveRejected = do
   alice <- allocateParty "alice"
@@ -629,7 +642,7 @@ testExpiredRemoveRejected = do
       quoteOutLeg = V2.TransferLeg with
         transferLegId = "lp-quote-out-0"; sender = opAcct; receiver = aliceAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
-      burnLeg = Lp.lpBurnLeg fx.registry aliceAcct lpId lpAmount
+      burnLeg = Lp.lpBurnLeg aliceAcct lpId lpAmount
   aliceHs <- query @RegV2.Holding alice
   let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) aliceHs)
   -- The BASE-receipt allocation is expired; the burn-sender is fresh.
@@ -656,9 +669,10 @@ testExpiredRemoveRejected = do
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
--- 3b.0 (request-bound settle): a supplied allocation whose spec is NOT one
+-- A supplied allocation whose spec is not one
 -- the accepted request named must be rejected — the operator cannot
 -- substitute a different allocation shape than the LP authored.
+-- | Proves settle cannot substitute an allocation from another request shape.
 testSettleRejectsForeignAllocation : Script ()
 testSettleRejectsForeignAllocation = do
   alice <- allocateParty "alice"
@@ -673,7 +687,7 @@ testSettleRejectsForeignAllocation = do
       quoteDepositLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId (PM.sqrtDecimal 2000000.0)
+      lpMintLeg = Lp.lpMintLeg aliceAcct lpId (PM.sqrtDecimal 2000000.0)
       baseSpec = depositSpec fx.registry aliceAcct baseDepositLeg
       quoteSpec = depositSpec fx.registry aliceAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
@@ -699,9 +713,10 @@ testSettleRejectsForeignAllocation = do
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
--- 3b.0 (request-bound settle): the request's `settleAt` is the single
+-- The request's `settleAt` is the single
 -- authoritative deadline. A request whose settleAt is already past must be
 -- rejected even when every supplied allocation is itself fresh.
+-- | Proves an expired liquidity request cannot settle with fresh allocations.
 testSettleRejectsExpiredRequest : Script ()
 testSettleRejectsExpiredRequest = do
   alice <- allocateParty "alice"
@@ -717,7 +732,7 @@ testSettleRejectsExpiredRequest = do
       quoteDepositLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId (PM.sqrtDecimal 2000000.0)
+      lpMintLeg = Lp.lpMintLeg aliceAcct lpId (PM.sqrtDecimal 2000000.0)
       baseSpec = depositSpec fx.registry aliceAcct baseDepositLeg
       quoteSpec = depositSpec fx.registry aliceAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
@@ -741,9 +756,9 @@ testSettleRejectsExpiredRequest = do
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
--- 3b.0/option-1 guard: the minted amount is read from the LP receipt, but
--- bounded — a receipt claiming MORE than the on-ledger fair share is
--- rejected (anti over-mint / dilution).
+-- The minted amount is read from the LP receipt but bounded: a receipt claiming
+-- more than the on-ledger fair share is rejected to prevent dilution.
+-- | Proves LP mint above the fair-share dust bound is rejected.
 testAddRejectsOverMint : Script ()
 testAddRejectsOverMint = do
   alice <- allocateParty "alice"
@@ -760,7 +775,7 @@ testAddRejectsOverMint = do
       quoteDepositLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = aliceAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.registry aliceAcct lpId overLp
+      lpMintLeg = Lp.lpMintLeg aliceAcct lpId overLp
       baseSpec = depositSpec fx.registry aliceAcct baseDepositLeg
       quoteSpec = depositSpec fx.registry aliceAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry aliceAcct [lpMintLeg] False
@@ -784,10 +799,11 @@ testAddRejectsOverMint = do
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
--- 3b review #1: the over-mint bound is symmetric with the dust tolerance.
+-- The over-mint bound is symmetric with the dust tolerance.
 -- A receipt a hair (< dust) above the on-ledger fair share is ACCEPTED —
 -- this is the cross-language sqrt rounding the bound defends, and a strict
 -- `<= fairLp` would wrongly abort it.
+-- | Proves conservative LP mint within the symmetric dust bound is accepted.
 testAddAcceptsWithinDust : Script ()
 testAddAcceptsWithinDust = do
   alice <- allocateParty "alice"
@@ -804,6 +820,7 @@ testAddAcceptsWithinDust = do
 -- TSv2 actor authorization: accept must check the actor list. The operator is
 -- the request signatory (so it can see the request) but is NOT the targeted lp;
 -- it must not be able to consume the request with its own actor list.
+-- | Proves only the named LP can accept its liquidity allocation request.
 testAcceptRejectsUnauthorizedActor : Script ()
 testAcceptRejectsUnauthorizedActor = do
   alice <- allocateParty "alice"
@@ -826,6 +843,7 @@ testAcceptRejectsUnauthorizedActor = do
 -- binds to that evidence (the live request is gone). Also asserts the two
 -- failure modes: binding to the consumed request fails, and settling with no
 -- binding at all fails.
+-- | Proves acceptance evidence binds the request before successful settlement.
 testAcceptCreatesEvidenceThenSettleSucceeds : Script ()
 testAcceptCreatesEvidenceThenSettleSucceeds = do
   alice <- allocateParty "alice"
@@ -841,7 +859,7 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
       quoteDepositLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
+      lpMintLeg = Lp.lpMintLeg lpAcct lpId lpAmount
       baseSpec = depositSpec fx.registry lpAcct baseDepositLeg
       quoteSpec = depositSpec fx.registry lpAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False
@@ -857,7 +875,7 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
   _ <- submit alice $ exerciseCmd (toInterfaceContractId @V2.AllocationRequest reqCid)
     (V2.AllocationRequest_Accept with actors = [alice]; extraArgs = emptyExtraArgs)
 
-  -- The settle can no longer bind to the consumed request.
+  -- Settlement must reject a consumed request without acceptance evidence.
   submitMustFail (actAs [fx.operator, fx.registry]) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
@@ -921,6 +939,7 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
 -- untouched USDC funds the quote allocate inside the same transaction. The
 -- operator settle then binds to the acceptance receipt exactly as in the
 -- stock accept flow.
+-- | Proves the standard batching utility can accept and allocate in one action.
 testBatchedUtilityAddLiquidity : Script ()
 testBatchedUtilityAddLiquidity = do
   alice <- allocateParty "alice"
@@ -936,7 +955,7 @@ testBatchedUtilityAddLiquidity = do
       quoteDepositLeg = V2.TransferLeg with
         transferLegId = "lp-quote-deposit"; sender = lpAcct; receiver = opAcct
         amount = 200000.0; instrumentId = "USDC"; meta = emptyMetadata
-      lpMintLeg = Lp.lpMintLeg fx.registry lpAcct lpId lpAmount
+      lpMintLeg = Lp.lpMintLeg lpAcct lpId lpAmount
       baseSpec = depositSpec fx.registry lpAcct baseDepositLeg
       quoteSpec = depositSpec fx.registry lpAcct quoteDepositLeg
       receiptSpec = mkSpec fx.registry lpAcct [lpMintLeg] False

@@ -77,10 +77,6 @@ policyReceiptValues r =
           ]
   in  header <> rankedRows
 
-policyReceiptMetadata : PolicyReceipt -> Metadata
-policyReceiptMetadata r =
-  emptyMetadata with values = TextMap.fromList (policyReceiptValues r)
-
 -- | Fold a receipt into existing metadata; receipt keys overwrite on collision.
 foldPolicyReceiptIntoMetadata
   : Optional PolicyReceipt -> Metadata -> Metadata

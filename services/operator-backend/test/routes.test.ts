@@ -1,9 +1,5 @@
-// Regression: the hand-rolled node:http router dispatches via inline
-// `if (method === "X" && path === "/y")` blocks. Before the fix, three routes
-// were registered twice (POST /v1/orders/match, GET /v1/orders/book, GET
-// /v1/prices) so the second handler was dead. This test statically scans the
-// router source and asserts no (method, exact-path) pair appears more than
-// once, which would shadow the later handler.
+// The node:http router dispatches through inline method/path guards. This test
+// keeps each exact route unique so one handler cannot shadow another.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -48,11 +44,11 @@ describe("no duplicate route registration", () => {
     const guards = exactRouteGuards(routerSrc);
     assert.ok(
       guards.includes("GET /v1/orders/matches"),
-      "read-only match preview moved to GET /v1/orders/matches",
+      "read-only match preview route must be registered",
     );
     assert.ok(
       guards.includes("POST /v1/orders/match"),
-      "execute path stays at POST /v1/orders/match",
+      "match execution route must be registered",
     );
   });
 

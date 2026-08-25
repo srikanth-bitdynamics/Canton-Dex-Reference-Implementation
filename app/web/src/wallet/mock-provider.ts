@@ -6,9 +6,7 @@
 // status progression has something to render. Real signing requires the
 // WalletConnect or CIP-0103 provider.
 //
-// This is the same shape the previous postMessage stub had, now lifted
-// behind the WalletProvider interface so the rest of the dApp doesn't
-// need to know whether the active wallet is real.
+// It implements the same WalletProvider boundary as production integrations.
 
 import type {
   WalletAccount,

@@ -54,10 +54,9 @@ Each theme below closes with the test that pins the fix.
 
 Amounts must reach the client as exact decimal strings at ledger scale, never
 re-floated through IEEE-754. The fills feed no longer routes deltas through
-`parseFloat().toFixed` (F13); `/v1/swaps` serves the exact stored strings rather
-than re-floating them (F20); `/v1/instruments` reports each instrument's
-`decimals` so a client can learn scale from the API, and pre-fix rows were
-backfilled rather than left wrong (F21).
+`parseFloat().toFixed`; `/v1/swaps` serves the exact stored strings; and
+`/v1/instruments` reports each instrument's `decimals` so a client can learn
+scale from the API. Existing projection rows can be reindexed after an upgrade.
 
 Proven by
 [`decimal-money.test.ts`](../../services/operator-backend/test/decimal-money.test.ts)
@@ -69,12 +68,10 @@ Proven by
 ### The read API stays uniform
 
 External clients depend on every read speaking the same shapes. The status wire
-value stopped shipping a `PS_`-prefixed enum the dApp silently stripped (F11);
-`/v1/orders/book` accepts `?pair=` like every other read (F15, additively); the
-trades feed no longer inverts trader and dealer on buys (F16); `/v1/trades`
-includes `counterparty` after the deployment was brought current with `main`
-(F22); an unscoped, unauthenticated `GET /v1/rfq` that lived only on a
-soon-to-be-retired branch was fixed on `main` (F23).
+value uses the public enum without a `PS_` prefix; `/v1/orders/book` accepts
+`?pair=` like every other read; the trades feed derives trader and dealer from
+the signed receipt rather than leg direction; `/v1/trades` includes
+`counterparty`; and an unscoped `GET /v1/rfq` requires the admin token.
 
 Proven by
 [`pool-status-normalisation.test.ts`](../../services/operator-backend/test/pool-status-normalisation.test.ts)
@@ -93,8 +90,8 @@ recorded), and
 
 Two fixes concern funding and custody. Funding an order locks only what the
 order needs and returns the change, so a party can place more than one order
-(F12); the off-ratio liquidity add refunds the unmatched remainder, and the
-hosted receipt reports the settled amounts rather than echoing the request (F25).
+at a time. An off-ratio liquidity add refunds the unmatched remainder, and the
+hosted receipt reports settled amounts rather than echoing requested amounts.
 
 Proven by
 [`normalize-funding.test.ts`](../../app/web/src/__tests__/normalize-funding.test.ts)
@@ -108,12 +105,11 @@ reserves).
 
 For a walletless integrator the hosted routes are the whole surface, so a gap in
 them blocks external evaluation entirely. RFQ gained a hosted cancel, so a round
-trip has an exit other than expiry (F17); order matching gained a hosted,
-unauthenticated trigger (`POST /v1/testnet/match`) so matching and its atomic
-settlement can be verified from outside (F24); `/v1/swaps` gained `?kind=` so
-liquidity events, not just swaps, are readable (F26). The whole `/v1/testnet/*`
-surface and the faucet's per-IP party quota were documented with their
-consequences (F14, F18).
+trip has an exit other than expiry. Order matching gained a hosted testnet
+trigger (`POST /v1/testnet/match`) so matching and its atomic settlement can be
+verified from outside. `/v1/swaps` accepts `?kind=` so liquidity events, not
+just swaps, are readable. The `/v1/testnet/*` surface and the faucet's per-IP
+party quota are documented with their consequences.
 
 Proven by
 [`swaps-kind-filter.test.ts`](../../services/operator-backend/test/swaps-kind-filter.test.ts)
@@ -126,15 +122,13 @@ collateral).
 
 `Holding_Split` is refused by the hosted relay because the relay exposes only a
 fixed set of settlement choices, and splitting is a wallet concern it does not
-surface (F19). The boundary is described in
+surface. The boundary is described in
 [Non-goals: the hosted testnet is a demo surface](../concepts/non-goals.md#the-hosted-testnet-is-a-demo-surface-not-a-wallet).
 
-### Closed after the report
+### Self-trade prevention
 
-One item was open at the time of the report and has since been closed: a resting
-order the book published but the matcher would not pair (F27). The cause was a
-self-cross — a party's own bid and ask, which can never settle. The matcher now
-applies self-trade prevention in
+A party's own bid and ask cannot settle because the resulting transfer legs
+would be self-transfers. The matcher therefore applies self-trade prevention in
 [`matching.ts`](../../services/operator-backend/src/order/matching.ts):
 
 ```typescript

@@ -86,9 +86,7 @@ describe("OrderService.runMatching settlement", () => {
 
     assert.equal(results.length, 1);
     assert.equal(results[0]!.error, undefined);
-    // The settle, both order roll-forwards and the trade record are one
-    // transaction. A follow-up submission could fail on its own, and by then
-    // the funds have moved and the allocations it named are archived.
+    // Settlement, both order transitions, and the trade record are atomic.
     assert.equal(ledger.submissions.length, 1);
     assert.equal(
       ledger.executes[0]!.templateId,
@@ -109,14 +107,10 @@ describe("OrderService.runMatching settlement", () => {
     );
   });
 
-  it("cannot leave an order bound to an allocation the settle archived", async () => {
+  it("records a partial-fill remainder in the settlement transaction", async () => {
     const ledger = new MatchingLedger([ask({}), bid({ remainingQty: "3" })]);
-    // Everything after the first submission fails. retryOnContention rethrows
-    // every non-contention error, so a 503, a timeout or an expired token gets
-    // here. If the match needs a second submission, the settle has already
-    // moved the funds and the order is left pointing at an archived
-    // allocation: Order_Cancel exercises that cid, so the trader can never
-    // cancel, and every later match aborts inside the settle batch.
+    // The ledger rejects any second submission. A correct match still succeeds
+    // because it records its funded remainder in the settlement transaction.
     const flaky: LedgerSubmitter = {
       submit: async <R>(req: SubmitRequest): Promise<R> => {
         if (ledger.submissions.length > 0) throw new Error("ledger unavailable");
@@ -235,8 +229,7 @@ describe("OrderService.runMatching settlement", () => {
     // products and collide here on a PARTIAL fill: 1000 @ 0.000001 commits
     // 0.0010000000, and filling 999.99996 of it spends 0.00099999996, which
     // rounds back up to the same 0.0010000000. 0.00004 base is unfilled with
-    // no quote behind it, so nothing may roll forward — a remainder order
-    // carrying a null allocation is matchable and aborts every later run.
+    // no quote behind it, so no funded remainder may roll forward.
     const ledger = new MatchingLedger([
       ask({ limitPrice: "0.000001", remainingQty: "999.99996" }),
       bid({ limitPrice: "0.000001", remainingQty: "1000" }),
@@ -253,16 +246,14 @@ describe("OrderService.runMatching settlement", () => {
     assert.deepEqual([...ledger.liveAllocations], []);
   });
 
-  it("keeps filling a bid a previous run partially filled", async () => {
+  it("keeps filling a rolled-forward bid", async () => {
     // Placement locks round(10.5993913768 * 8.4875456707) = 89.9628183922 of
     // quote. A first fill of 4.2004910968 at the bid's own limit spends
     // 35.6518600235, so 54.3109583687 rolls forward — while
     // round(6.3989002800 * 8.4875456707) is 54.3109583688, one ulp MORE than
     // the settle holds. Both are 10dp round-half-even products of the same
-    // terms, and they do not have to agree. A budget recomputed from the
-    // order's face terms therefore claims more than the allocation locks, the
-    // registry's coverage check rejects it, and the bid stops trading for
-    // good: every later run pairs it and every one of those settles aborts.
+    // terms, and they do not have to agree. The next fill must use the exact
+    // allocation remainder rather than recomputing a budget from face terms.
     const limitPrice = "8.4875456707";
     const ledger = new MatchingLedger([
       bid({

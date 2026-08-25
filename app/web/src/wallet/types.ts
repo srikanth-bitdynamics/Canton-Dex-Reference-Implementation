@@ -1,18 +1,15 @@
 // Wallet provider interface.
 //
-// The dApp NEVER signs as the trader. It builds an "intent" describing
-// what should happen on-ledger (allocation accept, order placement,
-// swap funding, LP burn accept) and hands it to the trader's wallet.
+// The dApp NEVER signs as the trader. It builds an intent describing the
+// requested ledger action and hands it to the trader's wallet.
 //
 // This file defines:
 //   - the intent shapes (mirror the on-ledger choices the trader signs)
-//   - the WalletProvider interface every concrete wallet integration
-//     must implement (WalletConnect, CIP-0103 native, Dfns, mock, ...)
+//   - the WalletProvider interface every concrete wallet integration implements
 //   - the connection state shape surfaced to the UI
 //
 // The dApp imports `handToWallet` from `./handoff` which dispatches to
-// whatever provider is currently active. Swapping providers later is
-// adding one file under `./wallet/` and wiring it in the registry.
+// the active provider selected in the wallet store.
 
 import type { Holding } from "@/types/contracts";
 
@@ -70,9 +67,7 @@ export interface DisclosedContract {
   contractId: string;
   templateId: string;
   contractKeyHash?: string;
-  // Canton's JSON Ledger API disclosed-contract field: the base64 created-event
-  // blob. (Previously mis-named `payloadBlob`, a key Canton ignores, so disclosed
-  // factory/request contracts never resolved on a real exercise.)
+  /** Base64-encoded created event used by the JSON Ledger API. */
   createdEventBlob: string;
   synchronizerId?: string;
 }
@@ -84,16 +79,13 @@ export interface DisclosedContract {
 // intent into a Daml command tree and submits via its signing path.
 
 /**
- * Trader accepts a V2.AllocationRequest (TradeAllocationRequest or
- * OrderAllocationRequest). Wallet must compose this with a
- * V2.AllocationFactory_Allocate call in the SAME submission so the
- * trader's holdings back the allocation.
+ * Lock the funds required by a pending order. The wallet authors one committed
+ * V2 allocation; Order_Fund later binds it to the order and consumes the
+ * OrderAllocationRequest used for correlation.
  */
-export interface AcceptAllocationRequestIntent {
-  kind: "accept-allocation-request";
-  requestCid: ContractId<"AllocationRequest">;
+export interface FundOrderIntent {
+  kind: "fund-order";
   factoryCid: ContractId<"AllocationFactory">;
-  allocationRequestExtraArgs: V2ExtraArgs;
   allocationFactoryExtraArgs: V2ExtraArgs;
   disclosure: DisclosedContract[];
   settlement: V2SettlementInfo;
@@ -168,7 +160,7 @@ export interface MergeHoldingsIntent {
  * pool.lpRegistrar) — via a CreateAndExercise of the token standard's
  * `BatchingUtilityV2.ExecuteBatch`, which accepts the request (leaving the
  * acceptance receipt) and authors all three inside ONE Daml transaction / one
- * top-level command (CIP-0103 prepareExecute allows only one). `allocations`
+ * top-level command for gateways that accept one command. `allocations`
  * is the canonical order [base deposit, quote deposit, LP receipt]; the
  * created cids are recovered operator-side from the single updateId for /settle.
  */
@@ -216,48 +208,14 @@ export interface RemoveLiquidityIntent {
   lpHoldingCids: ContractId<"Holding">[];
 }
 
-/**
- * Dealer posts a quote against an open RFQ. Same wallet path; the
- * dealer's wallet signs the RfqQuote create.
- */
-export interface PostRfqQuoteIntent {
-  kind: "post-rfq-quote";
-  rfqCid: ContractId<"Rfq">;
-  rfqId: string;
-  price: string;
-  expiresAt: string;
-  postedAt: string;
-  tier: "TierTrusted" | "TierWhitelist";
-  operator: Party;
-  trader: Party;
-}
-
-/**
- * Trader accepts an RFQ. Joint trader+operator submission — in
- * production the operator pre-creates a delegation contract so the
- * trader's wallet alone is enough; the operator's authority comes from
- * the delegation. For testnet, the dApp can fall back to having the
- * operator backend co-submit.
- */
-export interface AcceptRfqIntent {
-  kind: "accept-rfq";
-  rfqCid: ContractId<"Rfq">;
-  acceptedQuoteCid: ContractId<"RfqQuote">;
-  consideredQuoteCids: ContractId<"RfqQuote">[];
-  admin: Party;
-  operator: Party;
-}
-
 export type WalletIntent =
-  | AcceptAllocationRequestIntent
+  | FundOrderIntent
   | PlaceOrderIntent
   | RequestSwapIntent
   | SplitHoldingIntent
   | MergeHoldingsIntent
   | AddLiquidityIntent
-  | RemoveLiquidityIntent
-  | PostRfqQuoteIntent
-  | AcceptRfqIntent;
+  | RemoveLiquidityIntent;
 
 // === provider result + status ============================================
 
@@ -294,16 +252,15 @@ export interface WalletAccount {
 /**
  * Thrown by providers that cannot drive the LP DvP flow (add/remove
  * liquidity) because they can't return the created allocation cids the
- * `/settle` call requires — the operator-relay (`token-standard`,
- * `canton-direct`) and the current `walletconnect` paths. LP DvP needs a
- * CIP-0103 wallet (the `sdk` provider) or the dev `mock`.
+ * `/settle` call requires. The UI uses this to reject unsupported providers
+ * before any holdings are locked.
  */
 export class LiquidityAllocationUnsupportedError extends Error {
   constructor(public readonly providerId: string) {
     super(
       `LP add/remove liquidity is not supported by the "${providerId}" wallet ` +
         `provider (it cannot return created allocation cids for /settle). ` +
-        `Use a CIP-0103 wallet (the SDK provider).`,
+        `Select a wallet provider with full DvP support.`,
     );
     this.name = "LiquidityAllocationUnsupportedError";
   }

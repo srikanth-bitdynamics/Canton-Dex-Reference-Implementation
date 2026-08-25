@@ -1,16 +1,8 @@
--- | Prove per-admin choice context against a REAL token-standard V2
--- registry, the way TradingAppV2 is tested. A DvP add settles across TWO
--- real registries in one transaction:
---   * base/quote under the upstream `TestTokenV2_RegistryV2` (pool.admin) --
---     a genuinely context-requiring registry whose choice context carries a
---     disclosed `TokenRules` contract (not just a marker key);
---   * the LP mint under our `Registry.V2` (pool.lpRegistrar), which supports
---     the owner=None mint account.
--- poolAdminExtraArgs carries the TestTokenV2 registry's real enriched context
--- (with the TokenRules disclosure threaded through the outer submit);
--- lpRegistrarExtraArgs is empty (our registry needs none). Dropping the real
--- context aborts the settle -- so the per-admin split is load-bearing against
--- a real registry.
+-- | Cross-registry settlement tests. Base and quote use the upstream
+-- `TestTokenV2_RegistryV2`, whose choices require a disclosed `TokenRules`
+-- contract. LP mint and burn use `Registry.V2`, which supports the owner=None
+-- mint account and requires no choice context. The tests prove that each
+-- admin's context reaches its own settlement batch.
 module CantonDex.Tests.RealRegistryDvpTests where
 
 import DA.Assert
@@ -48,22 +40,20 @@ import CantonDex.Trading.Utils qualified as Utils
 lpId : Text
 lpId = "BTC-USDC-LP"
 
--- Collect the LP's unlocked V2 holding cids for a given instrument id.
+-- Collect the LP's unlocked V2 holding contract ids for an instrument.
 holdingCidsFor : Party -> Text -> Script [ContractId V2.Holding]
 holdingCidsFor owner instrId = do
   hs <- queryInterface @V2.Holding owner
   pure [ cid | (cid, Some v) <- hs, v.instrumentId.id == instrId, v.account.owner == Some owner, isNone v.lock ]
 
--- The same holdings as amounts.
+-- Read the amounts from those holdings.
 unlockedAmountsFor : Party -> Text -> Script [Decimal]
 unlockedAmountsFor owner instrId = do
   hs <- queryInterface @V2.Holding owner
   pure [ v.amount | (_, Some v) <- hs, v.instrumentId.id == instrId, v.account.owner == Some owner, isNone v.lock ]
 
--- Author an allocation through our own registry (the LP side), which needs no
--- choice context. readAs the registrar so a party outside the registry's own
--- user list can still read the factory contract; production serves it as a
--- disclosure.
+-- Author an LP allocation through the reference registry, which needs no choice
+-- context. `readAs` models the factory disclosure supplied by an integration.
 lpAlloc
   : Fixture -> Party -> V2.SettlementInfo -> V2.AllocationSpecification
   -> [ContractId V2.Holding] -> Time -> Script (ContractId V2.Allocation)
@@ -78,7 +68,7 @@ lpAlloc fx party settlement spec inputHoldingCids now = do
     _ -> abort "lpAlloc: allocation must complete"
 
 -- Author an allocation through the TestTokenV2 registry: enrich the factory
--- choice (real context + TokenRules disclosure) and submit it as `party`.
+-- choice with TokenRules context and disclosure, then submit it as `party`.
 ttAlloc
   : TT2.TestTokenV2Registry -> Party -> V2.SettlementInfo -> V2.AllocationSpecification
   -> [ContractId V2.Holding] -> Time -> Script (ContractId V2.Allocation)
@@ -141,7 +131,7 @@ setup lp = do
   -- LP side: our context-free, mint-capable self-registry.
   lpRegCid <- submit lpRegistrar $ createCmd RegV2.Registry with
     admin = lpRegistrar; users = [operator, lp]
-  -- Mint the LP's base/quote (real TestTokenV2 holdings).
+  -- Mint the LP's base and quote TestTokenV2 holdings.
   TT2.mint ttReg (Utils.basicAccount lp) "X" 10.0
   TT2.mint ttReg (Utils.basicAccount lp) "Y" 200000.0
   let poolId = "X-Y"
@@ -205,7 +195,7 @@ authorAdd fx lp baseAmount quoteAmount now = do
     requestedAt = now; settleAt = None
   baseCids <- holdingCidsFor lp "X"
   quoteCids <- holdingCidsFor lp "Y"
-  -- base/quote deposits via the real TestTokenV2 registry.
+  -- Base and quote deposits use the TestTokenV2 registry.
   baseDep <- ttAlloc fx.ttReg lp settlement (depositSpec fx.ttAdmin lpAcct baseLeg) baseCids now
   quoteDep <- ttAlloc fx.ttReg lp settlement (depositSpec fx.ttAdmin lpAcct quoteLeg) quoteCids now
   -- LP mint receipt via our self-registry (mint account, no context).
@@ -235,8 +225,7 @@ mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx =
     baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0; knownTotalLpSupply = 0.0
     requestedAt = now; poolAdminExtraArgs = poolAdminCtx; lpRegistrarExtraArgs = emptyExtraArgs
 
--- Run a full DvP add against the real registry and return its result -- used
--- as a funded-pool precondition (remove test) and by the add happy path.
+-- Run a full DvP add and return its result for tests that need a funded pool.
 addSettle : Fixture -> Party -> Time -> Script Dvp.PoolLiquidityRules_SettleAddResult
 addSettle fx lp now = do
   (reqCid, baseDep, quoteDep, receiptCid) <- authorAdd fx lp 10.0 200000.0 now
@@ -245,12 +234,9 @@ addSettle fx lp now = do
   submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
     mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx
 
--- Happy path against the REAL TestTokenV2 registry: with the real per-admin
--- context threaded as poolAdminExtraArgs, the DvP add settles end-to-end
--- across both registries. The operator-receiver allocations are born with
--- nextIterationFunding = Some(empty), so the standard registry accepts rolling
--- the LP's deposit credits forward into the pool-slice allocations. Pool goes
--- Active, reserves are backed, and the LP receives freshly-minted LP tokens.
+-- A DvP add settles across both registries when the base/quote batch receives
+-- the TestTokenV2 context. The pool becomes active, its reserves are backed by
+-- allocations, and the LP receives newly minted LP tokens.
 testRealRegistryDvpAddSettles : Script ()
 testRealRegistryDvpAddSettles = do
   lp <- allocateParty "lp"
@@ -262,15 +248,13 @@ testRealRegistryDvpAddSettles = do
   state.reserves.baseAmount === 10.0
   state.reserves.quoteAmount === 200000.0
   res.lpTokensMinted === PM.sqrtDecimal 2000000.0
-  -- LP received the freshly-minted LP holding on our registry.
+  -- The LP received the minted LP holding from the reference registry.
   lpHoldings <- query @RegV2.Holding lp
   let mintedLp = filter (\(_, h) -> h.instrumentId == lpId && h.owner == lp && not h.locked) lpHoldings
   length mintedLp === 1
 
--- With poolAdminExtraArgs blanked, the real registry's context-requiring
--- base/quote factory aborts FIRST at the missing `testTokenV2/tokenRules`
--- context lookup, before any settle logic -- proving poolAdminExtraArgs
--- carries the real per-admin context the base/quote batch requires.
+-- Without poolAdminExtraArgs, the context-requiring base/quote factory rejects
+-- the missing `testTokenV2/tokenRules` value before settlement.
 testRealRegistryDvpRejectsMissingContext : Script ()
 testRealRegistryDvpRejectsMissingContext = do
   lp <- allocateParty "lp"
@@ -286,10 +270,8 @@ testRealRegistryDvpRejectsMissingContext = do
       assertMsg ("expected missing tokenRules context, got: " <> show e)
         (T.isInfixOf "tokenRules" (show e))
 
--- Off-ratio add against the REAL registry: the settle takes only the
--- ratio-matched part of the deposit, and the standard registry returns the
--- unmatched remainder to the LP as an unlocked holding — the refund does not
--- depend on anything specific to our own registry.
+-- An off-ratio add takes only the ratio-matched part of the deposit. The
+-- upstream registry returns the unmatched remainder as an unlocked holding.
 testRealRegistryDvpAddRefundsOffRatioExcess : Script ()
 testRealRegistryDvpAddRefundsOffRatioExcess = do
   lp <- allocateParty "lp"
@@ -350,11 +332,9 @@ testRealRegistryDvpAddRefundsOffRatioExcess = do
   refundedY === [50000.0]
   refundedX === []
 
--- Remove against the REAL TestTokenV2 registry: after a funded add, the holder
--- redeems the full position. base/quote are DELIVERED to the holder from the
--- pool slices (drawn/settled via the real TestTokenV2 factory, born Some so the
--- standard registry accepts the slice settlement), and the LP tokens are burned
--- via our registry. Proves the slice lifecycle (not just the add) conforms.
+-- After funding the pool, the holder redeems the full position. TestTokenV2
+-- delivers base and quote from the pool slices, and the reference registry burns
+-- the LP tokens.
 testRealRegistryDvpRemoveSettles : Script ()
 testRealRegistryDvpRemoveSettles = do
   alice <- allocateParty "lp"
@@ -378,7 +358,7 @@ testRealRegistryDvpRemoveSettles = do
   reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestRemoveLiquidity with
     poolCid = fx.poolCid; holder = alice; baseOuts = [10.0]; quoteOuts = [200000.0]
     lpBurnAmount = lpAmount; requestedAt = now; settleAt = None
-  -- base/quote receipts via the real TestTokenV2 registry; burn-sender via ours.
+  -- Base/quote receipts use TestTokenV2; the burn sender uses our registry.
   baseReceipt <- ttAlloc fx.ttReg alice settlement (mkSpec fx.ttAdmin aliceAcct [baseOutLeg] False) [] now
   quoteReceipt <- ttAlloc fx.ttReg alice settlement (mkSpec fx.ttAdmin aliceAcct [quoteOutLeg] False) [] now
   brres <- submit alice $ exerciseCmd (toInterfaceContractId fx.lpReg : ContractId V2.AllocationFactory)
@@ -416,17 +396,15 @@ testRealRegistryDvpRemoveSettles = do
   assertMsg "alice received base (X) back" (not (null baseBack))
   assertMsg "alice received quote (Y) back" (not (null quoteBack))
 
--- Swap against the REAL TestTokenV2 registry, via the on-screen DvP path.
--- After a funded add, a swapper (bob) swaps quote (Y) -> base (X):
+-- Swap through the TestTokenV2 registry using the dApp's DvP shape. After
+-- funding the pool, Bob swaps quote (Y) for base (X):
 --   1. operator builds bob's prefunded swap-input allocation spec via
 --      PoolRules_RequestSwap (the dApp POST /v1/pools/swap/request path);
---   2. bob authors that exact spec through the real TestTokenV2 registry,
+--   2. bob authors that exact spec through the TestTokenV2 registry,
 --      locking his Y holdings (mirrors the wallet's AllocationFactory_Allocate);
---   3. operator settles via PoolRules_Swap against the real TestTokenV2
---      SettlementFactory, threading the real per-admin context + disclosures.
--- Asserts reserves move (quote up, base down) and the swap produces output --
--- proving the new swap path settles end-to-end against a context-requiring
--- real registry, not just the Mock.
+--   3. operator settles via PoolRules_Swap against its SettlementFactory,
+--      threading the per-admin context and disclosures.
+-- The assertions cover reserve movement and the receiver's output holding.
 testRealRegistryDvpSwapSettles : Script ()
 testRealRegistryDvpSwapSettles = do
   bob <- allocateParty "lp"      -- LP/funder
@@ -434,7 +412,7 @@ testRealRegistryDvpSwapSettles = do
   now <- getTime
   addRes <- addSettle fx bob now
 
-  -- Mint the swapper's quote (Y) input as a real TestTokenV2 holding.
+  -- Mint the swapper's quote (Y) input as a TestTokenV2 holding.
   let swapIn = 1000.0
   TT2.mint fx.ttReg (Utils.basicAccount bob) "Y" swapIn
 
@@ -445,13 +423,13 @@ testRealRegistryDvpSwapSettles = do
     inputInstrumentId = "Y"
     inputAmount = swapIn
 
-  -- 2. Bob authors that exact spec via the REAL TestTokenV2 registry,
+  -- 2. Bob authors that exact spec via the upstream TestTokenV2 registry,
   --    locking his Y input holdings.
   quoteIn <- holdingCidsFor bob "Y"
   swapAllocCid <- ttAlloc fx.ttReg bob reqRes.settlement reqRes.allocationSpec quoteIn now
 
-  -- 3. Operator settles the swap via PoolRules_Swap against the real
-  --    TestTokenV2 SettlementFactory, with the real per-admin context.
+  -- 3. Operator settles the swap via PoolRules_Swap against the upstream
+  --    TestTokenV2 SettlementFactory, with the per-admin context.
   settleDisc <- ttSettleDisclosures fx
   let swapCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
   swapRes <- submit (actAs fx.operator <> discloseMany' settleDisc) $
@@ -470,11 +448,11 @@ testRealRegistryDvpSwapSettles = do
   assertMsg "quote reserve increased after swap" (state.reserves.quoteAmount > 200000.0)
   assertMsg "base reserve decreased after swap" (state.reserves.baseAmount < 10.0)
   assertMsg "swap via RequestSwap produced output" (swapRes.amountOut > 0.0)
-  -- Bob received base (X) out as a real TestTokenV2 holding.
+  -- Bob received base (X) as a TestTokenV2 holding.
   bobBase <- holdingCidsFor bob "X"
   assertMsg "bob received base (X) from the swap" (not (null bobBase))
 
--- A matched trade whose two legs live under DIFFERENT registries: the X leg
+-- A matched trade whose legs live under different registries: the X leg
 -- under the upstream TestTokenV2 registry, the LP leg under ours. The Token
 -- Standard requires a batch's allocations to cover exactly the legs the batch
 -- is handed, so each admin's batch must carry only its own admin's legs.

@@ -34,12 +34,11 @@ bash scripts/run-local-daml-tests.sh
 ```
 
 which builds the `canton-dex-trading` DAR against the committed Token Standard
-DARs (`scripts/build-trading-surface.sh`) and then runs both the core suite and
-the reuse example. By hand:
+DARs (`scripts/build-trading-surface.sh`) and then runs the core suite. By hand:
 
 ```bash
 (cd trading       && dpm build)   # -> trading/.daml/dist/canton-dex-trading-0.1.4.dar
-(cd trading-tests && dpm test)    # every script reports "ok" (97 scripts at time of writing)
+(cd trading-tests && dpm test)    # every script reports "ok"
 ```
 
 ### The registry-fixture ladder
@@ -53,30 +52,29 @@ ladder from cheap-but-blind to slow-but-honest:
 |---|---|---|---|
 | `MockRegistry` | no (empty `inputHoldingCids`) | choice plumbing, multi-party authority | `EndToEndTests` |
 | `DexRegistry` over `MockRegistry` | no | the `RegistryApi` interface handshake | `TokenStandardHarnessTests` |
-| `CantonDex.Registry.V2` | yes (locks, credits, mint/burn accounts) | settlement, conservation, DvP | `PoolLiquidityRulesTests`, `RegistryConservationTests`, `RfqSettlementTests`, `PoolStateInvariantTests`, `DvpMintBurnTests` |
+| `CantonDex.Registry.V2` | yes (locks, credits, mint/burn accounts) | settlement, conservation, DvP | `PoolLiquidityRulesTests`, `RegistryConservationTests`, `RfqSettlementTests`, `PoolStateInvariantTests` |
 | upstream `TestTokenV2_RegistryV2` | yes, with a real disclosed `TokenRules` context | cross-registry settlement, per-admin choice context | `RealRegistryDvpTests` |
 
-The header of [`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml)
-records why the ladder exists: three separate wire shapes shipped wrong and
-every one of them passed a holding-less harness test, because the harness
-archives allocations without moving value. Settlement is only proven where
-holdings really move — against `Registry.V2` and the upstream registry.
+[`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml)
+shows why the ladder matters: a holding-less harness can verify command
+composition, but only a registry with real holdings can prove locks, credits,
+change, and balance conservation. Value movement is therefore tested against
+`Registry.V2` and the upstream registry.
 
 ### What each suite proves
 
 | Suite | Scripts | Proves | Fixture |
 |---|---|---|---|
-| [`InstrumentTests.daml`](../../trading-tests/CantonDex/Tests/InstrumentTests.daml) | 6 | instrument config create/update; mint request → registrar accept (with credential check) and requestor cancel; burn accept; transfer offer → accept and via `TransferPreapproval`; open issuance | instrument templates |
-| [`EdgeCaseTests.daml`](../../trading-tests/CantonDex/Tests/EdgeCaseTests.daml) | 5 | rejection paths the happy-path suites skip: zero/negative mint and burn amounts (`ensure` clauses), mint-accept on `instrumentId` mismatch or missing issuer credentials | instrument templates |
+| [`InstrumentTests.daml`](../../trading-tests/CantonDex/Tests/InstrumentTests.daml) | 6 | the standalone lifecycle sample retained in the package lineage: config updates, credential-gated mint, burn, transfer offers, and preapproval | `CantonDex.Instrument` sample (not used by DEX workflows) |
+| [`EdgeCaseTests.daml`](../../trading-tests/CantonDex/Tests/EdgeCaseTests.daml) | 5 | rejection paths for the standalone lifecycle sample: invalid mint/burn amounts, instrument mismatch, and missing issuer credentials | `CantonDex.Instrument` sample (not used by DEX workflows) |
 | [`PolicyReceiptTests.daml`](../../trading-tests/CantonDex/Tests/PolicyReceiptTests.daml) | 10 | `PolicyReceipt` + `MatchedTrade` shape invariants: `policyReceiptValues` encoding, `foldPolicyReceiptIntoMetadata`, `isWellFormed`, and the authority guard that rejects a receipt whose `signedBy` is not the venue | pure |
 | [`PoolRoundingTests.daml`](../../trading-tests/CantonDex/Tests/PoolRoundingTests.daml) | 5 | pool arithmetic always rounds in the pool's favour, so a swap, deposit, or withdrawal can never quietly pay out more than it should | pure (`PoolModel`) |
-| [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml) | 19 | the whole exchange front-to-back: pool funding, order funding (`OrderFundingRequest` → `Order_Fund`), `OrderMatchExecution_Execute` (limit-price, atomic forward-roll, closing an unbacked remainder), RFQ accept → `MatchedTrade` + `PolicyReceipt`, `PoolRules_Swap`, and DvP choice-context threading | `MockRegistry` |
+| [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml) | 19 | workflow choreography and authority across pool funding, order funding/matching, RFQ accept, OTC settlement, swap, and choice-context threading; it does not prove value movement because the fixture has no holdings | `MockRegistry` |
 | [`TokenStandardHarnessTests.daml`](../../trading-tests/CantonDex/Tests/TokenStandardHarnessTests.daml) | 1 | the matched-trade flow driven through the `RegistryApi` interface, mirroring `splice-token-standard-test-v2`'s `TradingAppV2` exercise | `DexRegistry` |
 | [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml) | 16 | DvP liquidity against real holdings: an atomic add funds base + quote and mints LP tokens in one flow; remove delivers base + quote to the holder and burns LP via the burn account; stale-quote rejection; the settle is co-controlled by operator + `lpRegistrar` | `Registry.V2` |
 | [`PoolStateInvariantTests.daml`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml) | 5 | `PoolState.reserves` always equals the sum of the live `PoolSlice` holdings: `PoolRules_ReconcileState` succeeds across an add → swap → remove lifecycle and fails on an omitted slice, an operator-fabricated state, or a foreign slice | `Registry.V2` |
-| [`DvpMintBurnTests.daml`](../../trading-tests/CantonDex/Tests/DvpMintBurnTests.daml) | 2 | the delivery-versus-mint/burn mechanism on the V2 allocation surface: a mint credits the recipient, a burn archives with no credit. Its header also documents, deliberately, that the shipped test registry does *not* gate mint authorization | `Registry.V2` |
 | [`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml) | 16 | settle-time conservation in the reference registry: an executor cannot draw more than the allocation's locked backing; roll-forward carries real locked backing; surplus returns to the authorizer; the `SettlementFactory` batch rejects per-instrument imbalance and coverage mismatches | `Registry.V2` |
-| [`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml) | 4 | the RFQ round trip against real holdings: each side funds its own leg from its own inventory; a dealer stocked with the wrong asset fails at allocation *after* `Rfq_Accept` has consumed the RFQ; an expiry between accept and settle blocks the settle; one lapsed quote aborts the accept | `Registry.V2` |
+| [`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml) | 4 | the RFQ round trip against real holdings: each side funds its own leg from its own inventory, successful settlement leaves no residual locks, expiry blocks late settlement, and every considered quote must be live when accepted | `Registry.V2` |
 | [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml) | 6 | the per-admin choice context against a genuinely context-requiring upstream registry: a DvP add settles across two registries in one transaction (base/quote under `TestTokenV2_RegistryV2`, the LP mint under `Registry.V2`), and dropping the real disclosed context aborts the settle | `TestTokenV2_RegistryV2` + `Registry.V2` |
 
 A concept doc points at several of these as its worked proof — for example the
@@ -89,17 +87,6 @@ testFloorDivStaysBelowExactQuotient = do
   numerator / 1007.0 === 6.9513406157         -- plain (/) rounds the last digit UP
   PM.floorDiv 7000.0 1007.0 === 6.9513406156  -- floorDiv never overshoots
   ...
-```
-
-### The reuse example (`examples/stable-pool/`)
-
-A separate Daml project consumes `canton-dex-trading-0.1.4.dar` as a
-*data-dependency* and builds a StableSwap pool on top of it, without editing a
-base template. `run-local-daml-tests.sh` runs it too; the three scripts prove
-an external builder can ship a different curve on the same V2 substrate:
-
-```bash
-(cd examples/stable-pool && dpm test)   # 3 ok
 ```
 
 ## Backend tests (`services/operator-backend`)
@@ -119,7 +106,7 @@ The files group by concern:
 | Area | Representative files | What they cover |
 |---|---|---|
 | Matching & pricing | `matching.test.ts`, `pool.test.ts`, `order.test.ts`, `decimal-money.test.ts` | order-book aggregation and `matchOrdersForPair`, the AMM quote math, decimal-string money handling |
-| RFQ & matched trade | `rfq.test.ts`, `matched-trade.test.ts`, `match-leg-shape.test.ts` | the RFQ accept flow end-to-end (the worked example: `RfqService.accept` → `MatchedTrade` + `PolicyReceipt`, with `verifyReceipt` digest replay), and the settlement batch wire shape |
+| RFQ & matched trade | `rfq.test.ts`, `matched-trade.test.ts`, `match-leg-shape.test.ts` | the RFQ accept flow end-to-end (`RfqService.accept` → `MatchedTrade` + `PolicyReceipt`, with `verifyReceipt` digest replay), and the settlement batch wire shape |
 | Indexer & idempotency | `idempotency.test.ts`, `indexer-projection-exactness.test.ts`, `indexer-migrations.test.ts`, `order-fill-recording.test.ts` | the replay/idempotency guard, exact decimal projection out of the store, schema migrations, order-fill recording |
 | Auth & read scoping | `auth.test.ts`, `caller-auth.test.ts`, `read-exposure.test.ts`, `rfq-read-scoping.test.ts` | the write-route auth gate, CORS default-deny, and that party-scoped reads never over-expose |
 | Ledger driver | `json-api-ledger.test.ts` | `JsonApiLedger.submit` serialization against a mocked `fetch` — create/exercise envelopes and the `updateId` → transaction-tree follow, with no live ledger |
@@ -183,8 +170,8 @@ engine on a Canton participant. It verifies:
 The test is gated on `CANTON_E2E=1` so it stays out of the default run; a local
 sandbox run takes ~30s including Canton boot.
 
-**Prerequisites:** `daml` CLI ≥ 3.4 on `$PATH`, and the `canton-dex-trading`
-DAR built (`cd trading && dpm build`).
+**Prerequisites:** DPM with the SDK version pinned by `trading/daml.yaml`, and
+the `canton-dex-trading` DAR built (`cd trading && dpm build`).
 
 **1. Boot a sandbox with the DEX DARs.** The trading DAR pulls its Token
 Standard dependencies in on upload, but listing them explicitly avoids a
@@ -289,11 +276,11 @@ runs add → swap → remove and asserts the on-ledger reserves and LP supply.
 
 ## What CI runs
 
-`.github/workflows/ci.yml` gates every pull request on the offline layers:
-commit-message hygiene, the Daml build plus upgrade-compatibility check
-(`scripts/check-upgrade-compat.sh`), the backend typecheck + tests, the
-frontend typecheck + build, and a Docker build smoke. The live-ledger paths
-above are opt-in and not part of CI.
+`.github/workflows/ci.yml` gates every pull request on the offline layers: the
+Daml build, in-script tests, and upgrade-compatibility check; backend typecheck
+and tests; frontend typecheck, tests, and production build; the documentation
+site build; and a Docker build smoke. The live-ledger paths above are opt-in and
+not part of CI.
 
 ## Out of scope
 
@@ -302,8 +289,8 @@ above are opt-in and not part of CI.
   ground at the ledger level, and `localnet:dvp-e2e` covers it against a live
   participant; a JSON-API-driven version can be added as another integration
   test.
-- The order-funding flow (`OrderFundingRequest` → trader-Accept → `Order_Fund`)
-  through a real browser wallet. The wallet handoff lives in
+- The order-funding flow (`OrderFundingRequest` → trader-authored allocation →
+  `Order_Fund`) through a real browser wallet. The wallet handoff lives in
   `app/web/src/wallet/`; an integration test for it needs a wallet emulator.
 - The full registry HTTP API. The `CANTON_E2E` test stubs `getFactories`
   because the RFQ accept flow reads no factory CIDs; tests that exercise pool

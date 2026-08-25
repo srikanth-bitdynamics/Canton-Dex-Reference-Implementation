@@ -187,9 +187,8 @@ export interface PoolRequestAddLiquidityResult extends LiquidityMatch {
 
 export interface PoolSettleAddLiquidityInput {
   poolCid: ContractId<"Pool">;
-  // The settle binds to EITHER the live request (legacy direct-allocation
-  // flow) OR the acceptance evidence (canonical accept flow, where accept
-  // consumed the request). Exactly one is supplied.
+  // Bind settlement to either a live request (direct-allocation integration)
+  // or the receipt left when a wallet accepts and consumes that request.
   requestCid?: ContractId<"LiquidityAllocationRequest"> | null;
   acceptanceCid?: ContractId<"LiquidityAllocationAcceptance"> | null;
   recipient: Party;

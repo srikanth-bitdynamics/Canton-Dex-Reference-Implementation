@@ -2,9 +2,8 @@
 //
 // Instrument configuration and lifecycle are not part of it: the vendored
 // standard has no such package, and the portable way to read instrument
-// properties is the off-ledger metadata-v1 API. The claim is plausible enough
-// to be written back in by anyone documenting the reference registry, so these
-// are ratchets.
+// properties is the off-ledger metadata-v1 API. These guards keep DEX-specific
+// registry features distinct from the portable Token Standard surface.
 
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
@@ -62,15 +61,12 @@ describe("token standard scope", () => {
     );
   });
 
-  it("the caveats survive, so the rules above cannot be met by deleting docs", () => {
-    // Without this, removing every mention would turn all the absence rules
-    // green while leaving a reader with no guidance at all.
+  it("documents what falls outside Token Standard V2", () => {
     const rel = "docs/concepts/architecture.md";
     assert.match(
       readFileSync(join(ROOT, rel), "utf8"),
       /not (?:part of|mandated by|standardi[sz]ed)|(?:stays |falls )?outside (?:the |Token |DEX )/i,
-      `${rel} no longer carries any caveat about what falls outside Token ` +
-        "Standard V2. That boundary was a review finding; keep it stated.",
+      `${rel} must state what falls outside Token Standard V2.`,
     );
   });
 

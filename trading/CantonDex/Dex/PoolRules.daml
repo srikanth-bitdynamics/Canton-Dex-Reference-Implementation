@@ -6,7 +6,6 @@ import DA.List (dedup)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
-import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 

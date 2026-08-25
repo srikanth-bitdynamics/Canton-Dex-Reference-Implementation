@@ -1,9 +1,8 @@
 // Single client surface the React pages import from. Delegates to:
 //   - OperatorApi (HTTP) for orchestration calls + read queries the
 //     operator can answer
-//   - Wallet handoff for trader-authority writes (place order, add
-//     liquidity, swap allocation creation) -- the dApp NEVER signs as
-//     the trader.
+//   - Wallet handoff for trader-authority writes (place order, add liquidity,
+//     and swap allocation creation). The dApp does not sign as the trader.
 //
 // This file is the boundary the rest of the dApp imports from. Adding
 // a new method here is an explicit, auditable extension; the React
@@ -67,7 +66,7 @@ interface RequestRemoveResult {
 
 function connectedParty(): string {
   const party = useWalletStore.getState().account?.party;
-  if (!party) throw new Error('connect a wallet before providing liquidity');
+  if (!party) throw new Error('connect a wallet before performing this action');
   return party;
 }
 
@@ -315,15 +314,10 @@ export function pickExactHoldingCids(
  * Pick a minimal set of unlocked holdings whose summed units COVER the target
  * (sum >= target), or null if the total is insufficient.
  *
- * Unlike `pickExactHoldingCids` this does not require an exact subset. The
- * registry's `AllocationFactory_Allocate` locks each input holding WHOLE and
- * only checks `have >= needed` (it accepts over-collateralised locks), and
- * `Allocation_Settle` returns the surplus of the locked backing to the owner
- * as a fresh UNLOCKED change holding (Registry.V2). The trade's leg amount is
- * the trade input (authored by the operator's request, independent of the
- * locked size), so a covering set funds ANY fraction without first splitting a
- * holding to the exact size — which a real external wallet (e.g. CIP-0103)
- * cannot do, since `Holding_Split` is `controller admin, owner`.
+ * Unlike `pickExactHoldingCids`, this accepts a covering set. The reference
+ * registry locks only the requested notional and returns unused inputs and
+ * split change through `authorizerChangeCids`, so the wallet does not need a
+ * separate admin-co-signed `Holding_Split` first.
  *
  * Prefers the single smallest holding that already covers the target (one
  * piece, least surplus); otherwise accumulates largest-first for the fewest
@@ -366,8 +360,8 @@ export function pickCoveringHoldingCids(
  * Whether the active wallet can co-sign as the instrument admin. The registry's
  * Holding_Split/Holding_Merge are `controller admin, owner`, so split/merge
  * normalization is only authorized through providers that route an admin
- * co-sign (operator relay / dev). Real external wallets cannot, so for them we
- * must not compose split/merge and instead fall back to exact-subset selection.
+ * co-sign (operator relay / dev). Other wallets use a covering holding set and
+ * let `AllocationFactory_Allocate` return the excess as change.
  */
 function activeWalletCoSignsAdmin(): boolean {
   const providerId = useWalletStore.getState().activeProviderId;
@@ -429,14 +423,8 @@ export async function normalizeSwapFunding(params: {
   );
   if (exactCids) return exactCids;
 
-  // No exact subset. Split/merge normalization needs an admin co-sign
-  // (`Holding_Split`/`Holding_Merge` are `controller admin, owner`). A real
-  // external wallet (e.g. CIP-0103) can't provide it. Rather than failing,
-  // lock a COVERING set of whole holdings (sum >= amount): the
-  // AllocationFactory accepts over-collateralised locks (`have >= needed`) and
-  // the settle step returns the surplus to the owner as unlocked change, so any
-  // fraction funds without a split. The trade leg amount is the trade input,
-  // independent of the locked size — see `pickCoveringHoldingCids`.
+  // Split/merge needs an admin co-sign. Without one, pass a covering set to the
+  // allocation factory; it locks the requested notional and returns change.
   if (!activeWalletCoSignsAdmin()) {
     return pickCoveringHoldingCids(
       holdings,
@@ -446,7 +434,7 @@ export async function normalizeSwapFunding(params: {
     );
   }
 
-  let plan = planSwapFunding(
+  const plan = planSwapFunding(
     holdings,
     params.instrumentId,
     params.amount,
@@ -791,10 +779,8 @@ export const ledger = {
       }
 
       const walletRes = await handToWallet({
-        kind: 'accept-allocation-request',
-        requestCid: bindRes.allocationRequestCid as ContractId<'AllocationRequest'>,
+        kind: 'fund-order',
         factoryCid: params.context.allocationFactoryCid as ContractId<'AllocationFactory'>,
-        allocationRequestExtraArgs: params.context.allocationFactoryExtraArgs,
         allocationFactoryExtraArgs: params.context.allocationFactoryExtraArgs,
         disclosure: params.context.allocationFactoryDisclosure,
         settlement: {
@@ -916,9 +902,8 @@ export const ledger = {
         'wallet returned neither the 3 created allocation cids nor an updateId for add-liquidity',
       );
     }
-    // Canonical accept flow consumes the request and leaves acceptance
-    // evidence; bind settle to that. Fall back to the live request only if no
-    // acceptance surfaced (legacy direct-allocation path).
+    // A wallet-accept flow leaves evidence after consuming the request. A
+    // direct-allocation integration instead settles against the live request.
     const liquidityAcceptanceCid = walletRes.auxiliaryCids?.liquidityAcceptanceCid;
     const settleBody =
       cids && cids.length === 3

@@ -1,4 +1,5 @@
-// Order flow. Same shape as RFQ; see RFQ comments for the worked example.
+// Order lifecycle: recover the trader-created intent, bind it to a pending
+// order, attach the trader-authored funding allocation, then match or cancel.
 
 import type { ContractId } from "@canton-dex/registry-client";
 import { RegistryClient } from "@canton-dex/registry-client";
@@ -10,7 +11,7 @@ import {
   recoverCreatedFundingRequest,
 } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
-import type { Order, Party, V2Account, V2TransferLeg } from "../types.js";
+import type { Order, Party, V2Account } from "../types.js";
 import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
 import { rootLogger } from "../lib/logger.js";
 
@@ -41,9 +42,8 @@ export interface OrderFundInput {
   // Operator-discovery path (updateId-only wallet, e.g. PartyLayer): the order's
   // single funding allocation is recovered from the transaction tree.
   updateId?: string | null;
-  // The OrderAllocationRequest created at bind. Passed to Order_Fund so it is
-  // consumed when the order is funded (the wallet no longer accepts it), instead
-  // of lingering as a stale funding request.
+  // The OrderAllocationRequest created at bind. Order_Fund consumes it together
+  // with the pending order after validating the allocation specification.
   allocationRequestCid?: ContractId<"OrderAllocationRequest"> | null;
 }
 
@@ -81,12 +81,6 @@ interface LiveOrder {
   allocationCid: ContractId<"Allocation"> | null;
 }
 
-export interface OrderMatchInput {
-  orderCid: ContractId<"Order">;
-  matchTransferLegs: V2TransferLeg[];
-  allowFutureIterations: boolean;
-}
-
 export class OrderService {
   constructor(
     private readonly ledger: LedgerSubmitter,
@@ -99,11 +93,8 @@ export class OrderService {
   }
 
   async bind(input: OrderBindInput): Promise<OrderBindResult> {
-    // Operator-discovery: recover the OrderFundingRequest the wallet created
-    // when it returned only an updateId (CIP-0103 SDK / PartyLayer). Mirrors
-    // fund()'s allocation recovery — without this, an updateId-only wallet's
-    // place-order fails downstream because the updateId is passed where a
-    // contract id is expected ("cannot parse ContractId 1220...").
+    // Recover the created request from the transaction tree when a wallet
+    // returns an update id instead of contract ids.
     let fundingRequestCid = input.fundingRequestCid;
     if (input.updateId) {
       fundingRequestCid = (await recoverCreatedFundingRequest(
@@ -167,27 +158,6 @@ export class OrderService {
     );
   }
 
-  async adjust(
-    input: OrderMatchInput,
-  ): Promise<{ adjustedAllocationCid: ContractId<"Allocation"> }> {
-    return retryOnContention(() =>
-      this.ledger.submit<{ adjustedAllocationCid: ContractId<"Allocation"> }>({
-        actAs: [this.operatorParty],
-        commandId: `order-adjust:${input.orderCid}`,
-        command: {
-          kind: "exercise",
-          templateId: "CantonDex.Dex.Order:Order",
-          contractId: input.orderCid,
-          choice: "Order_Adjust",
-          argument: {
-            matchTransferLegs: input.matchTransferLegs,
-            allowFutureIterations: input.allowFutureIterations,
-          },
-        },
-      }),
-    );
-  }
-
   async cancel(orderCid: ContractId<"Order">): Promise<OrderCancelResult> {
     const order = (await this.listOpen()).find((o) => o.contractId === orderCid);
     if (!order) throw new Error(`Order ${orderCid} not found`);
@@ -197,10 +167,8 @@ export class OrderService {
     ]);
     const req: SubmitRequest = {
       actAs: [this.operatorParty],
-      // A funded cancel releases holdings that are `signatory admin, owner`,
-      // which the operator cannot see. `order.admin` is the instrument's
-      // registry admin, so the disclosure has to come from that registry's
-      // choice context -- not yet served by registry-client.
+      // Cancellation may release holdings visible only to the owner and
+      // registry admin, so include the registry's choice context and disclosure.
       commandId: `order-cancel:${orderCid}`,
       disclosure: [...factories.disclosure, ...ctx.disclosure],
       command: {
@@ -237,9 +205,8 @@ export class OrderService {
   }
 
   /**
-   * Discover crossing orders for the given pair. Pure read; the operator
-   * is responsible for taking the returned matches and driving them
-   * through the TradingAppV2 settlement pattern.
+   * Discover crossing orders for the given pair. This is a pure read; the
+   * operator submits selected results through OrderMatchExecution_Execute.
    */
   async findMatches(input: {
     baseInstrumentId: string;

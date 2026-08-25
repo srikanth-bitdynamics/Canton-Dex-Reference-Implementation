@@ -2,14 +2,14 @@
 //
 // Not named *.test.ts on purpose: typechecked with the suite, never run as one.
 //
-// Three things these helpers exist to get right, each learned the hard way:
+// The helpers account for three Markdown details:
 //
 //   1. Markdown reflows. A claim can be split across lines, so a per-line regex
 //      finds nothing in text that is plainly there. Blocks are normalised to
 //      one line before matching.
 //   2. A caveat contains the words it disclaims. "The standard does not mandate
 //      an InstrumentConfiguration" matches a naive search for exactly the claim
-//      it refutes -- the rule would fire on the fix. Absence rules are
+//      it refutes. Absence rules are
 //      negation-aware.
 //   3. Headings and list items must end a block, or a sentence runs into the
 //      next one and produces a hit that spans two unrelated claims.

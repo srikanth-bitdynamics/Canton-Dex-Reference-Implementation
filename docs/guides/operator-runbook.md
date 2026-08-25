@@ -20,8 +20,8 @@ operator dev instance but should not be the production posture.
 | Party         | Owns                                                                          | Signs                                                               |
 | ------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | `operator`    | `DexPair`, `Order`, `MatchedTrade`, `SettledTrade`, `Pool`, `PoolState`, `PoolSlice`, `PoolRules`, `OrderMatchExecution` | All DEX-side market state                                          |
-| `lpRegistrar` | `LPTokenPolicy`, LP registry config (reference: `InstrumentConfiguration`) | Mint/burn supply and LP-token policy                               |
-| `admin`       | Base/quote registry config (reference: `InstrumentConfiguration`), `AllocationFactory`, `SettlementFactory` | Allocations, settlement batches, registry-side mint/burn/transfer |
+| `lpRegistrar` | `LPTokenPolicy`, LP registry config (reference: `InstrumentConfig`) | Mint/burn supply and LP-token policy                               |
+| `admin`       | Base/quote registry config (reference: `InstrumentConfig`), `AllocationFactory`, `SettlementFactory` | Allocations, settlement batches, registry-side mint/burn/transfer |
 | `trader` / `lp` | `OrderFundingRequest`, `Rfq`, and the deposit/receipt/burn allocations they author against a `LiquidityAllocationRequest` | Their own intents and allocation accepts                          |
 
 The traffic-cost split (called out in module headers) follows the role
@@ -40,14 +40,15 @@ In rough order of dependency:
      factory) with `users` = the parties that will exercise on it
    - `MockSettlementFactory` (or production) with the same `users`
    - the registry-specific instrument definition for each instrument the admin
-     manages. In the reference registry this is `InstrumentConfiguration`, with
-     the credential requirements you want enforced
+     manages. In the reference registry this is `InstrumentConfig`; keep its
+     requirement lists empty unless your registry replaces the placeholder
+     verifier with issuer-authorized evidence checks
 3. **List trading pairs.** Operator creates a `DexPair` per pair with the
    chosen `tradingMode` and `feeModel`. Pairs are toggled `active` to gate
    trading without archiving the pair record.
 4. **Create LP infrastructure (per pool).**
    - `lpRegistrar` creates the LP token's registry-specific instrument
-     definition. In the reference registry this is one `InstrumentConfiguration`
+     definition. In the reference registry this is one `InstrumentConfig`
      per pool
    - `lpRegistrar` creates the `LPTokenPolicy` for the full
      `{ admin = lpRegistrar, id = lpInstrumentId }` instrument identity
@@ -143,11 +144,11 @@ Off-ledger telemetry the operator should also collect:
 - **Latency** per workflow (`OrderFundingRequest_Bind` → `Order_Fund`,
   `Rfq_Accept` → `MatchedTrade_Settle`, `PoolRules_Swap` end-to-end).
 - **Failure counts** per choice, especially slippage rejections, allocation
-  conservation failures, and credential-requirement rejections.
+  conservation failures, and registry choice-context rejections.
 - **Slice-count distributions** per pool side, to flag when consolidation
   maintenance would help reduce the slice list's length.
 - **Pending request age**: how long `OrderAllocationRequest`,
-  `LiquidityAllocationRequest`, and `MintRequest` records have been open
+  `LiquidityAllocationRequest` and registry instruction records have been open
   without a downstream accept.
 
 Every HTTP request carries an `X-Request-Id` (echoed back and stamped on each

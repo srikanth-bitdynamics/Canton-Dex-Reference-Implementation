@@ -1,41 +1,31 @@
 -- Documentation anchor: this suite is the worked proof behind the RFQ
--- settlement concept. It walks a request-for-quote from a trader's request,
--- through competing dealer quotes, to a settlement in which each side's own
--- funds really move -- and pins the two ways bad wiring can strand locked money.
+-- settlement concept. It walks a request-for-quote from competing dealer
+-- quotes through settlement, then checks holdings and outstanding locks.
 --
--- | The RFQ round trip, end to end, against REAL holdings.
+-- | The RFQ round trip, end to end, against holding-tracking settlement.
 --
--- WHY THIS IS NOT IN TokenStandardHarnessTests. The harness registry
--- (`CantonDex.TokenStandardHarness.DexRegistry`) holds no holdings: its
--- allocation factory hands back an Allocation without ever locking anything,
--- and its settlement factory archives allocations without moving value. That
--- makes it perfect for testing choice plumbing and useless for testing
--- settlement -- and it is why an entire class of bug stayed invisible to this
--- suite while the deployment kept rejecting the flow. Three separate wire
--- shapes shipped wrong (the settle payload, the V2 Account record, the
--- AllocationSpecification) and every one of them passed a harness test.
+-- TokenStandardHarnessTests uses a holding-less registry. Its allocation
+-- factory returns an Allocation without locking holdings, and its settlement
+-- factory archives allocations without moving value. That fixture is useful
+-- for choice choreography but cannot prove balance conservation.
 --
--- So this module runs the whole thing against `CantonDex.Registry.V2`, the
--- production reference registry, with holdings that really exist and really
--- move:
+-- This module instead uses `CantonDex.Registry.V2`, whose holdings are locked,
+-- credited, and released by the settlement flow:
 --
 --   Rfq_Accept  ->  MatchedTrade_RequestAllocations
 --               ->  AllocationFactory_Allocate, once per counterparty, funded
 --                   from that counterparty's OWN unlocked holdings
 --               ->  MatchedTrade_Settle
 --
--- Two properties it exists to pin, both of which cost a live deployment real
--- money to learn:
+-- The suite checks two boundary conditions in addition to successful balance
+-- movement:
 --
---   1. On an RFQ_Buy the DEALER is the sender of the BASE leg. A dealer stocked
---      only with the quote asset therefore fails at the allocation -- AFTER
---      Rfq_Accept has consumed the Rfq and every quote, with no unwind. Both
---      directions are exercised here, from both sides' inventory.
+--   1. On an RFQ_Buy the dealer sends the base leg. Both directions therefore
+--      allocate from the correct counterparty inventory.
 --   2. Rfq_Accept copies the RFQ's `expiresAt` onto the MatchedTrade's
 --      `settlementDeadline`, and Allocation_Settle aborts once it passes. An
---      RFQ that expires between accept and settle is therefore unsettleable,
---      and the funds stay locked until someone cancels. That coupling is
---      asserted, not assumed.
+--      RFQ that expires between accept and settle cannot settle; its allocations
+--      remain available to the executor's cancellation path.
 module CantonDex.Tests.RfqSettlementTests where
 
 import DA.Assert
@@ -294,9 +284,7 @@ testRfqBuySettlesAgainstRealHoldings = do
   dealerBase1 === dealerBase0 - size
   dealerQuote1 === dealerQuote0 + notional
 
-  -- Whole holdings are locked and the surplus comes back unlocked, so a
-  -- settled trade must leave nothing behind. A stranded lock bricks the party:
-  -- Allocation_Cancel is the executor's choice, not the owner's.
+  -- Settlement consumes both funding allocations and leaves no residual lock.
   traderLocks <- lockedCount fx.trader
   dealerLocks <- lockedCount fx.trusted
   traderLocks === 0
@@ -308,9 +296,8 @@ testRfqBuySettlesAgainstRealHoldings = do
   loserBase === 5.0
   loserQuote === 500000.0
 
--- | RFQ_Sell: the mirror. The DEALER is now the sender of the QUOTE leg, which
--- is the case a dealer stocked only with the quote asset used to pass and a
--- dealer stocked only with base now fails.
+-- | RFQ_Sell: the mirror. The dealer sends quote, so its allocation must be
+-- funded with quote rather than base.
 testRfqSellSettlesAgainstRealHoldings : Script ()
 testRfqSellSettlesAgainstRealHoldings = do
   fx <- setup
@@ -342,17 +329,12 @@ testRfqSellSettlesAgainstRealHoldings = do
   traderLocks === 0
   dealerLocks === 0
 
--- | The RFQ's expiry IS the settlement deadline.
+-- | The RFQ's expiry is the settlement deadline.
 --
 -- Rfq_Accept sets `settlementDeadline = Some expiresAt` on the MatchedTrade,
--- and Allocation_Settle aborts once that time passes. So an RFQ accepted just
--- before its expiry cannot be settled after it -- and because Rfq_Accept is
--- consuming, there is no RFQ and no quote left to retry with. The counterparties'
--- funds simply stay locked.
---
--- This is why the backend clamps the requested expiry to a floor: an unclamped
--- one-minute RFQ fails INSIDE the settle, for a reason that looks nothing like
--- the expiry the caller chose.
+-- and Allocation_Settle rejects a settlement after that deadline. The rejected
+-- settlement leaves the allocations locked for the executor's cancellation
+-- path.
 testExpiryBetweenAcceptAndSettleBlocksTheSettle : Script ()
 testExpiryBetweenAcceptAndSettleBlocksTheSettle = do
   fx <- setup
@@ -376,8 +358,7 @@ testExpiryBetweenAcceptAndSettleBlocksTheSettle = do
   submitMustFail (actAs [fx.operator] <> readAs [fx.admin]) $
     settleTrade fx res.tradeCid trade.transferLegs allocs reqs
 
-  -- And the money is where the failure leaves it: locked behind allocations
-  -- that can now only be cancelled, never settled.
+  -- The rejected settlement leaves both funding allocations locked.
   traderLocks <- lockedCount fx.trader
   dealerLocks <- lockedCount fx.trusted
   traderLocks === 1
@@ -385,10 +366,9 @@ testExpiryBetweenAcceptAndSettleBlocksTheSettle = do
 
 -- | A quote that lapsed before the accept takes the whole accept down.
 --
--- Rfq_Accept asserts EVERY considered quote is still valid, and it is a
--- consuming choice -- so one stale cid in the considered set aborts it. The
--- backend therefore filters the considered set against its own clock rather
--- than forwarding whatever the caller sent; this pins why.
+-- Rfq_Accept validates every considered quote before consuming the RFQ. A
+-- lapsed quote therefore rejects the entire accept command; the backend filters
+-- the considered set against its clock before submission.
 testOneLapsedQuoteAbortsTheAccept : Script ()
 testOneLapsedQuoteAbortsTheAccept = do
   fx <- setup

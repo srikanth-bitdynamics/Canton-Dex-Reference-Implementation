@@ -1,10 +1,8 @@
 # Token Standard V2 allocation surface
 
-Token Standard **V2 (CIP-0112)** is merged into `canton-network/splice` `main`
-and is the network default. This document is the factual, file-anchored
-reference for the specific V2 allocation-surface features the DEX consumes —
-committed allocations and iterated settlement — and the exact DEX code that
-consumes each one.
+This document is the file-anchored reference for the Token Standard **V2
+(CIP-0112)** allocation features the DEX consumes: committed allocations,
+iterated settlement, and the exact DEX code that uses each one.
 
 The DEX uses allocations for two jobs. The obvious one is reserving funds for a
 single trade. The load-bearing one is holding **long-lived, iterated pool
@@ -107,8 +105,7 @@ iteration:
         -- ^ The new allocation created for the next settlement iteration, if any.
 ```
 
-It is `None` when the allocation is fully settled. (Historically, an earlier V2
-release exposed no such forward pointer; the merged standard includes it.)
+It is `None` when the allocation is fully settled.
 
 DEX usage:
 
@@ -147,31 +144,29 @@ DEX usage:
   `FinalizedAllocation`'s `extraTransferLegSides` and `nextIterationFunding`
   into the per-allocation `Allocation_Settle`.
 
-### No `Allocation_Adjust` choice
+### Order funding rolls forward during settlement
 
-The `Allocation` interface exposes exactly three state-changing choices —
-`Allocation_Settle`, `Allocation_Cancel`, and `Allocation_Withdraw`. There is no
-`Allocation_Adjust`. Where an alternative design might adjust an allocation's
-authorized amounts in place via a dedicated choice, on this surface that role is
-subsumed by iterated settlement: `Allocation_Settle` carries
-`extraTransferLegSides` and `nextIterationFunding` and emits a next-iteration
-allocation via `nextIterationAllocationCid`, so the funding "adjustment" happens
-as part of settle rather than as a separate choice.
+For a partial fill, `Allocation_Settle` carries `extraTransferLegSides` and
+`nextIterationFunding`, then returns the next allocation through
+`nextIterationAllocationCid`. The order remainder is created in that same
+transaction and references the returned allocation. There is no separate
+funding-mutation step between settlement and order roll-forward.
 
-This is why the DEX's conservation test is named for the settle path:
-`testFinalizedAllocationFundingConservation` in
+`testOrderRemainderFundingArithmetic` in
 [`trading-tests/CantonDex/Tests/EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
-checks that funding is conserved across the finalize-and-settle flow.
+checks the matcher-side residual calculation. The real-holding conservation
+checks are in
+[`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml),
+where `SettleBatch` enforces that spent plus rolled-forward funding cannot exceed
+the allocation's locked backing.
 
 ## Vendoring
 
-This repo vendors the Token Standard V2 sources under
-[`vendor/splice/`](../../vendor/splice/). They track the standard as merged into
-`canton-network/splice` `main`; the vendoring exists to pin an exact commit for
-reproducible builds, not because the DEX depends on anything non-standard. The
-pin in [`../../vendor/splice/VENDOR_PIN.md`](../../vendor/splice/VENDOR_PIN.md)
-is the authoritative record of exactly which commit the build compiles against,
-and is re-pinned as the standard's sources advance upstream.
+This repo commits released Token Standard V2 DARs under
+[`vendor/splice/dars/`](../../vendor/splice/dars/) for reproducible builds. The
+source tree is retained for readable API and example-code reference, but it is
+not compiled into the DEX. The authoritative dependency record is
+[`vendor/splice/VENDOR_PIN.md`](../../vendor/splice/VENDOR_PIN.md).
 
 ---
 

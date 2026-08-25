@@ -3,8 +3,6 @@
 // semantics, then exercises RfqService.accept and asserts on the
 // resulting MatchedTrade + PolicyReceipt.
 //
-// This is the "B6 worked example" deliverable.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -98,11 +96,8 @@ function setupLedger(): InMemoryLedger {
       }
     }
     const valid = considered;
-    // Mirrors policyCmp in trading/CantonDex/Dex/Rfq.daml (v2.0): tier ->
-    // LATER expiresAt -> EARLIER postedAt -> dealer party text. This handler
-    // used to reproduce the old price-based v1.4 ordering, so the suite
-    // agreed with itself while disagreeing with the chain -- it structurally
-    // could not catch the divergence it existed to catch.
+    // Mirrors policyCmp in trading/CantonDex/Dex/Rfq.daml: tier -> later
+    // expiresAt -> earlier postedAt -> dealer party text.
     const ranked = [...valid].sort((a, b) => {
       const tierA = a.tier === "TierTrusted" ? 0 : 1;
       const tierB = b.tier === "TierTrusted" ? 0 : 1;
@@ -263,7 +258,7 @@ test("RFQ accept end-to-end through operator backend", async () => {
   assert.equal(
     result.receipt.acceptedRank,
     1,
-    "Jump ranks #1 (cheapest trusted)",
+    "Jump ranks #1 by trusted tier and earlier posting time",
   );
   assert.equal(result.receipt.consideredCount, 3);
   assert.equal(result.receipt.policyVersion, POLICY_VERSION);
@@ -411,11 +406,11 @@ test("sweepExpired archives expired RFQs under operator authority only", async (
   );
 });
 
-// Per-caller binding (finding B-2, Low residual #1): cancel/accept act as the
+// Per-caller binding: cancel/accept act as the
 // fetched RFQ's `trader`. When the handler passes a `requireTrader` (the
 // verified caller party), the service must reject a mismatch so an operator-
 // token holder cannot grief/cancel or accept on another trader's behalf.
-test("cancel rejects a caller bound to a different party (B-2)", async () => {
+test("cancel rejects a caller bound to a different party", async () => {
   const ledger = setupLedger();
   const registry = new StubRegistry();
   const operator: Party = "operator::test";
@@ -452,7 +447,7 @@ test("cancel rejects a caller bound to a different party (B-2)", async () => {
   );
 });
 
-test("accept rejects a caller bound to a different party (B-2)", async () => {
+test("accept rejects a caller bound to a different party", async () => {
   const ledger = setupLedger();
   const registry = new StubRegistry();
   const operator: Party = "operator::test";

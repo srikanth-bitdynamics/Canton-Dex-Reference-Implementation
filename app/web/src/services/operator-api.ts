@@ -1,6 +1,7 @@
 // Typed client for the operator backend HTTP API. The dApp uses this
-// to compose orchestration calls; trader-authority actions go through
-// `wallet/handoff.ts` instead.
+// to compose orchestration calls. Allocation-backed trader actions go
+// through `wallet/handoff.ts`; hosted RFQ routes are the documented relay
+// exception.
 
 export type Party = string;
 export type ContractId<_T> = string;

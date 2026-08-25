@@ -26,7 +26,7 @@ responsibilities can be handed to different custodians later:
   regulated custodian later.
 - `CANTON_ADMIN` — asset admin / registrar. Owns the registry-side definition
   for the underlying instruments. In the reference registry this is
-  `InstrumentConfiguration`; Token Standard V2 does not require that exact
+  `InstrumentConfig`; Token Standard V2 does not require that exact
   template.
 
 In production these are typically three different parties for separation of
@@ -63,7 +63,7 @@ export CANTON_ADMIN=admin::1220::...
 
 The script is idempotent. It uploads DARs, allocates the parties if they don't
 exist, runs `bootstrap-registry.ts` to create reference-registry
-`InstrumentConfiguration` contracts for BTC / USDC / ETH and the LP
+`InstrumentConfig` contracts for BTC / USDC / ETH and the LP
 instruments, and (if `OPERATOR_ADMIN_TOKEN` is set) seeds an initial BTC/USDC
 pair.
 

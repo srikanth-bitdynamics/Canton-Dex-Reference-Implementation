@@ -1,13 +1,5 @@
-// Order matching engine: price-time priority.
-//
-// Pure functions over Order rows. The operator service polls open
-// orders and runs `match()` to discover crossing bid/ask pairs; the
-// returned matches are then sent through the TradingAppV2 settlement
-// pattern (`OTCTrade_RequestAllocations` → `OTCTrade_Settle`).
-//
-// Why pure functions: matching is decisive but read-only against the
-// ACS. Putting the algorithm here makes it trivially unit-testable
-// without a ledger. The service module wires it to actual ledger writes.
+// Price-time matching over active Order rows. This module proposes crossing
+// pairs; OrderMatchExecution_Execute revalidates and settles them on-ledger.
 
 import type { Order } from "../types.js";
 import * as dec from "../pool/decimal.js";
@@ -100,8 +92,8 @@ function clearingPrice(buy: Order, sell: Order): string {
  *      price; consume min(bidQty, askQty) from both sides.
  *
  * Returns the list of matches to settle. Orders are not mutated; the
- * caller is responsible for posting the resulting OTCTrades and
- * recording the fill against both orders.
+ * caller is responsible for submitting each result through
+ * OrderMatchExecution_Execute.
  */
 export function matchOrdersForPair(
   orders: Order[],

@@ -8,36 +8,37 @@ before reading the endpoint tables:
    indexer, projected into JSON the dApp renders — pairs, pools, order books,
    a party's holdings, trade and swap history. Reads never move value and, with
    two scoping exceptions below, need no authorization.
-2. **Orchestration writes.** Choices the *operator* is an authorizer on —
-   creating a pair or pool, opening a DvP allocation request, settling a matched
-   trade, cancelling an order. These carry the operator's authority and are
-   gated by a bearer token.
+2. **Orchestration writes.** Administrative and settlement commands the
+   operator is authorized to submit, plus explicitly documented hosted-party
+   RFQ relay routes. These are gated by a bearer token.
 
-What this API deliberately does **not** do is author trader-authority writes.
-Placing an order, allocating a holding, signing a swap — anything that spends a
-trader's funds — is signed by the trader's own wallet under the CIP-0103 dApp
-standard and never passes through this backend. The operator can *orchestrate*
-a settlement but cannot *move* a counterparty's value; that boundary is what the
-two-call flows below exist to preserve.
+Order funding, holding allocation, swaps, and LP actions preserve a
+self-custodial boundary: a trader wallet authors the allocation and this API
+only requests or settles it. The RFQ endpoints are the exception. They submit
+as hosted trader parties, and RFQ acceptance also submits as the operator, so
+the backend ledger user must hold those act-as rights. Do not expose those
+routes as a self-custodial production API without replacing that authority
+model.
 
 ```mermaid
 flowchart LR
   UI["dApp / integrator"]
   subgraph op["Operator backend — this API"]
     R["Reads<br/>ACS + indexer → JSON"]
-    W["Orchestration writes<br/>operator-signed choices"]
+    W["Orchestration writes<br/>operator commands + hosted RFQ relay"]
   end
   A["Trader wallet<br/>(CIP-0103)"]
   L[("Canton ledger")]
   UI -->|GET| R --> L
-  UI -->|"POST + operator token"| W -->|operator authority| L
+  UI -->|"POST + operator token"| W -->|authorized actAs parties| L
   UI -.->|WalletIntent| A -.->|trader authority| L
 ```
 
 A DvP flow crosses both lanes: the operator `POST …/request` returns an
 allocation spec, the **wallet** authors the allocations that lock the trader's
-funds, and the operator `POST …/settle` completes the atomic swap. The
-value-moving step is the middle one, and it is never an endpoint here.
+funds, and the operator `POST …/settle` invokes the atomic value transfer. The
+wallet-authored lock is the step the backend cannot perform for a self-custodial
+trader.
 
 ## Conventions
 
@@ -109,7 +110,6 @@ Auth is **open** for every read below unless the row says otherwise.
 | `GET /v1/pools` | All active pools |
 | `GET /v1/instruments` | Instrument metadata, merged from the registry configs; `?ids=BTC,USDC` filters |
 | `GET /v1/prices?pairs=` | Advisory pool mid-prices for fiat display |
-| `GET /v1/credentials?holder=` | `Credential` contracts held by a party |
 
 `GET /v1/context` returns the `DexContext` — the operator holds the knowledge of
 which admin governs which instrument and which factory to allocate against, so
@@ -134,7 +134,7 @@ poll fails):
 ```
 
 `GET /v1/instruments` merges `decimals` from Registry.V2 `InstrumentConfig` with
-`isin`/`cusip`/`description` from `InstrumentConfiguration`, keyed by
+`decimals`/`isin`/`cusip` from the reference registry's `InstrumentConfig`, keyed by
 `instrumentId`, then unions in the instruments referenced by active pools so the
 list is populated even before any config is registered. Both config templates
 are `signatory admin`, so the endpoint reads as `admin` and `lpRegistrar`, not
@@ -187,9 +187,9 @@ without a `db` handle.
 
 | Method · Path | Purpose | Auth |
 |---|---|---|
-| `GET /v1/trades?trader=&pair=&limit=` | RFQ `MatchedTrade`s + the `SettledTrade` each order-book fill writes | open / **admin** unfiltered |
+| `GET /v1/trades?trader=&pair=&limit=` | accepted RFQ `MatchedTrade`s + the `SettledTrade` each order-book fill writes | open / **admin** unfiltered |
 | `GET /v1/swaps?pair=&kind=&limit=` | Pool history; `kind` ∈ `swap`,`add_liquidity`,`remove_liquidity`,`state_change` (default `swap`) | open |
-| `GET /v1/rfq/history?trader=&limit=` | Settled RFQ acceptances (trader, pair, winning dealer, rank) | open / **admin** unfiltered |
+| `GET /v1/rfq/history?trader=&limit=` | RFQ lifecycle rows, including accepted quotes (trader, pair, winning dealer, rank) | open / **admin** unfiltered |
 | `GET /v1/price-history?pair=&hours=` | Price points from the swaps feed (`hours` 1–720, default 24) | open |
 | `GET /v1/stats/24h?pair=` | 24h price change, volume, swap count | open |
 | `GET /v1/dealers` | Dealer registry — public list | open |
@@ -411,21 +411,17 @@ production authority path.
 
 ## Wallet intent shapes
 
-For trader-authority writes, the frontend hands an intent to the active
-`WalletProvider` rather than calling the ledger — the wallet holds the trader's
-key, this backend does not. Shapes are in
+For self-custodial allocation writes, the frontend hands an intent to the active
+`WalletProvider` rather than calling the ledger. Shapes are in
 [`app/web/src/wallet/types.ts`](../../app/web/src/wallet/types.ts):
 
 | Intent | When |
 |---|---|
-| `AcceptAllocationRequestIntent` | Trader allocates holdings for an open order or swap |
+| `FundOrderIntent` | Trader locks holdings for a pending order |
 | `PlaceOrderIntent` | Trader places a new order |
 | `RequestSwapIntent` | Trader initiates a pool swap |
 | `AddLiquidityIntent` | Trader authors the base / quote / LP-receipt allocations for an add |
 | `RemoveLiquidityIntent` | Trader authors the base / quote-receipt and LP burn-sender allocations for a remove |
-| `PostRfqQuoteIntent` | Dealer posts a quote on an RFQ |
-| `AcceptRfqIntent` | Trader accepts a dealer's quote (co-signed with the operator) |
-
 The wallet also exposes `SplitHoldingIntent` / `MergeHoldingsIntent` for holding
 management; those are a wallet concern and have no operator endpoint.
 
@@ -493,10 +489,9 @@ curl -s -X POST http://localhost:8080/v1/rfq \
        "size":"0.5","expiresAt":"2026-12-31T00:00:00Z","whitelist":[],"createdAt":"2026-07-01T00:00:00Z"}'
 ```
 
-> **Historical rows.** The exactness and trade-labelling fixes are forward-only:
-> rows written before them keep their recorded values, so a pre-cutover swap can
-> differ in the last decimal and a pre-cutover buy can carry `trader`/`dealer`
-> inverted.
+> **Existing projection rows.** Reindex after deploying a version that changes
+> derived amount or party fields; rows already stored in SQLite retain their
+> original values until rebuilt.
 > [`services/operator-backend/scripts/reindex-derived.ts`](../../services/operator-backend/scripts/reindex-derived.ts)
 > recomputes both in place (idempotent, `--dry-run` first) with no ledger read.
 

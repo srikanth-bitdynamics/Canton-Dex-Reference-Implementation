@@ -1,4 +1,5 @@
--- | Daml Script tests for the registry workflows:
+-- | Daml Script tests for the standalone `CantonDex.Instrument` lifecycle
+-- sample. These templates are not used by active DEX workflows:
 --   1. InstrumentConfiguration create/update
 --   2. Mint request → registrar accept (with credential check)
 --   3. Mint request → requestor cancel

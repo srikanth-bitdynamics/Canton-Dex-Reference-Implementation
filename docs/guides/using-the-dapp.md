@@ -41,11 +41,12 @@ and V2 assets. See [Non-goals](../concepts/non-goals.md#the-hosted-testnet-is-a-
 
 ## How a trade is authorised
 
-Read this once and the rest of the guide follows. **The dApp holds no keys and
-invents nothing.** Every trader-authority action is the same three-step
-handshake: the dApp asks the operator for a Daml-built spec, your wallet signs
-exactly that spec (locking the funds it names), and the operator settles against
-it. The wallet carries *your* authority; the operator carries *its own*.
+Read this once and the pool/order screens follow. **The dApp holds no keys.** A
+DvP action is a three-step handshake: the dApp asks the operator for a
+Daml-built spec, your wallet signs that spec (locking the named funds), and the
+operator settles against it. The wallet carries *your* authority; the operator
+carries *its own*. The hosted RFQ screen is a separate relay flow described
+below.
 
 ```mermaid
 sequenceDiagram
@@ -168,30 +169,36 @@ amber = partially filled.
 
 ## Trade an RFQ block (RFQ page)
 
-Bilateral block trades. You publish a request, whitelisted dealers quote, you
-accept one, and the trade settles as a `MatchedTrade` visible only to you and the
-accepted dealer.
+Bilateral block trades. You publish a request, whitelisted dealers quote, and
+you accept one. Acceptance creates a `MatchedTrade` and policy receipt; token
+funding and settlement are separate steps.
 
 1. Open **RFQ** → click **+ New RFQ**.
 2. Pick pair, side, size, and validity window. Select dealers from the whitelist
    on the right.
-3. Send. Dealers receive your RFQ off-ledger and post quotes on-ledger; quotes
-   stream into the expanded row in real time.
+3. Send. The hosted trader screen creates the RFQ. A dealer integration must
+   observe that contract and create `RfqQuote` contracts; this reference does
+   not include a dealer quote-entry screen. Visible quotes stream into the
+   expanded row.
 4. Keep the default **Operator policy** ranking, or re-sort with the Best price /
    Earliest / Trusted only buttons. Under policy `v2.0` the ranking chain is
    **trusted tier first → later expiry first → earlier posting time first →
    dealer id** as the tiebreaker — price is *not* part of the policy chain; you
    choose from the policy-ranked candidates. The policy modal shows the exact
    ranking that was applied.
-5. Click **Accept** on the dealer you want. The operator and you co-sign
-   `Rfq_Accept`, the trade settles, and a `PolicyReceipt` is produced as proof of
-   the ranking applied.
-6. The receipt appears as a clickable pill in your **Portfolio → Activity** feed.
-   Click it to see the full attestation: which policy version, which rank, how
-   many quotes were considered.
+5. Click **Accept** on the dealer you want. On the hosted demo, the backend
+   submits `Rfq_Accept` with its configured trader and operator authorities; a
+   `PolicyReceipt` records the ranking applied. This is not a self-custodial
+   wallet approval flow.
+6. The accepted trade appears in the RFQ page's **Accepted** tab. Open its
+   receipt to see the policy version, the selected quote's rank, and how many
+   quotes were considered.
 
-Settled RFQs move to the **Settled** tab; those that expire with no accept (or no
-quotes) move to **Expired**.
+Accepted RFQs move to the **Accepted** tab; those that expire with no acceptance
+(or no quotes) move to **Expired**. The page does not claim that acceptance
+itself moved balances. The later `MatchedTrade` allocation and settle choices
+are demonstrated by the Daml tests and operator API, but are not driven by this
+hosted RFQ screen.
 
 ---
 
@@ -202,33 +209,18 @@ A snapshot of everything visible to your party:
 - **Holdings** — every instrument you hold, with available / locked. Locked =
   currently backing an open order, swap, or RFQ allocation.
 - **LP positions** — shown separately with pool-share % and underlying value.
-- **Allocation breakdown** — what's locking your funds, with the Allocation CID +
-  type (prefunded / committed).
-- **Activity** — settled actions with timestamp, type, on-ledger Trade CID, and
-  (for RFQs) a clickable policy-receipt pill.
-
-Use the filter buttons (All / Swaps / Orders / LP) to narrow the feed.
-
----
-
-## Credential warnings
-
-Some instruments require the holder to present credentials (for example, a
-KYC tier-1 claim). If your party doesn't hold the required credential, the UI
-shows a yellow **Missing credentials** banner before you can trade, naming the
-issuer and the exact `property=value` claim you need. Contact the credential
-issuer to obtain the claim, then refresh.
-
-This enforcement is on-ledger: the registry rejects mint/burn/transfer that fails
-the credential check, regardless of what the dApp shows.
+- **Allocation breakdown** — funded orders currently locking your holdings,
+  identified by allocation.
+- **Activity** — pool-wide settled swap activity from the operator indexer. The
+  current page does not yet combine order, RFQ, and LP history into this feed.
 
 ---
 
 ## Reference: what the wallet signs, and what settles
 
-Every trader-authority write is the handshake from
+The allocation-backed actions use the handshake from
 [How a trade is authorised](#how-a-trade-is-authorised): the operator builds a
-spec, your wallet authors it, the operator settles. The wallet provider knows
+spec, your wallet authors it, and the operator settles. The wallet provider knows
 the disclosed factory CIDs, the package hash, and the holding CIDs to lock; the
 dApp passes only the intent verb.
 
@@ -237,9 +229,11 @@ dApp passes only the intent verb.
 | Swap | `request-swap` | Prefunded input `Allocation`, then [`PoolRules_Swap`](../../trading/CantonDex/Dex/PoolRules.daml) |
 | Add liquidity | `add-liquidity` | Base-deposit + quote-deposit + LP-receipt `Allocation`s, settled by [`PoolLiquidityRules_SettleAddLiquidity`](../../trading/CantonDex/Dex/PoolLiquidityRules.daml) |
 | Remove liquidity | `remove-liquidity` | Base-receipt + quote-receipt + LP burn-sender `Allocation`s, settled by [`PoolLiquidityRules_SettleRemoveLiquidity`](../../trading/CantonDex/Dex/PoolLiquidityRules.daml) |
-| Place order | `place-order` + `accept-allocation-request` | [`OrderFundingRequest`](../../trading/CantonDex/Dex/OrderFundingRequest.daml) → funded [`Order`](../../trading/CantonDex/Dex/Order.daml) |
-| Accept RFQ | `accept-rfq` | Joint [`Rfq_Accept`](../../trading/CantonDex/Dex/Rfq.daml) exercise → [`MatchedTrade`](../../trading/CantonDex/Dex/MatchedTrade.daml) |
-| Post RFQ quote (dealer) | `post-rfq-quote` | `RfqQuote` create |
+| Place order | `place-order` + `fund-order` | [`OrderFundingRequest`](../../trading/CantonDex/Dex/OrderFundingRequest.daml) → funded [`Order`](../../trading/CantonDex/Dex/Order.daml) |
+
+RFQ create, cancel, and accept are not wallet intents in this app. The hosted
+RFQ page calls the operator API, whose ledger user must be authorized for the
+hosted parties involved.
 
 The split that makes the "operator can't rewrite your price" guarantee is one
 pair of choices: the request choice builds a spec and creates nothing, and the
@@ -258,9 +252,8 @@ nonconsuming choice PoolRules_Swap : PoolRules_SwapResult
   ...
 ```
 
-What your wallet actually signs is a single `AllocationFactory_Allocate`
-exercise that locks the named holdings
-([`commands.ts`](../../app/web/src/wallet/commands.ts)):
+Swap and order funding each use one `AllocationFactory_Allocate` exercise that
+locks the named holdings ([`commands.ts`](../../app/web/src/wallet/commands.ts)):
 
 ```ts
 choice: "AllocationFactory_Allocate",
@@ -274,6 +267,12 @@ choiceArgument: {
 },
 ```
 
+Add and remove liquidity need three allocations across two registry admins.
+Their wallet command is one `BatchingUtility_ExecuteBatch` exercise containing
+one `AllocationRequest_Accept` action followed by three
+`AllocationFactory_Allocate` actions. The utility keeps the wallet approval to
+one top-level command while preserving one atomic Daml transaction.
+
 **Proven on-ledger** (each line links the choice and the test that pins it):
 
 - A swap re-derives its output from live reserves inside `PoolRules_Swap`, and
@@ -282,8 +281,8 @@ choiceArgument: {
 - Add / remove liquidity move funds and mint / burn LP tokens in one atomic,
   co-controlled (operator + lpRegistrar) settlement —
   [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml).
-- An accepted RFQ moves each side's real funds and lands a `MatchedTrade` for the
-  trader and dealer only —
+- The RFQ settlement workflow moves each side's real funds after both parties
+  author allocations —
   [`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml).
 - The `PolicyReceipt` records the ranking honestly, and a trade signed by anyone
   but the venue is rejected —

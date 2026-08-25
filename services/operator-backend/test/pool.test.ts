@@ -465,8 +465,8 @@ describe("PoolService DvP liquidity", () => {
       "settle is co-signed [operator, lpRegistrar]",
     );
     assert.equal(cmd.argument.requestCid, "#req:0");
-    // Legacy direct-allocation path binds to the live request, not evidence.
-    assert.equal(cmd.argument.acceptanceCid, null, "no acceptance evidence on the legacy path");
+    // Direct-allocation integration binds to the live request, not evidence.
+    assert.equal(cmd.argument.acceptanceCid, null, "no acceptance evidence on the direct path");
     assert.equal(cmd.argument.lpBaseDepositCid, "#b:0");
     assert.equal(cmd.argument.lpReceiptCid, "#r:0");
     assert.ok(cmd.argument.baseFactoryCid, "base/quote factory present");

@@ -146,8 +146,7 @@ describe('decimal formatting', () => {
   });
 
   it('formatDecimal10 does not crash at or above 1e21', () => {
-    // Previously decimal10Units(value) threw because toFixed/String emitted
-    // scientific notation that BigInt() rejected.
+    // Scientific notation must be expanded before conversion to fixed-point.
     expect(() => formatDecimal10(1e21)).not.toThrow();
     expect(formatDecimal10(1e21)).toBe('1000000000000000000000.0000000000');
     expect(formatDecimal10(100)).toBe('100.0000000000');

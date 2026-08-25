@@ -1,7 +1,5 @@
-// GET /v1/instruments decodes what the ledger actually returns.
-//
-// Daml Int64 arrives as a JSON string, so `decimals` came back "10" and a
-// typeof === "number" guard dropped it, leaving the field null.
+// GET /v1/instruments preserves Daml wire types at the HTTP boundary. Daml
+// Int64 arrives as a JSON string and is decoded to the endpoint's number field.
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -33,11 +31,8 @@ class StubRegistry extends RegistryClient {
 class ConfigLedger extends InMemoryLedger {
   override async query<T>(filter: SubscriptionFilter): Promise<T[]> {
     if (filter.templateId?.endsWith("Registry.V2:InstrumentConfig")) {
-      return [{ instrumentId: "dBTC", decimals: "10" }] as T[];
-    }
-    if (filter.templateId?.endsWith("InstrumentConfiguration")) {
       return [
-        { instrumentId: "dBTC", isin: null, cusip: null, description: "Test asset" },
+        { instrumentId: "dBTC", decimals: "10", isin: null, cusip: "TEST-1" },
       ] as T[];
     }
     return [];
@@ -94,14 +89,16 @@ describe("GET /v1/instruments", () => {
     assert.equal(typeof dbtc.decimals, "number", "served as a number, not a string");
   });
 
-  it("still merges the configuration fields", async () => {
+  it("serves optional metadata from the V2 registry config", async () => {
     const rows = (await (await fetch(`${baseUrl}/v1/instruments`)).json()) as Array<{
       instrumentId: string;
       description: string | null;
       isin: string | null;
+      cusip: string | null;
     }>;
     const dbtc = rows.find((r) => r.instrumentId === "dBTC")!;
-    assert.equal(dbtc.description, "Test asset");
+    assert.equal(dbtc.description, null, "description is not part of this registry config");
     assert.equal(dbtc.isin, null, "an unset Optional Text stays null");
+    assert.equal(dbtc.cusip, "TEST-1");
   });
 });

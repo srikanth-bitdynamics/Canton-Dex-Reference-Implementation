@@ -1,6 +1,5 @@
-// Policy receipt modal. Renders an operator-signed PolicyReceipt for a
-// settled MatchedTrade so the trader or counterparty can audit the
-// ranking that produced the trade.
+// Policy receipt modal. Renders the operator-signed ranking record attached to
+// a MatchedTrade. The receipt is created at quote acceptance, before settlement.
 //
 // On-ledger: the receipt rides in MatchedTrade.policyReceipt, folded
 // into SettlementInfo.meta via PolicyReceipt.daml. This modal renders
@@ -17,6 +16,7 @@ export interface PolicyReceiptTrade {
   rank?: number;
   considered?: number;
   dealer?: string;
+  recordedAt?: string;
   settledAt?: string;
   /** Optional embedded receipt -- if present, takes precedence over
    *  the loose top-level fields. */
@@ -38,7 +38,7 @@ export function PolicyReceiptModal({ trade, onClose }: Props) {
   const acceptedDealer = trade.dealer ?? r?.acceptedDealer ?? '—';
   const rank = trade.rank ?? r?.acceptedRank ?? 0;
   const considered = trade.considered ?? r?.consideredCount ?? 0;
-  const settledAt = trade.settledAt ?? r?.signedAt ?? '—';
+  const recordedAt = trade.recordedAt ?? trade.settledAt ?? r?.signedAt ?? '—';
   const d = dealerByParty(acceptedDealer, dealers);
 
   return (
@@ -86,8 +86,8 @@ export function PolicyReceiptModal({ trade, onClose }: Props) {
           </span>
         </div>
         <div className="kv" style={{ padding: '4px 0' }}>
-          <span className="k">Settlement</span>
-          <span className="v mono">{settledAt}</span>
+          <span className="k">Recorded at</span>
+          <span className="v mono">{recordedAt}</span>
         </div>
       </div>
 

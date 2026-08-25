@@ -1,10 +1,30 @@
 # Canton DEX workflow design
 
-Every settling workflow in this DEX is one app choice that builds the transfer
-legs and calls a single Token Standard settlement. The app contracts own market
-structure; the Token Standard owns the funds; the registry owns what an
-instrument means. The hard part was never Uniswap parity — it was getting those
-Daml workflows right.
+Each state transition has a named app choice. A terminal, value-moving choice
+validates the workflow's business rules and delegates settlement to Token
+Standard V2. It may call more than one `SettlementFactory_SettleBatch` when the
+instruments have different registry admins, but those calls remain atomic inside
+one Daml transaction. The app contracts own market state; the registry owns
+holdings and settlement.
+
+## The common workflow in five steps
+
+Ignore the contract names for a moment. Every value-moving flow follows the
+same sequence:
+
+1. **Describe intent.** A trader, dealer, or liquidity provider states the
+   proposed action; a pool already carries its standing swap terms in state.
+2. **Fix the terms.** The pool curve, order limits, dealer quote, or bilateral
+   agreement determines the transfer legs and settlement identity.
+3. **Reserve value.** Each holder's wallet locks the required holdings in a V2
+   allocation whose terms match that settlement.
+4. **Validate.** A named DEX choice checks current state, authority, price,
+   quantity, expiry, and allocation identity.
+5. **Settle and record.** The registry moves all legs atomically; the same Daml
+   transaction closes or recreates the affected market state.
+
+The backend may discover contracts, calculate candidates, and submit commands,
+but it cannot bypass the checks in steps 3 and 4.
 
 ## Two workflow families
 
@@ -15,15 +35,32 @@ different application state and cancellation rules.
 - **Bilateral settlement** — OTC and RFQ block trades. A `MatchedTrade` names
   two pre-agreed legs; each side authors a one-shot allocation; the operator
   batches them by registry admin and settles.
-- **Pool and prefunded orders** — swaps, add/remove liquidity, and resting
-  orders. Funds sit under *committed*, *iterated* allocations that the settle
-  rolls forward via `FinalizedAllocation.nextIterationFunding`, so the same
-  reserve or order can settle repeatedly without re-authoring.
+- **Long-lived pool and order inventory** — pool slices and resting orders use
+  committed, iterated allocations so their remaining funding can roll forward
+  without re-authoring. A trader's swap input is a separate allocation consumed
+  by that swap.
 
 The rest of this page walks the four workflows that carry the design: swap,
 add/remove liquidity, the order lifecycle, and RFQ. Secondary flows (pair
 listing, pool creation, asset lifecycle) and the design principles are in
 [Reference](#reference).
+
+## Active workflow map
+
+This table is the shortest route from a user action to the choices worth reading.
+Retired package-lineage choices are deliberately omitted because no active flow
+may exercise them.
+
+| User action | Intent / request | Holder-authorized step | Validating terminal choice | Result |
+|---|---|---|---|---|
+| Swap | `PoolRules_RequestSwap` | `AllocationFactory_Allocate` | `PoolRules_Swap` | holdings move; `PoolState` and touched slices roll forward |
+| Add liquidity | `PoolLiquidityRules_RequestAddLiquidity` | accept request and allocate deposits/receipt | `PoolLiquidityRules_SettleAddLiquidity` | reserves increase and LP holdings are minted |
+| Remove liquidity | `PoolLiquidityRules_RequestRemoveLiquidity` | accept request and allocate payout/burn legs | `PoolLiquidityRules_SettleRemoveLiquidity` | reserves decrease, assets return, and LP holdings burn |
+| Place order | `OrderFundingRequest_Bind` | `AllocationFactory_Allocate` | `Order_Fund` | pending order becomes funded |
+| Match orders | funded buy + sell orders | already prefunded | `OrderMatchExecution_Execute` | atomic fill; each remainder rolls forward |
+| Cancel order | funded or partially filled order | already prefunded | `Order_Cancel` | order closes and remaining funding unlocks |
+| Accept RFQ | `Rfq` + `RfqQuote` | `Rfq_Accept` under the hosted authority model | `Rfq_Accept` | `MatchedTrade` and policy receipt are created; no value moves yet |
+| Settle RFQ / OTC | `MatchedTrade` allocation requests | each counterparty authors its allocation | `MatchedTrade_Settle` | bilateral legs settle atomically |
 
 ## Actors and core contracts
 
@@ -122,8 +159,8 @@ sequenceDiagram
     D->>O: POST /v1/pools/add-liquidity/request
     O->>L: PoolLiquidityRules_RequestAddLiquidity
     O-->>D: request + specs (base, quote, LP receipt)
-    LP->>L: 3x AllocationFactory_Allocate (base, quote, LP receipt)
-    Note over LP,L: LP-signed via wallet
+    LP->>L: BatchingUtility_ExecuteBatch
+    Note over LP,L: one wallet approval: Accept + 3 Allocate actions
     D->>O: POST /v1/pools/add-liquidity/settle (allocation cids)
     O->>L: PoolLiquidityRules_SettleAddLiquidity
     Note over O,L: base/quote batch under pool.admin,<br/>LP mint batch under pool.lpRegistrar
@@ -138,8 +175,8 @@ enters the reserves; the excess is refunded in the same batch, so it never buys
 LP tokens.
 
 ```daml
--- base/quote batch (pool.admin): deposits in, operator receivers roll
--- forward with nextIterationFunding on the finalized step.
+-- base/quote batch (pool.admin): deposits in and reserve allocations continue
+-- with the funding declared by their allocation specifications.
 bqResult <- exercise baseQuoteSettleCid V2.SettlementFactory_SettleBatch with
   settlement
   transferLegs = [baseDepositLeg, quoteDepositLeg] ++ baseRefundLegs ++ quoteRefundLegs
@@ -175,7 +212,10 @@ one settled trade without either side trusting the matcher.
 
 ```mermaid
 flowchart LR
-  P["Order (Pending)"] -->|Order_Fund| F["Order (Funded)"]
+  I["OrderFundingRequest<br/>trader intent"] -->|operator: Bind| P["Order (Pending)<br/>+ OrderAllocationRequest"]
+  P -.->|wallet: Allocate| A["committed V2.Allocation"]
+  P -->|operator: Order_Fund| F["Order (Funded)"]
+  A --> F
   F -->|OrderMatchExecution_Execute| S{{"SettleBatch<br/>+ roll orders forward"}}
   S -->|partial fill| PF["Order (PartiallyFilled)"]
   S -->|full fill| X["archived + SettledTrade"]
@@ -183,6 +223,20 @@ flowchart LR
   F -->|Order_Cancel| C["cancelled, allocation released"]
   PF -->|Order_Cancel| C
 ```
+
+The funding request and the allocation request serve different purposes:
+
+1. The trader creates `OrderFundingRequest` to state side, pair, price,
+   quantity, and expiry. It contains no locked funds.
+2. The operator exercises `OrderFundingRequest_Bind`, creating the pending
+   `Order` and an `OrderAllocationRequest` with the exact funding specification.
+3. The wallet reads that specification and calls `AllocationFactory_Allocate`
+   under the trader's authority. In the current order flow it does not exercise
+   `AllocationRequest_Accept` as a separate command.
+4. `Order_Fund` validates the allocation, consumes the pending order and its
+   allocation request, and creates the funded successor.
+5. Matching or cancellation can now consume the allocation. A pending order is
+   deliberately neither matchable nor cancellable as a funded position.
 
 A resting order is an authorization for a future match whose exact legs are not
 yet known — a prefunded, iterated allocation, not a one-shot one.
@@ -220,14 +274,15 @@ ranked.
 
 ```mermaid
 sequenceDiagram
-    actor T as Trader (wallet)
-    actor Dl as Dealer (wallet)
-    participant O as Operator
+    actor T as Hosted trader
+    actor Dl as Hosted dealer
+    participant O as Operator backend
     participant L as Ledger
     T->>O: POST /v1/rfq (create Rfq)
-    Dl->>O: post RfqQuote
+    Dl->>O: create RfqQuote
     T->>O: POST /v1/rfq/accept
-    O->>L: Rfq_Accept (trader + operator) -> MatchedTrade + PolicyReceipt
+    O->>L: Rfq_Accept (actAs trader + operator)
+    L-->>O: MatchedTrade + PolicyReceipt
     T->>L: author allocation
     Dl->>L: author allocation
     O->>L: MatchedTrade_Settle -> SettlementFactory_SettleBatch (per admin)
@@ -241,6 +296,20 @@ ranks the considered quotes, records the winner and its rank in a
 published policy was applied, not that the price was good), and copies the RFQ's
 `expiresAt` onto the trade's `settlementDeadline`.
 
+The included RFQ page covers creation, quote review, and acceptance through
+hosted-party relay routes: the backend ledger user
+must have act-as rights for the trader (and dealer when it authors quotes), while
+accept also needs operator authority. This is distinct from the wallet-authored
+allocation flow used by pools and orders. A self-custodial deployment must
+replace the relay with a wallet, delegation, or co-submission mechanism that
+supplies the same controllers.
+
+The page's **Accepted** tab means that `Rfq_Accept` created the `MatchedTrade`;
+it does not mean balances moved. The following allocation requests and
+`MatchedTrade_Settle` are available through the Daml and operator-service flow
+and are covered by the settlement tests, but the hosted RFQ page does not drive
+those later steps.
+
 ```daml
 tradeCid <- create MT.MatchedTrade with
   venue = operator
@@ -250,11 +319,10 @@ tradeCid <- create MT.MatchedTrade with
   policyReceipt = Some receipt
 ```
 
-That deadline coupling is a real hazard: `Allocation_Settle` aborts once the
-deadline passes, and because `Rfq_Accept` is consuming there is nothing left to
-retry with, so an RFQ that expires between accept and settle strands both
-sides' funds until someone cancels — which is why the backend clamps a
-requested expiry to a floor.
+The RFQ expiry becomes the trade settlement deadline. Allocations created for
+that trade cannot settle after the deadline; their owners must cancel or
+withdraw them to release the locked holdings. Integrators therefore need to
+leave enough time between acceptance, wallet funding, and settlement.
 
 Proven in
 [`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml),
@@ -264,27 +332,9 @@ exactly as expected, no locks stranded) and
 `testExpiryBetweenAcceptAndSettleBlocksTheSettle` (past the inherited deadline
 the settle fails and the funds stay locked).
 
-## Contract lifecycles
+## Pool lifecycle
 
-Two contracts carry an explicit status through their life; the others are created
-and archived in a single step. These are their state machines.
-
-An **order** rests prefunded, matches (possibly in parts), and ends either filled
-or cancelled:
-
-```mermaid
-stateDiagram-v2
-  [*] --> Pending: place (OrderFundingRequest_Bind)
-  Pending --> Funded: Order_Fund (allocation locked)
-  Funded --> PartiallyFilled: OrderMatchExecution_Execute (partial)
-  PartiallyFilled --> PartiallyFilled: further partial fills
-  Funded --> [*]: full fill, SettledTrade
-  PartiallyFilled --> [*]: full fill, SettledTrade
-  Funded --> [*]: Order_Cancel (allocation released)
-  PartiallyFilled --> [*]: Order_Cancel
-```
-
-A **pool** starts empty, becomes tradable once funded, and can be paused for an
+A pool starts empty, becomes tradable once funded, and can be paused for an
 emergency stop:
 
 ```mermaid
@@ -307,7 +357,7 @@ stateDiagram-v2
   is no separate `DexRules` admission contract yet; a production fork can add one
   if listing needs multi-party approval.
 - **Pool creation.** `DexOperator` creates a `Pool` for a `DexPair` and the LP
-  instrument definition (an `InstrumentConfiguration` in the reference
+  instrument definition (an `InstrumentConfig` in the reference
   registry). The pool starts `Unfunded` with a constant-product invariant until
   the first add-liquidity settles.
 - **Direct creation.** `DexPair`, `Pool`, and `PoolState` are all directly

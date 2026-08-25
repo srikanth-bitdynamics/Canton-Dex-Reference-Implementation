@@ -46,7 +46,6 @@ if [[ "${DEPLOY_SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> Building DARs"
   bash "$ROOT_DIR/scripts/build-trading-surface.sh"
   (cd "$ROOT_DIR/trading-tests" && dpm build)
-  (cd "$ROOT_DIR/examples/stable-pool" && dpm build)
 else
   echo "==> Skipping DAR build (DEPLOY_SKIP_BUILD=1)"
 fi
@@ -68,8 +67,7 @@ if [[ "${DEPLOY_SKIP_UPLOAD:-0}" != "1" ]]; then
   for dar in \
     "$ROOT_DIR"/vendor/splice/daml/splice-util-token-standard-wallet/.daml/dist/splice-util-token-standard-wallet-current.dar \
     "$ROOT_DIR"/trading/.daml/dist/*.dar \
-    "$ROOT_DIR"/trading-tests/.daml/dist/*.dar \
-    "$ROOT_DIR"/examples/stable-pool/.daml/dist/*.dar; do
+    "$ROOT_DIR"/trading-tests/.daml/dist/*.dar; do
     [[ -f "$dar" ]] && upload_dar "$dar"
   done
 else

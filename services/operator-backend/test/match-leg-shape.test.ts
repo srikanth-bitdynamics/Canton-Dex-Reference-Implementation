@@ -2,8 +2,8 @@
 // from which OrderMatchExecution builds the two transfer legs.
 //
 // The ledger types `argument` as unknown, so a wrong shape is not a compile
-// error at the submission site — it is a rejected command that the route
-// previously reported as 200.
+// error at the submission site. This test keeps the TypeScript command shape
+// aligned with the Daml record before a submission reaches the ledger.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

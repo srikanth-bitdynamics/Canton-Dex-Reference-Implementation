@@ -36,9 +36,7 @@ export function OrdersPage() {
       const toastId = toast.push(`Cancel order ${id.slice(0, 10)}…`, 'cancelOrder', () =>
         queryClient.invalidateQueries({ queryKey: ['orders'] }),
       );
-      // Drive the lifecycle off the real result: complete only once the cancel
-      // settles on-ledger, dismiss (and surface) on failure. The toast does not
-      // auto-advance, so a failed cancel can't look like it succeeded.
+      // Complete only after the cancel settles on-ledger; dismiss on failure.
       try {
         const res = await ledger.cancelOrder(id);
         toast.complete(toastId);
@@ -65,10 +63,8 @@ export function OrdersPage() {
         () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
       );
       placeToastId.current = id;
-      // The toast advances ONLY on real pipeline progress. Order placement
-      // blocks on two wallet approvals (create + fund); `onProgress` moves the
-      // card a step at a time as each on-ledger step actually lands, so it can
-      // never show "In book" while the funding approval is still pending.
+      // Order placement needs two wallet approvals with an operator bind between
+      // them, so the toast follows each observed pipeline step.
       return ledger.placeOrder({
         ...params,
         onProgress: (phase) => toast.setPhase(id, phase),
@@ -86,9 +82,7 @@ export function OrdersPage() {
       setQuantity('');
     },
     onError: (error) => {
-      // The mutationFn pushed a lifecycle toast that only completes on real
-      // success; on failure dismiss it and surface the real error instead of
-      // leaving a half-finished card on screen.
+      // Dismiss the lifecycle toast and surface the error from the failed step.
       if (placeToastId.current != null) {
         toast.dismiss(placeToastId.current);
         placeToastId.current = null;

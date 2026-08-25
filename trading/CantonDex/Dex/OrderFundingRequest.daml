@@ -1,7 +1,7 @@
 -- | Trader-initiated order placement. The trader signs intent; the operator's
 -- _Bind creates the Order (Pending) plus an OrderAllocationRequest the trader
--- accepts to fund it (funding holdings come from the trader's wallet). After
--- the allocation is bound via Order_Fund the order is Funded and live.
+-- uses to author the funding allocation. Order_Fund validates and binds that
+-- allocation, then the order is Funded and live.
 module CantonDex.Dex.OrderFundingRequest where
 
 import CantonDex.Dex.Order qualified as Order
@@ -34,7 +34,7 @@ template OrderFundingRequest with
         debug $ "OrderFundingRequest rejected: " <> reason
         pure ()
 
-    -- Create the Order (Pending) and the OrderAllocationRequest the trader accepts.
+    -- Create the pending Order and its funding specification.
     choice OrderFundingRequest_Bind : OrderFundingRequest_BindResult
       with
         settlementRef : Text

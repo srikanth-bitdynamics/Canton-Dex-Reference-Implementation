@@ -61,7 +61,7 @@ type Ev = { CreatedEvent: Created } | { ArchivedEvent: { contractId: string } };
 interface Tx { transaction: { updateId: string; events: Ev[] } }
 
 // Canton 3.x JSON API encodes Daml Int64 as a JSON string. Coerce every
-// integer-valued number to a string (matches the backend JsonApiLedger fix).
+// integer-valued number before submission.
 function encInt(v: unknown): unknown {
   if (typeof v === "number") return Number.isInteger(v) ? String(v) : v;
   if (Array.isArray(v)) return v.map(encInt);

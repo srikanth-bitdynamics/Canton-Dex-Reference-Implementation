@@ -39,12 +39,10 @@ const disclosure = [
 ];
 
 describe('composeCommands', () => {
-  it('accept-allocation-request', () => {
+  it('fund-order', () => {
     const intent: WalletIntent = {
-      kind: 'accept-allocation-request',
-      requestCid: 'aaaaaaaaaaaarequest1',
+      kind: 'fund-order',
       factoryCid: 'factory1',
-      allocationRequestExtraArgs,
       allocationFactoryExtraArgs,
       disclosure,
       settlement: {
@@ -70,7 +68,7 @@ describe('composeCommands', () => {
         "actAs": [
           "alice::1220a",
         ],
-        "commandId": "alloc-accept-aaaaaaaaaaaa-1779192000000",
+        "commandId": "order-fund-DexOrder-web-1-1779192000000",
         "commands": [
           {
             "ExerciseCommand": {
@@ -270,9 +268,8 @@ describe('composeCommands', () => {
     };
     const out = composeCommands(intent, ctx);
     expect(out.actAs).toEqual(['alice::1220a']);
-    // CIP-0103 allows ONE top-level command: a CreateAndExercise of the
-    // standard BatchingUtilityV2 accepts the request and authors all three
-    // allocations inside one Daml tx.
+    // One CreateAndExercise of the standard BatchingUtilityV2 accepts the
+    // request and authors all three allocations inside one Daml transaction.
     expect(out.commands).toHaveLength(1);
     const cmd = (out.commands[0] as { CreateAndExerciseCommand: { templateId: string; createArguments: Record<string, unknown>; choice: string; choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand;
     expect(cmd.templateId).toContain('Splice.Util.Token.Wallet.BatchingUtilityV2:BatchingUtility');
@@ -384,73 +381,4 @@ describe('composeCommands', () => {
     expect(extractLiquidityAcceptanceCid(tx)).toBe('acc1');
   });
 
-  it('post-rfq-quote', () => {
-    const intent: WalletIntent = {
-      kind: 'post-rfq-quote',
-      rfqCid: 'rfqA',
-      rfqId: 'rfq-001',
-      price: '30100.5',
-      expiresAt: '2026-05-19T12:30:00Z',
-      postedAt: '2026-05-19T12:00:00Z',
-      tier: 'TierTrusted',
-      operator: 'op::1',
-      trader: 'trader::1',
-    };
-    const ctxAsDealer: ComposeContext = { ...ctx, party: 'dealer::1' };
-    expect(composeCommands(intent, ctxAsDealer)).toMatchInlineSnapshot(`
-      {
-        "actAs": [
-          "dealer::1",
-        ],
-        "commandId": "rfq-quote-rfq-001-1779192000000",
-        "commands": [
-          {
-            "CreateCommand": {
-              "createArguments": {
-                "dealer": "dealer::1",
-                "expiresAt": "2026-05-19T12:30:00Z",
-                "operator": "op::1",
-                "postedAt": "2026-05-19T12:00:00Z",
-                "price": "30100.5",
-                "rfqId": "rfq-001",
-                "tier": "TierTrusted",
-                "trader": "trader::1",
-              },
-              "templateId": "#canton-dex-trading:CantonDex.Dex.Rfq:RfqQuote",
-            },
-          },
-        ],
-      }
-    `);
-  });
-
-  it('accept-rfq carries joint trader+operator actAs', () => {
-    const intent: WalletIntent = {
-      kind: 'accept-rfq',
-      rfqCid: 'rfqAcid1234567890',
-      acceptedQuoteCid: 'q1',
-      consideredQuoteCids: ['q1', 'q2'],
-      admin: 'ad::1',
-      operator: 'op::1',
-    };
-    const out = composeCommands(intent, ctx);
-    expect(out.actAs).toEqual(['alice::1220a', 'op::1']);
-    expect(out.commands).toHaveLength(1);
-    const cmd = out.commands[0] as { ExerciseCommand: { choice: string } };
-    expect(cmd.ExerciseCommand.choice).toBe('Rfq_Accept');
-  });
-
-  it('accept-rfq refuses missing operator', () => {
-    const intent = {
-      kind: 'accept-rfq',
-      rfqCid: 'r',
-      acceptedQuoteCid: 'q',
-      consideredQuoteCids: [],
-      admin: 'ad::1',
-      operator: '',
-    } as unknown as WalletIntent;
-    expect(() => composeCommands(intent, ctx)).toThrowError(
-      /operator party is required/,
-    );
-  });
 });

@@ -20,9 +20,11 @@ funding an order or adding liquidity must go through the trader's wallet.
 Implemented in [`Registry.V2`](../../trading/CantonDex/Registry/V2.daml).
 
 ### AllocationRequest
-A V2 contract asking a party to author the allocations a settlement needs; the
-party accepts by composing `AllocationFactory_Allocate` in the same submission.
-The DEX's variants are
+A V2 contract that publishes the allocation specifications a settlement needs
+and the actions available to the target party. Liquidity funding composes
+request acceptance with `AllocationFactory_Allocate`; order funding uses the
+request as a correlation record and consumes it when the resulting allocation
+is bound. The DEX's variants are
 [`OrderAllocationRequest`](../../trading/CantonDex/Dex/Order.daml),
 [`LiquidityAllocationRequest`](../../trading/CantonDex/Dex/LiquidityAllocationRequest.daml),
 and [`TradeAllocationRequest`](../../trading/CantonDex/Dex/MatchedTrade.daml).
@@ -123,13 +125,15 @@ burnAccount = HoldingV2.Account None None burnAccountId
 ```
 
 Defined in [`Trading.Utils`](../../trading/CantonDex/Trading/Utils.daml); the
-mint/burn mechanism is proven in
-[`DvpMintBurnTests`](../../trading-tests/CantonDex/Tests/DvpMintBurnTests.daml).
+mint/burn mechanism is proven as part of atomic add/remove settlement in
+[`PoolLiquidityRulesTests`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml).
 
 ### Operator
 The venue operator: it orchestrates matching, binds orders, and submits the
-settlement batches it is authorized to submit. It never moves trader assets on
-its own.
+settlement batches it is authorized to submit. It cannot settle a trader's
+holdings without that trader's allocation. The hosted RFQ relay is a separate
+authority model in which the backend ledger user is explicitly granted act-as
+rights for hosted parties.
 
 ### Over-lock
 Locking more backing than a settlement strictly needs. Token Standard V2 accepts
@@ -151,15 +155,15 @@ The constant-product pool is split three ways:
 [`PoolState`](../../trading/CantonDex/Dex/PoolState.daml) (the hot reserves / LP
 supply / status), and [`PoolSlice`](../../trading/CantonDex/Dex/PoolSlice.daml)
 (one [committed allocation](#committed-allocation) per side). Slices are
-operator-authored so add/swap/remove touch only the slices they source rather
-than one hot contract — they are not per-LP entitlement. Reserves↔slices
-integrity is proven in
+operator-authored inventory units, not per-LP entitlement. Swap and remove use
+only a covering slice set, while every reserve-changing operation still updates
+the singleton `PoolState`. Reserves↔slices integrity is proven in
 [`PoolStateInvariantTests`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml).
 
 ### prepare / sign / execute
 The three steps of CIP-0103 interactive submission: the dApp prepares a
-transaction, the wallet signs it, and it is executed on the ledger. A prepared
-transaction may carry only one top-level command.
+transaction, the wallet signs it, and it is executed on the ledger. CIP-0103
+does not itself limit the number of top-level commands; some wallet gateways do.
 
 ### Registry / Registrar
 The component that defines instrument semantics and supplies

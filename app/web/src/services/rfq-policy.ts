@@ -1,6 +1,6 @@
 // Client-side replay of the operator's RFQ ranking policy v2.0.
 //
-// Sort chain (mirrors `applyPolicy` in `trading/CantonDex/Dex/Rfq.daml`):
+// Sort chain (mirrors `policyCmp` in `trading/CantonDex/Dex/Rfq.daml`):
 //   1. whitelist-preference: trusted-tier dealers rank above
 //      whitelist-tier (filter-then-rank — only whitelisted dealers
 //      can post on an RFQ in the first place).
@@ -8,7 +8,7 @@
 //   3. createdAt: earlier `postedAt` ranks higher — first-mover.
 //   4. venue tie-breaker: dealer party id string compare.
 //
-// `side` is no longer used by `policy` mode (price isn't part of the
+// `side` is unused by `policy` mode (price isn't part of the
 // policy chain — the trader chooses from the policy-ranked candidates).
 // `side` is still consumed by the other sort modes the UI exposes.
 //

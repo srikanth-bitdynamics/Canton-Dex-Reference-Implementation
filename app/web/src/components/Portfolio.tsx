@@ -1,21 +1,16 @@
 // Portfolio view.
 //
 // Surfaces:
-//   - holdings table (asset rows + LP token rows synthesized from
-//     pool contracts)
-//   - allocation breakdown: locked-funds detail with prefunded vs
-//     committed badges + clickable policy-receipt drill-down for
-//     RFQ-derived activity entries
-//   - activity feed: per-event tx + policy receipt pills
+//   - holdings table (ordinary assets plus LP positions)
+//   - funded-order allocation breakdown
+//   - pool activity feed supplied by the indexer
 
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { ASSETS } from '@/primitives/assets';
 import { Glyph, PairGlyph } from '@/primitives/Glyph';
 import { StatusBadge } from '@/primitives/StatusBadge';
 import { fmt, fmtUsd } from '@/primitives/format';
-import { PolicyReceiptModal } from '@/primitives/PolicyReceiptModal';
 import { useAssetPricesUsd } from '@/hooks/usePrices';
 import { EmptyState } from '@/primitives/EmptyState';
 import type {
@@ -34,17 +29,13 @@ interface PortfolioProps {
   recentActivity: TransactionEvent[];
 }
 
-// Compact contract-id suffix for tag pills.
-const cidTag = (cid: string, prefix: string) => {
-  const tail = cid.replace(/[#:].*$/, '').slice(-4);
-  return `${prefix}#${tail || cid.slice(-4)}`;
-};
+const shortRef = (value: string, label: string) =>
+  `${label} …${value.slice(-6)}`;
 
 interface AllocationRow {
   label: string;
   amt: string;
   tag: string;
-  kind: 'prefunded' | 'committed';
 }
 
 export function Portfolio({
@@ -53,13 +44,26 @@ export function Portfolio({
   orders,
   recentActivity,
 }: PortfolioProps) {
-  const [receiptOpenFor, setReceiptOpenFor] = useState<string | null>(null);
-
-  const grouped = holdings.reduce<
-    Record<string, { available: number; locked: number }>
+  const isLpOf = (p: Pool, h: Holding) =>
+    p.lpInstrumentId.id === h.instrumentId && p.lpInstrumentId.admin === h.admin;
+  const ordinaryHoldings = holdings.filter(
+    (h) => !pools.some((p) => isLpOf(p, h)),
+  );
+  const grouped = ordinaryHoldings.reduce<
+    Record<
+      string,
+      { admin: string; instrumentId: string; available: number; locked: number }
+    >
   >((acc, h) => {
-    const key = h.instrumentId;
-    if (!acc[key]) acc[key] = { available: 0, locked: 0 };
+    const key = `${h.admin}\u0000${h.instrumentId}`;
+    if (!acc[key]) {
+      acc[key] = {
+        admin: h.admin,
+        instrumentId: h.instrumentId,
+        available: 0,
+        locked: 0,
+      };
+    }
     if (h.locked) acc[key]!.locked += h.amount;
     else acc[key]!.available += h.amount;
     return acc;
@@ -67,7 +71,7 @@ export function Portfolio({
 
   // Live USD prices for every symbol we display. `null` for any symbol
   // the backend has no source for — callers render "—" instead of $0.
-  const heldSymbols = Object.keys(grouped);
+  const heldSymbols = Object.values(grouped).map((row) => row.instrumentId);
   const poolSymbols = pools.flatMap((p) => [
     p.baseInstrumentId,
     p.quoteInstrumentId,
@@ -76,63 +80,48 @@ export function Portfolio({
     ...heldSymbols,
     ...poolSymbols,
   ]);
-  // LP tokens have no market pair, so the backend can't price them. Derive each
-  // pool's LP-token USD price from its share of the pool reserves; without this
-  // a single LP holding makes `someUnknownPrice` true and blanks every value
-  // card even though the underlying BTC/USDC are priced.
-  const lpPriceUsd: Record<string, number> = {};
-  for (const p of pools) {
-    const basePx = priceUsd[p.baseInstrumentId];
-    const quotePx = priceUsd[p.quoteInstrumentId];
-    if (p.totalLpSupply > 0 && basePx != null && quotePx != null) {
-      lpPriceUsd[p.lpInstrumentId.id] =
-        (p.reserves.baseAmount * basePx + p.reserves.quoteAmount * quotePx) /
-        p.totalLpSupply;
-    }
-  }
-  const priceFor = (sym: string): number | null =>
-    priceUsd[sym] ?? lpPriceUsd[sym] ?? null;
+  const priceFor = (sym: string): number | null => priceUsd[sym] ?? null;
   const priceOr0 = (sym: string) => priceFor(sym) ?? 0;
+
+  // Match LP holdings on the full (admin, id) identity. Comparing the textual
+  // id alone would conflate instruments issued by different registrars. Split
+  // holding contracts are consolidated into one row per pool.
+  const lpRows = pools.flatMap((pool) => {
+    const matching = holdings.filter((h) => isLpOf(pool, h));
+    if (matching.length === 0) return [];
+    const available = matching
+      .filter((h) => !h.locked)
+      .reduce((sum, h) => sum + h.amount, 0);
+    const locked = matching
+      .filter((h) => h.locked)
+      .reduce((sum, h) => sum + h.amount, 0);
+    const amount = available + locked;
+    const pct = pool.totalLpSupply > 0 ? amount / pool.totalLpSupply : 0;
+    const baseShare = pct * pool.reserves.baseAmount;
+    const quoteShare = pct * pool.reserves.quoteAmount;
+    const value =
+      baseShare * priceOr0(pool.baseInstrumentId) +
+      quoteShare * priceOr0(pool.quoteInstrumentId);
+    return {
+      pool,
+      amount,
+      available,
+      locked,
+      pct,
+      baseShare,
+      quoteShare,
+      value,
+    };
+  });
   const someUnknownPrice =
     heldSymbols.some((s) => priceFor(s) == null) ||
-    pools.some(
-      (p) =>
-        priceFor(p.baseInstrumentId) == null ||
-        priceFor(p.quoteInstrumentId) == null,
+    lpRows.some(
+      ({ pool }) =>
+        priceFor(pool.baseInstrumentId) == null ||
+        priceFor(pool.quoteInstrumentId) == null,
     );
 
-  // Synthesize LP rows from holdings whose instrument matches a pool's
-  // LP instrument. Match on the full (admin, id) identity — comparing
-  // the textual id alone would conflate LP tokens from different
-  // registrars that happen to share a name.
-  const isLpOf = (p: Pool, h: Holding) =>
-    p.lpInstrumentId.id === h.instrumentId && p.lpInstrumentId.admin === h.admin;
-  const lpRows = holdings
-    .filter((h) => pools.some((p) => isLpOf(p, h)))
-    .map((h) => {
-      const pool = pools.find((p) => isLpOf(p, h))!;
-      const pct =
-        pool.totalLpSupply > 0 ? h.amount / pool.totalLpSupply : 0;
-      const baseShare = pct * pool.reserves.baseAmount;
-      const quoteShare = pct * pool.reserves.quoteAmount;
-      const value =
-        baseShare * priceOr0(pool.baseInstrumentId) +
-        quoteShare * priceOr0(pool.quoteInstrumentId);
-      return {
-        holding: h,
-        pool,
-        pct,
-        baseShare,
-        quoteShare,
-        value,
-      };
-    });
-
-  // Real allocation breakdown:
-  //   - prefunded: active Orders carrying a funded allocationCid. The
-  //     locked notional is `limitPrice * remainingQty` for Bid (quote
-  //     leg) and `remainingQty` of the base for Ask.
-  //   - committed: LP positions, derived from lpRows above.
+  // Active orders expose the allocation that funds their remaining quantity.
   const orderAllocations: AllocationRow[] = orders
     .filter((o) => o.allocationCid)
     .map((o) => {
@@ -149,35 +138,26 @@ export function Portfolio({
           4,
         )} ${baseSym} @ ${fmt(o.limitPrice, 2)}`,
         amt: `${fmt(lockedAmt, lockedSym === baseSym ? 4 : 2)} ${lockedSym}`,
-        tag: cidTag(o.allocationCid!, 'OrderAlloc'),
-        kind: 'prefunded',
+        tag: shortRef(o.allocationCid!, 'Allocation'),
       };
     });
-  const lpAllocations: AllocationRow[] = lpRows.map((r) => ({
-    label: `LP position ${r.pool.baseInstrumentId}/${r.pool.quoteInstrumentId}`,
-    amt: `${fmt(r.baseShare, 4)} ${r.pool.baseInstrumentId} + ${fmt(
-      r.quoteShare,
-      2,
-    )} ${r.pool.quoteInstrumentId}`,
-    tag: cidTag(r.holding.contractId, 'PoolAlloc'),
-    kind: 'committed',
-  }));
-  const allocations: AllocationRow[] = [
-    ...orderAllocations,
-    ...lpAllocations,
-  ];
+  const allocations: AllocationRow[] = orderAllocations;
 
-  const totalValue = Object.entries(grouped).reduce(
-    (s, [sym, v]) => s + (v.available + v.locked) * priceOr0(sym),
+  const ordinaryValue = Object.values(grouped).reduce(
+    (s, v) => s + (v.available + v.locked) * priceOr0(v.instrumentId),
     0,
   );
   const lpValue = lpRows.reduce((s, r) => s + r.value, 0);
-  const lockedValue = Object.entries(grouped).reduce(
-    (s, [sym, v]) => s + v.locked * priceOr0(sym),
+  const ordinaryLockedValue = Object.values(grouped).reduce(
+    (s, v) => s + v.locked * priceOr0(v.instrumentId),
     0,
   );
-
-  const receiptTrade = recentActivity.find((a) => a.id === receiptOpenFor);
+  const lpLockedValue = lpRows.reduce(
+    (sum, row) =>
+      sum + (row.amount > 0 ? (row.value * row.locked) / row.amount : 0),
+    0,
+  );
+  const lockedValue = ordinaryLockedValue + lpLockedValue;
 
   return (
     <div className="page">
@@ -188,17 +168,13 @@ export function Portfolio({
             All holdings, LP positions, and on-ledger activity for your party.
           </p>
         </div>
-        <div className="row">
-          <button className="btn ghost tiny">Export CSV</button>
-          <button className="btn">Refresh</button>
-        </div>
       </div>
 
       <div className="grid-3" style={{ marginBottom: 20 }}>
         <div className="stat">
           <div className="stat-l">Total portfolio value</div>
           <div className="stat-v" style={{ fontSize: 26 }}>
-            {someUnknownPrice ? '—' : fmtUsd(totalValue + lpValue)}
+            {someUnknownPrice ? '—' : fmtUsd(ordinaryValue + lpValue)}
           </div>
           <div className="stat-d">
             {someUnknownPrice
@@ -209,7 +185,9 @@ export function Portfolio({
         <div className="stat">
           <div className="stat-l">Available</div>
           <div className="stat-v">
-            {someUnknownPrice ? '—' : fmtUsd(totalValue - lockedValue)}
+            {someUnknownPrice
+              ? '—'
+              : fmtUsd(ordinaryValue + lpValue - lockedValue)}
           </div>
           <div className="stat-d">Free for new operations</div>
         </div>
@@ -218,7 +196,7 @@ export function Portfolio({
           <div className="stat-v">
             {someUnknownPrice ? '—' : fmtUsd(lockedValue)}
           </div>
-          <div className="stat-d">Funding open orders &amp; swaps</div>
+          <div className="stat-d">Funding active allocations</div>
         </div>
       </div>
 
@@ -255,12 +233,13 @@ export function Portfolio({
               </tr>
             </thead>
             <tbody>
-              {Object.entries(grouped).map(([sym, { available, locked }]) => {
+              {Object.entries(grouped).map(([key, row]) => {
+                const { admin, instrumentId: sym, available, locked } = row;
                 const a = ASSETS[sym];
                 const total = available + locked;
                 return (
                   <tr
-                    key={sym}
+                    key={key}
                     style={{ borderTop: '1px solid var(--border-soft)' }}
                   >
                     <td className="py-2 px-3">
@@ -271,7 +250,7 @@ export function Portfolio({
                           <div
                             style={{ fontSize: 11, color: 'var(--text-2)' }}
                           >
-                            {a?.name ?? sym}
+                            {a?.name ?? sym} · issuer {shortRef(admin, 'party')}
                           </div>
                         </div>
                       </div>
@@ -301,7 +280,7 @@ export function Portfolio({
               })}
               {lpRows.map((r) => (
                 <tr
-                  key={r.holding.contractId}
+                  key={`${r.pool.contractId}:${r.pool.lpInstrumentId.admin}:${r.pool.lpInstrumentId.id}`}
                   style={{ borderTop: '1px solid var(--border-soft)' }}
                 >
                   <td className="py-2 px-3">
@@ -339,16 +318,16 @@ export function Portfolio({
                     </div>
                   </td>
                   <td className="text-right py-2 px-3 mono">
-                    {fmt(r.holding.amount, 4)}
+                    {fmt(r.available, 4)}
                   </td>
                   <td
                     className="text-right py-2 px-3 mono"
                     style={{ color: 'var(--text-2)' }}
                   >
-                    0.0000
+                    {fmt(r.locked, 4)}
                   </td>
                   <td className="text-right py-2 px-3 mono">
-                    {fmt(r.holding.amount, 4)}
+                    {fmt(r.amount, 4)}
                   </td>
                   <td className="text-right py-2 px-3 mono">
                     {priceUsd[r.pool.baseInstrumentId] != null &&
@@ -376,13 +355,12 @@ export function Portfolio({
           <div className="card">
             <div className="card-head">
               <h3 className="card-title">Allocation breakdown</h3>
-              <span className="card-sub">What's locking your funds</span>
+              <span className="card-sub">Funding active orders</span>
             </div>
             <div className="card-body">
               {allocations.length === 0 && (
                 <EmptyState compact>
-                  No active allocations. Funds lock here while orders and swaps
-                  settle.
+                  No active funded orders.
                 </EmptyState>
               )}
               {allocations.map((row, i, arr) => (
@@ -406,18 +384,7 @@ export function Portfolio({
                     </div>
                     <div className="row" style={{ gap: 6, marginTop: 4 }}>
                       <span className="alloc-pill">{row.tag}</span>
-                      <span
-                        className={`badge tiny ${
-                          row.kind === 'committed' ? 'green' : 'blue'
-                        }`}
-                        title={
-                          row.kind === 'committed'
-                            ? 'Locked until you withdraw'
-                            : 'Locked for one trade'
-                        }
-                      >
-                        {row.kind}
-                      </span>
+                      <span className="badge tiny blue">prefunded</span>
                     </div>
                   </div>
                   <div
@@ -437,13 +404,7 @@ export function Portfolio({
       <div className="card">
         <div className="card-head">
           <h3 className="card-title">Activity</h3>
-          <div className="row" style={{ gap: 8 }}>
-            <button className="btn tiny ghost">All</button>
-            <button className="btn tiny ghost">Swaps</button>
-            <button className="btn tiny ghost">Orders</button>
-            <button className="btn tiny ghost">LP</button>
-            <button className="btn tiny ghost">RFQ</button>
-          </div>
+          <span className="card-sub">Pool swaps observed by the indexer</span>
         </div>
         <div>
           <div
@@ -459,22 +420,14 @@ export function Portfolio({
             <span>Time</span>
             <span>Type</span>
             <span>Detail</span>
-            <span style={{ textAlign: 'right' }}>Tx · Policy</span>
             <span style={{ textAlign: 'right' }}>Status</span>
           </div>
           {recentActivity.length === 0 && (
             <EmptyState compact>
-              No activity yet. Swaps, orders, and LP changes appear here as
-              they settle.
+              No indexed pool swaps yet.
             </EmptyState>
           )}
           {recentActivity.map((a) => {
-            const txPill =
-              a.tradeCid ??
-              '0x' +
-                (0xa1c4 + Math.abs(a.id.charCodeAt(0)) * 17)
-                  .toString(16)
-                  .padStart(4, '0');
             return (
               <div key={a.id} className="activity-row">
                 <span className="time">
@@ -484,52 +437,12 @@ export function Portfolio({
                   })}
                 </span>
                 <span>
-                  <span
-                    className={`badge ${
-                      a.type === 'Swap'
-                        ? 'blue'
-                        : a.type === 'AddLiquidity'
-                          ? 'green'
-                          : a.type === 'RemoveLiquidity'
-                            ? 'amber'
-                            : a.type === 'Rfq'
-                              ? 'blue'
-                              : ''
-                    } tiny`}
-                  >
+                  <span className="badge blue tiny">
                     {a.type}
                   </span>
                 </span>
                 <span className="mono" style={{ fontSize: 12 }}>
                   {a.details}
-                </span>
-                <span
-                  style={{
-                    justifySelf: 'end',
-                    display: 'flex',
-                    gap: 6,
-                    alignItems: 'center',
-                  }}
-                >
-                  <span className="alloc-pill mono" style={{ fontSize: 10 }}>
-                    {txPill}
-                  </span>
-                  {a.policyCid && (
-                    <button
-                      className="alloc-pill mono"
-                      onClick={() => setReceiptOpenFor(a.id)}
-                      title="Open policy receipt"
-                      style={{
-                        fontSize: 10,
-                        cursor: 'pointer',
-                        border: 0,
-                        background: 'rgba(56,139,253,0.12)',
-                        color: 'var(--blue)',
-                      }}
-                    >
-                      {a.policyCid}
-                    </button>
-                  )}
                 </span>
                 <span style={{ textAlign: 'right' }}>
                   <StatusBadge status={a.status} />
@@ -539,13 +452,6 @@ export function Portfolio({
           })}
         </div>
       </div>
-
-      {receiptOpenFor && receiptTrade && (
-        <PolicyReceiptModal
-          trade={receiptTrade}
-          onClose={() => setReceiptOpenFor(null)}
-        />
-      )}
     </div>
   );
 }

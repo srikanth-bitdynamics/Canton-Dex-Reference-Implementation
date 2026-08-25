@@ -7,7 +7,6 @@ module CantonDex.Dex.PoolLiquidityRules where
 
 import DA.Assert (assertWithinDeadline)
 import DA.Foldable (forA_)
-import DA.List (find)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
@@ -94,23 +93,22 @@ allocationLegAmount legId cid = do
     Some s -> pure s.amount
     None -> abort ("allocation missing expected leg: " <> legId)
 
--- The validation terms the settle binds to, sourced from either the live
--- request (legacy direct-allocation flow) or the acceptance evidence
--- (stock-wallet accept flow, where accept has already consumed the request).
+-- Validation terms supplied by one of the two supported wallet integration
+-- modes: a live request for direct allocation, or an acceptance receipt after
+-- AllocationRequest_Accept consumes that request.
 data LiquidityBinding = LiquidityBinding with
     lp : Party
     settlement : V2.SettlementInfo
     allocations : [V2.AllocationSpecification]
     settleAt : Optional Time
 
--- Resolve the settle binding. Prefer the live request when supplied; otherwise
--- fall back to the acceptance evidence. Exactly one must be present.
+-- Resolve the settle binding. Exactly one source must be present.
 resolveBinding
   : Optional (ContractId LAR.LiquidityAllocationRequest)
   -> Optional (ContractId LAR.LiquidityAllocationAcceptance)
   -> Update LiquidityBinding
 resolveBinding mReq mAcc = case (mReq, mAcc) of
-  (Some r, _) -> do
+  (Some r, None) -> do
     req <- fetch r
     pure LiquidityBinding with
       lp = req.lp; settlement = req.settlement
@@ -120,6 +118,8 @@ resolveBinding mReq mAcc = case (mReq, mAcc) of
     pure LiquidityBinding with
       lp = acc.lp; settlement = acc.settlement
       allocations = acc.allocations; settleAt = acc.settleAt
+  (Some _, Some _) ->
+    abort "settle requires exactly one of requestCid or acceptanceCid"
   (None, None) ->
     abort "settle requires a live request or acceptance evidence"
 
@@ -204,9 +204,6 @@ removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount =
      , dvpSpec pool.admin holderAcct quoteLegs False
      , dvpSpec pool.lpRegistrar holderAcct [burnLeg] True ]
 
--- `SideDelivery` + `buildSideDelivery` moved to `CantonDex.Dex.PoolExecution`
--- (shared settlement-assembly); used below as `PE.buildSideDelivery`.
-
 template PoolLiquidityRules with
     operator : Party
     lpRegistrar : Party
@@ -263,11 +260,11 @@ template PoolLiquidityRules with
         poolStateCid : ContractId PS.PoolState
         lpPolicyCid : ContractId LP.LPTokenPolicy
         requestCid : Optional (ContractId LAR.LiquidityAllocationRequest)
-          -- ^ Live request (legacy direct-allocation flow). Mutually exclusive
+          -- ^ Live request for direct-allocation integrations. Mutually exclusive
           -- with `acceptanceCid`; exactly one must be present.
         acceptanceCid : Optional (ContractId LAR.LiquidityAllocationAcceptance)
-          -- ^ Acceptance evidence (stock-wallet flow where accept consumed the
-          -- request).
+          -- ^ Acceptance evidence for wallets that consume the request through
+          -- AllocationRequest_Accept.
         recipient : Party
         lpBaseDepositCid : ContractId V2.Allocation
         lpQuoteDepositCid : ContractId V2.Allocation
@@ -447,11 +444,11 @@ template PoolLiquidityRules with
         poolStateCid : ContractId PS.PoolState
         lpPolicyCid : ContractId LP.LPTokenPolicy
         requestCid : Optional (ContractId LAR.LiquidityAllocationRequest)
-          -- ^ Live request (legacy direct-allocation flow). Mutually exclusive
+          -- ^ Live request for direct-allocation integrations. Mutually exclusive
           -- with `acceptanceCid`; exactly one must be present.
         acceptanceCid : Optional (ContractId LAR.LiquidityAllocationAcceptance)
-          -- ^ Acceptance evidence (stock-wallet flow where accept consumed the
-          -- request).
+          -- ^ Acceptance evidence for wallets that consume the request through
+          -- AllocationRequest_Accept.
         holder : Party
         lpTokensToRedeem : Decimal
         knownTotalLpSupply : Decimal

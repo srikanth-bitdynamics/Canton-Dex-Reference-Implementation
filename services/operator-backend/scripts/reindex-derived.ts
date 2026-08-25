@@ -1,5 +1,5 @@
-// Recompute the indexer's derived columns for rows written before the
-// exactness and labelling fixes, which were forward-only.
+// Recompute the indexer's derived columns from the exact source values retained
+// in append-only pool-state and trade records.
 //
 // No ledger read: pool_states is append-only and keeps exact reserve strings
 // keyed by contract id, every swaps row names the states it sits between, and

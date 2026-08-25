@@ -11,8 +11,9 @@ smart-upgrade but are not supported for new contracts.
 
 ## Reporting a vulnerability
 
-Do not file a public issue for security problems. Instead, email the
-maintainers (see `CODEOWNERS` or repo metadata) with:
+Do not file a public issue for security problems. Use the repository's private
+security-advisory form, or contact the maintainers through the repository
+owner's published contact channel, with:
 
 - a clear description of the issue
 - reproduction steps or proof of concept
@@ -51,5 +52,4 @@ Out of scope:
 
 - Pay bug bounties. This is a reference implementation, not a
   production deployment.
-- Treat AI-generated reports without a working reproduction as
-  valid.
+- Treat reports without reproducible steps or concrete evidence as valid.

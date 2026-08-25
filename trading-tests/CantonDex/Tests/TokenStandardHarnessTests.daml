@@ -8,7 +8,6 @@ module CantonDex.Tests.TokenStandardHarnessTests where
 import DA.Assert
 import DA.List (head)
 import DA.Map qualified as Map
-import DA.TextMap qualified as TextMap
 
 import Daml.Script
 
@@ -25,7 +24,6 @@ import Splice.Testing.TokenStandard.RegistryApiV2
 
 import CantonDex.Dex.MatchedTrade qualified as MT
 import CantonDex.Trading.Utils qualified as Utils
-import CantonDex.Trading.WorkflowConstructors qualified as WC
 import CantonDex.TokenStandardHarness.DexRegistry qualified as DexReg
 
 testMatchedTradeViaTokenStandardRegistry : Script ()

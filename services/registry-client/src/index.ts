@@ -2,32 +2,23 @@
 // backend and an asset registrar's HTTP endpoints.
 //
 // Endpoints (matching docs/guides/choice-context.md):
-//   GET  /registry/instrument-config/:id
-//   GET  /registry/credentials?holder=:p
 //   GET  /registry/factories/:admin
-//   GET  /registry/preapprovals?receiver=:p&admin=:a
 //   GET  /registry/choice-context/:admin
 //
-// The client owns its caches; consumers (operator backend modules)
-// MUST go through the client and never call the registry HTTP API
-// directly -- that's how cache invalidation stays correct.
+// The client owns its caches. Operator modules use this boundary rather than
+// calling registry endpoints directly, keeping validation and invalidation in
+// one place.
 
 import { TtlCache } from "./cache.js";
 import {
   ChoiceContextRef,
-  Credential,
   FactoryRefs,
-  InstrumentConfiguration,
   Party,
   RegistryError,
-  TransferPreapproval,
 } from "./types.js";
 import {
   validateChoiceContextRef,
-  validateCredentials,
   validateFactoryRefs,
-  validateInstrumentConfiguration,
-  validatePreapprovals,
 } from "./validate.js";
 
 export * from "./types.js";
@@ -35,55 +26,22 @@ export * from "./types.js";
 export interface RegistryClientConfig {
   baseUrl: string;
   authToken?: string;
-  credentialsTtlMs?: number;
   choiceContextTtlMs?: number;
   /** Override fetch for tests. */
   fetchImpl?: typeof fetch;
 }
 
 export class RegistryClient {
-  private readonly configCache = new TtlCache<string, InstrumentConfiguration>(
-    (id) => `cfg:${id}`,
-  );
   private readonly factoryCache = new TtlCache<Party, FactoryRefs>(
     (a) => `fac:${a}`,
   );
-  private readonly preapprovalCache = new TtlCache<
-    { receiver: Party; admin: Party },
-    TransferPreapproval[]
-  >((k) => `pre:${k.receiver}:${k.admin}`);
   private readonly choiceContextCache = new TtlCache<Party, ChoiceContextRef>(
     (a) => `ctx:${a}`,
   );
-  private readonly credCache: TtlCache<Party, Credential[]>;
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly config: RegistryClientConfig) {
-    this.credCache = new TtlCache<Party, Credential[]>(
-      (h) => `cred:${h}`,
-      config.credentialsTtlMs ?? 60_000,
-    );
     this.fetchImpl = config.fetchImpl ?? fetch;
-  }
-
-  async getInstrumentConfig(
-    instrumentId: string,
-  ): Promise<InstrumentConfiguration> {
-    const cached = this.configCache.get(instrumentId);
-    if (cached) return cached;
-    const cfg = await this.fetchJson(
-      `/registry/instrument-config/${encodeURIComponent(instrumentId)}`,
-      validateInstrumentConfiguration,
-    );
-    if (!cfg) {
-      throw new RegistryError(
-        "config-not-found",
-        `instrumentId=${instrumentId}`,
-        false,
-      );
-    }
-    this.configCache.set(instrumentId, cfg);
-    return cfg;
   }
 
   async getFactories(admin: Party): Promise<FactoryRefs> {
@@ -119,59 +77,15 @@ export class RegistryClient {
     return ctx;
   }
 
-  async getCredentials(holder: Party): Promise<Credential[]> {
-    const cached = this.credCache.get(holder);
-    if (cached) return cached;
-    const creds =
-      (await this.fetchJson(
-        `/registry/credentials?holder=${encodeURIComponent(holder)}`,
-        validateCredentials,
-      )) ?? [];
-    this.credCache.set(holder, creds);
-    return creds;
-  }
-
-  async findCredential(
-    holder: Party,
-    issuer: Party,
-    property: string,
-    value: string,
-  ): Promise<Credential | undefined> {
-    const creds = await this.getCredentials(holder);
-    return creds.find(
-      (c) => c.issuer === issuer && c.property === property && c.value === value,
-    );
-  }
-
-  async getPreapprovals(
-    receiver: Party,
-    admin: Party,
-  ): Promise<TransferPreapproval[]> {
-    const cached = this.preapprovalCache.get({ receiver, admin });
-    if (cached) return cached;
-    const preapprovals =
-      (await this.fetchJson(
-        `/registry/preapprovals?receiver=${encodeURIComponent(
-          receiver,
-        )}&admin=${encodeURIComponent(admin)}`,
-        validatePreapprovals,
-      )) ?? [];
-    this.preapprovalCache.set({ receiver, admin }, preapprovals);
-    return preapprovals;
-  }
-
   invalidateAll(): void {
-    this.configCache.invalidateAll();
     this.factoryCache.invalidateAll();
-    this.preapprovalCache.invalidateAll();
     this.choiceContextCache.invalidateAll();
-    this.credCache.invalidateAll();
   }
 
   /**
    * Fetch + validate a registry response. `validate` turns the parsed JSON
    * into a checked `T`, throwing RegistryError("malformed", ...) on a shape
-   * mismatch — registry output is never trusted via a bare `as T` cast (R-1).
+   * mismatch. Registry output is never trusted via a bare `as T` cast.
    * Returns null on 404 (callers treat absent as empty/not-found).
    */
   private async fetchJson<T>(

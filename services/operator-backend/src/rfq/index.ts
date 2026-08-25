@@ -1,13 +1,5 @@
-// RFQ flow.
-//
-// Operator responsibilities:
-//   1. Run the matcher: rank inbound quotes by the published policy.
-//   2. Build the PolicyReceipt and have the trader+operator co-submit
-//      Rfq_Accept (which produces the MatchedTrade with the receipt).
-//   3. Drive downstream settlement (handed off to MatchedTrade module).
-//
-// This module is the WORKED END-TO-END EXAMPLE. Other flow modules
-// follow the same shape; if you read one well, you've read them all.
+// RFQ negotiation: rank quotes, record the policy receipt, and co-submit
+// Rfq_Accept. The resulting MatchedTrade is funded and settled separately.
 
 import type { ContractId } from "@canton-dex/registry-client";
 
@@ -23,7 +15,7 @@ export interface RfqAcceptInput {
   admin: Party;
   now: Time;
   /**
-   * Per-caller party binding (B-2): when set, the fetched RFQ's `trader` must
+   * Per-caller party binding: when set, the fetched RFQ's `trader` must
    * equal this, so a caller can only accept on behalf of itself. The handler
    * passes the verified caller party; undefined = binding disabled.
    */
@@ -165,7 +157,7 @@ export class RfqService {
   /** Cancel an open RFQ. Trader-controlled choice. */
   async cancel(input: {
     rfqCid: ContractId<"Rfq">;
-    /** Per-caller binding (B-2): when set, must equal the RFQ's trader. */
+    /** When set, the verified caller must equal the RFQ's trader. */
     requireTrader?: Party;
   }): Promise<void> {
     const rfq = await this.fetchRfq(input.rfqCid);
@@ -236,15 +228,9 @@ export class RfqService {
           choice: "Rfq_Accept",
           argument: {
             acceptedQuoteCid: input.acceptedQuoteCid,
-            // The quotes that survived OUR OWN validity filter, not the
-            // caller's list. Rfq_Accept asserts every considered quote is
-            // still unexpired (Rfq.daml:112-116), and the choice is
-            // CONSUMING: one lapsed cid in the caller's set aborts it after
-            // the Rfq and every quote would have been archived, with no
-            // unwind. The accepted quote is necessarily in this set --
-            // `acceptedRank >= 0` above already proved it survived the same
-            // filter -- so the Daml's `acceptedQuoteCid elem
-            // consideredQuoteCids` still holds.
+            // Submit only quotes that survived the same validity filter used
+            // for ranking. The accepted quote was checked against this set
+            // above, and Rfq_Accept validates the set again on-ledger.
             consideredQuoteCids: ranked.map((q) => q.contractId),
             admin: input.admin,
             currentTime: input.now,

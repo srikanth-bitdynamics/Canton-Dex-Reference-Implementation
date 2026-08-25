@@ -88,12 +88,9 @@ remainderFunding authorizer committedBudget transferLegs =
 -- the settle rolled its residual budget into.
 --
 -- `residualFunding` is what this fill left of the side's committed budget. None
--- means the budget is spent: the residual quantity has nothing behind it and no
--- later fill could back it, so the order is closed out rather than created
--- unbacked (an unbacked order is matchable, and every match against it aborts).
--- The funds are not stranded — the budget genuinely went into this fill. The
--- mirror case, budget left behind an order this fill closes, has no release
--- path at all and is rejected.
+-- means the budget is spent, so no funded remainder can be created. Conversely,
+-- a next allocation without a corresponding order would have no workflow owner;
+-- that shape is rejected.
 rollOrderForward
   : ContractId Order
   -> Order
@@ -144,7 +141,7 @@ template OrderMatchExecution with
           --   the self-registry, real for a context-requiring registry.
       controller operator
       do
-        -- Price/quantity/instrument enforcement at match time (finding D-1).
+        -- Enforce price, quantity, and instrument terms at match time.
         -- The off-ledger matcher proposes `match`; this choice fetches both
         -- orders and refuses any fill the orders' own terms do not permit, so
         -- a buggy or malicious matcher cannot fill a resting order outside its
@@ -164,10 +161,7 @@ template OrderMatchExecution with
         assertMsg "sell order is not funded"
           (sellOrder.status == OS_Funded || sellOrder.status == OS_PartiallyFilled)
 
-        -- Without this the fill can spend the collateral of a DIFFERENT resting
-        -- order of the same trader: the batch still conserves, so nothing
-        -- downstream catches it, and that other order is left bound to an
-        -- archived allocation.
+        -- Each order may settle only the allocation bound to that order.
         assertMsg "buyer allocation is not the bid order's allocation"
           (buyOrder.allocationCid == Some buyerAllocationCid)
         assertMsg "seller allocation is not the ask order's allocation"
@@ -219,14 +213,10 @@ template OrderMatchExecution with
         buyerAllocation <- fetch buyerAllocationCid
         sellerAllocation <- fetch sellerAllocationCid
 
-        -- Each side authorizes both legs; legsToSides projects each account's
-        -- own sides. The budget the remainder comes out of is the allocation's
-        -- own, never a caller-supplied one: a budget recomputed from the
-        -- order's face terms can round an ulp above the residual the previous
-        -- fill rolled forward, and every later settle of that allocation then
-        -- aborts on the registry's coverage check. A side the fill closes out
-        -- rolls nothing forward, so its surplus is released rather than locked
-        -- behind an order that is gone.
+        -- Each side authorizes both legs; legsToSides projects the account's own
+        -- sides. Remainder funding is derived from the live allocation budget,
+        -- not recomputed from face terms, so repeated fills preserve the exact
+        -- registry-backed residual. A fully filled side rolls nothing forward.
         let sideFunding : Order -> V2.Allocation -> V2.Account -> Optional Utils.Funding
             sideFunding order allocation account
               | match.fillQty >= order.remainingQty = None
@@ -258,10 +248,8 @@ template OrderMatchExecution with
               (_ :: cid :: _) -> cid
               _ -> None
 
-        -- Both orders roll forward here, not in a follow-up submission: the
-        -- settle has archived the allocations they are bound to, so an order
-        -- left behind by a failure between the two would be uncancellable
-        -- (Order_Cancel exercises the archived cid) and unfillable for ever.
+        -- Settlement and both order transitions are atomic. Every remainder is
+        -- created in the same transaction as the next allocation it references.
         buyRemainderCid <- rollOrderForward
           buyOrderCid buyOrder match.fillQty buyerFunding buyerNext
         sellRemainderCid <- rollOrderForward

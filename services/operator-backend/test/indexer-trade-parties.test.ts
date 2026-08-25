@@ -1,12 +1,8 @@
 // Which side of a matched trade is the trader.
 //
-// Both fields used to be read off legs[0], but legs[0] is the base leg and its
-// sender flips with the side: on a sell the trader sends base, on a buy the
-// dealer does. Every buy was therefore labelled backwards — silently, so a
-// client reconciling on `trader == me` simply missed all of its buys.
-//
-// The policy receipt names the accepted dealer outright and is signed by the
-// venue, so it is the authority here, not leg direction.
+// A transfer leg does not identify business roles because its sender changes
+// with trade direction. The venue-signed policy receipt names the accepted
+// dealer, so the indexer derives trader/dealer labels from that receipt.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -88,7 +84,7 @@ describe("indexer: labelling the sides of a matched trade", () => {
     assert.equal(row.dealer, DEALER);
   });
 
-  it("labels a BUY correctly — the case that used to invert", async () => {
+  it("labels a BUY from the policy receipt rather than base-leg direction", async () => {
     // Base leg runs dealer -> trader. Reading legs[0].sender as the trader
     // would name the DEALER as the trader here.
     const row = await run(ledgerWith(DEALER, TRADER));
@@ -104,10 +100,8 @@ describe("indexer: labelling the sides of a matched trade", () => {
   });
 
   it("still records the counterparty when there is no receipt", async () => {
-    // `dealer` is a role and a null is correct here -- but the other side of
-    // the trade must not vanish with it. /v1/trades does not serve the raw
-    // payload, so without this column an order-book fill's counterparty is
-    // unrecoverable from the API.
+    // `dealer` is RFQ-specific; `counterparty` preserves the other participant
+    // for every trade shape returned by /v1/trades.
     const row = await run(ledgerWith(TRADER, DEALER, false));
     assert.equal(row.trader, TRADER);
     assert.equal(row.counterparty, DEALER);

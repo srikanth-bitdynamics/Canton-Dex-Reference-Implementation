@@ -211,7 +211,7 @@ describe("quote pool reference (poolCid or poolId)", () => {
     assert.equal(r.status, 404);
   });
 
-  it("still accepts legacy poolId (validation passes; 404)", async () => {
+  it("accepts poolId as the pair-based quote lookup (validation passes; 404)", async () => {
     const r = await postJson("/v1/swaps/quote", {
       poolId: "BTC-USDC",
       inputInstrumentId: "BTC",

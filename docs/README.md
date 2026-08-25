@@ -12,9 +12,8 @@ For the ideas behind the design, read the **[Overview](concepts/overview.md)**.
 > **Standards note.** This reference implements the Canton Network Token
 > Standard **V2 (CIP-0112)** — the privacy/performance/accounting revision of
 > the base token standard (**CIP-0056**) — and uses the **CIP-0103** dApp
-> standard for trader-authorized wallet submissions. V2 is merged into
-> `canton-network/splice` `main` and is the network default; the exact
-> vendored commit is pinned in
+> standard for trader-authorized wallet submissions. The exact Splice release
+> used for the committed Token Standard DARs is recorded in
 > [`../vendor/splice/VENDOR_PIN.md`](../vendor/splice/VENDOR_PIN.md).
 
 ---
@@ -24,6 +23,7 @@ For the ideas behind the design, read the **[Overview](concepts/overview.md)**.
 | I want to… | Read, in order |
 |---|---|
 | **Run it locally** | [Getting Started](getting-started.md) |
+| **Learn DEX and TSv2 from Daml** | [Overview](concepts/overview.md) → [Glossary](concepts/glossary.md) → [Workflows](concepts/workflows.md) → [Builder Guide](guides/builder-guide.md) |
 | **Understand the design** | [Overview](concepts/overview.md) → [Architecture](concepts/architecture.md) → [Workflows](concepts/workflows.md) |
 | **Build on / extend it** | [Getting Started](getting-started.md) → [Builder Guide](guides/builder-guide.md) → [HTTP API](reference/http-api.md) |
 | **Operate a venue** | [Deployment](guides/deployment.md) → [Operator Guide](guides/operator-guide.md) → [Operator Runbook](guides/operator-runbook.md) |
@@ -60,23 +60,23 @@ lookup (reference).
 | Page | Audience | Recipe |
 |---|---|---|
 | [Builder Guide](guides/builder-guide.md) | Builder | The contract surface, off-ledger layout, matcher logic, and extension patterns. |
-| [Using the dApp](guides/using-the-dapp.md) | Trader, LP, dealer | Swap, add/remove liquidity, place orders, trade an RFQ block, read the portfolio. |
+| [Using the dApp](guides/using-the-dapp.md) | Trader, LP | Swap, add/remove liquidity, place orders, accept an RFQ quote, read the portfolio. |
 | [Add a Trading Pair](guides/add-a-trading-pair.md) | Operator | List a new pair (e.g. `ETH/USDT`) on a running venue. |
-| [Add an LP or Instrument](guides/add-lp-or-instrument.md) | Builder, operator | Mint a new asset or lifecycle-rich instrument via Token Standard V2. |
+| [Add an LP or Instrument](guides/add-lp-or-instrument.md) | Builder, operator | Register a fungible asset or identify where gated/lifecycle behavior requires a custom registry. |
 | [Deployment](guides/deployment.md) | Operator | Local dev, Docker Compose, testnet, environment variables, production checklist. |
 | [Operator Guide](guides/operator-guide.md) | Operator | First-time deployment and day-to-day operations. |
 | [Operator Runbook](guides/operator-runbook.md) | Operator, SRE | Recovery procedures, observability, and failure modes. |
 | [Run on a Testnet](guides/run-on-testnet.md) | Operator | Point the operator backend and dApp at a Canton testnet. |
 | [Registry Integration](guides/registry-integration.md) | Integrator | What the DEX assumes from an asset registry, and how to swap in your own. |
 | [Choice Context](guides/choice-context.md) | Integrator | What the backend attaches to each transaction it submits (context + disclosure). |
-| [Validator Test Plan](guides/validator-test-plan.md) | QA, validator | The 11-phase live end-to-end validation checklist. |
+| [Validator Test Plan](guides/validator-test-plan.md) | QA, validator | The live end-to-end validation checklist. |
 
 ### Reference — look something up
 | Page | Topic |
 |---|---|
 | [HTTP API](reference/http-api.md) | The operator-backend HTTP endpoints, wallet intents, and error codes. |
 | [Allocation Surface](reference/allocation-surface.md) | The V2 allocation surface this reference relies on (committed allocations, iterated settlement). |
-| [Testing](reference/testing.md) | The real-ledger, JSON Ledger API end-to-end test driver. |
+| [Testing](reference/testing.md) | The test strategy, suite coverage, and opt-in live-ledger drivers. |
 | [Ecosystem feedback](reference/ecosystem-feedback.md) | How the reference was evaluated externally, what was found, and what changed. |
 
 ---
@@ -87,8 +87,6 @@ lookup (reference).
 - The [Builder Guide](guides/builder-guide.md) walks through the four workflow
   families — pair listing, matched-trade/RFQ, prefunded orders,
   and pool/swap/LP — with file and test pointers.
-- [`examples/stable-pool/`](../examples/stable-pool/) is a separate Daml
-  project that consumes the DEX DAR (a reuse proof point).
 
 ## Governance
 [Contributing](../CONTRIBUTING.md) · [Code of Conduct](../CODE_OF_CONDUCT.md)

@@ -20,7 +20,7 @@ and points at the guide or contract where the excluded work would live.
 | A production matching engine | The batch matcher shows only the Canton-specific part: a fill re-checked and settled atomically on-ledger | A fork's off-ledger matcher (pro-rata, iceberg, continuous auction) |
 | A rich instrument lifecycle | Token Standard V2 standardizes the holding, not lifecycle; the DEX needs only a holding | The registry that administers the `InstrumentId` — [add an instrument](../guides/add-lp-or-instrument.md) |
 | A privileged reference registry | `Registry.V2` is a convenience so the DEX runs standalone, not the mechanism value settles through | Any conforming TSv2 registry (Amulet, or another) |
-| Self-custody onboarding | The hosted relay is a testnet convenience while DA Utilities lacks TSv2 support | The user's own wallet (PartyLayer / dapp-sdk), once the validator supports V2 |
+| Self-custody onboarding | The hosted relay is a testnet convenience, not a production wallet integration | The user's own compatible wallet or a deployment-specific delegation/co-submission flow |
 | Operational hardening | HA, secrets management, and a rate-limited gateway are an operator's deployment decisions | Whoever runs an instance — [operator runbook](../guides/operator-runbook.md) |
 | Production off-ledger services | The on-ledger contracts are the specification; the backend and indexer are one implementation of the surface around them | The integrator's own service — [architecture](architecture.md#off-ledger-services-what-they-may-and-may-not-do) |
 
@@ -88,7 +88,7 @@ The standard holding model is kept intentionally small. The reference issues
 exactly one lifecycle-bearing instrument — the LP token — as a token-standard
 instrument with its own registrar and DvP mint/burn
 (`trading/CantonDex/Lp/Instrument.daml`). Token Standard V2 standardizes the
-holding, not lifecycle: it does not mandate `InstrumentConfiguration` or a rich
+holding, not lifecycle: it does not mandate an instrument-configuration or rich
 lifecycle, and the reference does not assume one exists for every registry.
 Anything richer — a bond's maturity and coupon, a vested or dividend-paying token
 — is attached by the registry that administers the `InstrumentId`, not by DEX
@@ -106,8 +106,8 @@ does not assume its own registry is present, nor that every registry exposes the
 same conveniences. [architecture.md](architecture.md#what-settles-value-the-token-standard-v2-spine)
 and [registry-integration.md](../guides/registry-integration.md) set out exactly
 what a registry must provide. On the public testnet the pair's assets happen to be
-issued by this registry, but the flows are written to work against Amulet or any
-other conforming registry just as well.
+issued by this registry. Integrating another conforming registry also requires
+its factory discovery, choice context, disclosures, and metadata endpoint.
 
 ## The hosted testnet is a demo surface, not a wallet
 
@@ -118,22 +118,20 @@ self-custody: the walletless connect options are marked **DEV** and are never
 preselected in a testnet or production build
 ([using-the-dapp.md](../guides/using-the-dapp.md#connecting-a-wallet)). A real user
 brings their own wallet (PartyLayer or the dapp-sdk) and signs for themselves; the
-hosted relay exists only so the milestone flows can be exercised from a browser
-without one. The whole `/v1/testnet/*` relay surface and the faucet's per-IP party
-quota, and why each was added, are documented in
+hosted relay exists only so the reference flows can be exercised from a browser
+without one. The `/v1/testnet/*` relay surface and the faucet's per-IP party
+quota are documented in
 [ecosystem-feedback.md](../reference/ecosystem-feedback.md).
 
 **Current deployment status.** On the public testnet at
 `testnet-dex.bitdynamics.cc`, every tester is onboarded as a hosted party on the
 operator's (BitDynamics) validator, and every traded asset (`dBTC`, `dUSD`, and the
 pool's LP token) is issued locally by the deployment's own Token Standard V2
-registry. This is a bridge: external participants cannot yet bring their own Token
-Standard V2 party and assets because the general-purpose validator and wallet
-tooling (DA Utilities) does not yet support Token Standard V2. When that support
-ships, users connect their own participant's party and trade their own V2 assets
-through PartyLayer or the dapp-sdk, and the hosted onboarding is retired. The code
-path for that is already the intended one; the hosted relay is the only piece
-specific to this interim.
+registry. This deployment choice does not change the application boundary:
+self-custodial users connect through a compatible wallet and registry, while a
+hosted party authorizes only the allowlisted demo operations exposed by the
+relay. Registry choice context and disclosures still determine whether a given
+external instrument can participate in a settlement.
 
 ## Operational hardening is out of scope
 

@@ -74,12 +74,8 @@ export interface Toast {
 export function useToasts() {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  // Drive a specific toast to a real pipeline phase (monotonic, clamped to the
-  // terminal phase). Toasts NEVER auto-advance on a cosmetic timer — their
-  // progress only ever reflects real on-ledger pipeline steps the calling flow
-  // reports (via `setPhase`) or its terminal success (via `complete`). This is
-  // what keeps a lifecycle card from racing ahead of a still-pending wallet
-  // approval and falsely showing the action as done.
+  // Advance only when the calling flow reports the corresponding pipeline
+  // phase; timers never imply ledger progress.
   const setPhase = useCallback((id: number, phase: number) => {
     setToasts((cur) =>
       cur.map((t) =>
@@ -90,9 +86,7 @@ export function useToasts() {
     );
   }, []);
 
-  // Drive a toast straight to its terminal (all-done) phase. A flow calls this
-  // from its success path so the card only reads "complete" once the real
-  // on-ledger operation has actually resolved.
+  // A flow marks the terminal phase only after its on-ledger operation resolves.
   const complete = useCallback((id: number) => {
     setToasts((cur) =>
       cur.map((t) => (t.id === id ? { ...t, phase: t.phaseCount } : t)),

@@ -14,13 +14,11 @@
 --   9. mkTradeSettlementInfo on a trade with no receipt produces empty meta
 module CantonDex.Tests.PolicyReceiptTests where
 
-import DA.Assert
 import DA.Optional (isSome, isNone)
 import DA.TextMap qualified as TextMap
 
 import Daml.Script
 
-import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 

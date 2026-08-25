@@ -358,7 +358,7 @@ testExpiredTransferFactoryRejected = do
 testAllocateLocksOnlyTheNotional : Script ()
 testAllocateLocksOnlyTheNotional = do
   fx <- setup
-  -- One 10,000 holding funding a 9 leg: the shape that stranded a party.
+  -- An over-collateralized input locks only the required amount.
   hold <- mintHolding fx fx.alice "USD" 10000.0
   let spec = Utils.mkPrefundedAllocationSpecification
         fx.admin (Utils.basicAccount fx.alice) None
@@ -415,15 +415,11 @@ testAllocateStillRejectsInsufficientHoldings = do
     inputHoldingCids = [toInterfaceContractId hold]
     actors = [fx.alice]; extraArgs = emptyExtraArgs
 
--- 9. An order-book fill stays inside the backing across iterations ----------
+-- 9. Partial fills use the allocation's rolled funding ----------------------
 --
--- Placement locks the bid's face notional, round(qty * limit). A partial fill
--- at the bid's own limit spends round(fill * limit) and the settle re-locks
--- the difference — which can be one ulp BELOW round(remaining * limit), since
--- both are independent 10dp roundings of the same terms. A budget recomputed
--- from the order's face terms then exceeds the backing, the coverage check
--- rejects it, and the order can never trade again. OrderMatchExecution takes
--- the budget from the allocation, so the later fill settles.
+-- Decimal rounding can make `original budget - first spend` one ulp smaller
+-- than `remaining quantity * limit price`. OrderMatchExecution must use the
+-- allocation's actual rolled funding, so a second fill remains covered.
 
 -- Place a funded resting order through the real placement path, so the locked
 -- backing is exactly the amount OrderFundingRequest_Bind asks the trader for.
@@ -498,8 +494,8 @@ execMatch
   -> Decimal -> Decimal -> Script OME.OrderMatch_ExecuteResult
 execMatch = execMatchDeclaring TextMap.empty TextMap.empty
 
-testPartiallyFilledOrderStillFills : Script ()
-testPartiallyFilledOrderStillFills = do
+testPartialFillUsesRolledFundingBudget : Script ()
+testPartialFillUsesRolledFundingBudget = do
   operator <- allocateParty "match-operator"
   admin <- allocateParty "match-admin"
   buyer <- allocateParty "match-buyer"
@@ -527,8 +523,8 @@ testPartiallyFilledOrderStillFills = do
   Some bid2 <- queryContractId operator bid2Cid
   bid2.remainingQty === 6.3989002800
 
-  -- What the settle actually re-locked, one ulp below the face notional of
-  -- the quantity that is left.
+  -- The rolled backing is one ulp below the independently recomputed face
+  -- notional, and remains the authoritative budget for the next fill.
   lockedQuote <- lockedOf buyer "USDC"
   lockedQuote === [54.3109583687]
   bid2.remainingQty * limitPrice === 54.3109583688
@@ -544,14 +540,11 @@ testPartiallyFilledOrderStillFills = do
 
 -- 8. The operator cannot declare the match budget --------------------------
 --
--- OrderMatchExecution carries committed-funding fields the choice must not
--- read: the operator authors that contract alone, so a budget taken from it
--- is a budget the operator chose. The budget comes from each side's own
--- allocation instead. Declaring one far above the locked backing changes
--- nothing here; were it read, the roll-forward would exceed the backing and
--- the registry's coverage check would reject the settle outright.
-testDeclaredMatchFundingIsIgnored : Script ()
-testDeclaredMatchFundingIsIgnored = do
+-- Compatibility fields on OrderMatchExecution are operator-authored and must
+-- not control a trader's funding budget. The budget comes from each side's
+-- allocation; arbitrary declared values therefore do not affect settlement.
+testCompatibilityFundingFieldsDoNotControlSettlement : Script ()
+testCompatibilityFundingFieldsDoNotControlSettlement = do
   operator <- allocateParty "declared-operator"
   admin <- allocateParty "declared-admin"
   buyer <- allocateParty "declared-buyer"

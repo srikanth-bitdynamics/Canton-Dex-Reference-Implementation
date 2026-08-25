@@ -2,6 +2,11 @@
 -- instrumentId used as the join key across DEX templates, holder/issuer
 -- credential requirements, and optional external ids. DEX contracts treat
 -- instrumentId as opaque; asset semantics live in the registry.
+--
+-- This template is part of a standalone DEX-specific lifecycle sample, not
+-- Token Standard V2. Active DEX workflows use `CantonDex.Registry.V2` and
+-- portable integrations obtain instrument properties through metadata-v1.
+-- The template remains in the deployed package lineage for compatibility.
 module CantonDex.Instrument.InstrumentConfiguration where
 
 import CantonDex.Instrument.Credentials qualified as Cred

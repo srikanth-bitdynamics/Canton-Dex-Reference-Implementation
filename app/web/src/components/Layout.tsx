@@ -1,7 +1,6 @@
 // Top-level shell:
 //   - brand block on the left with version + network meta
-//   - tab nav with explicit `data-screen-label` attribute for automated
-//     screenshots and regression checks
+//   - tab nav with stable screen labels
 //   - status pill (sync state) and wallet block on the right
 //
 // Wallet state is owned by `useWalletStore` and surfaced through

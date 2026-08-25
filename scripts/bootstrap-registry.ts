@@ -2,15 +2,9 @@
 //
 // The DEX assumes a set of registry contracts exist on the ledger before any
 // trading can happen (see docs/guides/registry-integration.md). This script
-// creates, under the asset admin unless noted:
-//   - CantonDex.Instrument.InstrumentConfiguration per tradable instrument
-//   - the same, under the lpRegistrar, per LP token
-//   - CantonDex.Instrument.Credentials:Credential for the holders that need one
-//   - CantonDex.Registry.V2:Registry under the lpRegistrar -- required for
-//     any liquidity move; the allocation, settlement and transfer factories
-//     are interface views of it
-//   - optionally, a second registry plus one InstrumentConfig per instrument
-//     in `registryV2`, for assets this deployment mints itself
+// creates one CantonDex.Registry.V2:Registry per admin, registers the configured
+// instruments, and exposes the V2 holding, allocation, settlement, and
+// transfer interfaces.
 //
 // This script is idempotent: it checks whether each contract already
 // exists (by template + payload key) and only creates the missing ones.
@@ -33,45 +27,21 @@ import { rootLogger } from "../services/operator-backend/src/lib/logger.js";
 
 const log = rootLogger.child({ component: "bootstrap-registry" });
 
-interface CredentialRequirement {
-  issuer: string;
-  property: string;
-  value: string;
-}
-
 interface RegistryV2Instrument {
   instrumentId: string;
   // Daml Decimal is 10-scale; the registry accepts 0..18.
   decimals?: number;
   // Total issuable supply. Omit (or null) for uncapped.
   supplyCap?: string | null;
-  holderRequirements?: CredentialRequirement[];
-  issuerRequirements?: CredentialRequirement[];
   isin?: string | null;
   cusip?: string | null;
 }
 
 interface BootstrapConfig {
-  instruments: Array<{
-    instrumentId: string;
-    description: string;
-    isin?: string;
-    cusip?: string;
-    holderRequirements?: CredentialRequirement[];
-    issuerRequirements?: CredentialRequirement[];
-  }>;
+  instruments: RegistryV2Instrument[];
   // LP instrument ids — one per pool that the operator plans to seed.
   lpInstruments: string[];
-  // Holder credentials to seed (per holder, per requirement).
-  credentials: Array<{
-    issuer: string;
-    holder: string;
-    property: string;
-    value: string;
-  }>;
-  // The V2 registry: the contract every V2 holding is minted through. Distinct
-  // from `instruments` above, which creates the legacy reference-registry
-  // InstrumentConfiguration.
+  // Optional registry overrides. The top-level instruments remain the default.
   registryV2?: {
     // Parties allowed to exercise the factory choices. Defaults to the
     // operator + lpRegistrar.
@@ -82,12 +52,11 @@ interface BootstrapConfig {
 
 const DEFAULT_CONFIG: BootstrapConfig = {
   instruments: [
-    { instrumentId: "BTC", description: "Demo Bitcoin" },
-    { instrumentId: "USDC", description: "Demo USD Coin" },
-    { instrumentId: "ETH", description: "Demo Ether" },
+    { instrumentId: "BTC" },
+    { instrumentId: "USDC" },
+    { instrumentId: "ETH" },
   ],
   lpInstruments: ["BTC-USDC-LP", "ETH-USDC-LP"],
-  credentials: [],
 };
 
 const REGISTRY_TEMPLATE_ID = "CantonDex.Registry.V2:Registry";
@@ -112,41 +81,6 @@ function loadConfig(): BootstrapConfig {
     return DEFAULT_CONFIG;
   }
   return JSON.parse(readFileSync(path, "utf8")) as BootstrapConfig;
-}
-
-async function ensureInstrument(
-  ledger: JsonApiLedger,
-  admin: string,
-  inst: BootstrapConfig["instruments"][number],
-  dryRun: boolean,
-): Promise<void> {
-  const existing = await ledger.query<{ admin: string; instrumentId: string }>({
-    templateId: "CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration",
-    observingParty: admin,
-  });
-  if (existing.some((e) => e.admin === admin && e.instrumentId === inst.instrumentId)) {
-    log.info("instrument already configured", { instrumentId: inst.instrumentId });
-    return;
-  }
-  log.info("creating InstrumentConfiguration", { instrumentId: inst.instrumentId, dryRun });
-  if (dryRun) return;
-  await ledger.submit({
-    actAs: [admin],
-    commandId: `bootstrap-instrument-${inst.instrumentId}`,
-    command: {
-      kind: "create",
-      templateId: "CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration",
-      argument: {
-        admin,
-        instrumentId: inst.instrumentId,
-        holderRequirements: inst.holderRequirements ?? [],
-        issuerRequirements: inst.issuerRequirements ?? [],
-        isin: inst.isin ?? null,
-        cusip: inst.cusip ?? null,
-        description: inst.description,
-      },
-    },
-  });
 }
 
 /**
@@ -223,50 +157,13 @@ async function ensureV2Instrument(
         instrumentId: inst.instrumentId,
         decimals: String(inst.decimals ?? DEFAULT_DECIMALS),
         supplyCap: inst.supplyCap ?? null,
-        holderRequirements: inst.holderRequirements ?? [],
-        issuerRequirements: inst.issuerRequirements ?? [],
+        // The reference verifier does not resolve signed credential evidence.
+        // Bootstrap only open instruments; gated assets need another registry.
+        holderRequirements: [],
+        issuerRequirements: [],
         isin: inst.isin ?? null,
         cusip: inst.cusip ?? null,
       },
-    },
-  });
-}
-
-async function ensureCredential(
-  ledger: JsonApiLedger,
-  cred: BootstrapConfig["credentials"][number],
-  dryRun: boolean,
-): Promise<void> {
-  const existing = await ledger.query<{
-    issuer: string;
-    holder: string;
-    property: string;
-    value: string;
-  }>({
-    templateId: "CantonDex.Instrument.Credentials:Credential",
-    observingParty: cred.issuer,
-  });
-  if (
-    existing.some(
-      (c) =>
-        c.issuer === cred.issuer &&
-        c.holder === cred.holder &&
-        c.property === cred.property &&
-        c.value === cred.value,
-    )
-  ) {
-    log.info("credential already exists", cred);
-    return;
-  }
-  log.info("creating Credential", { ...cred, dryRun });
-  if (dryRun) return;
-  await ledger.submit({
-    actAs: [cred.issuer],
-    commandId: `bootstrap-cred-${cred.issuer}-${cred.holder}-${cred.property}`,
-    command: {
-      kind: "create",
-      templateId: "CantonDex.Instrument.Credentials:Credential",
-      argument: cred,
     },
   });
 }
@@ -297,58 +194,38 @@ async function main(): Promise<void> {
     lpRegistrar,
     instruments: cfg.instruments.length,
     lpInstruments: cfg.lpInstruments.length,
-    credentials: cfg.credentials.length,
-    registryV2Instruments: cfg.registryV2?.instruments.length ?? 0,
+    registryV2Instruments: cfg.registryV2?.instruments.length ?? cfg.instruments.length,
     dryRun,
   });
 
-  // 1. Admin's instruments (BTC, USDC, ...).
-  for (const inst of cfg.instruments) {
-    await ensureInstrument(ledger, admin, inst, dryRun);
-  }
-
-  // 2. LP token configurations under the lpRegistrar.
-  for (const lpId of cfg.lpInstruments) {
-    await ensureInstrument(
-      ledger,
-      lpRegistrar,
-      { instrumentId: lpId, description: `LP token for ${lpId}` },
-      dryRun,
-    );
-  }
-
-  // 3. Seed holder credentials.
-  for (const cred of cfg.credentials) {
-    await ensureCredential(ledger, cred, dryRun);
-  }
-
-  // 4. The LP registry, not optional: Lp/Instrument.daml builds its specs with
-  //    admin = lpRegistrar and Registry.V2 asserts spec.admin == admin, so
-  //    without it no pool can allocate a liquidity move. No instruments are
-  //    registered on it -- the LP path never reads an InstrumentConfig.
-  await ensureRegistry(ledger, lpRegistrar, [operator(), admin], dryRun);
-
-  // 5. Optionally, a registry for instruments this deployment mints itself.
-  //    Opt-in: a deployment whose users bring their own assets needs none, and
-  //    Registry_Mint requires an InstrumentConfig it never creates lazily.
+  // 1. Asset registry and its tradable instruments.
   const registryV2 = cfg.registryV2;
-  if (!registryV2) {
-    log.info("no registryV2 block configured; skipping the minting registry");
-  } else if (admin === lpRegistrar) {
-    // One party, one registry -- the shape the repo's own fixtures use.
-    const cid = await ensureRegistry(ledger, admin, [operator()], dryRun);
-    for (const inst of registryV2.instruments) {
-      if (cid) await ensureV2Instrument(ledger, admin, cid, inst, dryRun);
+  const assetRegistryCid = await ensureRegistry(
+    ledger,
+    admin,
+    registryV2?.users ?? [operator(), lpRegistrar],
+    dryRun,
+  );
+  for (const inst of registryV2?.instruments ?? cfg.instruments) {
+    if (assetRegistryCid) {
+      await ensureV2Instrument(ledger, admin, assetRegistryCid, inst, dryRun);
     }
-  } else {
-    const cid = await ensureRegistry(
-      ledger,
-      admin,
-      registryV2.users ?? [operator(), lpRegistrar],
-      dryRun,
-    );
-    for (const inst of registryV2.instruments) {
-      if (cid) await ensureV2Instrument(ledger, admin, cid, inst, dryRun);
+  }
+
+  // 2. LP registry and pool-share instruments. When the same party administers
+  // both asset classes, reuse the registry created above.
+  const lpRegistryCid = admin === lpRegistrar
+    ? assetRegistryCid
+    : await ensureRegistry(ledger, lpRegistrar, [operator(), admin], dryRun);
+  for (const instrumentId of cfg.lpInstruments) {
+    if (lpRegistryCid) {
+      await ensureV2Instrument(
+        ledger,
+        lpRegistrar,
+        lpRegistryCid,
+        { instrumentId },
+        dryRun,
+      );
     }
   }
 

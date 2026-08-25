@@ -122,11 +122,8 @@ async function discoverAnnouncedWallets(): Promise<Array<{ id: string; name: str
   return [...found.values()];
 }
 
-// The CIP-0103 SDK / wallet gateway rejects with a structured JSON-RPC error
-// object (e.g. `{ error: { message, code, cause } }`), not an Error. The dApp's
-// `String(err)` then rendered "[object Object]" and hid the real failure (e.g.
-// "FAILED_TO_PREPARE_TRANSACTION: Preparing multiple commands is currently not
-// supported"). Extract a human-readable message from whatever shape arrives.
+// Wallets and gateways may reject with structured JSON-RPC objects instead of
+// Error instances. Extract a human-readable message from the common shapes.
 export function describeWalletError(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (typeof e === "string") return e;
@@ -262,11 +259,8 @@ export class SdkProvider implements WalletProvider {
       return account;
     } catch (err) {
       let msg = err instanceof Error ? err.message : String(err);
-      // The SDK's connect() retry loop assumes ITS OWN popup picker is mounted;
-      // with our headless walletPicker a gateway-side failure surfaces as the
-      // opaque "Wallet picker is not open" (or "not connected"). When the target
-      // was the gateway, probe it so the user sees the real reason (down /
-      // misconfigured) instead of a misleading picker message.
+      // A headless picker can hide a gateway failure behind a generic connection
+      // message. Probe the gateway when it was the selected target.
       if (targetIsGateway && /wallet picker is not open|not connected/i.test(msg)) {
         try {
           await this.assertGatewayReachable();
@@ -387,7 +381,7 @@ export class SdkProvider implements WalletProvider {
           : {}),
       } as Parameters<DappSDK["prepareExecuteAndWait"]>[0]);
     } catch (e) {
-      // Surface the wallet/gateway's real error instead of "[object Object]".
+      // Surface the wallet or gateway's normalized error.
       throw new Error(`wallet submission failed: ${describeWalletError(e)}`);
     }
     // prepareExecuteAndWait resolves to { tx: { status, commandId, payload:
@@ -425,9 +419,7 @@ export class SdkProvider implements WalletProvider {
 
   private wireEvents(): void {
     this.statusListener = (e: StatusEvent) => {
-      // The connection flag lives at e.connection.isConnected, not e.isConnected;
-      // reading the wrong (always-undefined) field meant disconnect was never
-      // detected and the provider stayed "connected" against a dead session.
+      // Connection state is nested under `connection` in the SDK status event.
       const conn = e.connection?.isConnected;
       if (conn === false && this.status.kind === "connected") {
         this.setStatus({ kind: "disconnected" });

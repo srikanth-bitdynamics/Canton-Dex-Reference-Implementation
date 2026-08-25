@@ -37,9 +37,11 @@ Two things here are specific to this design:
 - **Slices are locality units, not LP shares.** A slice does not belong to an
   LP — there is no `PoolSlice.owner`. The `operator` is the sole signatory, and
   the operator-backend indexer tracks slices by `poolId` and hands the relevant
-  `ContractId`s to each choice. Add creates a *new* slice, which conflicts with
-  nothing; remove and swap touch only the slices they source. So no single hot
-  contract serializes every pool operation — only the small `PoolState` does.
+  `ContractId`s to each choice. Remove and swap touch only the slices they
+  source, so the slice set does not have to travel through one growing state
+  contract. All reserve-changing operations still serialize on the small
+  `PoolState`; slices reduce state size and settlement input, not that global
+  pricing dependency.
 - **`amount` is a cache, not the source of truth.** The committed allocation
   holds the funds; `amount` is stored alongside so the rules choices can walk
   slices without a `fetch` per slice, and it is reconciled against the
@@ -66,9 +68,10 @@ reserve is their aggregate. Two on-ledger mechanisms keep the two from drifting:
 - **Global reconciliation.** The nonconsuming `PoolRules_ReconcileState` choice
   re-derives both side totals from the full active slice set and asserts each
   equals the recorded reserve (`baseTotal == state.reserves.baseAmount`). It
-  writes no state, so an operator or auditor can run it against a live pool
-  without contending with swaps. Completeness of the slice list is the caller's
-  responsibility — pair the call with the indexer's active-slice count.
+  writes no state and is intended for off-hot-path checks. A concurrent pool
+  update may invalidate its reads, in which case the caller retries. Completeness
+  of the slice list is the caller's responsibility — pair the call with the
+  indexer's active-slice count.
 
 Both are exercised by
 [`PoolStateInvariantTests.daml`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml):

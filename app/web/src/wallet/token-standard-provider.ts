@@ -9,15 +9,12 @@
 // What each intent maps to on-ledger:
 //
 //   place-order             →  CreateCommand OrderFundingRequest
-//   accept-allocation-request → AllocationFactory_Allocate (single command; the
-//                               operator's Order_Fund consumes the request)
+//   fund-order               → AllocationFactory_Allocate
 //   request-swap            →  AllocationFactory_Allocate (operator settles via PoolRules_Swap)
 //   add-liquidity           →  CreateAndExercise BatchingUtilityV2.ExecuteBatch
 //                               (accept + all 3 allocations in one command)
 //   remove-liquidity        →  CreateAndExercise BatchingUtilityV2.ExecuteBatch
 //                               (accept + all 3 allocations in one command)
-//   post-rfq-quote          →  CreateCommand RfqQuote
-//   accept-rfq              →  Exercise Rfq_Accept (joint trader + operator)
 //
 // Connection lifecycle:
 //   - connect() validates the ledger URL, fetches the user's primary
@@ -201,8 +198,8 @@ export class TokenStandardProvider implements WalletProvider {
     switch (intent.kind) {
       case "place-order":
         return this.placeOrder(intent);
-      case "accept-allocation-request":
-        return this.acceptAllocationRequest(intent);
+      case "fund-order":
+        return this.fundOrder(intent);
       case "request-swap":
       case "split-holding":
       case "merge-holdings":
@@ -214,10 +211,6 @@ export class TokenStandardProvider implements WalletProvider {
         // tree and returns createdEvents, so the operator-relay path CAN surface
         // the allocation cids the settle needs — no CIP-0103 wallet required.
         return this.submitComposed(intent);
-      case "post-rfq-quote":
-        return this.postRfqQuote(intent);
-      case "accept-rfq":
-        return this.acceptRfq(intent);
     }
   }
 
@@ -345,8 +338,8 @@ export class TokenStandardProvider implements WalletProvider {
   }
 
 
-  private async acceptAllocationRequest(
-    intent: Extract<WalletIntent, { kind: "accept-allocation-request" }>,
+  private async fundOrder(
+    intent: Extract<WalletIntent, { kind: "fund-order" }>,
   ): Promise<WalletResult> {
     const party = this.session!.party;
     const composed = composeCommands(intent, {
@@ -373,58 +366,4 @@ export class TokenStandardProvider implements WalletProvider {
     };
   }
 
-  private async postRfqQuote(
-    intent: Extract<WalletIntent, { kind: "post-rfq-quote" }>,
-  ): Promise<WalletResult> {
-    const party = this.session!.party;
-    const result = await this.submitAndWait(
-      [party],
-      `rfq-quote-${intent.rfqId}-${Date.now()}`,
-      {
-        CreateCommand: {
-          templateId: template("CantonDex.Dex.Rfq:RfqQuote"),
-          createArguments: {
-            dealer: party,
-            trader: intent.trader,
-            operator: intent.operator,
-            rfqId: intent.rfqId,
-            price: intent.price,
-            expiresAt: intent.expiresAt,
-            postedAt: intent.postedAt,
-            tier: intent.tier,
-          },
-        },
-      },
-    );
-    return { submittedBy: party, primaryCid: result.updateId };
-  }
-
-  private async acceptRfq(
-    intent: Extract<WalletIntent, { kind: "accept-rfq" }>,
-  ): Promise<WalletResult> {
-    const party = this.session!.party;
-    // RFQ accept needs joint trader+operator authority. The provider
-    // submits as the trader; the operator's authority comes from a
-    // pre-deployed delegation. (Today this would need a backend co-sign
-    // — surface that as a clear error rather than silently failing.)
-    const result = await this.submitAndWait(
-      [party, intent.operator],
-      `rfq-accept-${intent.rfqCid.slice(0, 12)}-${Date.now()}`,
-      {
-        ExerciseCommand: {
-          templateId: template("CantonDex.Dex.Rfq:Rfq"),
-          contractId: intent.rfqCid,
-          choice: "Rfq_Accept",
-          choiceArgument: {
-            acceptedQuoteCid: intent.acceptedQuoteCid,
-            consideredQuoteCids: intent.consideredQuoteCids,
-            admin: intent.admin,
-            currentTime: new Date().toISOString(),
-            signature: null,
-          },
-        },
-      },
-    );
-    return { submittedBy: party, primaryCid: result.updateId };
-  }
 }

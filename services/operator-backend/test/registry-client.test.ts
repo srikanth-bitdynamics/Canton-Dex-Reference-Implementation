@@ -14,8 +14,8 @@ describe("RegistryClient.getChoiceContext", () => {
       context: { values: { "dex.choiceContext": true } },
       disclosure: [
         {
-          contractId: "#cfg:0" as ContractId<"InstrumentConfiguration">,
-          templateId: "CantonDex.Instrument.InstrumentConfiguration:InstrumentConfiguration",
+          contractId: "#registry:0" as ContractId<"Registry">,
+          templateId: "CantonDex.Registry.V2:Registry",
           createdEventBlob: "payload",
         },
       ],

@@ -4,7 +4,7 @@ What the DEX assumes from an asset registry. Token Standard V2 standardizes the
 holding/allocation/settlement interfaces; it does not standardize a particular
 instrument-configuration or lifecycle template. This document therefore
 separates hard V2 interface requirements from the reference registry's optional
-configuration model in `trading/CantonDex/Instrument/`.
+`InstrumentConfig` model in `trading/CantonDex/Registry/V2.daml`.
 
 ## The registry boundary
 
@@ -76,7 +76,7 @@ trades, the registry must provide:
 
 1. **A stable `InstrumentId` and admin.** The DEX keys orders, pools, RFQs, and
    matched trades by `InstrumentId`. In the reference registry this information
-   lives on `InstrumentConfiguration`; another registry may expose it through
+   lives on `InstrumentConfig`; another registry may expose it through
    metadata, discovery APIs, or disclosed config contracts.
 
 2. **Holdings** as registry-side templates implementing the V2 holding
@@ -99,31 +99,28 @@ trades, the registry must provide:
 | Assumption | Where it shows up |
 |---|---|
 | `instrumentId` is stable across the instrument's lifetime | Order, Pool, MatchedTrade, Rfq all key on it |
-| Registry config/metadata changes are admin-controlled | Operator backend caches config/context and listens for archive/recreate cycles where the registry provides disclosed config contracts |
-| Holdings can be locked / unlocked / split / merged by admin | The trader's wallet or registry handles holding selection before allocation accept |
+| Factory and choice-context discovery is admin-controlled | The operator fetches these off-ledger and flushes its registry-client cache after a registry republishes factories or disclosures |
+| Allocation creation can consume one or more holdings and return change | The trader's wallet selects holdings; the registry factory validates and locks them |
 | Allocation factory accepts arbitrary `AllocationSpecification` shapes (prefunded, with-legs, committed, with `nextIterationFunding`) | Order's prefunded model and Pool's committed model both depend on this |
 | Settlement factory enforces transfer-leg consistency with allocations | OTC / matched-trade settlement and `PoolRules_Swap` rely on the factory to validate, not the DEX |
 
 ## Allocation lifetime caps
 
-Registries may bound how long an allocation or instruction can live. Amulet
-(Splice 0.6.11+) enforces `AmuletConfig.tokenStandardMaxTTL` — **90 days by
-default** — on token-standard allocations and instructions. This matters for
-the DEX because pool reserves are held as long-lived committed allocations
-(one per slice): against a TTL-capping registry, pool inventory must be rolled
-into fresh allocations before the cap expires, and settlement deadlines on
-order/LP allocations must stay inside the registry's cap. The reference
-registry does not enforce a cap; integrators against Amulet (or any registry
-with a similar bound) should treat slice re-allocation as a scheduled
-operational task.
+Registries may bound how long an allocation or instruction can live. This
+matters because pool slices are long-lived committed allocations and resting
+orders may also outlive a registry's cap. An integration must discover the
+registry's current limit, keep requested settlement deadlines inside it, and
+rotate pool slices before they expire. The reference registry does not impose a
+TTL; that does not imply another registry will accept the same lifetime.
 
 ## Registry API surface (Daml + OpenAPI)
 
 Token Standard V2 registries are expected to expose both the Daml
 interfaces and the standard OpenAPI endpoints (the specs ship alongside
 each API package in `canton-network/splice` under `token-standard/`). The
-reference registry implements the Daml interface side in full; its off-ledger
-surface is the choice-context endpoint the backend's registry-client consumes
+reference registry implements the Daml surfaces used by this DEX; its
+off-ledger integration is represented by the factory and choice-context
+endpoints the backend's registry-client consumes
 (see [Choice Context](choice-context.md)). A production registry should
 implement the standard OpenAPI so V2-compliant wallets and apps can discover
 factories and context without bespoke integration.
@@ -141,22 +138,17 @@ aborts when that registry's disclosed context is dropped.
 
 ## Mint / Burn / Transfer prerequisites
 
-For trader-facing flows (mint, burn, hold, transfer), the reference registry
-exposes request/accept templates. These are not Token Standard V2 requirements;
-they are one implementation pattern. The local mirror in
-`CantonDex/Instrument/` defines the on-ledger shape:
+The active reference registry keeps these surfaces distinct:
 
-- `MintRequest` — requestor-signed; admin accepts to create a
-  `Holding`. Required preconditions in the reference registry:
-  `InstrumentConfiguration` exists; if `issuerRequirements` is non-empty,
-  requestor presents matching `Credential` claims at accept time.
-- `BurnRequest` — requestor-signed with a pre-locked holding; admin
-  accepts to archive the holding. Cancel/reject release the lock.
-- `TransferOffer` — sender-signed with a pre-locked holding; receiver
-  + admin jointly accept; both must satisfy `holderRequirements`.
-- `TransferPreapproval` — receiver-signed; allows `TransferOffer_AcceptPreapproved`
-  by sender + admin without explicit receiver accept, scoped to specified
-  instrument ids (or all under the admin if empty).
+- `Registry_RegisterInstrument`, `Registry_Mint`, and `Registry_Burn` are
+  registry-specific administration choices. Token Standard V2 does not define
+  instrument registration or issuance policy.
+- Peer-to-peer transfers use the standard `V2.TransferFactory` and
+  `V2.TransferInstruction` interfaces implemented by `Registry.V2`.
+- DEX trades do not call the mint/burn administration choices for base or quote
+  assets. They consume V2 holdings through allocation and settlement choices.
+- LP mint and burn are DvP legs under `lpRegistrar`, recorded by
+  `LPTokenPolicy`; they do not use a parallel holding template.
 
 ## What the registry MUST enforce for iterated settlement
 
@@ -195,7 +187,7 @@ The reference registry
 [`Registry.V2`](../../trading/CantonDex/Registry/V2.daml) enforces all five in
 Daml, inside `allocation_settleImpl` and `settlementFactory_settleBatchImpl`.
 [`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)
-proves them against that production code:
+proves them against that implementation:
 
 - `testExtraLegBeyondBackingRejected` — executor-supplied extra leg-sides
   cannot draw more than the allocation's locked backing.
@@ -218,84 +210,27 @@ registries are expected to enforce at least what `Registry.V2` does.
 
 When the operator or trader builds a transaction that touches a registry
 contract, the registry may require extra disclosed contracts or context. In the
-reference registry this includes the `InstrumentConfiguration` CID and, where
-required, credential CIDs that satisfy holder/issuer requirements. The DEX
+reference registry this context is empty. External registries may return
+disclosed configuration, rights, or credential contracts. The DEX
 operator backend's **registry-client** module is responsible for fetching the
 registry-specific context and attaching it to the choice arguments.
 
 See [Choice Context](choice-context.md) for the exact
 inputs each registry choice expects.
 
-## Force-upgrade for passive holders
+## Registry-specific lifecycle changes
 
-Some registries may reserve the right to force-upgrade holdings to a new
-instrument version. Token Standard V2 does not standardize this lifecycle flow;
-it is registry-specific.
+Token Standard V2 does not standardize instrument lifecycle or force-upgrade
+workflows. The DEX therefore makes no claim that holdings automatically migrate
+when a registry changes an instrument. A registry integration must document
+whether it preserves the same `InstrumentId`, replaces holdings, or requires a
+new instrument identity.
 
-What this means in practice for a DEX integrator:
-
-- **Active holders upgrade themselves.** One possible pattern is
-  *upgrade-on-use*: the registry's transfer/allocation factories
-  rewrite the holding to the current version on any operation that
-  touches it. A holder who is actively trading or otherwise moving
-  their position pays for the upgrade implicitly as part of that
-  operation. The DEX-side commands (allocate, transfer, settle) sit
-  squarely inside this path, so any DEX-touched holding stays current
-  automatically.
-
-- **Passive holders may get force-upgraded by the issuer.** A holder who
-  never moves their position cannot upgrade-on-use. The issuer
-  exercises a force-upgrade choice on those holdings — typically gated
-  by an off-ledger event the issuer needs to crystallize (coupon
-  payment, regulatory event, security-fix migration). This is an
-  issuer-side action, not a DEX one.
-
-- **Issuers should do this sparingly.** Force-upgrades cost the issuer traffic
-  and may disrupt active trades that touch a holding mid-upgrade.
-  Issuers will batch them and choose moments when on-ledger activity is
-  low.
-
-### DEX exposure model
-
-The DEX has three classes of holdings to think about:
-
-1. **Trader holdings used in active flows** (incoming for swaps,
-   add-liquidity legs, order funding). These traverse the registry's
-   transfer/allocation factories on every interaction and are
-   upgrade-on-use covered.
-
-2. **Pool reserves.** Reserves are held by the pool contract under the
-   operator's authority. They are not passive: every swap rotates a
-   slice of reserves through the factory paths. The pool is therefore
-   effectively self-maintaining against issuer upgrades, with the one
-   edge case that a pool sitting completely idle for a long stretch
-   could fall behind. The pool's reserves are instrument-id-keyed, not
-   holding-version-keyed, so a forced re-versioning of a reserve
-   holding is mechanically transparent to the pool's accounting; the
-   next swap that touches the reserve re-fetches the now-upgraded
-   holding.
-
-3. **LP holdings.** Issued through the LP registrar/policy component. The
-   reference LP token has no off-ledger lifecycle event to crystallize. There
-   is no force-upgrade event for LP tokens in this reference — see
-   [LP Tokens](../concepts/lp-tokens.md).
-
-### What DEX integrators should do
-
-- Don't bake the holding contract id or the instrument version into UI
-  state. Re-query holdings on the wallet provider's natural cadence
-  (post-allocation, post-settlement, on focus).
-- When a wallet command returns a "holding not found" or "holding
-  version mismatch" error after a forced upgrade, re-fetch the holding
-  list and retry rather than surfacing the error to the user.
-- Treat instrument id (e.g., `BTC`) as the stable join key; treat the
-  per-holding contract id and package hash as ephemeral.
-
-The DEX's allocation flow already re-queries holdings on each user
-action (pre-allocation greedy selection, post-settlement refresh), so
-incidental force-upgrade exposure is minimal. Where it could bite is
-manual replay tooling that caches a stale holding cid. The operator
-backend's command path does not cache cids across requests.
+The safe DEX behavior is deliberately small: do not persist holding contract
+ids in UI state, refresh holdings before authoring an allocation, and cancel or
+relist market objects when the registry says their instrument version is no
+longer tradable. Any automatic upgrade-on-use or issuer-driven migration is a
+custom registry feature outside this reference.
 
 ## Known limitation: one registry admin per pair
 
@@ -330,16 +265,16 @@ legs — is rejected rather than settled.
 
 ## What the DEX does not assume
 
-- It does not assume any particular registry implementation. Any registry
-  implementing the V2 holding and allocation APIs works; nothing depends on
-  the reference `Registry.V2`.
+- It does not require the reference registry for base or quote assets. An
+  alternative must implement the V2 holding, allocation, and settlement APIs
+  used by the workflow and provide compatible factory/context discovery. The
+  included LP path still uses the concrete `LPTokenPolicy` component.
 - It does not assume holding precision is uniform. Each registry may expose its
   own display scale or amount constraints; the DEX treats amounts as `Decimal`
   and lets the registry enforce its own limits.
-- It does not implement deployment-specific credential verification
-  logic. The `Credentials.daml` model provides the reference type
-  shape; production registries can replace `verifyCredentials` with
-  their own verifier, typically backed by a credential registry.
+- It does not implement deployment-grade credential verification. The
+  `Registry.V2` credential record is an explicit placeholder; a production
+  registry must resolve and verify issuer-authorized evidence itself.
 
 ---
 

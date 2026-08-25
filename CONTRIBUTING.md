@@ -12,8 +12,8 @@ builder evaluating Canton + Token Standard V2.
   guide are the most exercised paths; clarity wins.
 - **New test cases** that exercise V2-standard edge behaviour (e.g.
   finalized-allocation funding conservation, settlement actor expansion).
-- **Reuse examples** that build on the reference (see
-  `examples/`).
+- **Small, documented extensions** that demonstrate a reusable workflow without
+  obscuring the reference core.
 
 ## What we will likely push back on
 
@@ -26,22 +26,25 @@ builder evaluating Canton + Token Standard V2.
 
 ## Development workflow
 
-1. Pre-reqs: Daml SDK 3.4.11, Node 20+, `tsx`.
-2. Build: `bash scripts/build-trading-surface.sh`.
-3. Test: `cd trading-tests && daml test`.
-4. UI typecheck: `cd app/web && npx tsc --noEmit`.
-5. Backend typecheck: `cd services/operator-backend && npx tsc --noEmit`.
+1. Install DPM and Node.js 24. DPM resolves the Daml SDK 3.5.2 version pinned in
+   `trading/daml.yaml`.
+2. Build and test Daml: `bash scripts/run-local-daml-tests.sh`.
+3. Check Daml package compatibility: `bash scripts/check-upgrade-compat.sh`.
+4. Test the backend: `cd services/operator-backend && npm ci && npm run typecheck && npm test`.
+5. Test the dApp: `cd app/web && npm ci && npx tsc --noEmit && npm test && npm run build`.
+6. Build the docs site: `cd website && npm ci && npm run build`.
 
 ## Pull request expectations
 
-- Daml changes: include a test, run `daml test`, and explain any
-  Optional-field additions for smart-upgrade compatibility.
+- Daml changes: include a test, run the Daml and upgrade-check scripts above,
+  and explain any public contract-surface change.
 - Backend changes: TypeScript typecheck clean; include a `curl` example
   for any new endpoint in the PR description.
 - UI changes: at minimum a screenshot of the affected page; if the
   change touches data flow, also confirm against testnet.
-- Avoid committing: secrets, `.env` files, sqlite databases, `.pem`
-  keys, vendor binary blobs. The `.gitignore` should catch these.
+- Avoid committing secrets, `.env` files, SQLite databases, private keys, or
+  generated build output. The Token Standard DARs already pinned under
+  `vendor/splice/dars/` are the intentional exception for binary dependencies.
 
 ## Licensing
 

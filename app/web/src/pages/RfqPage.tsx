@@ -4,9 +4,9 @@
 //   - full-width active list with expand-in-place detail
 //   - operator policy-driven quote ranking with sort-mode comparison
 //   - compose-modal for new RFQs (dealer whitelist, validity window)
-//   - settled tab with policy-receipt drill-down
+//   - accepted tab with MatchedTrade and policy-receipt drill-down
 //   - expired tab populated by the 1Hz sweeper
-//   - 5-stage lifecycle bar (Open → Quoted → Accepted → Settling → Settled)
+//   - 3-stage lifecycle bar (Open → Quoted → Accepted)
 //
 // Live data path:
 //   - /v1/rfq seeds rfqs/quotes via react-query (10s refetch)
@@ -29,11 +29,11 @@ import { POLICY_VERSION, rankQuotes, whitelistedDealers } from '@/services/rfq-p
 import { ledger } from '@/services/ledger';
 import { useCurrentParty } from '@/wallet/hooks';
 import type {
+  AcceptedTrade,
   ExpiredRfq,
   Rfq,
   RfqQuote,
   RfqSide,
-  SettledTrade,
 } from '@/types/rfq';
 
 const operatorApi = new OperatorApi(
@@ -41,7 +41,7 @@ const operatorApi = new OperatorApi(
     'http://localhost:8080',
 );
 
-type Tab = 'active' | 'settled' | 'expired';
+type Tab = 'active' | 'accepted' | 'expired';
 type SortMode = 'policy' | 'price' | 'earliest' | 'trusted';
 
 export function RfqPage() {
@@ -64,12 +64,12 @@ export function RfqPage() {
   );
 
   const [rfqs, setRfqs] = useState<Rfq[]>([]);
-  const [settled, setSettled] = useState<SettledTrade[]>([]);
+  const [accepted, setAccepted] = useState<AcceptedTrade[]>([]);
   const [expired, setExpired] = useState<ExpiredRfq[]>([]);
   const [acceptError, setAcceptError] = useState<string | null>(null);
 
   // Reconcile the live snapshot into local state. Local state holds
-  // optimistic transitions (Settling/Settled flashes) that the server
+  // optimistic transitions (Accepting/Accepted flashes) that the server
   // doesn't model directly; the snapshot is authoritative for everything
   // else.
   useEffect(() => {
@@ -79,7 +79,7 @@ export function RfqPage() {
         cur
           .filter(
             (r) =>
-              r.status === 'RFQ_Settling' || r.status === 'RFQ_Settled',
+              r.status === 'RFQ_Accepting' || r.status === 'RFQ_Accepted',
           )
           .map((r) => [r.contractId, r]),
       );
@@ -102,12 +102,12 @@ export function RfqPage() {
   }, [rfqs, expandedId]);
 
   // 1s tick: decrement expiresIn on RFQs and validFor on quotes; sweep
-  // zero-expiry RFQs into Expired. Settling/Settled rows are exempt.
+  // zero-expiry RFQs into Expired. Accepting/Accepted rows are exempt.
   useEffect(() => {
     const id = setInterval(() => {
       setRfqs((cur) => {
         const next = cur.map((r) => {
-          if (r.status === 'RFQ_Settling' || r.status === 'RFQ_Settled') return r;
+          if (r.status === 'RFQ_Accepting' || r.status === 'RFQ_Accepted') return r;
           return {
             ...r,
             expiresIn: Math.max(0, r.expiresIn - 1),
@@ -120,8 +120,8 @@ export function RfqPage() {
         const toExpire = next.filter(
           (r) =>
             r.expiresIn === 0 &&
-            r.status !== 'RFQ_Settling' &&
-            r.status !== 'RFQ_Settled',
+            r.status !== 'RFQ_Accepting' &&
+            r.status !== 'RFQ_Accepted',
         );
         if (toExpire.length) {
           setExpired((cx) => [
@@ -148,8 +148,8 @@ export function RfqPage() {
         return next.filter(
           (r) =>
             r.expiresIn > 0 ||
-            r.status === 'RFQ_Settling' ||
-            r.status === 'RFQ_Settled',
+            r.status === 'RFQ_Accepting' ||
+            r.status === 'RFQ_Accepted',
         );
       });
     }, 1000);
@@ -169,7 +169,7 @@ export function RfqPage() {
           r.contractId === rfq.contractId
             ? {
                 ...r,
-                status: 'RFQ_Settling',
+                status: 'RFQ_Accepting',
                 acceptedDealer: quote.dealer,
                 acceptedRank: rank,
                 acceptedConsidered: ranked.length,
@@ -186,39 +186,37 @@ export function RfqPage() {
           admin: context.admin,
           now: new Date().toISOString(),
         });
-        const settledTrade: SettledTrade = {
+        const acceptedTrade: AcceptedTrade = {
           id: result.tradeCid,
           pair: rfq.pair,
           side: rfq.side,
           size: rfq.size,
           price: quote.price,
           dealer: quote.dealer,
-          settledAt: 'just now',
+          recordedAt: 'just now',
           tradeCid: result.tradeCid,
           policyVer: result.receipt.policyVersion,
           policyCid: result.receipt.policyHash.slice(0, 24),
-          // From the signed receipt, not the local ranking: the two use
-          // different sort chains, so the header could contradict the
-          // rankedDealers table rendered directly beneath it.
+          // The ledger receipt is authoritative even though the local preview
+          // mirrors the same policy ranking.
           rank: result.receipt.acceptedRank,
           considered: result.receipt.consideredCount,
-          receipt: result.receipt,
+          policyReceipt: result.receipt,
         };
         setRfqs((cur) =>
           cur.map((r) =>
             r.contractId === rfq.contractId
-              ? { ...r, status: 'RFQ_Settled', settledTrade }
+              ? { ...r, status: 'RFQ_Accepted', acceptedTrade }
               : r,
           ),
         );
         setTimeout(() => {
           setRfqs((cur) => cur.filter((r) => r.contractId !== rfq.contractId));
-          setSettled((cx) => [settledTrade, ...cx]);
+          setAccepted((cx) => [acceptedTrade, ...cx]);
           live.refetch();
         }, 700);
       } catch (err) {
-        // The optimistic rollback restores the row exactly, so without this a
-        // rejected accept looks identical to the button not registering.
+        // Restore the active row and surface the rejected command.
         setAcceptError(err instanceof Error ? err.message : String(err));
         console.error('rfq.accept failed', err);
         // Roll back the optimistic transition.
@@ -237,7 +235,7 @@ export function RfqPage() {
         );
       }
     },
-    [live],
+    [context, live],
   );
 
   const cancelRfq = useCallback(
@@ -249,7 +247,7 @@ export function RfqPage() {
         live.refetch();
       }
     },
-    [live, context],
+    [live],
   );
 
   const onCompose = useCallback(
@@ -262,8 +260,7 @@ export function RfqPage() {
         const nowMs = Date.now();
         const expiresAt = new Date(nowMs + rfq.expiresIn * 1000).toISOString();
         const created = await operatorApi.createRfq({
-          // Trader identity is the connected wallet party, NOT the
-          // dealer display string the form happens to show.
+          // The connected wallet party is the RFQ trader.
           trader: party,
           rfqId: rfq.rfqId,
           pair: rfq.pair,
@@ -273,10 +270,7 @@ export function RfqPage() {
           whitelist: rfq.whitelist,
           createdAt: new Date(nowMs).toISOString(),
         });
-        // Optimistically add with the server-assigned cid; the next
-        // refetch will reconcile. NO local-only fallback — if the
-        // create fails we surface the error and the user sees no
-        // phantom row.
+        // Add the server-assigned contract id; the next refetch reconciles it.
         setRfqs((cur) => [
           { ...rfq, trader: party, contractId: created.rfqCid },
           ...cur,
@@ -284,9 +278,7 @@ export function RfqPage() {
         setExpandedId(created.rfqCid);
       } catch (err) {
         console.error('rfq.create failed', err);
-        // Re-throw so the compose modal can surface the error. The
-        // RFQ is NOT inserted locally — that would lie about ledger
-        // state.
+        // Let the compose modal surface the ledger error.
         throw err;
       } finally {
         setComposing(false);
@@ -297,13 +289,13 @@ export function RfqPage() {
   );
 
   const totalNotional = useMemo(
-    () => settled.reduce((s, t) => s + t.price * t.size, 0),
-    [settled],
+    () => accepted.reduce((s, t) => s + t.price * t.size, 0),
+    [accepted],
   );
 
-  const settledTradeFor = useCallback(
-    (id: string) => settled.find((t) => t.id === id) ?? null,
-    [settled],
+  const acceptedTradeFor = useCallback(
+    (id: string) => accepted.find((t) => t.id === id) ?? null,
+    [accepted],
   );
 
   const policyTargetRfq = useMemo(
@@ -348,8 +340,8 @@ export function RfqPage() {
           </div>
         </div>
         <div className="stat">
-          <div className="stat-l">Settled (30d)</div>
-          <div className="stat-v">{settled.length}</div>
+          <div className="stat-l">Accepted (session)</div>
+          <div className="stat-v">{accepted.length}</div>
           <div className="stat-d">{fmtUsdK(totalNotional)} notional</div>
         </div>
         <div className="stat">
@@ -389,10 +381,10 @@ export function RfqPage() {
               Active · {rfqs.length}
             </button>
             <button
-              className={tab === 'settled' ? 'active' : ''}
-              onClick={() => setTab('settled')}
+              className={tab === 'accepted' ? 'active' : ''}
+              onClick={() => setTab('accepted')}
             >
-              Settled · {settled.length}
+              Accepted · {accepted.length}
             </button>
             <button
               className={tab === 'expired' ? 'active' : ''}
@@ -438,9 +430,9 @@ export function RfqPage() {
             onComposeFirst={() => setComposing(true)}
           />
         )}
-        {tab === 'settled' && (
-          <SettledTab
-            settled={settled}
+        {tab === 'accepted' && (
+          <AcceptedTab
+            accepted={accepted}
             onReceiptOpen={(id) => setReceiptOpenFor(id)}
           />
         )}
@@ -465,7 +457,7 @@ export function RfqPage() {
 
       {receiptOpenFor && (
         <PolicyReceiptModal
-          trade={settledTradeFor(receiptOpenFor)}
+          trade={acceptedTradeFor(receiptOpenFor)}
           onClose={() => setReceiptOpenFor(null)}
         />
       )}
@@ -551,11 +543,7 @@ function RfqRow({
       ? 0
       : r.status === 'RFQ_Quoted'
         ? 1
-        : r.status === 'RFQ_Accepted'
-          ? 2
-          : r.status === 'RFQ_Settling'
-            ? 3
-            : 4;
+        : 2;
   const ranked = rankQuotes(r.side, r.quotes, sortBy);
   const best = ranked[0];
 
@@ -665,7 +653,7 @@ function RfqRow({
             Lifecycle
           </div>
           <div style={{ display: 'flex', gap: 3, marginTop: 4 }}>
-            {['Open', 'Quoted', 'Accepted', 'Settling', 'Settled'].map((s, i) => (
+            {['Open', 'Quoted', 'Accepted'].map((s, i) => (
               <span
                 key={s}
                 style={{
@@ -700,16 +688,16 @@ function RfqRow({
               color: r.expiresIn < 60 ? 'var(--red)' : 'var(--text)',
             }}
           >
-            {r.status === 'RFQ_Settling' || r.status === 'RFQ_Settled'
+            {r.status === 'RFQ_Accepting' || r.status === 'RFQ_Accepted'
               ? '—'
               : formatExpiresIn(r.expiresIn)}
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          {r.status === 'RFQ_Settling' ? (
-            <span className="badge blue tiny">Settling</span>
-          ) : r.status === 'RFQ_Settled' ? (
-            <span className="badge green tiny">Settled</span>
+          {r.status === 'RFQ_Accepting' ? (
+            <span className="badge blue tiny">Accepting</span>
+          ) : r.status === 'RFQ_Accepted' ? (
+            <span className="badge green tiny">Accepted</span>
           ) : (
             <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
               {isExpanded ? 'Collapse' : 'Review'}
@@ -898,7 +886,7 @@ function RfqRow({
             </tbody>
           </table>
 
-          {r.status === 'RFQ_Settling' && (
+          {r.status === 'RFQ_Accepting' && (
             <div
               style={{
                 marginTop: 14,
@@ -918,20 +906,20 @@ function RfqRow({
                     className="phase-dot"
                     style={{ background: 'var(--blue)' }}
                   ></span>
-                  <span style={{ fontWeight: 600 }}>MatchedTrade in flight</span>
+                  <span style={{ fontWeight: 600 }}>Accepting quote</span>
                 </div>
                 <span className="alloc-pill mono">
                   Policy{POLICY_VERSION} · rank {r.acceptedRank}/{r.acceptedConsidered}
                 </span>
               </div>
               <div style={{ color: 'var(--text-2)', lineHeight: 1.5 }}>
-                Both parties post Allocations · operator validates whitelist +
-                expiry · SettleBatch executes on the two allocations atomically.
+                The ledger validates the quote set and creates a MatchedTrade
+                with its policy receipt. Funding and settlement happen later.
               </div>
             </div>
           )}
 
-          {r.status !== 'RFQ_Settling' && r.status !== 'RFQ_Settled' && (
+          {r.status !== 'RFQ_Accepting' && r.status !== 'RFQ_Accepted' && (
             <div
               className="row"
               style={{ justifyContent: 'flex-end', marginTop: 12, gap: 8 }}
@@ -947,15 +935,29 @@ function RfqRow({
   );
 }
 
-// === Settled tab ===========================================================
+// === Accepted tab ==========================================================
 
-interface SettledTabProps {
-  settled: SettledTrade[];
+interface AcceptedTabProps {
+  accepted: AcceptedTrade[];
   onReceiptOpen: (id: string) => void;
 }
 
-function SettledTab({ settled, onReceiptOpen }: SettledTabProps) {
+function AcceptedTab({ accepted, onReceiptOpen }: AcceptedTabProps) {
   const { data: dealers } = useDealers();
+  if (accepted.length === 0) {
+    return (
+      <div
+        style={{
+          textAlign: 'center',
+          padding: 32,
+          color: 'var(--text-2)',
+          fontSize: 12,
+        }}
+      >
+        No quotes have been accepted in this session.
+      </div>
+    );
+  }
   return (
     <table className="w-full text-xs">
       <thead>
@@ -972,13 +974,13 @@ function SettledTab({ settled, onReceiptOpen }: SettledTabProps) {
         </tr>
       </thead>
       <tbody>
-        {settled.map((t) => (
+        {accepted.map((t) => (
           <tr key={t.id} style={{ borderTop: '1px solid var(--border-soft)' }}>
             <td
               className="py-2 px-3 mono"
               style={{ color: 'var(--text-2)', fontSize: 11 }}
             >
-              {t.settledAt}
+              {t.recordedAt}
             </td>
             <td className="py-2 px-3" style={{ fontWeight: 600 }}>
               {t.pair}
@@ -1435,9 +1437,10 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
               lineHeight: 1.55,
             }}
           >
-            Off-ledger: request goes to selected dealers via private channel.
-            On-ledger: an accepted quote becomes a MatchedTrade between you
-            and that one dealer — no other party sees it.
+            Off-ledger: the request reaches the selected dealers through a
+            private channel. On-ledger: accepting a quote creates a
+            MatchedTrade visible to the trader, dealer, and operator. Token
+            settlement is a later allocation-backed step.
           </div>
         </div>
       </div>

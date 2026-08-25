@@ -1,5 +1,5 @@
-// RFQ-specific types. Mirror the Daml templates in
-// trading/CantonDex/Dex/Rfq.daml so JSON wire decoding is identity.
+// RFQ-specific types. Open, Accepted, Cancelled, and Expired mirror the Daml
+// lifecycle. Quoted and Accepting are page-only projections.
 
 import type { PolicyReceipt } from './contracts';
 
@@ -7,9 +7,8 @@ export type RfqSide = 'RFQ_Buy' | 'RFQ_Sell';
 export type RfqStatus =
   | 'RFQ_Open'
   | 'RFQ_Quoted'
+  | 'RFQ_Accepting'
   | 'RFQ_Accepted'
-  | 'RFQ_Settling'
-  | 'RFQ_Settled'
   | 'RFQ_Cancelled'
   | 'RFQ_Expired';
 export type DealerTier = 'TierTrusted' | 'TierWhitelist';
@@ -31,8 +30,8 @@ export interface Rfq {
   acceptedDealer?: string;
   acceptedRank?: number;
   acceptedConsidered?: number;
-  /** Settled-trade reference once the RFQ flips to RFQ_Settled. */
-  settledTrade?: SettledTrade;
+  /** MatchedTrade and policy receipt produced when a quote is accepted. */
+  acceptedTrade?: AcceptedTrade;
 }
 
 export interface RfqQuote {
@@ -46,20 +45,20 @@ export interface RfqQuote {
   tier: 'trusted' | 'whitelist';
 }
 
-export interface SettledTrade {
+export interface AcceptedTrade {
   id: string;
   pair: string;
   side: RfqSide;
   size: number;
   price: number;
   dealer: string;
-  settledAt: string;
+  recordedAt: string;
   tradeCid: string;
   policyVer: string;
   policyCid: string;
   rank: number;
   considered: number;
-  receipt?: PolicyReceipt;
+  policyReceipt?: PolicyReceipt;
 }
 
 export interface ExpiredRfq {

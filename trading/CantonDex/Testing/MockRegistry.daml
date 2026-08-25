@@ -9,7 +9,6 @@
 module CantonDex.Testing.MockRegistry where
 
 import DA.Action (when)
-import DA.Foldable (forA_)
 import DA.Map qualified as Map
 import DA.TextMap qualified as TextMap
 

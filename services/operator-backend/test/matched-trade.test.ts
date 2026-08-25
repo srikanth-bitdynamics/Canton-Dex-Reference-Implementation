@@ -96,11 +96,8 @@ describe("MatchedTradeService", () => {
 
     await svc.settle({
       tradeCid: "#trade:0" as ContractId<"MatchedTrade">,
-      // Empty on purpose: the settle fetches and archives every cid passed
-      // here as its FIRST act, and a counterparty that authored via
-      // AllocationRequest_Accept has already archived its own request. The
-      // old fixture passed "#req:0" and asserted the broken shape around it,
-      // so this suite was green while the choice could not decode at all.
+      // Accepted allocation requests have already been consumed. Settlement
+      // binds to the resulting allocations, so there are no live request cids.
       allocationRequestCids: [],
       batchesByAdmin: new Map<Party, SettlementBatchV2>([
         [

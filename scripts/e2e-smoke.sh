@@ -43,38 +43,77 @@ for i in {1..30}; do
   sleep 0.5
 done
 
-check() {
+check_get_contains() {
   local name="$1"
-  local code="$2"
-  shift 2
-  echo "  [$name] $*"
-  if eval "$@"; then
-    echo "    OK ($code)"
+  local url="$2"
+  local expected="$3"
+  echo "  [$name] GET $url"
+  if curl -fsS "$url" | grep -qF "$expected"; then
+    echo "    OK (200)"
   else
-    echo "    FAIL ($code)"
+    echo "    FAIL (expected 200 containing: $expected)"
+    exit 1
+  fi
+}
+
+check_post_contains() {
+  local name="$1"
+  local url="$2"
+  local body="$3"
+  local expected="$4"
+  echo "  [$name] POST $url"
+  if curl -fsS -X POST -H 'Content-Type: application/json' -d "$body" "$url" \
+      | grep -qF "$expected"; then
+    echo "    OK (200)"
+  else
+    echo "    FAIL (expected 200 containing: $expected)"
+    exit 1
+  fi
+}
+
+check_status() {
+  local name="$1"
+  local expected="$2"
+  shift 2
+  local actual
+  actual="$(curl -sS -o /dev/null -w '%{http_code}' "$@")"
+  echo "  [$name] expected $expected, received $actual"
+  if [[ "$actual" != "$expected" ]]; then
     exit 1
   fi
 }
 
 echo "==> Read endpoints"
-check status 200 "curl -fsS '${BASE}/v1/status' | grep -q '\"synced\":true'"
-check context 200 "curl -fsS '${BASE}/v1/context' | grep -q '\"operator\"'"
-check pools 200 "curl -fsS '${BASE}/v1/pools' | grep -q 'BTC'"
-check pairs 200 "curl -fsS '${BASE}/v1/pairs' | grep -q 'BTC'"
-check orders-400 400 "curl -s -o /dev/null -w '%{http_code}' '${BASE}/v1/orders' | grep -q 400"
-check orders 200 "curl -fsS '${BASE}/v1/orders?trader=trader-demo' >/dev/null"
-check holdings 200 "curl -fsS '${BASE}/v1/holdings?owner=trader-demo' | grep -q USDC"
+check_get_contains status "${BASE}/v1/status" '"synced":true'
+check_get_contains context "${BASE}/v1/context" '"operator"'
+check_get_contains pools "${BASE}/v1/pools" 'BTC'
+check_get_contains pairs "${BASE}/v1/pairs" 'BTC'
+check_status orders-400 400 "${BASE}/v1/orders"
+check_get_contains orders "${BASE}/v1/orders?trader=trader-demo" '['
+check_get_contains holdings "${BASE}/v1/holdings?owner=trader-demo" 'USDC'
 
 echo "==> Quote"
-check quote 200 "curl -fsS -X POST -H 'Content-Type: application/json' -d '{\"poolId\":\"#contract:1\",\"inputInstrumentId\":\"BTC\",\"inputAmount\":\"0.1\"}' '${BASE}/v1/swaps/quote' >/dev/null || true"
+POOL_ID="$(curl -fsS "${BASE}/v1/pools" | node -e '
+  let input = "";
+  process.stdin.on("data", chunk => input += chunk);
+  process.stdin.on("end", () => {
+    const poolId = JSON.parse(input)[0]?.poolId;
+    if (!poolId) process.exit(1);
+    process.stdout.write(poolId);
+  });
+')"
+check_post_contains quote "${BASE}/v1/swaps/quote" \
+  "{\"poolId\":\"${POOL_ID}\",\"inputInstrumentId\":\"BTC\",\"inputAmount\":\"0.1\"}" \
+  'outputAmount'
 
 echo "==> Order book"
-check book 200 "curl -fsS '${BASE}/v1/orders/book?base=BTC&quote=USDC' | grep -q 'bids'"
+check_get_contains book "${BASE}/v1/orders/book?base=BTC&quote=USDC" 'bids'
 
 echo "==> Prices"
-check prices 200 "curl -fsS '${BASE}/v1/prices?pairs=BTC/USDC' | grep -q 'prices'"
+check_get_contains prices "${BASE}/v1/prices?pairs=BTC/USDC" 'prices'
 
 echo "==> Admin auth gate"
-check admin-401 401 "curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' '${BASE}/v1/admin/pairs' | grep -q '^[24]'"
+check_status admin-401 401 -X POST -H 'Content-Type: application/json' -d '{}' \
+  "${BASE}/v1/admin/pairs"
 
 echo "==> All smoke checks passed"

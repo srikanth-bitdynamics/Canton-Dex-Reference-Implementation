@@ -94,7 +94,7 @@ function mkQuote(o: {
     trader: "alice" as never,
     operator: "op" as never,
     rfqId: "rfq-1",
-    // Defaulted: under v2.0 the ranking never reads price, so most cases have
+    // Under v2.0 the ranking never reads price, so most cases have
     // no reason to state one.
     price: o.price ?? "1.00",
     expiresAt: o.expiresAt ?? "2099-01-01T00:00:00Z",
@@ -106,8 +106,7 @@ function mkQuote(o: {
 // The operator's off-chain ranking is replayed against `policyCmp` in
 // trading/CantonDex/Dex/Rfq.daml, so these pin the chain's ordering, not a
 // plausible one. v2.0 does NOT rank by price: `side` is unused in policy mode
-// because the trader picks among ranked candidates. Tests that asserted
-// "cheapest first" agreed with an ordering the deployed Daml does not have.
+// because the trader picks among ranked candidates.
 describe("rankQuotes reproduces the on-ledger policyCmp (v2.0)", () => {
   const now = "2026-01-01T00:00:00Z";
 

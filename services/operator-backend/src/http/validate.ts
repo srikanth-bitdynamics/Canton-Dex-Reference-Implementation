@@ -1,10 +1,7 @@
 // Runtime validation for write-route JSON bodies.
 //
-// Write POSTs previously cast JSON straight to the service's parameter type
-// via `Parameters<...>[0]` with no runtime check, so a malformed amount or a
-// bogus party id reached the ledger submitter untouched. These helpers do a
-// shallow shape check and throw a typed validation error (mapped to 400 by
-// the router) before the body is handed to a service.
+// These helpers perform a shallow shape check and throw a typed validation
+// error (mapped to 400 by the router) before a request reaches a service.
 //
 // The checks are intentionally conservative — format-level, not semantic.
 // On-ledger choices remain the source of truth; this just rejects obviously
@@ -29,7 +26,7 @@ const DECIMAL_RE = /^-?\d+(\.\d{1,10})?$/;
 // Real Canton party ids are "<hint>::<fingerprint>" where the fingerprint is a
 // hex namespace key (e.g. "alice::1220ab…"). Accepting any non-whitespace
 // string lets a caller pass an arbitrary label the operator would then actAs
-// on a shared token (finding B-2). By default we require the canonical
+// on using a shared token. By default we require the canonical
 // "hint::hexfingerprint" form so a client cannot smuggle in a bare label.
 //
 // The in-memory dev-server uses bare hints ("trader-demo"); set

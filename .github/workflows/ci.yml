@@ -29,9 +29,9 @@ jobs:
       - name: Install the SDK pinned by trading/daml.yaml
         run: dpm install "$(awk '/^sdk-version:/ {print $2; exit}' trading/daml.yaml)"
       - name: Build and test
-        run: scripts/run-local-daml-tests.sh
+        run: bash scripts/run-local-daml-tests.sh
       - name: Upgrade compatibility with the deployed version
-        run: scripts/check-upgrade-compat.sh
+        run: bash scripts/check-upgrade-compat.sh
 
   backend:
     name: Backend (typecheck + tests)

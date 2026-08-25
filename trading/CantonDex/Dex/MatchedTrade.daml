@@ -156,7 +156,6 @@ template MatchedTrade with
         let settlement = mkTradeSettlementInfo self this
 
         forA_ allocationRequests $ \reqCid -> do
-          req <- fetch reqCid
           archive reqCid
 
         results <- forA (Map.toList batchesByAdmin) $ \(batchAdmin, batch) -> do

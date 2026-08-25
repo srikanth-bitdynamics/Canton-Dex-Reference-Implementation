@@ -749,20 +749,3 @@ template Registry with
         pure V2.SettlementFactory_SettleBatchResult with
           allocationSettleResults = results
           meta = emptyMetadata
-
-
--- | Boot a Registry and return it as Transfer/Allocation/Settlement factories.
-createRegistry
-  : Party -> [Party]
-  -> Update ( ContractId Registry
-            , ContractId V2.TransferFactory
-            , ContractId V2.AllocationFactory
-            , ContractId V2.SettlementFactory )
-createRegistry admin users = do
-  cid <- create Registry with admin; users
-  pure
-    ( cid
-    , toInterfaceContractId cid
-    , toInterfaceContractId cid
-    , toInterfaceContractId cid
-    )

@@ -88,9 +88,8 @@ surface:
 
 DEX usage:
 
-- `Utils.netFundingDelta` / `Utils.adjustedNextIterationFunding` /
-  `Utils.normalizeFunding` compute the per-instrument funding map the authorizer
-  must cover.
+- `Utils.normalizeFunding` rejects negative remaining funding and removes zero
+  entries when a settlement computes the next iteration's funding map.
 - `Utils.mkIteratedAllocationSpecification` /
   `Utils.mkPrefundedAllocationSpecification` set it on the spec.
 - `Registry.V2.allocationFactory_allocateImpl` validates that the locked input

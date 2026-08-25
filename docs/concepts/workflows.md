@@ -205,6 +205,11 @@ pro-rata payout across an ordered slice prefix (full slices drain, only the
 boundary slice is re-wrapped for its leftover), delivers base and quote to the
 holder, and burns the LP tokens under `pool.lpRegistrar`.
 
+Pool reserve allocations are committed without a settlement deadline, so the
+LP has no unilateral exit if the operator or registrar becomes unavailable.
+See [Availability and the LP exit boundary](liquidity-and-custody.md#availability-and-the-lp-exit-boundary)
+and [LP redemption has an explicit liveness dependency](non-goals.md#lp-redemption-has-an-explicit-liveness-dependency).
+
 Proven in
 [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml) —
 `testDvpAddLiquidity` (LP funds base+quote and receives real LP holdings in one
@@ -425,4 +430,4 @@ interfaces and no separate `DexRules` governance contract.
 
 ---
 
-**Where to read next:** [Architecture](architecture.md) · [Pricing](pricing.md) · [Builder Guide](../guides/builder-guide.md) · [Allocation Surface](../reference/allocation-surface.md) · [All docs](../README.md)
+**Where to read next:** [Architecture](architecture.md) · [Liquidity and custody](liquidity-and-custody.md) · [Non-goals](non-goals.md) · [Pricing](pricing.md) · [Builder Guide](../guides/builder-guide.md) · [Allocation Surface](../reference/allocation-surface.md) · [All docs](../README.md)

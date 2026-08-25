@@ -63,16 +63,6 @@ textMapUnionWith f =
     (\_ v2 -> Some v2)
     (\_ v1 v2 -> Some (f v1 v2))
 
-netFundingDelta : HoldingV2.Account -> [V2.TransferLeg] -> Funding
-netFundingDelta authorizer transferLegs =
-  TextMap.fromListWithR (+) $ map legAmount transferLegs
-  where
-    legAmount leg =
-      ( leg.instrumentId
-      , (if leg.sender == authorizer then negate leg.amount else 0.0) +
-        (if leg.receiver == authorizer then leg.amount else 0.0)
-      )
-
 normalizeFunding : Funding -> Optional Funding
 normalizeFunding funding
   | any (\(_, amount) -> amount < 0.0) entries = None
@@ -83,17 +73,6 @@ normalizeFunding funding
       ]
   where
     entries = TextMap.toList funding
-
-adjustedNextIterationFunding
-  : HoldingV2.Account
-  -> Funding
-  -> [V2.TransferLeg]
-  -> Optional Funding
-adjustedNextIterationFunding authorizer currentFunding additionalTransferLegs =
-  normalizeFunding $
-    textMapUnionWith (+)
-      currentFunding
-      (netFundingDelta authorizer additionalTransferLegs)
 
 senderSide : V2.TransferLeg -> V2.TransferLegSide
 senderSide leg = V2.TransferLegSide with

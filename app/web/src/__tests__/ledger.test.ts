@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertSwapAuthority,
   formatDecimal,
   formatDecimal10,
   pickCoveringHoldingCids,
@@ -22,6 +23,94 @@ const holding = (
   instrumentId,
   amount,
   locked,
+});
+
+const swapAuthorityFixture = (): Parameters<typeof assertSwapAuthority>[0] => ({
+  context: {
+    operator: 'op::1',
+    lpRegistrar: 'lp::1',
+    admin: 'default-ad::1',
+    allocationFactoryCid: 'factory',
+    settlementFactoryCid: 'settlement-factory',
+    allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
+    allocationFactoryDisclosure: [],
+    network: 'local',
+  },
+  pool: {
+    contractId: 'pool1234567890',
+    admin: 'ad::1',
+    baseInstrumentId: 'BTC',
+    quoteInstrumentId: 'USDC',
+  },
+  swapper: 'alice::1220a',
+  inputInstrumentId: 'BTC',
+  inputAmount: '0.1000000000',
+  minOutputAmount: '18.0000000000',
+  settlement: {
+    executors: ['op::1'],
+    id: 'DexPool',
+    cid: 'pool1234567890',
+    meta: { values: {} },
+  },
+  allocationSpec: {
+    admin: 'ad::1',
+    authorizer: { owner: 'alice::1220a', provider: null, id: '' },
+    transferLegSides: [
+      {
+        transferLegId: 'swap-in',
+        side: 'SenderSide',
+        otherside: { owner: 'op::1', provider: null, id: '' },
+        amount: '0.1000000000',
+        instrumentId: 'BTC',
+        meta: { values: {} },
+      },
+      {
+        transferLegId: 'swap-out-0',
+        side: 'ReceiverSide',
+        otherside: { owner: 'op::1', provider: null, id: '' },
+        amount: '19.0000000000',
+        instrumentId: 'USDC',
+        meta: { values: {} },
+      },
+    ],
+    settlementDeadline: null,
+    nextIterationFunding: null,
+    committed: false,
+    meta: { values: {} },
+  },
+  quoteBinding: {
+    expectedPoolId: 'BTC-USDC',
+    poolStateCid: '#state:0' as never,
+    inputSliceCid: '#base:0' as never,
+    outputSliceCids: ['#quote:0' as never],
+    minOutputAmount: '18.0000000000',
+  },
+});
+
+describe('swap authority validation', () => {
+  it('accepts an exact terminal input/output allocation', () => {
+    expect(() => assertSwapAuthority(swapAuthorityFixture())).not.toThrow();
+  });
+
+  it('rejects output below the trader minimum before wallet signing', () => {
+    const fixture = swapAuthorityFixture();
+    fixture.allocationSpec.transferLegSides[1]!.amount = '17.9999999999';
+    expect(() => assertSwapAuthority(fixture)).toThrow(/below the requested slippage minimum/);
+  });
+
+  it('rejects changed input, settlement, or allocation authority', () => {
+    const changedInput = swapAuthorityFixture();
+    changedInput.allocationSpec.transferLegSides[0]!.amount = '0.2000000000';
+    expect(() => assertSwapAuthority(changedInput)).toThrow(/allocation input/);
+
+    const changedSettlement = swapAuthorityFixture();
+    changedSettlement.settlement.executors = ['other::1'];
+    expect(() => assertSwapAuthority(changedSettlement)).toThrow(/settlement descriptor/);
+
+    const committed = swapAuthorityFixture();
+    committed.allocationSpec.committed = true;
+    expect(() => assertSwapAuthority(committed)).toThrow(/allocation authority/);
+  });
 });
 
 describe('ledger helpers', () => {

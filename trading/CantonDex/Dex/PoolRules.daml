@@ -3,6 +3,7 @@ module CantonDex.Dex.PoolRules where
 
 import DA.Foldable (forA_)
 import DA.List (dedup)
+import DA.Optional (fromSomeNote)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
@@ -27,14 +28,104 @@ data PoolRules_SwapResult = PoolRules_SwapResult with
     amountOut : Decimal
   deriving (Eq, Show)
 
--- The settlement descriptor + the swapper's input-allocation spec the wallet
+-- The settlement descriptor + the swapper's exact two-sided spec the wallet
 -- must author before a swap can settle. Returned by PoolRules_RequestSwap so
 -- the spec is Daml-built (matching what PoolRules_Swap settles against) rather
 -- than reconstructed off-ledger.
 data PoolRules_RequestSwapResult = PoolRules_RequestSwapResult with
     settlement : V2.SettlementInfo
     allocationSpec : V2.AllocationSpecification
+    quoteBinding : Optional SwapQuoteBinding
   deriving (Eq, Show)
+
+-- The exact pool snapshot used to construct a trader-authorized swap.
+-- Keeping these cids together ensures the request and settle steps use the
+-- same state and ordered slice set; a concurrent pool update makes the quote
+-- stale instead of silently changing the trader's execution.
+data SwapQuoteBinding = SwapQuoteBinding with
+    expectedPoolId : PoolId
+    poolStateCid : ContractId PoolState
+    inputSliceCid : ContractId PoolSlice
+    outputSliceCids : [ContractId PoolSlice]
+    minOutputAmount : Decimal
+  deriving (Eq, Show)
+
+data PreparedSwap = PreparedSwap with
+    preparedPool : Pool
+    preparedState : PoolState
+    preparedInputSlice : PoolSlice
+    preparedInputIsBase : Bool
+    preparedAmountOut : Decimal
+    preparedDraw : SliceDraw
+    preparedSwapInLeg : V2.TransferLeg
+    preparedOutputDelivery : PE.SideDelivery
+
+prepareSwap
+  : Party
+  -> ContractId Pool
+  -> V2.Account
+  -> Text
+  -> Decimal
+  -> SwapQuoteBinding
+  -> Update PreparedSwap
+prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount binding = do
+  (pool, state) <- fetchPoolContext
+    operator binding.expectedPoolId poolCid binding.poolStateCid
+  assertMsg "Pool must be Active" (state.status == PS_Active)
+  assertMsg "inputInstrumentId is not a pool instrument"
+    (inputInstrumentId == pool.baseInstrumentId
+      || inputInstrumentId == pool.quoteInstrumentId)
+  assertMsg "inputAmount must be positive" (inputAmount > 0.0)
+  assertMsg "minOutputAmount must be non-negative" (binding.minOutputAmount >= 0.0)
+  assertMsg "Swap needs at least one output slice" (not (null binding.outputSliceCids))
+  assertMsg "Swap output slices must be unique"
+    (length (dedup binding.outputSliceCids) == length binding.outputSliceCids)
+
+  let inputIsBase = inputInstrumentId == pool.baseInstrumentId
+      inputSide = if inputIsBase then BaseSide else QuoteSide
+      outputSide = if inputIsBase then QuoteSide else BaseSide
+      outputInstrumentId = if inputIsBase then pool.quoteInstrumentId else pool.baseInstrumentId
+      (reserveIn, reserveOut) =
+        if inputIsBase then (state.reserves.baseAmount, state.reserves.quoteAmount)
+        else (state.reserves.quoteAmount, state.reserves.baseAmount)
+      amountOut = constantProductOut reserveIn reserveOut pool.feeBps inputAmount
+  assertMsg "Swap output rounds to zero" (amountOut > 0.0)
+  assertMsg "Output below slippage minimum" (amountOut >= binding.minOutputAmount)
+
+  inputSlice <- fetch binding.inputSliceCid
+  assertMsg "Input slice belongs to a different pool" (inputSlice.poolId == pool.poolId)
+  assertMsg "Input slice operator mismatch" (inputSlice.operator == operator)
+  assertMsg "Input slice is on the wrong reserve side" (inputSlice.side == inputSide)
+
+  outputItems <- forA binding.outputSliceCids (\cid -> do s <- fetch cid; pure (cid, s))
+  forA_ outputItems $ \(_, s) -> do
+    assertMsg "Output slice belongs to a different pool" (s.poolId == pool.poolId)
+    assertMsg "Output slice operator mismatch" (s.operator == operator)
+    assertMsg "Output slice is on the wrong reserve side" (s.side == outputSide)
+  let totalOutputProvided = foldl (\acc (_, s) -> acc + s.amount) 0.0 outputItems
+  assertMsg "Provided output slices cannot cover amountOut"
+    (totalOutputProvided >= amountOut)
+
+  let poolAccount = Utils.basicAccount operator
+  assertMsg "Swapper account must differ from the pool/operator account"
+    (swapperAccount /= poolAccount)
+  let draw = drawFromSlices amountOut outputItems
+      swapInLeg = V2.TransferLeg with
+        transferLegId = "swap-in"
+        sender = swapperAccount; receiver = poolAccount
+        amount = inputAmount; instrumentId = inputInstrumentId
+        meta = emptyMetadata
+      outputDelivery =
+        PE.buildSideDelivery "swap-out-" poolAccount swapperAccount outputInstrumentId draw
+  pure PreparedSwap with
+    preparedPool = pool
+    preparedState = state
+    preparedInputSlice = inputSlice
+    preparedInputIsBase = inputIsBase
+    preparedAmountOut = amountOut
+    preparedDraw = draw
+    preparedSwapInLeg = swapInLeg
+    preparedOutputDelivery = outputDelivery
 
 -- Result of PoolRules_ReconcileState: the audited slice totals.
 data PoolRules_ReconcileResult = PoolRules_ReconcileResult with
@@ -53,34 +144,32 @@ template PoolRules with
   where
     signatory operator
 
-    -- Build the swapper's input-allocation spec + the pool settlement
-    -- descriptor for the wallet to author. Creates nothing: PoolRules_Swap
-    -- consumes the resulting allocation cid directly, so there is no request
-    -- contract to archive. The swapper's allocation is prefunded/iterated
-    -- (funds only the input; empty legs), because PoolRules_Swap supplies the
-    -- real swap-in/swap-out legs via extraTransferLegSides at settle — which
-    -- V2 only permits when the allocation was authored iterated-enabled
-    -- (nextIterationFunding = Some ...).
+    -- Build the exact two-sided allocation the wallet authorizes. The trader
+    -- signs both the input and every output leg against one pool snapshot;
+    -- PoolRules_Swap cannot add or alter trader legs during settlement.
     nonconsuming choice PoolRules_RequestSwap : PoolRules_RequestSwapResult
       with
         poolCid : ContractId Pool
         swapper : Party
         inputInstrumentId : Text
         inputAmount : Decimal
+        quoteBinding : Optional SwapQuoteBinding
       controller operator
       do
-        pool <- fetch poolCid
-        assertMsg "Pool operator mismatch" (pool.operator == operator)
-        assertMsg "inputInstrumentId is not a pool instrument"
-          (inputInstrumentId == pool.baseInstrumentId
-            || inputInstrumentId == pool.quoteInstrumentId)
-        assertMsg "inputAmount must be positive" (inputAmount > 0.0)
         let swapperAccount = Utils.basicAccount swapper
+            binding = fromSomeNote "PoolRules_RequestSwap: quoteBinding is required" quoteBinding
+        prepared <- prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount binding
+        let pool = prepared.preparedPool
             settlement = poolSettlement poolCid operator
-            funding = TextMap.fromList [(inputInstrumentId, inputAmount)]
             allocationSpec =
-              Utils.mkPrefundedAllocationSpecification pool.admin swapperAccount None funding
-        pure PoolRules_RequestSwapResult with settlement; allocationSpec
+              Utils.mkIteratedAllocationSpecification
+                pool.admin
+                swapperAccount
+                None
+                (prepared.preparedSwapInLeg :: prepared.preparedOutputDelivery.legs)
+                None
+                False
+        pure PoolRules_RequestSwapResult with settlement; allocationSpec; quoteBinding
 
     -- Constant-product swap (multi-slice): prices against global reserves,
     -- sources amountOut from an ordered output-slice prefix (draining full
@@ -99,61 +188,31 @@ template PoolRules with
         outputSliceCids : [ContractId PoolSlice]
         factoryCid : ContractId V2.SettlementFactory
         extraArgs : ExtraArgs
+        quoteBinding : Optional SwapQuoteBinding
       controller operator
       do
-        (pool, state) <- fetchPoolContext operator expectedPoolId poolCid poolStateCid
-        assertMsg "Pool must be Active" (state.status == PS_Active)
-        assertMsg "inputInstrumentId is not a pool instrument"
-          (inputInstrumentId == pool.baseInstrumentId
-            || inputInstrumentId == pool.quoteInstrumentId)
-        assertMsg "inputAmount must be positive" (inputAmount > 0.0)
-        assertMsg "Swap needs at least one output slice" (not (null outputSliceCids))
-
-        let inputIsBase = inputInstrumentId == pool.baseInstrumentId
-            outputInstrumentId = if inputIsBase then pool.quoteInstrumentId else pool.baseInstrumentId
-            (reserveIn, reserveOut) =
-              if inputIsBase then (state.reserves.baseAmount, state.reserves.quoteAmount)
-              else (state.reserves.quoteAmount, state.reserves.baseAmount)
-            amountOut = constantProductOut reserveIn reserveOut pool.feeBps inputAmount
-        assertMsg "Output below slippage minimum" (amountOut >= minOutputAmount)
-
-        inputSlice <- fetch inputSliceCid
-        assertMsg "Input slice belongs to a different pool" (inputSlice.poolId == pool.poolId)
-
-        outputItems <- forA outputSliceCids (\cid -> do s <- fetch cid; pure (cid, s))
-        forA_ outputItems $ \(_, s) ->
-          assertMsg "Output slice belongs to a different pool" (s.poolId == pool.poolId)
-        let totalOutputProvided = foldl (\acc (_, s) -> acc + s.amount) 0.0 outputItems
-        assertMsg "Provided output slices cannot cover amountOut"
-          (totalOutputProvided >= amountOut)
-
-        let draw = drawFromSlices amountOut outputItems
+        let binding = fromSomeNote "PoolRules_Swap: quoteBinding is required" quoteBinding
+        assertMsg "Swap quote pool id mismatch" (expectedPoolId == binding.expectedPoolId)
+        assertMsg "Swap quote state mismatch" (poolStateCid == binding.poolStateCid)
+        assertMsg "Swap quote input slice mismatch" (inputSliceCid == binding.inputSliceCid)
+        assertMsg "Swap quote output slices mismatch" (outputSliceCids == binding.outputSliceCids)
+        assertMsg "Swap quote slippage minimum mismatch" (minOutputAmount == binding.minOutputAmount)
+        prepared <- prepareSwap
+          operator poolCid swapperAccount inputInstrumentId inputAmount binding
+        let pool = prepared.preparedPool
+            state = prepared.preparedState
+            inputSlice = prepared.preparedInputSlice
+            inputIsBase = prepared.preparedInputIsBase
+            amountOut = prepared.preparedAmountOut
+            swapInLeg = prepared.preparedSwapInLeg
+            outDel = prepared.preparedOutputDelivery
+            draw = prepared.preparedDraw
             poolAccount = Utils.basicAccount operator
             settlement = poolSettlement poolCid operator
 
-        -- The swapper must not be the pool/operator account. If it were, the
-        -- swap-in leg (sender = swapper, receiver = pool) and every output leg
-        -- (sender = pool, receiver = swapper) would be self-transfers, and the
-        -- batch's per-instrument sender/receiver totals could not balance
-        -- (legsToSides drops a side whose sender == receiver), aborting settle
-        -- with an opaque conservation error. Reject it here with a clear one.
-        assertMsg "Swapper account must differ from the pool/operator account"
-          (swapperAccount /= poolAccount)
-
-        let swapInLeg = V2.TransferLeg with
-              transferLegId = "swap-in"
-              sender = swapperAccount; receiver = poolAccount
-              amount = inputAmount; instrumentId = inputInstrumentId
-              meta = emptyMetadata
-        -- The output-side delivery (legs pool→swapper, finalized slice
-        -- allocations, drained cids, boundary) is the same multi-slice
-        -- assembly the liquidity remove uses — shared via PoolExecution.
-        let outDel = PE.buildSideDelivery "swap-out-" poolAccount swapperAccount outputInstrumentId draw
-
-        -- Finalized: swapper provides input (consumed) + receives all output
-        -- legs; the input slice receives the input and rolls forward (grows).
-        let swapperFinalized = Utils.mkFinalizedAllocation swapperAllocationCid
-              (Utils.legsToSides swapperAccount (swapInLeg :: outDel.legs)) None
+        -- The trader authored every leg side, so settlement cannot add or
+        -- alter trader authority here. Pool allocations still roll forward.
+        let swapperFinalized = Utils.finalAllocation swapperAllocationCid
             inputFinalized = Utils.mkFinalizedAllocation inputSlice.allocationCid
               (Utils.legsToSides poolAccount [swapInLeg])
               (Some (TextMap.fromList [(inputInstrumentId, inputSlice.amount + inputAmount)]))

@@ -150,8 +150,8 @@ function composePlaceOrder(
   };
 }
 
-// Swap (DvP): author the single prefunded/iterated input allocation the
-// operator's PoolRules_RequestSwap named, locking the trader's input holdings.
+// Swap (DvP): author the terminal allocation that contains the exact input and
+// output sides returned by PoolRules_RequestSwap, locking the trader's input.
 // The created Allocation cid is read back from the submit result (like LP DvP)
 // and fed to the operator settle (PoolRules_Swap). No intermediate request contract.
 function composeRequestSwap(

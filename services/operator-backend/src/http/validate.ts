@@ -122,13 +122,13 @@ export interface RouteSpec {
 
 export const WRITE_SPECS: Record<string, RouteSpec> = {
   "POST /v1/pools/swap": {
-    required: ["poolCid", "inputInstrumentId", "inputAmount", "minOutputAmount"],
+    required: ["poolCid", "inputInstrumentId", "inputAmount", "minOutputAmount", "quoteBinding"],
     decimals: ["inputAmount", "minOutputAmount"],
     cids: ["poolCid"],
   },
   "POST /v1/pools/swap/request": {
-    required: ["poolCid", "swapper", "inputInstrumentId", "inputAmount"],
-    decimals: ["inputAmount"],
+    required: ["poolCid", "swapper", "inputInstrumentId", "inputAmount", "minOutputAmount"],
+    decimals: ["inputAmount", "minOutputAmount"],
     parties: ["swapper"],
     cids: ["poolCid"],
   },

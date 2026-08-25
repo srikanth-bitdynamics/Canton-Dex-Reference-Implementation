@@ -35,9 +35,6 @@ data OrderMatch_ExecuteResult = OrderMatch_ExecuteResult with
     settledTradeCid : Optional (ContractId MT.SettledTrade)
   deriving (Eq, Show)
 
-mkOrderMatchRefId : Text -> Text
-mkOrderMatchRefId matchId = "OrderMatch-" <> matchId
-
 mkMatchTransferLegs : MatchedOrderPair -> [V2.TransferLeg]
 mkMatchTransferLegs match =
   let quoteAmount = match.fillQty * match.fillPrice
@@ -64,18 +61,18 @@ allocationFunding : V2.Allocation -> Utils.Funding
 allocationFunding allocation =
   optional TextMap.empty identity (view allocation).allocation.nextIterationFunding
 
--- | Remainder funding for one side: the committed budget the side's
+-- | Remainder funding for one side: the reserved budget the side's
 -- allocation locked, minus what this fill spends out of it (the side's
--- sender-side outflows). Non-positive entries are dropped. `None` (no
--- committed budget) means the allocation fully settles with no roll-forward.
+-- sender-side outflows). Non-positive entries are dropped. `None` means the
+-- allocation fully settles with no roll-forward.
 remainderFunding : V2.Account -> Utils.Funding -> [V2.TransferLeg] -> Optional Utils.Funding
-remainderFunding authorizer committedBudget transferLegs =
+remainderFunding authorizer fundingBudget transferLegs =
   let spent = TextMap.fromListWithR (+)
         [ (leg.instrumentId, leg.amount)
         | leg <- transferLegs
         , leg.sender == authorizer
         ]
-      remaining = Utils.textMapUnionWith (-) committedBudget spent
+      remaining = Utils.textMapUnionWith (-) fundingBudget spent
   in case Utils.normalizeFunding remaining of
        -- An empty residual (fill consumed the whole budget) must roll nothing
        -- forward: the allocation fully settles, so signal None rather than a
@@ -203,15 +200,25 @@ template OrderMatchExecution with
         assertMsg "fill price below ask limit"
           (match.fillPrice >= sellOrder.limitPrice)
 
-        let transferLegs = mkMatchTransferLegs match
-            settlement = V2.SettlementInfo with
-              executors = [operator]
-              id = mkOrderMatchRefId matchId
-              cid = None
-              meta = emptyMetadata
-
         buyerAllocation <- fetch buyerAllocationCid
         sellerAllocation <- fetch sellerAllocationCid
+        let buyerAllocationView = view buyerAllocation
+            sellerAllocationView = view sellerAllocation
+        assertMsg "buyer allocation belongs to a different settlement"
+          (buyerAllocationView.settlement == sellerAllocationView.settlement)
+        assertMsg "order settlement executor mismatch"
+          (buyerAllocationView.settlement.executors == [operator])
+        assertMsg "buyer allocation authorizer mismatch"
+          (buyerAllocationView.allocation.authorizer == match.buyerAccount)
+        assertMsg "seller allocation authorizer mismatch"
+          (sellerAllocationView.allocation.authorizer == match.sellerAccount)
+        assertMsg "buyer allocation registry admin mismatch"
+          (buyerAllocationView.allocation.admin == buyOrder.admin)
+        assertMsg "seller allocation registry admin mismatch"
+          (sellerAllocationView.allocation.admin == sellOrder.admin)
+
+        let transferLegs = mkMatchTransferLegs match
+            settlement = buyerAllocationView.settlement
 
         -- Each side authorizes both legs; legsToSides projects the account's own
         -- sides. Remainder funding is derived from the live allocation budget,
@@ -271,6 +278,7 @@ template OrderMatchExecution with
           sellRemainderCid
           settledTradeCid = Some settledTradeCid
 
+    -- Explicitly consumes an execution proposal that can no longer settle.
     choice OrderMatchExecution_Abort : ()
       controller operator
       do pure ()

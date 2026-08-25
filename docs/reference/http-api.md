@@ -230,12 +230,16 @@ defined in
 |---|---|---|
 | `POST /v1/swaps/quote` | Exact off-ledger swap quote | open |
 
-A quote is advisory — the on-ledger `PoolRules_Swap` choice re-derives the output
-from the current reserves and settles against that value, so the operator cannot
-quote one number and settle another. Because the endpoint runs the *same*
-function off-ledger, preview and settlement agree to the last digit (see
-[Pricing](../concepts/pricing.md)). Supply `poolCid`; `poolId` is also accepted
-and resolves either the ContractId or the logical id (e.g. `"BTC-USDC"`).
+A quote is advisory. The authoritative `/v1/pools/swap/request` call accepts the
+trader's minimum, binds a pool-state snapshot and slice set on-ledger, and
+returns an allocation specification with the exact input and output leg sides.
+The dApp verifies that response before the wallet signs it. `PoolRules_Swap`
+then re-derives the output and rejects any snapshot or allocation whose legs no
+longer match, so the operator cannot quote one number and settle another.
+Because the quote endpoint runs the same function off-ledger, preview and
+settlement agree to the last digit (see [Pricing](../concepts/pricing.md)).
+Supply `poolCid`; `poolId` is also accepted and resolves either the ContractId
+or the logical id (e.g. `"BTC-USDC"`).
 
 ```json
 // request
@@ -294,6 +298,14 @@ from the transaction tree so the settle can still be assembled.
 | `POST /v1/pools/remove-liquidity/request` | Open remove-LP |
 | `POST /v1/pools/remove-liquidity/settle` | `PoolLiquidityRules_SettleRemoveLiquidity` (operator + lpRegistrar) |
 | `POST /v1/pools/recover-dvp-allocations` | Recover created allocation cids from an `updateId`-only receipt |
+
+`POST /v1/pools/swap/request` requires `poolCid`, `swapper`,
+`inputInstrumentId`, `inputAmount`, and `minOutputAmount`. Its response includes
+the `settlement`, exact `allocationSpec`, registry context/disclosure, and a
+`quoteBinding` containing the pool id, state cid, selected slice cids, and
+minimum. Pass that binding unchanged to `POST /v1/pools/swap` with the wallet's
+`swapperAllocationCid`. If the state or slices have moved, settlement fails and
+the terminal, uncommitted swap allocation remains withdrawable by its trader.
 
 **An add off the reserve ratio is only partly taken.** LP tokens are minted
 against whichever leg is short relative to the pool's ratio
@@ -453,7 +465,8 @@ The most common ones and how a client should handle them:
 
 | On-ledger assertion | Triggering condition | Suggested handling |
 |---|---|---|
-| `Output below slippage minimum` | the pool price moved against the taker between quote and settle, below the swap's `minOutputAmount` | re-quote and retry, or widen slippage tolerance |
+| `Output below slippage minimum` | the request-time quote is below the trader's `minOutputAmount`, so no allocation specification is issued | refresh the quote or widen the slippage tolerance before signing |
+| `stale swap quote binding` | the bound pool state or reserve slices changed before settlement | withdraw the uncommitted allocation, request a fresh signed specification, and retry |
 | `expectedPoolId mismatch (pool config swapped?)` | the referenced pool contract is no longer the active one for the pair | refresh the client's pool cache and rebuild the request |
 | `add: base reserve delta must equal created base slice amount` | reserve and slice arithmetic disagree during a liquidity settle (should be unreachable) | operator alert; run `PoolRules_ReconcileState` |
 | `Allocation_Settle: settlement deadline has passed` | an order or RFQ allocation was settled after its deadline | release the reserved funds with the cancel / withdraw choice |

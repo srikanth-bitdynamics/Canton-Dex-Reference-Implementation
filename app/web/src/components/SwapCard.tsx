@@ -94,6 +94,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
         context,
         pool: {
           contractId: pool.contractId,
+          admin: pool.admin,
           baseInstrumentId: pool.baseInstrumentId,
           quoteInstrumentId: pool.quoteInstrumentId,
         },

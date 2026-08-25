@@ -115,6 +115,12 @@ testSwapOutputRoundsDownToKeepConstantProduct = do
   reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid = fx.poolCid; swapper = bob
     inputInstrumentId = "USDC"; inputAmount = 7.0
+    quoteBinding = Some (PRules.SwapQuoteBinding with
+      expectedPoolId = fx.poolId
+      poolStateCid = addRes.poolStateCid
+      inputSliceCid = addRes.quoteSliceCid
+      outputSliceCids = [addRes.baseSliceCid]
+      minOutputAmount = 0.0)
   -- Allocation plumbing: give bob the 7 USDC and lock it into the settlement
   -- the request named, the way a real trade would fund its input.
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 7.0
@@ -133,6 +139,7 @@ testSwapOutputRoundsDownToKeepConstantProduct = do
       outputSliceCids = [addRes.baseSliceCid]
       factoryCid = fx.settleCid
       extraArgs = emptyExtraArgs
+      quoteBinding = reqRes.quoteBinding
 
   -- Read back the pool the swap left behind.
   state <- fromSome <$> queryContractId @PS.PoolState fx.operator swapRes.poolStateCid

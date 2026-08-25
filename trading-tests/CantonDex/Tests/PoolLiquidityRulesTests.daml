@@ -786,7 +786,7 @@ testAddRejectsOverMint = do
       requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
   pure ()
 
--- 3b review #1: the over-mint bound is symmetric with the dust tolerance.
+-- The over-mint bound is symmetric with the dust tolerance.
 -- A receipt a hair (< dust) above the on-ledger fair share is ACCEPTED —
 -- this is the cross-language sqrt rounding the bound defends, and a strict
 -- `<= fairLp` would wrongly abort it.

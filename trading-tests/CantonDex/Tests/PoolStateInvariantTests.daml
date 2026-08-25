@@ -82,6 +82,12 @@ testReconcileAfterAddSwapRemove = do
   reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid = fx.poolCid; swapper = bob
     inputInstrumentId = "USDC"; inputAmount = 100.0
+    quoteBinding = Some (PRules.SwapQuoteBinding with
+      expectedPoolId = fx.poolId
+      poolStateCid = addRes.poolStateCid
+      inputSliceCid = addRes.quoteSliceCid
+      outputSliceCids = [addRes.baseSliceCid]
+      minOutputAmount = 0.0)
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 100.0
   swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
     [toInterfaceContractId usdcHold] now
@@ -98,6 +104,7 @@ testReconcileAfterAddSwapRemove = do
     outputSliceCids = [addRes.baseSliceCid]
     factoryCid = fx.settleCid
     extraArgs = emptyExtraArgs
+    quoteBinding = reqRes.quoteBinding
   let newBaseSliceCid = fromSome swapRes.boundaryOutputSliceCid
   rec2 <- submit fx.operator $
     reconcileCmd fx rulesCid swapRes.poolStateCid [swapRes.inputSliceCid, newBaseSliceCid]
@@ -228,6 +235,12 @@ testSwapRejectsOperatorAsSwapper = do
   reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid = fx.poolCid; swapper = bob
     inputInstrumentId = "USDC"; inputAmount = 100.0
+    quoteBinding = Some (PRules.SwapQuoteBinding with
+      expectedPoolId = fx.poolId
+      poolStateCid = addRes.poolStateCid
+      inputSliceCid = addRes.quoteSliceCid
+      outputSliceCids = [addRes.baseSliceCid]
+      minOutputAmount = 0.0)
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 100.0
   swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
     [toInterfaceContractId usdcHold] now
@@ -242,3 +255,4 @@ testSwapRejectsOperatorAsSwapper = do
       outputSliceCids = [addRes.baseSliceCid]
       factoryCid = fx.settleCid
       extraArgs = emptyExtraArgs
+      quoteBinding = reqRes.quoteBinding

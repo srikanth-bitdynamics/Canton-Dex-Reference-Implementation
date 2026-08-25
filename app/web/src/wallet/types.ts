@@ -116,9 +116,9 @@ export interface PlaceOrderIntent {
 
 /**
  * Trader requests a swap (DvP). The operator has built (via Daml
- * PoolRules_RequestSwap) the swapper's prefunded/iterated input-allocation
- * spec; the wallet authors that single allocation via AllocationFactory_Allocate
- * (locking `inputHoldingCids`), and its created cid is returned as
+ * PoolRules_RequestSwap) the exact input and output leg sides for one pool
+ * snapshot. The wallet authors that terminal allocation via
+ * AllocationFactory_Allocate (locking `inputHoldingCids`), and its created cid is returned as
  * `WalletResult.createdAllocationCids[0]` for the operator settle
  * (PoolRules_Swap). No intermediate request contract is created.
  */

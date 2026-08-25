@@ -178,15 +178,25 @@ describe('composeCommands', () => {
   const swapAllocationSpec = {
     admin: 'ad::1',
     authorizer: { owner: 'alice::1220a', provider: null, id: '' },
-    transferLegSides: [],
+    transferLegSides: [
+      {
+        transferLegId: 'swap-in', side: 'SenderSide',
+        otherside: { owner: 'op::1', provider: null, id: '' },
+        amount: '0.1', instrumentId: 'BTC', meta: { values: {} },
+      },
+      {
+        transferLegId: 'swap-out-0', side: 'ReceiverSide',
+        otherside: { owner: 'op::1', provider: null, id: '' },
+        amount: '1974.31', instrumentId: 'USDC', meta: { values: {} },
+      },
+    ],
     settlementDeadline: null,
-    nextIterationFunding: { USDC: '1000.0' },
+    nextIterationFunding: null,
     committed: false,
     meta: { values: {} },
   } as unknown as RequestSwapIntent['allocationSpec'];
   const swapSettlement = {
-    executor: 'op::1',
-    settlementRef: { id: 'DexPool', cid: 'pool1234567890' },
+    executors: ['op::1'], id: 'DexPool', cid: 'pool1234567890', meta: { values: {} },
   } as unknown as RequestSwapIntent['settlement'];
 
   it('request-swap authors a single AllocationFactory_Allocate', () => {

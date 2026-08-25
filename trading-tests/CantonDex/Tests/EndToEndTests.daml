@@ -334,21 +334,23 @@ testOrderFundingFlow = do
   -- Assert the intermediate state before any funds are locked.
   Some order <- queryContractId operator bindRes.orderCid
   order.status === Order.OS_Pending
-  Some _allocReq <- queryContractId operator bindRes.allocationRequestCid
+  Some allocReq <- queryContractId operator bindRes.allocationRequestCid
 
   -- Act 2: Alice's wallet authors the committed funding allocation under her
   -- own authority. The request remains live as the correlation record until
   -- the operator binds the resulting allocation.
   let aliceAccount = Utils.basicAccount alice
-      orderRef = order.settlementRef
-      lockedFunding = TextMap.fromList [("USDC", 0.5 * 60000.0)]
-      settlement = V2.SettlementInfo with
-        executors = [operator]
-        id = orderRef.id
-        cid = orderRef.cid
-        meta = emptyMetadata
-      allocateArg = WC.mkPrefundedAllocationFactoryAllocate
-        admin aliceAccount settlement order.expiry lockedFunding now [] [alice] emptyExtraArgs
+      settlement = fromSome allocReq.allocationSettlement
+      specification = Order.orderFundingSpecification
+        admin alice allocReq.lockInstrumentId allocReq.lockAmount
+        allocReq.expiry
+      allocateArg = V2.AllocationFactory_Allocate with
+        settlement
+        allocation = specification
+        requestedAt = now
+        inputHoldingCids = []
+        actors = [alice]
+        extraArgs = emptyExtraArgs
 
   instrResult <- submit alice $ exerciseCmd factoryCid allocateArg
   case instrResult.output of
@@ -507,8 +509,8 @@ testRfqExpireOperatorCleanup = do
 
 -- PoolRules_Swap updates pool inventory ---------------------------------
 --
--- Trader pre-funds a swap by creating their own prefunded allocation
--- via the mock factory; operator drives PoolRules_Swap which adjusts both
+-- Trader authorizes the exact two-sided allocation via the mock factory;
+-- operator drives PoolRules_Swap which adjusts both
 -- pool allocations + the trader allocation and batch-settles them.
 --
 -- Verifies:
@@ -552,18 +554,21 @@ testPoolSwapEndToEnd = do
     now
     emptyExtraArgs
 
-  -- Bob creates a prefunded swap allocation (100 USDC -> BTC).
-  -- Settlement reference matches the pool's so the legs can be settled.
   let bobAccount = Utils.basicAccount bob
-      swapSettlement = V2.SettlementInfo with
-        executors = [operator]
-        id = "DexPool"
-        cid = Some (coerceContractId poolCid)
-        meta = emptyMetadata
-      -- Prefunded: empty legs, nextIterationFunding holds the swap input
-      bobFunding = TextMap.fromList [("USDC", 100.0)]
-      bobAllocateArg = WC.mkPrefundedAllocationFactoryAllocate
-        admin bobAccount swapSettlement None bobFunding now [] [bob] emptyExtraArgs
+      quoteBinding = Some (PRules.SwapQuoteBinding with
+        expectedPoolId = poolId
+        poolStateCid = initRes.poolStateCid
+        inputSliceCid = initRes.quoteSliceCid
+        outputSliceCids = [initRes.baseSliceCid]
+        minOutputAmount = 0.0)
+  reqRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+    poolCid
+    swapper = bob
+    inputInstrumentId = "USDC"
+    inputAmount = 100.0
+    quoteBinding
+  let bobAllocateArg = WC.mkAllocationFactoryAllocate
+        reqRes.settlement reqRes.allocationSpec now [] [bob] emptyExtraArgs
 
   bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
   bobAllocationCid <- case bobInstr.output of
@@ -585,6 +590,7 @@ testPoolSwapEndToEnd = do
     outputSliceCids = [initRes.baseSliceCid]
     factoryCid = settleCid
     extraArgs = emptyExtraArgs
+    quoteBinding = reqRes.quoteBinding
 
   -- Verify reserves moved.
   Some state <- queryContractId operator swapRes.poolStateCid
@@ -643,6 +649,12 @@ testPoolSwapViaRequestSwap = do
     swapper = bob
     inputInstrumentId = "USDC"
     inputAmount = 100.0
+    quoteBinding = Some (PRules.SwapQuoteBinding with
+      expectedPoolId = poolId
+      poolStateCid = initRes.poolStateCid
+      inputSliceCid = initRes.quoteSliceCid
+      outputSliceCids = [initRes.baseSliceCid]
+      minOutputAmount = 0.0)
 
   -- Bob (the wallet) authors that exact spec via the allocation factory.
   let bobAccount = Utils.basicAccount bob
@@ -667,6 +679,7 @@ testPoolSwapViaRequestSwap = do
     outputSliceCids = [initRes.baseSliceCid]
     factoryCid = settleCid
     extraArgs = emptyExtraArgs
+    quoteBinding = reqRes.quoteBinding
 
   Some state <- queryContractId operator swapRes.poolStateCid
   assertMsg "base reserve decreased" (state.reserves.baseAmount < 10.0)
@@ -763,6 +776,13 @@ testMatchedTradeFullSettle = do
       bobReqCid = case [ c | (p, c) <- reqsByOwner, p == bob ] of
         (c :: _) -> c
         [] -> error "bob request missing"
+
+  let aliceReqIface : ContractId V2.AllocationRequest =
+        toInterfaceContractId aliceReqCid
+  submitMustFail (actAs [bob] <> readAs [operator]) $
+    exerciseCmd aliceReqIface V2.AllocationRequest_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
 
   aliceAllocCid <- mkAlloc alice aliceReqCid
   bobAllocCid <- mkAlloc bob bobReqCid

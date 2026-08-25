@@ -29,7 +29,7 @@ testMintRejectsZeroAmount : Script ()
 testMintRejectsZeroAmount = do
   registrar <- allocateParty "registrar"
   alice <- allocateParty "alice"
-  _cfg <- mkConfig registrar "BTC" [] "test"
+  mkConfig registrar "BTC" [] "test"
   submitMustFail alice $ createCmd Mint.MintRequest with
     requestor = alice
     admin = registrar

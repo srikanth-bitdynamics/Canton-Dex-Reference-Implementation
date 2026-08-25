@@ -95,17 +95,10 @@ DEX_DEV_OPEN=1 npm run dev
 ```
 
 `DEX_DEV_OPEN=1` opens the operator-write gate **and** (because the dev server
-seeds bare-hint parties like `trader-demo`) auto-relaxes party validation, so
-the seeded demo data passes writes out of the box. Example demo swap:
-
-```bash
-curl -s -X POST http://localhost:8080/v1/pools/swap \
-  -H 'content-type: application/json' \
-  -d '{"poolCid":"#2:0","swapperAccount":{"owner":"trader-demo"},
-       "inputInstrumentId":"BTC","inputAmount":"0.1","minOutputAmount":"0",
-       "swapperAllocationCid":"#synthetic:0"}'
-# → { "amountOut": "1974.31...", ... }  and pool reserves move to 10.1 / 198025.68
-```
+seeds bare-hint parties like `trader-demo`) auto-relaxes party validation. It
+does not emulate wallet signatures or fabricate V2 allocations: allocation-
+backed writes return `501 not_supported` on the in-memory ledger. Use the local
+Canton flow below to exercise a real swap, order, or liquidity settlement.
 
 Demo-mode flags (in-memory dev server only; never set in production):
 
@@ -116,9 +109,8 @@ Demo-mode flags (in-memory dev server only; never set in production):
 | `DEX_DEV_WALLET_RELAY=1` | enable the dev wallet-relay endpoint |
 | `DEX_OPERATOR_API_TOKEN` | require this bearer token on writes instead of the open bypass |
 
-> The **two-step** swap (`/v1/pools/swap/request` → allocate → settle) needs a
-> real Canton participant; the in-memory ledger returns **501 `not_supported`**
-> for it. Use the single-step `/v1/pools/swap` above for the demo.
+> A swap is always `/v1/pools/swap/request` → wallet-authorized allocation →
+> `/v1/pools/swap`. There is no synthetic single-step settlement path.
 
 Tests + typecheck:
 ```bash

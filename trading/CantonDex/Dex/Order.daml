@@ -5,12 +5,14 @@
 module CantonDex.Dex.Order where
 
 import DA.Map qualified as Map
+import DA.Optional (isSome)
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
+import Splice.TokenStandard.Utils qualified as TSUtils
 
 import CantonDex.Trading.Utils qualified as Utils
 import CantonDex.Trading.WorkflowConstructors qualified as WC
@@ -57,6 +59,35 @@ makeOrderRefFromText : Text -> SettlementRef
 makeOrderRefFromText refId = SettlementRef with
   id = "DexOrder-" <> refId
   cid = None
+
+-- All orders for one operator, registry, and instrument pair share a
+-- settlement domain. Buy and sell allocations can therefore be settled in
+-- the same V2 batch, while allocations from another venue or pair cannot.
+orderBookSettlement
+  : Party -> Party -> Text -> Text -> V2.SettlementInfo
+orderBookSettlement operator admin baseInstrumentId quoteInstrumentId =
+  V2.SettlementInfo with
+    executors = [operator]
+    id = "CantonDex/OrderBook/" <> show (operator, admin, baseInstrumentId, quoteInstrumentId)
+    cid = None
+    meta = emptyMetadata
+
+orderFundingSpecification
+  : Party -> Party -> Text -> Decimal -> Optional Time
+  -> V2.AllocationSpecification
+orderFundingSpecification admin trader lockInstrumentId lockAmount expiry =
+  V2.AllocationSpecification with
+    admin
+    authorizer = Utils.basicAccount trader
+    transferLegSides = []
+    settlementDeadline = expiry
+    nextIterationFunding = Some (TextMap.fromList [(lockInstrumentId, lockAmount)])
+    -- A committed allocation without a deadline cannot be withdrawn by its
+    -- authorizer. Expiring orders remain committed until their deadline; GTC
+    -- orders stay uncommitted so the trader retains a unilateral exit if the
+    -- venue becomes unavailable.
+    committed = isSome expiry
+    meta = emptyMetadata
 
 template Order with
     operator : Party
@@ -109,6 +140,22 @@ template Order with
               ( req.orderRef == settlementRef
                   && req.trader == trader
                   && req.operator == operator )
+            allocation <- fetch allocationCid
+            let allocationView = view allocation
+                requestSettlement = optional
+                  (V2.SettlementInfo with
+                    executors = [operator]
+                    id = req.orderRef.id
+                    cid = req.orderRef.cid
+                    meta = emptyMetadata)
+                  identity
+                  req.allocationSettlement
+                expectedSpec = orderFundingSpecification
+                  admin trader req.lockInstrumentId req.lockAmount req.expiry
+            assertMsg "Order funding allocation belongs to a different settlement"
+              (allocationView.settlement == requestSettlement)
+            assertMsg "Order funding allocation does not match the request"
+              (allocationView.allocation == expectedSpec)
             archive reqCid
         newOrderCid <- create this with
           status = OS_Funded
@@ -167,6 +214,7 @@ template OrderAllocationRequest with
     lockAmount : Decimal
     expiry : Optional Time
     requestedAt : Time
+    allocationSettlement : Optional V2.SettlementInfo
   where
     signatory operator
     observer trader
@@ -174,23 +222,18 @@ template OrderAllocationRequest with
     interface instance V2.AllocationRequest for OrderAllocationRequest where
       view = V2.AllocationRequestView with
         originalRequestCid = None
-        settlement = V2.SettlementInfo with
-          executors = [operator]
-          id = orderRef.id
-          cid = orderRef.cid
-          meta = emptyMetadata
+        settlement = optional
+          (V2.SettlementInfo with
+            executors = [operator]
+            id = orderRef.id
+            cid = orderRef.cid
+            meta = emptyMetadata)
+          identity
+          allocationSettlement
         allocations =
           -- Prefunded: no legs at request time; the trader locks lockAmount as
           -- next-iteration funding, concrete legs travel with the match flow.
-          [ V2.AllocationSpecification with
-              admin
-              authorizer = Utils.basicAccount trader
-              transferLegSides = []
-              settlementDeadline = expiry
-              nextIterationFunding = Some (TextMap.fromList [(lockInstrumentId, lockAmount)])
-              committed = True
-              meta = emptyMetadata
-          ]
+          [orderFundingSpecification admin trader lockInstrumentId lockAmount expiry]
         requestedAt
         settleAt = expiry
         availableActions = Map.fromList
@@ -203,14 +246,14 @@ template OrderAllocationRequest with
       allocationRequest_rejectExtraObservers = \_ -> []
       allocationRequest_withdrawExtraObservers = \_ -> []
 
-      allocationRequest_acceptImpl = \self _arg -> do
-        archive self
+      allocationRequest_acceptImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors [[trader]]
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
 
-      allocationRequest_rejectImpl = \self _arg -> do
-        archive self
+      allocationRequest_rejectImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors [[trader]]
         pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
 
-      allocationRequest_withdrawImpl = \self _arg -> do
-        archive self
+      allocationRequest_withdrawImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors [[operator]]
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata

@@ -10,6 +10,7 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
+import Splice.TokenStandard.Utils qualified as TSUtils
 
 import CantonDex.Dex.DexPair qualified as DexPair
 import CantonDex.Dex.PolicyReceipt qualified as PR
@@ -60,14 +61,16 @@ template TradeAllocationRequest with
 
       -- Accept consumes the request; the wallet composes it with the matching
       -- AllocationFactory_Allocate in the same transaction.
-      allocationRequest_acceptImpl = \self _arg -> do
-        archive self
+      allocationRequest_acceptImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors
+          [[TSUtils.accountPrincipal admin authorizer]]
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
       allocationRequest_rejectImpl = \self arg -> do
-        archive self
+        TSUtils.archiveAndCheckActors self arg.actors
+          [[TSUtils.accountPrincipal admin authorizer]]
         pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
       allocationRequest_withdrawImpl = \self arg -> do
-        archive self
+        TSUtils.archiveAndCheckActors self arg.actors [settlement.executors]
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
 
 data SettlementBatchV2 = SettlementBatchV2 with
@@ -187,8 +190,6 @@ template MatchedTrade with
         allocationRequestCids : [ContractId TradeAllocationRequest]
       controller venue
       do
-        let settlement = mkTradeSettlementInfo self this
-
         forA_ allocationRequestCids $ \reqCid -> do
           fetch reqCid
           archive reqCid

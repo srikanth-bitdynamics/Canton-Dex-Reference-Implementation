@@ -151,15 +151,35 @@ a 30 bps fee (`feeBps = 30`); every figure is what the on-ledger `Decimal` math
 guarantees the pool never pays out more than the exact floored amount, so these
 figures are reproducible on-ledger.
 
+## Availability and the LP exit boundary
+
+The atomic remove flow protects correctness when it runs; it does not make
+redemption permissionless. An LP holder owns LP tokens, while reserve
+allocations are authored for the pool operator and the remove-rules contract is
+co-signed by the operator and LP registrar. Consequently:
+
+- routine redemption requires both operator and registrar availability;
+- a holder cannot withdraw a reserve slice through `Allocation_Withdraw`,
+  because the holder is not that allocation's authorizer;
+- the committed reserve allocations have no holder deadline that turns into a
+  unilateral redemption right.
+
+This single-operator liveness dependency is intentional in the reference and
+is not suitable as an unstated production custody assumption. A production
+fork should add its chosen governed/threshold execution and emergency-exit
+model, then audit that model separately. See [Non-goals](non-goals.md#lp-redemption-has-an-explicit-liveness-dependency).
+
 ---
 
 ### Reference / details
 
-- **Residual trust boundary.** `PoolState` is operator-signed, so a malicious
-  operator could fabricate a parallel state contract that overstates reserves.
-  `PoolRules_ReconcileState` catches that against the real slices (the desync
-  case above), but listing-trust in the operator is assumed; production
-  hardening would bind state updates to an admin-co-signed `Pool`.
+- **Residual trust boundary.** `PoolState`, `PoolSlice`, and the reserve
+  allocation account are operator-controlled. A malicious operator could
+  fabricate a parallel state or cancel reserve allocations; an unavailable
+  operator can block LP redemption. `PoolRules_ReconcileState` detects
+  accounting drift against live slices, but it does not provide governance or
+  liveness. Production hardening must replace this single-party boundary with
+  the deployment's governed execution and emergency-exit design.
 - **Slices are long-lived, and some registries cap that.** The committed
   allocations backing slices persist between operations. A registry may bound
   allocation lifetime — Amulet enforces `tokenStandardMaxTTL` (default

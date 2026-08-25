@@ -91,7 +91,7 @@ whose holdings are locked by the holder.
 | Contract family | Market state | Where the funds are | Choice that changes state |
 |---|---|---|---|
 | Pool | `Pool`, `PoolState`, and independent `PoolSlice` contracts | committed V2 allocations referenced by the slices | `PoolRules_Swap` or a `PoolLiquidityRules` settle choice |
-| Order | one `Order` contract in `Pending`, `Funded`, or `PartiallyFilled` state | a committed V2 allocation referenced by a funded order | `Order_Fund`, `OrderMatchExecution_Execute`, or `Order_Cancel` |
+| Order | one `Order` contract in `Pending`, `Funded`, or `PartiallyFilled` state | an iterated V2 allocation referenced by a funded order; committed through an expiry, trader-withdrawable for GTC | `Order_Fund`, `OrderMatchExecution_Execute`, or `Order_Cancel` |
 | RFQ / OTC | `Rfq`, `RfqQuote`, and `MatchedTrade` contracts | one V2 allocation per settlement authorizer | `Rfq_Accept` followed by `MatchedTrade_Settle` |
 | LP token | `Lp.LPTokenPolicy` supply state | LP holdings managed through the token registry | add/remove liquidity DvP settlement records mint or burn |
 
@@ -123,8 +123,9 @@ flowchart LR
    locked value.
 2. `OrderFundingRequest_Bind` consumes that intent and creates a `Pending`
    `Order` plus an `OrderAllocationRequest` describing the required funding.
-3. The trader's wallet authors the committed V2 allocation. Only the trader can
-   lock these holdings.
+3. The trader's wallet authors the V2 allocation. An expiring order is committed
+   through its deadline; a GTC order is uncommitted so the trader can withdraw
+   it without the operator. Only the trader can lock these holdings.
 4. The consuming `Order_Fund` choice replaces the pending order with a `Funded`
    order that references the allocation contract id.
 5. `OrderMatchExecution_Execute` rechecks both orders' pair, side, limit price,
@@ -133,6 +134,11 @@ flowchart LR
    the next allocation.
 6. Before settlement, `Order_Cancel` consumes the order and cancels its
    allocation, releasing the trader's holdings.
+
+If the operator is unavailable, the allocation interface remains the custody
+exit: a GTC authorizer may exercise `Allocation_Withdraw` immediately, while an
+expiring committed order becomes withdrawable after its deadline. The stale
+`Order` may remain visible, but it cannot settle after its allocation is gone.
 
 ### Pools: five templates, deliberately split
 
@@ -229,10 +235,12 @@ mint/burn settle atomically, each batch under its own registry admin.
 
 ## The executor-control constraint
 
-Committed and iterated allocations are what make long-lived pool and order
-inventory possible — but they also hand the executor (the operator) the ability
-to drive those funds' settlement path. That is safe only because every permitted
-use is validated by on-ledger contract state, not by the off-ledger service.
+Iterated allocations make long-lived pool and order inventory possible.
+Commitment additionally gives the executor an availability guarantee and is
+used for pool slices and deadline-bounded orders. That authority is safe only
+because every permitted use is validated by on-ledger contract state, not by
+the off-ledger service. GTC order funding remains uncommitted so iteration does
+not remove the trader's unilateral withdrawal right.
 
 Concretely, `PoolState.reserves` is derived and the slices are the truth, so the
 invariant **`reserves == sum of active slice amounts per side`** must hold.

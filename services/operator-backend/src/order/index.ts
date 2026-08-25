@@ -11,7 +11,13 @@ import {
   recoverCreatedFundingRequest,
 } from "../ledger/recover.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
-import type { Order, Party, V2Account } from "../types.js";
+import type {
+  Order,
+  Party,
+  V2Account,
+  V2AllocationSpecification,
+  V2SettlementInfo,
+} from "../types.js";
 import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
 import { rootLogger } from "../lib/logger.js";
 
@@ -33,6 +39,8 @@ export interface OrderBindInput {
 export interface OrderBindResult {
   orderCid: ContractId<"Order">;
   allocationRequestCid: ContractId<"OrderAllocationRequest">;
+  settlement: V2SettlementInfo;
+  allocationSpec: V2AllocationSpecification;
 }
 
 export interface OrderFundInput {
@@ -108,7 +116,7 @@ export class OrderService {
         "order bind: supply fundingRequestCid or an updateId to recover it",
       );
     }
-    return retryOnContention(() =>
+    const result = await retryOnContention(() =>
       this.ledger.submit<OrderBindResult>({
         actAs: [this.operatorParty],
         commandId: `order-bind:${input.settlementRef}`,
@@ -122,6 +130,10 @@ export class OrderService {
         },
       }),
     );
+    if (!result.settlement || !result.allocationSpec) {
+      throw new Error("order bind: on-ledger result omitted funding terms");
+    }
+    return result;
   }
 
   async fund(

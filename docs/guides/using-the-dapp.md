@@ -58,16 +58,18 @@ sequenceDiagram
     O-->>D: allocationSpec + settlement + disclosed factory context
     D->>W: 2. Hand off the intent (e.g. request-swap)
     W->>W: Sign AllocationFactory_Allocate
-    W-->>D: Prefunded trader Allocation (or updateId)
+    W-->>D: Trader-authorized Allocation (or updateId)
     D->>O: 3. Settle
     O->>O: Exercise PoolRules_Swap / SettleBatch (operator authority)
     O-->>D: Atomic settlement
     Note over W,O: You receive the output; holdings and pool reserves refresh.
 ```
 
-Because the settle step re-derives its own numbers on the ledger, the operator
-cannot quote you one price and settle another. The exact template and choice
-names behind each action are in
+For a swap, the specification contains the exact input and output sides for a
+specific pool snapshot. The wallet signs those sides, and the settle step
+re-derives the same numbers on the ledger. The operator therefore cannot alter
+the output after authorization. The exact template and choice names behind each
+action are in
 [Reference: what the wallet signs](#reference-what-the-wallet-signs-and-what-settles).
 
 ---
@@ -226,7 +228,7 @@ dApp passes only the intent verb.
 
 | UI action | Wallet intent | On-ledger result |
 |---|---|---|
-| Swap | `request-swap` | Prefunded input `Allocation`, then [`PoolRules_Swap`](../../trading/CantonDex/Dex/PoolRules.daml) |
+| Swap | `request-swap` | Terminal `Allocation` with exact input and output sides, then [`PoolRules_Swap`](../../trading/CantonDex/Dex/PoolRules.daml) |
 | Add liquidity | `add-liquidity` | Base-deposit + quote-deposit + LP-receipt `Allocation`s, settled by [`PoolLiquidityRules_SettleAddLiquidity`](../../trading/CantonDex/Dex/PoolLiquidityRules.daml) |
 | Remove liquidity | `remove-liquidity` | Base-receipt + quote-receipt + LP burn-sender `Allocation`s, settled by [`PoolLiquidityRules_SettleRemoveLiquidity`](../../trading/CantonDex/Dex/PoolLiquidityRules.daml) |
 | Place order | `place-order` + `fund-order` | [`OrderFundingRequest`](../../trading/CantonDex/Dex/OrderFundingRequest.daml) → funded [`Order`](../../trading/CantonDex/Dex/Order.daml) |
@@ -247,6 +249,7 @@ nonconsuming choice PoolRules_RequestSwap : PoolRules_RequestSwapResult
     swapper : Party
     inputInstrumentId : Text
     inputAmount : Decimal
+    quoteBinding : Optional SwapQuoteBinding
   ...
 nonconsuming choice PoolRules_Swap : PoolRules_SwapResult
   ...

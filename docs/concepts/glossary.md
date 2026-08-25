@@ -52,10 +52,12 @@ settlement surface this DEX is built on. Often written "Token Standard V2" or
 
 ### Committed allocation
 An [allocation](#allocation) authored with `committed = True`, so the authorizer
-cannot unilaterally withdraw it and the venue can settle against it repeatedly.
-Pool reserves and resting-order collateral are committed; each pool
-[slice](#pool--poolstate--poolslice) wraps one. Field on `AllocationSpecification`;
-see [`PoolSlice`](../../trading/CantonDex/Dex/PoolSlice.daml).
+cannot unilaterally withdraw it before its deadline and the executor has an
+availability guarantee. Pool reserve slices are committed. Expiring order
+collateral is committed through its deadline; GTC order collateral is
+uncommitted to preserve a trader-controlled exit. Field on
+`AllocationSpecification`; see
+[`PoolSlice`](../../trading/CantonDex/Dex/PoolSlice.daml).
 
 ### DexPair
 The operator's listing record for one market: base + quote
@@ -90,9 +92,10 @@ same `id` but a different `admin` are different instruments. The DEX stores the
 
 ### Iterated settlement
 Settling in steps, where each step rolls the remaining backing forward to the
-next iteration via `nextIterationFunding`. Pool swaps and partial order fills use
-it so one [committed allocation](#committed-allocation) can back many
-settlements. Enforced in
+next iteration via `nextIterationFunding`. Pool reserve slices and partial order
+fills use it so one allocation can back many settlements; the trader's swap
+allocation is terminal and signs its exact input and output sides. Iteration is
+independent of whether an allocation is committed. Enforced in
 [`Registry.V2`](../../trading/CantonDex/Registry/V2.daml); proven in
 [`RegistryConservationTests`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)
 (roll-forward stays within the locked backing).

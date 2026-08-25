@@ -101,13 +101,13 @@ trades, the registry must provide:
 | `instrumentId` is stable across the instrument's lifetime | Order, Pool, MatchedTrade, Rfq all key on it |
 | Factory and choice-context discovery is admin-controlled | The operator fetches these off-ledger and flushes its registry-client cache after a registry republishes factories or disclosures |
 | Allocation creation can consume one or more holdings and return change | The trader's wallet selects holdings; the registry factory validates and locks them |
-| Allocation factory accepts arbitrary `AllocationSpecification` shapes (prefunded, with-legs, committed, with `nextIterationFunding`) | Order's prefunded model and Pool's committed model both depend on this |
+| Allocation factory accepts arbitrary `AllocationSpecification` shapes (prefunded, with-legs, committed or uncommitted, with `nextIterationFunding`) | Orders require both deadline-committed and trader-withdrawable GTC shapes; pools require committed inventory |
 | Settlement factory enforces transfer-leg consistency with allocations | OTC / matched-trade settlement and `PoolRules_Swap` rely on the factory to validate, not the DEX |
 
 ## Allocation lifetime caps
 
 Registries may bound how long an allocation or instruction can live. This
-matters because pool slices are long-lived committed allocations and resting
+matters because pool slices are long-lived committed allocations and expiring
 orders may also outlive a registry's cap. An integration must discover the
 registry's current limit, keep requested settlement deadlines inside it, and
 rotate pool slices before they expire. The reference registry does not impose a

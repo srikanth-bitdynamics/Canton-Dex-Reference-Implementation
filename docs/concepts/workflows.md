@@ -36,9 +36,10 @@ different application state and cancellation rules.
   two pre-agreed legs; each side authors a one-shot allocation; the operator
   batches them by registry admin and settles.
 - **Long-lived pool and order inventory** — pool slices and resting orders use
-  committed, iterated allocations so their remaining funding can roll forward
-  without re-authoring. A trader's swap input is a separate allocation consumed
-  by that swap.
+  iterated allocations so their remaining funding can roll forward without
+  re-authoring. Pool slices are committed; expiring orders commit through their
+  deadline; GTC orders remain trader-withdrawable. A trader's swap is a
+  separate terminal allocation consumed by that swap.
 
 The rest of this page walks the four workflows that carry the design: swap,
 add/remove liquidity, the order lifecycle, and RFQ. Secondary flows (pair
@@ -86,7 +87,9 @@ non-obvious part:
   settling choice supplies the real legs as `extraTransferLegSides` on a
   `FinalizedAllocation`, and the registry rolls the residual budget into a fresh
   allocation the choice binds back onto the slice or order. A one-shot
-  allocation (`nextIterationFunding = None`) could not do this.
+  allocation (`nextIterationFunding = None`) could not do this. Commitment is a
+  separate decision: it guarantees executor availability but restricts the
+  authorizer's withdrawal right.
 - **Per-admin batches.** Legs are grouped by the registry `admin` that governs
   the instrument. Liquidity settles as *split-admin* DvP: base and quote under
   `pool.admin`, the LP mint/burn under `pool.lpRegistrar` — two
@@ -108,24 +111,28 @@ sequenceDiagram
     O->>L: PoolRules_RequestSwap
     L-->>O: allocation spec + settlement descriptor
     O-->>D: spec
-    T->>L: AllocationFactory_Allocate (prefund the input)
-    Note over T,L: trader-signed via wallet (CIP-0103)
+    T->>L: AllocationFactory_Allocate (exact input + output sides)
+    Note over T,L: trader signs the exact input and output legs (CIP-0103)
     D->>O: POST /v1/pools/swap (allocation cid)
     O->>L: PoolRules_Swap -> SettlementFactory_SettleBatch
     Note over O,L: swapper + input slice + output slices settle atomically (DvP)
     L-->>O: settled, PoolState rolled forward
 ```
 
-`PoolRules_Swap` prices `amountOut` from the current reserves *inside the
-choice* (`constantProductOut`, see [Pricing](pricing.md)), enforces the taker's
-`minOutputAmount` floor, then settles the swapper against the pool in one batch.
+`PoolRules_RequestSwap` binds the current `PoolState`, selected input/output
+slices, and `minOutputAmount`, then emits an allocation specification containing
+the exact input sender side and every output receiver side. The wallet signs
+that complete specification. `PoolRules_Swap` re-derives `amountOut` from the
+bound reserves *inside the choice* (`constantProductOut`, see
+[Pricing](pricing.md)), requires the signed legs to match, and settles the
+swapper against the pool in one batch. The operator cannot lower the output or
+use a different pool snapshot if doing so changes the signed legs.
 The input reserve slice rolls forward grown by the full input; the output side
 is drained from an ordered slice prefix so a routine swap never touches every
 reserve slice.
 
 ```daml
-let swapperFinalized = Utils.mkFinalizedAllocation swapperAllocationCid
-      (Utils.legsToSides swapperAccount (swapInLeg :: outDel.legs)) None
+let swapperFinalized = Utils.finalAllocation swapperAllocationCid
     inputFinalized = Utils.mkFinalizedAllocation inputSlice.allocationCid
       (Utils.legsToSides poolAccount [swapInLeg])
       (Some (TextMap.fromList [(inputInstrumentId, inputSlice.amount + inputAmount)]))
@@ -213,7 +220,7 @@ one settled trade without either side trusting the matcher.
 ```mermaid
 flowchart LR
   I["OrderFundingRequest<br/>trader intent"] -->|operator: Bind| P["Order (Pending)<br/>+ OrderAllocationRequest"]
-  P -.->|wallet: Allocate| A["committed V2.Allocation"]
+  P -.->|wallet: Allocate| A["iterated V2.Allocation<br/>deadline-committed or GTC-withdrawable"]
   P -->|operator: Order_Fund| F["Order (Funded)"]
   A --> F
   F -->|OrderMatchExecution_Execute| S{{"SettleBatch<br/>+ roll orders forward"}}
@@ -259,6 +266,13 @@ choice is load-bearing — the settle archives the allocations the orders point
 at, so an order left behind by a two-step flow would be uncancellable and
 unfillable. `Order_Cancel` is the single operator-controlled path for
 trader-requested cancels and post-expiry cleanup.
+
+Custody does not depend on that operator path. An expiring order is committed
+only until its deadline and is then withdrawable by the trader through
+`Allocation_Withdraw`. A GTC order has no deadline, so its allocation is
+uncommitted and trader-withdrawable at any time. Withdrawing leaves an
+operator-signed `Order` record that may remain visible, but the missing
+allocation makes settlement fail atomically; no funds remain locked.
 
 Proven in
 [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml) —

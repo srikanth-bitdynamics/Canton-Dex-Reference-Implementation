@@ -21,6 +21,14 @@ export interface DisclosedContract {
   synchronizerId?: string;
 }
 
+export interface SwapQuoteBinding {
+  expectedPoolId: string;
+  poolStateCid: ContractId<"PoolState">;
+  inputSliceCid: ContractId<"PoolSlice">;
+  outputSliceCids: ContractId<"PoolSlice">[];
+  minOutputAmount: Decimal;
+}
+
 export interface PoolSlice {
   allocationCid: ContractId<"Allocation">;
   amount: Decimal;
@@ -106,18 +114,18 @@ export class OperatorApi {
     return this.post("/v1/swaps/quote", req);
   }
 
-  // Operator builds (in Daml) the swapper's prefunded input-allocation spec +
-  // settlement; the wallet authors that spec, then swap() settles with the
-  // created allocation cid. The spec/settlement are opaque pass-through wire
-  // objects here — the wallet (commands.ts) consumes their typed shape.
+  // Operator builds the exact two-sided allocation against one pool snapshot;
+  // the wallet authorizes it and swap() settles that same quote binding.
   async requestSwap(req: {
     poolCid: ContractId<"Pool">;
     swapper: Party;
     inputInstrumentId: string;
     inputAmount: Decimal;
+    minOutputAmount: Decimal;
   }): Promise<{
     allocationSpec: unknown;
     settlement: unknown;
+    quoteBinding: SwapQuoteBinding;
     factoryCid: ContractId<"AllocationFactory">;
     allocationFactoryExtraArgs: V2ExtraArgs;
     allocationFactoryDisclosure: DisclosedContract[];
@@ -131,6 +139,7 @@ export class OperatorApi {
     inputInstrumentId: string;
     inputAmount: Decimal;
     minOutputAmount: Decimal;
+    quoteBinding: SwapQuoteBinding;
     // Either the explicit created cid, or an updateId for operator-discovery.
     swapperAllocationCid?: ContractId<"Allocation">;
     updateId?: string;
@@ -186,6 +195,8 @@ export class OperatorApi {
   }): Promise<{
     orderCid: ContractId<"Order">;
     allocationRequestCid: ContractId<"OrderAllocationRequest">;
+    settlement: unknown;
+    allocationSpec: unknown;
   }> {
     return this.post("/v1/orders/bind", req);
   }

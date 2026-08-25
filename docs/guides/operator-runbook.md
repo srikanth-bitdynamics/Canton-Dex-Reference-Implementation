@@ -84,6 +84,17 @@ the cleanup surface is auditable in one place.
   orders past `expiry` (checked off-ledger when scheduling the cancel) and for
   operator-initiated takedowns (compliance, fat-finger cancels, pair
   de-listing).
+- This sweep is not the trader's only custody exit. GTC order allocations are
+  uncommitted and authorizer-withdrawable at any time; expiring order
+  allocations become authorizer-withdrawable after their deadline. A withdraw
+  may leave stale order state for the operator to clean, but settlement against
+  the consumed allocation fails safely.
+
+### Stale swaps
+
+- A swap allocation is terminal and uncommitted. If its bound pool-state or
+  slice contract becomes stale before settlement, the trader can exercise
+  `Allocation_Withdraw`; the operator must not retry with altered trader legs.
 
 ### Stale RFQs and quotes
 
@@ -116,6 +127,9 @@ the cleanup surface is auditable in one place.
   invariant;
   [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml)
   exercises the multi-slice boundary case (`testDvpMultiSliceRemove`).
+- LP redemption requires both operator and LP registrar availability. This
+  reference has no holder-only emergency redemption path; see
+  [Liquidity and custody](../concepts/liquidity-and-custody.md#availability-and-the-lp-exit-boundary).
 
 ### LP supply reconciliation
 

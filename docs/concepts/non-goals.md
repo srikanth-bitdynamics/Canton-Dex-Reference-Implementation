@@ -21,6 +21,7 @@ and points at the guide or contract where the excluded work would live.
 | A rich instrument lifecycle | Token Standard V2 standardizes the holding, not lifecycle; the DEX needs only a holding | The registry that administers the `InstrumentId` — [add an instrument](../guides/add-lp-or-instrument.md) |
 | A privileged reference registry | `Registry.V2` is a convenience so the DEX runs standalone, not the mechanism value settles through | Any conforming TSv2 registry (Amulet, or another) |
 | Self-custody onboarding | The hosted relay is a testnet convenience, not a production wallet integration | The user's own compatible wallet or a deployment-specific delegation/co-submission flow |
+| Trustless LP emergency redemption | Reserve slices are operator-authored and removal is co-controlled by the operator and LP registrar | A production pool-governance and emergency-exit design |
 | Operational hardening | HA, secrets management, and a rate-limited gateway are an operator's deployment decisions | Whoever runs an instance — [operator runbook](../guides/operator-runbook.md) |
 | Production off-ledger services | The on-ledger contracts are the specification; the backend and indexer are one implementation of the surface around them | The integrator's own service — [architecture](architecture.md#off-ledger-services-what-they-may-and-may-not-do) |
 
@@ -132,6 +133,23 @@ self-custodial users connect through a compatible wallet and registry, while a
 hosted party authorizes only the allowlisted demo operations exposed by the
 relay. Registry choice context and disclosures still determine whether a given
 external instrument can participate in a settlement.
+
+## LP redemption has an explicit liveness dependency
+
+LP holders own the LP-token claim, not the reserve allocations referenced by
+`PoolSlice`. A routine removal exercises
+`PoolLiquidityRules_SettleRemoveLiquidity`, which requires both the pool
+operator and LP registrar. If either party becomes unavailable, this reference
+has no unilateral holder choice that redeems LP tokens against reserve slices.
+The reserves remain represented on-ledger, but the holder cannot complete the
+redemption workflow alone.
+
+That is a deliberate single-operator reference boundary, not a claim of
+trustless custody. A production design must choose its own liveness mechanism,
+such as governed or threshold-controlled execution plus a separately audited
+emergency redemption path. Adding such a path changes pool authority and
+failure semantics and is therefore not hidden inside the reference settlement
+flow.
 
 ## Operational hardening is out of scope
 

@@ -398,7 +398,7 @@ testRealRegistryDvpRemoveSettles = do
 
 -- Swap through the TestTokenV2 registry using the dApp's DvP shape. After
 -- funding the pool, Bob swaps quote (Y) for base (X):
---   1. operator builds bob's prefunded swap-input allocation spec via
+--   1. operator builds bob's exact two-sided allocation spec via
 --      PoolRules_RequestSwap (the dApp POST /v1/pools/swap/request path);
 --   2. bob authors that exact spec through the TestTokenV2 registry,
 --      locking his Y holdings (mirrors the wallet's AllocationFactory_Allocate);
@@ -412,16 +412,60 @@ testRealRegistryDvpSwapSettles = do
   now <- getTime
   addRes <- addSettle fx bob now
 
-  -- Mint the swapper's quote (Y) input as a TestTokenV2 holding.
+  -- Mint enough quote for one deliberately underpaying allocation and the real
+  -- swap allocation, so the negative check cannot consume the real input.
   let swapIn = 1000.0
-  TT2.mint fx.ttReg (Utils.basicAccount bob) "Y" swapIn
+  TT2.mint fx.ttReg (Utils.basicAccount bob) "Y" (2.0 * swapIn)
 
-  -- 1. Operator builds the swapper's prefunded input-allocation spec.
+  let quoteBinding = Some (PRules.SwapQuoteBinding with
+        expectedPoolId = fx.poolId
+        poolStateCid = addRes.poolStateCid
+        inputSliceCid = addRes.quoteSliceCid
+        outputSliceCids = [addRes.baseSliceCid]
+        minOutputAmount = 0.0)
+  -- 1. Operator builds the exact two-sided allocation spec.
   reqRes <- submit fx.operator $ exerciseCmd fx.rulesCid PRules.PoolRules_RequestSwap with
     poolCid = fx.poolCid
     swapper = bob
     inputInstrumentId = "Y"
     inputAmount = swapIn
+    quoteBinding
+  reqRes.allocationSpec.nextIterationFunding === None
+  reqRes.allocationSpec.committed === False
+  let senderSides = filter (\side -> side.side == V2.SenderSide)
+        reqRes.allocationSpec.transferLegSides
+      receiverSides = filter (\side -> side.side == V2.ReceiverSide)
+        reqRes.allocationSpec.transferLegSides
+  map (.instrumentId) senderSides === ["Y"]
+  map (.amount) senderSides === [swapIn]
+  map (.instrumentId) receiverSides === ["X"]
+  assertMsg "swap request must bind a positive output" (sum (map (.amount) receiverSides) > 0.0)
+
+  -- Even a one-ulp reduction in the signed receiver side cannot settle. The
+  -- pool choice recomputes the output from the bound state, and SettleBatch
+  -- requires the allocation to authorize that exact leg.
+  let underpaySpec = reqRes.allocationSpec with
+        transferLegSides = map
+          (\side -> if side.side == V2.ReceiverSide
+            then side with amount = side.amount - 0.0000000001
+            else side)
+          reqRes.allocationSpec.transferLegSides
+  underpayInputs <- holdingCidsFor bob "Y"
+  underpayCid <- ttAlloc fx.ttReg bob reqRes.settlement underpaySpec underpayInputs now
+  malformedSettleDisc <- ttSettleDisclosures fx
+  let swapCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
+  submitMustFail (actAs fx.operator <> discloseMany' malformedSettleDisc) $
+    exerciseCmd fx.rulesCid PRules.PoolRules_Swap with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid
+      swapperAccount = Utils.basicAccount bob
+      inputInstrumentId = "Y"; inputAmount = swapIn; minOutputAmount = 0.0
+      swapperAllocationCid = underpayCid
+      inputSliceCid = addRes.quoteSliceCid
+      outputSliceCids = [addRes.baseSliceCid]
+      factoryCid = fx.ttSettleCid
+      extraArgs = swapCtx
+      quoteBinding = reqRes.quoteBinding
 
   -- 2. Bob authors that exact spec via the upstream TestTokenV2 registry,
   --    locking his Y input holdings.
@@ -431,7 +475,6 @@ testRealRegistryDvpSwapSettles = do
   -- 3. Operator settles the swap via PoolRules_Swap against the upstream
   --    TestTokenV2 SettlementFactory, with the per-admin context.
   settleDisc <- ttSettleDisclosures fx
-  let swapCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
   swapRes <- submit (actAs fx.operator <> discloseMany' settleDisc) $
     exerciseCmd fx.rulesCid PRules.PoolRules_Swap with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
@@ -443,6 +486,7 @@ testRealRegistryDvpSwapSettles = do
       outputSliceCids = [addRes.baseSliceCid]
       factoryCid = fx.ttSettleCid
       extraArgs = swapCtx
+      quoteBinding = reqRes.quoteBinding
 
   Some state <- queryContractId fx.operator swapRes.poolStateCid
   assertMsg "quote reserve increased after swap" (state.reserves.quoteAmount > 200000.0)

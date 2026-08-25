@@ -8,7 +8,7 @@
 // a new method here is an explicit, auditable extension; the React
 // components below this layer should never reach past it.
 
-import { OperatorApi } from './operator-api';
+import { OperatorApi, type SwapQuoteBinding } from './operator-api';
 import { handToWallet } from '@/wallet/handoff';
 import { getProvider } from '@/wallet/registry';
 import { coSignsAdmin } from '@/wallet/capabilities';
@@ -180,6 +180,92 @@ function unitsToDecimal10(value: bigint): string {
   const whole = abs / 10_000_000_000n;
   const frac = (abs % 10_000_000_000n).toString().padStart(10, '0');
   return `${sign}${whole.toString()}.${frac}`;
+}
+
+export function assertSwapAuthority(params: {
+  context: DexContext;
+  pool: {
+    contractId: string;
+    admin: string;
+    baseInstrumentId: string;
+    quoteInstrumentId: string;
+  };
+  swapper: string;
+  inputInstrumentId: string;
+  inputAmount: string;
+  minOutputAmount: string;
+  allocationSpec: V2AllocationSpecification;
+  settlement: V2SettlementInfo;
+  quoteBinding: SwapQuoteBinding;
+}): void {
+  const { allocationSpec: spec, settlement, quoteBinding } = params;
+  const outputInstrumentId = params.inputInstrumentId === params.pool.baseInstrumentId
+    ? params.pool.quoteInstrumentId
+    : params.pool.baseInstrumentId;
+  const poolAccount = (account: { owner: string | null; provider: string | null; id: string }) =>
+    account.owner === params.context.operator && account.provider === null && account.id === '';
+
+  if (
+    (params.inputInstrumentId !== params.pool.baseInstrumentId &&
+      params.inputInstrumentId !== params.pool.quoteInstrumentId) ||
+    spec.admin !== params.pool.admin ||
+    spec.authorizer.owner !== params.swapper ||
+    spec.authorizer.provider !== null ||
+    spec.authorizer.id !== '' ||
+    spec.nextIterationFunding !== null ||
+    spec.committed
+  ) {
+    throw new Error('swap: operator returned an invalid trader allocation authority');
+  }
+  if (
+    settlement.executors.length !== 1 ||
+    settlement.executors[0] !== params.context.operator ||
+    settlement.id !== 'DexPool' ||
+    settlement.cid !== params.pool.contractId
+  ) {
+    throw new Error('swap: operator returned an invalid settlement descriptor');
+  }
+  if (
+    quoteBinding.minOutputAmount !== params.minOutputAmount ||
+    quoteBinding.outputSliceCids.length === 0
+  ) {
+    throw new Error('swap: operator returned a quote binding that differs from the request');
+  }
+
+  const senderSides = spec.transferLegSides.filter((side) => side.side === 'SenderSide');
+  const receiverSides = spec.transferLegSides.filter((side) => side.side === 'ReceiverSide');
+  const sender = senderSides[0];
+  if (
+    senderSides.length !== 1 ||
+    !sender ||
+    sender.transferLegId !== 'swap-in' ||
+    sender.instrumentId !== params.inputInstrumentId ||
+    decimal10StringUnits(sender.amount) !== decimal10StringUnits(params.inputAmount) ||
+    !poolAccount(sender.otherside)
+  ) {
+    throw new Error('swap: operator returned allocation input that differs from the request');
+  }
+  if (
+    receiverSides.length === 0 ||
+    receiverSides.some((side, index) =>
+      side.transferLegId !== `swap-out-${index}` ||
+      side.instrumentId !== outputInstrumentId ||
+      decimal10StringUnits(side.amount) <= 0n ||
+      !poolAccount(side.otherside)
+    )
+  ) {
+    throw new Error('swap: operator returned invalid allocation output legs');
+  }
+  if (senderSides.length + receiverSides.length !== spec.transferLegSides.length) {
+    throw new Error('swap: operator returned unsupported allocation leg sides');
+  }
+  const outputAmount = receiverSides.reduce(
+    (sum, side) => sum + decimal10StringUnits(side.amount),
+    0n,
+  );
+  if (outputAmount < decimal10StringUnits(params.minOutputAmount)) {
+    throw new Error('swap: signed output is below the requested slippage minimum');
+  }
 }
 
 interface FundingHolding {
@@ -629,9 +715,9 @@ export const ledger = {
 
   // === write endpoints =====================================================
   //
-  // Swap/order writes still take a `context` argument carrying the operator
-  // party, asset admin, and allocation factory cid. DvP add/remove fetch
-  // the factories they need from `/request`.
+  // Swap/order writes still take a `context` argument carrying the venue
+  // operator and default factory surface. Swap and DvP liquidity use the
+  // selected pool's registry admin and fetch their factories from `/request`.
 
   /**
    * Trader-authority swap. Resolves the output instrument from the pool
@@ -639,23 +725,28 @@ export const ledger = {
    */
   executeSwap: async (params: {
     context: DexContext;
-    pool: { contractId: string; baseInstrumentId: string; quoteInstrumentId: string };
+    pool: {
+      contractId: string;
+      admin: string;
+      baseInstrumentId: string;
+      quoteInstrumentId: string;
+    };
     inputInstrumentId: string;
     inputAmount: number;
     minOutputAmount: number;
     swapperParty: string;
     inputHoldingCids?: string[];
   }) => {
-    // Three-call DvP swap: (1) the operator builds the swapper's input
-    // allocation spec in Daml (PoolRules_RequestSwap); (2) the wallet authors
-    // that single allocation, locking the trader's input holdings, and returns
+    // Three-call DvP swap: (1) Daml builds the exact two-sided allocation for
+    // one pool snapshot; (2) the wallet authorizes it, locking only the input,
+    // and returns
     // the created Allocation cid; (3) the operator settles via PoolRules_Swap
     // with that cid. The promise resolves on the real settle result — no
     // optimistic success.
     let inputHoldingCids = params.inputHoldingCids;
     if (!inputHoldingCids || inputHoldingCids.length === 0) {
       inputHoldingCids = await normalizeSwapFunding({
-        admin: params.context.admin,
+        admin: params.pool.admin,
         party: params.swapperParty,
         instrumentId: params.inputInstrumentId,
         amount: params.inputAmount,
@@ -673,9 +764,22 @@ export const ledger = {
       swapper: params.swapperParty,
       inputInstrumentId: params.inputInstrumentId,
       inputAmount: formatDecimal10(params.inputAmount),
+      minOutputAmount: formatDecimal10(params.minOutputAmount),
     });
 
-    // 2. Wallet authors the single prefunded input allocation.
+    assertSwapAuthority({
+      context: params.context,
+      pool: params.pool,
+      swapper: params.swapperParty,
+      inputInstrumentId: params.inputInstrumentId,
+      inputAmount: formatDecimal10(params.inputAmount),
+      minOutputAmount: formatDecimal10(params.minOutputAmount),
+      allocationSpec: req.allocationSpec as V2AllocationSpecification,
+      settlement: req.settlement as V2SettlementInfo,
+      quoteBinding: req.quoteBinding,
+    });
+
+    // 2. Wallet authors the exact terminal allocation.
     const walletResult = await handToWallet({
       kind: 'request-swap',
       poolId: params.pool.contractId,
@@ -688,7 +792,7 @@ export const ledger = {
     });
     const swapperAllocationCid = walletResult.createdAllocationCids?.[0];
     // updateId-only wallets (e.g. PartyLayer) return no created cid; the operator
-    // recovers the swap input allocation from the tree by updateId.
+    // recovers the signed swap allocation from the tree by updateId.
     const updateId = walletResult.auxiliaryCids?.updateId;
     if (!swapperAllocationCid && !updateId) {
       throw new Error(
@@ -704,6 +808,7 @@ export const ledger = {
       inputInstrumentId: params.inputInstrumentId,
       inputAmount: formatDecimal10(params.inputAmount),
       minOutputAmount: formatDecimal10(params.minOutputAmount),
+      quoteBinding: req.quoteBinding,
       ...(swapperAllocationCid
         ? { swapperAllocationCid: swapperAllocationCid as ContractId<'Allocation'> }
         : { updateId }),
@@ -783,21 +888,8 @@ export const ledger = {
         factoryCid: params.context.allocationFactoryCid as ContractId<'AllocationFactory'>,
         allocationFactoryExtraArgs: params.context.allocationFactoryExtraArgs,
         disclosure: params.context.allocationFactoryDisclosure,
-        settlement: {
-          executors: [params.context.operator],
-          id: `DexOrder-${settlementRef}`,
-          cid: null,
-          meta: { values: {} },
-        },
-        allocationSpec: {
-          admin: params.context.admin,
-          authorizer: { owner: trader, provider: null, id: '' },
-          transferLegSides: [],
-          settlementDeadline: params.expiry,
-          nextIterationFunding: { [lockInstrumentId]: lockAmount },
-          committed: true,
-          meta: { values: {} },
-        },
+        settlement: bindRes.settlement as V2SettlementInfo,
+        allocationSpec: bindRes.allocationSpec as V2AllocationSpecification,
         inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
         hint: { instrumentId: lockInstrumentId, amount: lockAmount },
       });

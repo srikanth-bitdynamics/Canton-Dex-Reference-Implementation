@@ -5,11 +5,12 @@ This document is the file-anchored reference for the Token Standard **V2
 iterated settlement, and the exact DEX code that uses each one.
 
 The DEX uses allocations for two jobs. The obvious one is reserving funds for a
-single trade. The load-bearing one is holding **long-lived, iterated pool
-inventory**: a bid, an ask, and each side of pool liquidity are backed by an
-allocation that stays live and rolls forward across many settlements. That
-second job is what pulls in the committed-allocation and iterated-settlement
-parts of the standard catalogued below.
+single trade. The load-bearing one is holding **long-lived, iterated inventory**:
+a bid, an ask, and each side of pool liquidity are backed by an allocation that
+stays live and rolls forward across many settlements. Pool slices and
+deadline-bounded orders use commitment; GTC orders use iteration without
+commitment so the trader retains a unilateral exit. These jobs pull in the
+allocation and iterated-settlement parts of the standard catalogued below.
 
 For the architectural rationale (why the pool leans on these features rather
 than a custom balance with an escrow bridge behind it), see
@@ -64,6 +65,11 @@ DEX usage:
 - `PoolLiquidityRules.mkOperatorReceiver` and `PoolLiquidityRules.dvpSpec`
   (`trading/CantonDex/Dex/PoolLiquidityRules.daml`) build committed specs for
   pool slices and LP DvP legs.
+- `Order.orderFundingSpecification` commits an expiring order only through its
+  deadline. A GTC order has no bounded deadline, so it is deliberately
+  uncommitted and its trader can exercise `Allocation_Withdraw` at any time.
+- Swap allocations are terminal and uncommitted. If the bound pool snapshot is
+  stale before settlement, the trader can withdraw the allocation.
 
 ### `nextIterationFunding` — on `AllocationSpecification`, `FinalizedAllocation`, and `Allocation_Settle`
 

@@ -4,6 +4,8 @@
 -- allocation, then the order is Funded and live.
 module CantonDex.Dex.OrderFundingRequest where
 
+import Splice.Api.Token.AllocationV2 qualified as V2
+
 import CantonDex.Dex.Order qualified as Order
 
 template OrderFundingRequest with
@@ -38,11 +40,13 @@ template OrderFundingRequest with
     choice OrderFundingRequest_Bind : OrderFundingRequest_BindResult
       with
         settlementRef : Text
-          -- ^ Operator-chosen unique reference; becomes the settlement id.
+          -- ^ Operator-chosen unique correlation reference for this order.
       controller operator
       do
         now <- getTime
         let orderRef = Order.makeOrderRefFromText settlementRef
+            allocationSettlement = Order.orderBookSettlement
+              operator admin baseInstrumentId quoteInstrumentId
             lockInstrumentId = case side of
               Order.Bid -> quoteInstrumentId
               Order.Ask -> baseInstrumentId
@@ -71,11 +75,17 @@ template OrderFundingRequest with
           lockAmount
           expiry
           requestedAt = now
+          allocationSettlement = Some allocationSettlement
         pure OrderFundingRequest_BindResult with
           orderCid
           allocationRequestCid = allocReqCid
+          settlement = Some allocationSettlement
+          allocationSpec = Some (Order.orderFundingSpecification
+            admin trader lockInstrumentId lockAmount expiry)
 
 data OrderFundingRequest_BindResult = OrderFundingRequest_BindResult with
     orderCid : ContractId Order.Order
     allocationRequestCid : ContractId Order.OrderAllocationRequest
+    settlement : Optional V2.SettlementInfo
+    allocationSpec : Optional V2.AllocationSpecification
   deriving (Eq, Show)

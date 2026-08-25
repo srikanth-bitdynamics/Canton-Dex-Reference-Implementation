@@ -538,7 +538,7 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.requestCid, null, "request consumed on the discovery path");
   });
 
-  it("swap (operator-discovery) recovers the single input allocation from updateId", async () => {
+  it("swap (operator-discovery) recovers the signed allocation from updateId", async () => {
     const pool = mkSlicedPool();
     const ledger = new CapturingLedger(pool, mkLpPolicy());
     ledger.treeEvents = [
@@ -553,11 +553,25 @@ describe("PoolService DvP liquidity", () => {
       inputInstrumentId: "BTC",
       inputAmount: "0.01",
       minOutputAmount: "0",
+      quoteBinding: {
+        expectedPoolId: pool.poolId,
+        poolStateCid: pool.poolStateCid,
+        inputSliceCid: pool.baseSlices[0]!.contractId,
+        outputSliceCids: [pool.quoteSlices[0]!.contractId],
+        minOutputAmount: "0",
+      },
       updateId: "u-swap",
     });
 
     const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
-    assert.equal(cmd.argument.swapperAllocationCid, "#swapAlloc", "recovered swap input cid");
+    assert.equal(cmd.argument.swapperAllocationCid, "#swapAlloc", "recovered signed swap cid");
+    assert.deepEqual(cmd.argument.quoteBinding, {
+      expectedPoolId: pool.poolId,
+      poolStateCid: pool.poolStateCid,
+      inputSliceCid: "#bs:0",
+      outputSliceCids: ["#qs:0"],
+      minOutputAmount: "0",
+    });
   });
 
   it("discoverAcceptance disambiguates by originalRequestCid (lp + settlement.id collide)", async () => {

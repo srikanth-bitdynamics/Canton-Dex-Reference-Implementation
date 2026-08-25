@@ -29,7 +29,7 @@ flowchart TB
 
 - **DEX contracts own market structure**: orders, pools, LP issuance, RFQ, trades.
 - **Token Standard contracts own reservation and settlement**: a trade is a set of
-  committed allocations settled by one `SettlementFactory_SettleBatch`.
+  holder-authored allocations settled by one `SettlementFactory_SettleBatch`.
 - **Registry contracts own asset semantics**: what a holding is, who may hold it,
   and the choice context a settlement needs.
 
@@ -45,7 +45,8 @@ A runnable Canton DEX that:
 - represents every asset (base, quote, and LP) as a Token Standard V2 (CIP-0112)
   `V2.Holding`;
 - uses iterated allocations, so pool reserves and resting orders adjust in place
-  without a re-funding round trip;
+  without a re-funding round trip; commitment is selected separately according
+  to each workflow's exit requirements;
 - records an operator `PolicyReceipt` on every RFQ accept, so dealer ranking is
   replayable after the fact;
 - deploys to a Canton testnet participant with the included tooling
@@ -94,6 +95,9 @@ A limit order rests in the book, funded by the trader's own locked allocation.
 - `Dex/Order.daml` — the operator-bound `Order` and its `OrderAllocationRequest`. The
   trader authors the allocation with `AllocationFactory_Allocate`, so their own
   authority locks the holding; the operator cannot move it.
+- Expiring orders commit funding until their deadline. GTC funding remains
+  uncommitted, allowing the trader to withdraw through the standard allocation
+  interface if the venue is unavailable; a later match then fails safely.
 - `Dex/OrderMatchExecution.daml` — the atomic match (see the matcher section below).
 - Proven by
   [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)

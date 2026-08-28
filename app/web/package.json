@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/canton-foundation/canton-dex"
+    "url": "https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation.git"
   },
   "private": true,
   "type": "module",
@@ -27,22 +27,30 @@
     "@walletconnect/types": "^2.23.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.0",
+    "react-router-dom": "^7.18.2",
     "zustand": "^4.5.0"
+  },
+  "overrides": {
+    "@coinbase/cdp-sdk": {
+      "axios": "^1.20.0"
+    },
+    "@metamask/utils": {
+      "uuid": "^11.1.1"
+    }
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
-    "@vitest/ui": "^1.6.1",
+    "@vitejs/plugin-react": "^6.1.0",
+    "@vitest/ui": "^4.1.11",
     "autoprefixer": "^10.4.19",
     "jsdom": "^29.1.1",
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.6",
     "typescript": "^5.5.3",
-    "vite": "^5.3.4",
-    "vitest": "^1.6.1"
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
   }
 }

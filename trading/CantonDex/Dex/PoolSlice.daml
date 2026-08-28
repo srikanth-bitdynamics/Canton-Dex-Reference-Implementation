@@ -30,3 +30,5 @@ template PoolSlice with
       --   choice that writes the slice.
   where
     signatory operator
+
+    ensure poolId /= "" && amount > 0.0

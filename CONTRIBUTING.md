@@ -40,8 +40,10 @@ builder evaluating Canton + Token Standard V2.
   and explain any public contract-surface change.
 - Backend changes: TypeScript typecheck clean; include a `curl` example
   for any new endpoint in the PR description.
-- UI changes: at minimum a screenshot of the affected page; if the
-  change touches data flow, also confirm against testnet.
+- UI changes: at minimum a screenshot of the affected page. If the change
+  touches AMM data flow, run the self-contained DPM sandbox proof documented in
+  `docs/guides/localnet.md`; controlled-testnet validation is an additional
+  check when the contributor has access to such an environment.
 - Avoid committing secrets, `.env` files, SQLite databases, private keys, or
   generated build output. The Token Standard DARs already pinned under
   `vendor/splice/dars/` are the intentional exception for binary dependencies.

@@ -1,11 +1,8 @@
-// Shared off-ledger choice-context fetch: wraps the registry's enriched
-// context + disclosures into the extraArgs shape the token-standard choices
-// take. Used by the pool, order, and matched-trade services.
+// Convert one operation-specific registry response into the ExtraArgs shape
+// expected by Token Standard choices. Discovery itself stays at the call site
+// so a context cannot be fetched without the exact operation arguments.
 
-import type { DisclosedContract } from "@canton-dex/registry-client";
-import { RegistryClient } from "@canton-dex/registry-client";
-
-import type { Party } from "../types.js";
+import type { ChoiceContextRef, DisclosedContract } from "@canton-dex/registry-client";
 
 export interface ChoiceContext {
   extraArgs: {
@@ -15,13 +12,14 @@ export interface ChoiceContext {
   disclosure: DisclosedContract[];
 }
 
-export async function fetchChoiceContext(
-  registry: RegistryClient,
-  admin: Party,
-): Promise<ChoiceContext> {
-  const ctx = await registry.getChoiceContext(admin);
+export function asChoiceContext(ctx: ChoiceContextRef): ChoiceContext {
   return {
     extraArgs: { context: ctx.context, meta: { values: {} } },
     disclosure: ctx.disclosure,
   };
 }
+
+export const emptyExtraArgs = {
+  context: { values: {} },
+  meta: { values: {} },
+};

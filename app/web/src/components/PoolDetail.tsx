@@ -577,7 +577,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                 </div>
                 <div className="sp-12" />
                 <div style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.5, padding: '6px 8px', background: 'var(--bg-2)', borderRadius: 6 }}>
-                  Delivery-versus-payment in three steps: the operator creates a{' '}
+                  Live-ledger DvP design in three steps: the operator creates a{' '}
                   <span className="mono">LiquidityAllocationRequest</span> → your
                   wallet authors the base/quote receipt + LP burn-sender
                   allocations → the operator and lpRegistrar settle, delivering

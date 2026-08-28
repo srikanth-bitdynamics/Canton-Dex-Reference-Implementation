@@ -124,10 +124,11 @@ export class RfqService {
   }
 
   /**
-   * Create an RFQ on the trader's behalf. The Rfq template is signatory
-   * trader, so this submission carries the trader's authority — in
-   * production the trader's wallet does this, but the operator backend
-   * accepts the call here so the dApp can drive the live demo path.
+   * Trusted-custodial exception: create an RFQ with the trader's authority.
+   * The public HTTP route is disabled unless DEX_HOSTED_RFQ_RELAY and caller
+   * binding are configured, and the participant user must already have actAs
+   * rights for that trader. A self-custody deployment hands this command to the
+   * trader's wallet instead.
    */
   async create(input: RfqCreateInput): Promise<{ rfqCid: ContractId<"Rfq"> }> {
     const rfqCid = await retryOnContention(() =>
@@ -186,7 +187,7 @@ export class RfqService {
         throw new RfqAuthError("caller may only accept its own RFQ");
       }
       const quotes = await this.fetchQuotes(input.consideredQuoteCids);
-      const ranked = rankQuotes(rfq.side, quotes, input.now);
+      const ranked = rankQuotes(quotes, input.now);
       const accepted = quotes.find(
         (q) => q.contractId === input.acceptedQuoteCid,
       );
@@ -208,7 +209,6 @@ export class RfqService {
       // Rfq_Accept choice computes its own copy from the same inputs.
       const receipt = buildReceipt({
         rfqId: rfq.rfqId,
-        side: rfq.side,
         quotes,
         acceptedDealer: accepted.dealer,
         signedBy: this.operatorParty,

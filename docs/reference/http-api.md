@@ -9,23 +9,29 @@ before reading the endpoint tables:
    a party's holdings, trade and swap history. Reads never move value and, with
    two scoping exceptions below, need no authorization.
 2. **Orchestration writes.** Administrative and settlement commands the
-   operator is authorized to submit, plus explicitly documented hosted-party
-   RFQ relay routes. These are gated by a bearer token.
+   operator is authorized to submit, plus the explicitly documented
+   operator-mediated RFQ routes. These are gated by a bearer token.
 
 Order funding, holding allocation, swaps, and LP actions preserve a
 self-custodial boundary: a trader wallet authors the allocation and this API
-only requests or settles it. The RFQ endpoints are the exception. They submit
-as hosted trader parties, and RFQ acceptance also submits as the operator, so
-the backend ledger user must hold those act-as rights. Do not expose those
-routes as a self-custodial production API without replacing that authority
-model.
+only requests or settles it. The RFQ write endpoints are a custodial exception.
+They submit as configured trader parties, and acceptance also submits as the
+operator, so the backend ledger user must hold those act-as rights.
+`testnet-server.ts` disables that relay by default; opting in requires
+per-caller JWT binding. Do not describe or expose that authority model as
+self-custodial.
+
+The server in this repository has no `/v1/testnet/*` namespace, party faucet,
+or public-host provisioning. Those are deployment concerns, not hidden API
+routes. The only generic signing relay is the development-only endpoint
+documented below.
 
 ```mermaid
 flowchart LR
   UI["dApp / integrator"]
   subgraph op["Operator backend — this API"]
     R["Reads<br/>ACS + indexer → JSON"]
-    W["Orchestration writes<br/>operator commands + hosted RFQ relay"]
+    W["Orchestration writes<br/>operator commands + mediated RFQ"]
   end
   A["Trader wallet<br/>(CIP-0103)"]
   L[("Canton ledger")]
@@ -79,26 +85,35 @@ Three fail-closed gates, applied in this order:
 |---|---|---|
 | **Admin token** | `/v1/admin/*` writes | `Authorization: Bearer $OPERATOR_ADMIN_TOKEN` |
 | **Operator token** | every other state-changing route (pool swap/LP, order, RFQ, matched-trade, wallet relay) | `Authorization: Bearer $DEX_OPERATOR_API_TOKEN` |
-| **Per-caller binding** *(optional)* | trader-subject writes | `X-Caller-Token` JWT whose `sub` is the caller's own party |
+| **Per-caller binding** *(optional)* | party-scoped reads and trader-subject writes | `X-Caller-Token` JWT whose `sub` is the caller's own party |
 
-Reads are open, except the *unfiltered* forms of `/v1/trades`, `/v1/rfq`, and
-`/v1/rfq/history`, whose rows name both parties and so require the admin token.
+Market reads are open. Account and party-history reads require an explicit
+`owner` or `trader`; when per-caller binding is enabled, that party must match a
+valid `X-Caller-Token` (**401** missing/invalid, **403** mismatch). An admin token
+may read any party. The *unfiltered* forms of `/v1/trades`, `/v1/rfq`, and
+`/v1/rfq/history` require the admin token because their rows name both parties.
 On the in-memory dev server, `DEX_DEV_OPEN=1` opens the operator-write gate
 without a token; see
-[Local Setup → Exercising write paths](../getting-started.md#exercising-write-paths-in-demo-mode).
+[Local Setup → Exercising write paths](../getting-started.md#what-is-safe-to-explore-in-this-mode).
 
 When the operator token is unset and the dev bypass is off, an operator write
 returns **401**. When per-caller binding is configured
-(`callerJwtSecret`), a write whose subject party is not the caller's own — or
-that carries no valid `X-Caller-Token` — returns **403**. Binding is off by
+(`callerJwtSecret`), a party-scoped read or trader-subject write with no valid
+`X-Caller-Token` returns **401**; a valid token for a different party returns
+**403**. Binding is off by
 default (a single trusted backend); turn it on when the backend fronts
 mutually-distrusting callers.
+
+The optional custodial RFQ mode is stricter: `testnet-server.ts` refuses to
+enable `DEX_HOSTED_RFQ_RELAY=1` unless `DEX_CALLER_JWT_SECRET` is present. For
+that mode, per-caller binding is mandatory rather than optional.
 
 ---
 
 ## Read endpoints
 
-Auth is **open** for every read below unless the row says otherwise.
+Auth is **open** for market reads unless the row says otherwise. Rows marked
+*caller-bound* require the party token only when per-caller binding is enabled.
 
 ### Reads — context and market
 
@@ -125,9 +140,10 @@ it surfaces it here rather than making the dApp guess:
 }
 ```
 
-`GET /v1/status` reports `slot` as the participant's latest offset (polled every
-2s, with a local counter fallback so the UI's liveness pill keeps moving if the
-poll fails):
+`GET /v1/status` reports `slot` as the participant's latest ledger-end offset,
+polled every two seconds. `synced` reflects the **most recent** probe. A failed
+configured-participant probe keeps the last real offset and returns
+`synced:false`; only the no-Canton in-memory dev server uses a local counter:
 
 ```json
 { "network": "canton:devnet", "slot": 1234567, "synced": true, "serverTime": "2026-05-17T..." }
@@ -151,7 +167,7 @@ fields until `registry-client` implements the standard's off-ledger
 
 | Method · Path | Purpose |
 |---|---|
-| `GET /v1/orders?trader=` | Open orders for one trader (**400** without `?trader=`) |
+| `GET /v1/orders?trader=` | Open orders for one trader; caller-bound (**400** without `?trader=`) |
 | `GET /v1/orders/book?pair=BASE/QUOTE` | Resting bids and asks for one market |
 | `GET /v1/orders/matches?pair=BASE/QUOTE` | Crossable pairs — a read-only preview |
 
@@ -166,8 +182,8 @@ the operator route that *acts* on a match
 
 | Method · Path | Purpose |
 |---|---|
-| `GET /v1/holdings?owner=` | Per-contract (UTXO-style) holding rows (**400** without `?owner=`) |
-| `GET /v1/balances?owner=` | The holding rows summed per instrument, `available` vs `locked` |
+| `GET /v1/holdings?owner=` | Per-contract (UTXO-style) holding rows; caller-bound (**400** without `?owner=`) |
+| `GET /v1/balances?owner=` | Caller-bound holding totals per instrument, `available` vs `locked` |
 
 `/v1/balances` saves every client re-deriving a balance from the UTXO-style
 rows. `locked` is the portion committed to open orders, swaps, or allocations;
@@ -187,9 +203,9 @@ without a `db` handle.
 
 | Method · Path | Purpose | Auth |
 |---|---|---|
-| `GET /v1/trades?trader=&pair=&limit=` | accepted RFQ `MatchedTrade`s + the `SettledTrade` each order-book fill writes | open / **admin** unfiltered |
+| `GET /v1/trades?trader=&pair=&limit=` | accepted RFQ `MatchedTrade`s + the `SettledTrade` each order-book fill writes | caller-bound / **admin** unfiltered |
 | `GET /v1/swaps?pair=&kind=&limit=` | Pool history; `kind` ∈ `swap`,`add_liquidity`,`remove_liquidity`,`state_change` (default `swap`) | open |
-| `GET /v1/rfq/history?trader=&limit=` | RFQ lifecycle rows, including accepted quotes (trader, pair, winning dealer, rank) | open / **admin** unfiltered |
+| `GET /v1/rfq/history?trader=&limit=` | RFQ lifecycle rows, including accepted quotes (trader, pair, winning dealer, rank) | caller-bound / **admin** unfiltered |
 | `GET /v1/price-history?pair=&hours=` | Price points from the swaps feed (`hours` 1–720, default 24) | open |
 | `GET /v1/stats/24h?pair=` | 24h price change, volume, swap count | open |
 | `GET /v1/dealers` | Dealer registry — public list | open |
@@ -207,7 +223,7 @@ one genuinely float-valued field on the API: it is a ratio, not an amount.
 
 | Method · Path | Purpose | Auth |
 |---|---|---|
-| `GET /v1/rfq?owner=` | RFQs and quotes scoped to one party | open / **admin** unfiltered |
+| `GET /v1/rfq?owner=` | RFQs and quotes scoped to one party | caller-bound / **admin** unfiltered |
 
 A trader sees the RFQs they raised or were whitelisted for; a dealer sees the
 quotes they posted or received. The operator observes *every* RFQ and quote — who
@@ -374,6 +390,13 @@ request is rejected with **400** before it reaches the ledger.
 | `POST /v1/rfq/:cid/cancel` | Cancel an open RFQ (**204**) |
 | `POST /v1/rfq/accept` | Operator + trader co-sign the accept → `{ tradeCid, receipt }` |
 
+These three writes are disabled (`404`) by default in `testnet-server.ts`.
+`DEX_HOSTED_RFQ_RELAY=1` enables the custodial mode only when
+`DEX_CALLER_JWT_SECRET` is also configured; the participant user must have
+`actAs` rights for every configured trader. This flag does not provision
+parties or make the server a public service. Reads remain available when the
+mode is disabled.
+
 ```json
 // POST /v1/rfq
 { "trader": "...", "rfqId": "...", "pair": "BTC/USDC", "side": "RFQ_Buy",
@@ -412,12 +435,14 @@ The pass-through bodies for the pair/pool routes are the service inputs in
 |---|---|---|
 | `POST /v1/wallet/submit` | Forward shaped ledger commands under the operator JWT | operator + flag |
 
-Off by default: it returns **404** unless `DEX_DEV_WALLET_RELAY=1`. When on, the
-forwarded `actAs` parties must be on the `DEX_DEV_RELAY_PARTIES` allowlist (else
-**403**), the `commands` array and `commandId` are shape-checked, and the relay
-follows the committed transaction tree to return the created allocation cids the
-DvP settle path needs. It is a convenience for the walletless demo, not a
-production authority path.
+Only the in-memory `dev-server.ts` can enable this route with
+`DEX_DEV_WALLET_RELAY=1`; `testnet-server.ts` hard-disables it even if that
+variable leaks into a deployment environment. In dev, forwarded `actAs`
+parties must be on `DEX_DEV_RELAY_PARTIES` (else **403**), the `commands` array
+and `commandId` are shape-checked, and the relay follows the committed
+transaction tree to return created allocation cids. It is a walletless local
+diagnostic, not a public faucet, hosted-party service, or production authority
+path.
 
 ---
 

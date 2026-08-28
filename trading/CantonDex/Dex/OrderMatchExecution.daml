@@ -112,6 +112,106 @@ rollOrderForward orderCid order filledQty residualFunding nextAllocationCid = do
       | otherwise -> abort "fully filled order must not roll funding forward"
     _ -> abort "residual funding and rolled-forward allocation disagree"
 
+data PreparedOrderMatch = PreparedOrderMatch with
+    preparedBuyOrder : Order
+    preparedSellOrder : Order
+    preparedBuyerFunding : Optional Utils.Funding
+    preparedSellerFunding : Optional Utils.Funding
+    preparedSettlementArguments : V2.SettlementFactory_SettleBatch
+
+prepareOrderMatch
+  : Party
+  -> MatchedOrderPair
+  -> ContractId Order
+  -> ContractId Order
+  -> ContractId V2.Allocation
+  -> ContractId V2.Allocation
+  -> Update PreparedOrderMatch
+prepareOrderMatch
+    operator match buyOrderCid sellOrderCid
+    buyerAllocationCid sellerAllocationCid = do
+  buyOrder <- fetch buyOrderCid
+  sellOrder <- fetch sellOrderCid
+
+  assertMsg "buy order operator mismatch" (buyOrder.operator == operator)
+  assertMsg "sell order operator mismatch" (sellOrder.operator == operator)
+  assertMsg "buy order must be a Bid" (buyOrder.side == Bid)
+  assertMsg "sell order must be an Ask" (sellOrder.side == Ask)
+  assertMsg "buy order is not funded"
+    (buyOrder.status == OS_Funded || buyOrder.status == OS_PartiallyFilled)
+  assertMsg "sell order is not funded"
+    (sellOrder.status == OS_Funded || sellOrder.status == OS_PartiallyFilled)
+  assertMsg "buyer allocation is not the bid order's allocation"
+    (buyOrder.allocationCid == Some buyerAllocationCid)
+  assertMsg "seller allocation is not the ask order's allocation"
+    (sellOrder.allocationCid == Some sellerAllocationCid)
+  assertMsg "buyer account is not the bid trader"
+    (match.buyerAccount.owner == Some buyOrder.trader)
+  assertMsg "seller account is not the ask trader"
+    (match.sellerAccount.owner == Some sellOrder.trader)
+  assertMsg "registry admin mismatch" (buyOrder.admin == sellOrder.admin)
+  assertMsg "base instrument mismatch"
+    (buyOrder.baseInstrumentId == sellOrder.baseInstrumentId
+      && match.baseInstrumentId == buyOrder.baseInstrumentId)
+  assertMsg "quote instrument mismatch"
+    (buyOrder.quoteInstrumentId == sellOrder.quoteInstrumentId
+      && match.quoteInstrumentId == buyOrder.quoteInstrumentId)
+  assertMsg "fill quantity must be positive" (match.fillQty > 0.0)
+  assertMsg "fill exceeds bid remaining quantity"
+    (match.fillQty <= buyOrder.remainingQty)
+  assertMsg "fill exceeds ask remaining quantity"
+    (match.fillQty <= sellOrder.remainingQty)
+  assertMsg "fill price must be positive" (match.fillPrice > 0.0)
+  assertMsg "fill price above bid limit" (match.fillPrice <= buyOrder.limitPrice)
+  assertMsg "fill price below ask limit" (match.fillPrice >= sellOrder.limitPrice)
+
+  buyerAllocation <- fetch buyerAllocationCid
+  sellerAllocation <- fetch sellerAllocationCid
+  let buyerAllocationView = view buyerAllocation
+      sellerAllocationView = view sellerAllocation
+  assertMsg "buyer allocation belongs to a different settlement"
+    (buyerAllocationView.settlement == sellerAllocationView.settlement)
+  assertMsg "order settlement executor mismatch"
+    (buyerAllocationView.settlement.executors == [operator])
+  assertMsg "buyer allocation authorizer mismatch"
+    (buyerAllocationView.allocation.authorizer == match.buyerAccount)
+  assertMsg "seller allocation authorizer mismatch"
+    (sellerAllocationView.allocation.authorizer == match.sellerAccount)
+  assertMsg "buyer allocation registry admin mismatch"
+    (buyerAllocationView.allocation.admin == buyOrder.admin)
+  assertMsg "seller allocation registry admin mismatch"
+    (sellerAllocationView.allocation.admin == sellOrder.admin)
+
+  let transferLegs = mkMatchTransferLegs match
+      sideFunding : Order -> V2.Allocation -> V2.Account -> Optional Utils.Funding
+      sideFunding order allocation account
+        | match.fillQty >= order.remainingQty = None
+        | otherwise =
+            remainderFunding account (allocationFunding allocation) transferLegs
+      buyerFunding = sideFunding buyOrder buyerAllocation match.buyerAccount
+      sellerFunding = sideFunding sellOrder sellerAllocation match.sellerAccount
+      buyerFinalized = Utils.mkFinalizedAllocation
+        buyerAllocationCid
+        (Utils.legsToSides match.buyerAccount transferLegs)
+        buyerFunding
+      sellerFinalized = Utils.mkFinalizedAllocation
+        sellerAllocationCid
+        (Utils.legsToSides match.sellerAccount transferLegs)
+        sellerFunding
+      settlementArguments = V2.SettlementFactory_SettleBatch with
+        settlement = buyerAllocationView.settlement
+        transferLegs
+        allocations = [buyerFinalized, sellerFinalized]
+        actors = [operator]
+        extraArgs = Utils.emptyExtraArgs
+
+  pure PreparedOrderMatch with
+    preparedBuyOrder = buyOrder
+    preparedSellOrder = sellOrder
+    preparedBuyerFunding = buyerFunding
+    preparedSellerFunding = sellerFunding
+    preparedSettlementArguments = settlementArguments
+
 template OrderMatchExecution with
     operator : Party
     matchId : Text
@@ -132,123 +232,33 @@ template OrderMatchExecution with
   where
     signatory operator
 
+    -- Read-only discovery surface for the registry's canonical settlement
+    -- endpoint. Execution repeats the same preparation against live state, so
+    -- any intervening order or allocation change aborts rather than settling
+    -- a stale preview.
+    choice OrderMatchExecution_PreviewSettlement
+      : V2.SettlementFactory_SettleBatch
+      controller operator
+      do
+        prepared <- prepareOrderMatch
+          operator match buyOrderCid sellOrderCid
+          buyerAllocationCid sellerAllocationCid
+        pure prepared.preparedSettlementArguments
+
     choice OrderMatchExecution_Execute : OrderMatch_ExecuteResult
       with
         factoryCid : ContractId V2.SettlementFactory
         extraArgs : ExtraArgs
-          -- ^ Registry choice context for the SettleBatch. The caller
-          --   fetches this off-ledger (`getChoiceContext admin`); empty for
-          --   the self-registry, real for a context-requiring registry.
+          -- ^ Operation-specific registry context for this exact SettleBatch
+          --   argument; empty for the self-registry.
       controller operator
       do
-        -- Enforce price, quantity, and instrument terms at match time.
-        -- The off-ledger matcher proposes `match`; this choice fetches both
-        -- orders and refuses any fill the orders' own terms do not permit, so
-        -- a buggy or malicious matcher cannot fill a resting order outside its
-        -- limit price or for instruments/quantities it never agreed to.
-        buyOrder <- fetch buyOrderCid
-        sellOrder <- fetch sellOrderCid
-
-        assertMsg "buy order operator mismatch" (buyOrder.operator == operator)
-        assertMsg "sell order operator mismatch" (sellOrder.operator == operator)
-        assertMsg "buy order must be a Bid" (buyOrder.side == Bid)
-        assertMsg "sell order must be an Ask" (sellOrder.side == Ask)
-
-        -- A never-funded order has no collateral behind it, so a fill would be
-        -- recorded against nothing.
-        assertMsg "buy order is not funded"
-          (buyOrder.status == OS_Funded || buyOrder.status == OS_PartiallyFilled)
-        assertMsg "sell order is not funded"
-          (sellOrder.status == OS_Funded || sellOrder.status == OS_PartiallyFilled)
-
-        -- Each order may settle only the allocation bound to that order.
-        assertMsg "buyer allocation is not the bid order's allocation"
-          (buyOrder.allocationCid == Some buyerAllocationCid)
-        assertMsg "seller allocation is not the ask order's allocation"
-          (sellOrder.allocationCid == Some sellerAllocationCid)
-
-        -- The match's accounts must be the orders' own traders, so the legs
-        -- move the actual order owners' funds (not third parties').
-        assertMsg "buyer account is not the bid trader"
-          (match.buyerAccount.owner == Some buyOrder.trader)
-        assertMsg "seller account is not the ask trader"
-          (match.sellerAccount.owner == Some sellOrder.trader)
-
-        -- Instrument ids are only meaningful under a registry admin, so two
-        -- orders naming the same id under different admins are different
-        -- instruments.
-        assertMsg "registry admin mismatch" (buyOrder.admin == sellOrder.admin)
-
-        -- Instruments must agree across both orders and the match.
-        assertMsg "base instrument mismatch"
-          (buyOrder.baseInstrumentId == sellOrder.baseInstrumentId
-            && match.baseInstrumentId == buyOrder.baseInstrumentId)
-        assertMsg "quote instrument mismatch"
-          (buyOrder.quoteInstrumentId == sellOrder.quoteInstrumentId
-            && match.quoteInstrumentId == buyOrder.quoteInstrumentId)
-
-        -- Quantity must be positive and within both orders' remaining size.
-        assertMsg "fill quantity must be positive" (match.fillQty > 0.0)
-        assertMsg "fill exceeds bid remaining quantity"
-          (match.fillQty <= buyOrder.remainingQty)
-        assertMsg "fill exceeds ask remaining quantity"
-          (match.fillQty <= sellOrder.remainingQty)
-
-        -- Price band: a buyer never pays above their limit and a seller never
-        -- receives below theirs. A crossing book guarantees such a price exists
-        -- (bid limit >= ask limit); the cleared fill price must sit in [ask, bid].
-        assertMsg "fill price must be positive" (match.fillPrice > 0.0)
-        assertMsg "fill price above bid limit"
-          (match.fillPrice <= buyOrder.limitPrice)
-        assertMsg "fill price below ask limit"
-          (match.fillPrice >= sellOrder.limitPrice)
-
-        buyerAllocation <- fetch buyerAllocationCid
-        sellerAllocation <- fetch sellerAllocationCid
-        let buyerAllocationView = view buyerAllocation
-            sellerAllocationView = view sellerAllocation
-        assertMsg "buyer allocation belongs to a different settlement"
-          (buyerAllocationView.settlement == sellerAllocationView.settlement)
-        assertMsg "order settlement executor mismatch"
-          (buyerAllocationView.settlement.executors == [operator])
-        assertMsg "buyer allocation authorizer mismatch"
-          (buyerAllocationView.allocation.authorizer == match.buyerAccount)
-        assertMsg "seller allocation authorizer mismatch"
-          (sellerAllocationView.allocation.authorizer == match.sellerAccount)
-        assertMsg "buyer allocation registry admin mismatch"
-          (buyerAllocationView.allocation.admin == buyOrder.admin)
-        assertMsg "seller allocation registry admin mismatch"
-          (sellerAllocationView.allocation.admin == sellOrder.admin)
-
-        let transferLegs = mkMatchTransferLegs match
-            settlement = buyerAllocationView.settlement
-
-        -- Each side authorizes both legs; legsToSides projects the account's own
-        -- sides. Remainder funding is derived from the live allocation budget,
-        -- not recomputed from face terms, so repeated fills preserve the exact
-        -- registry-backed residual. A fully filled side rolls nothing forward.
-        let sideFunding : Order -> V2.Allocation -> V2.Account -> Optional Utils.Funding
-            sideFunding order allocation account
-              | match.fillQty >= order.remainingQty = None
-              | otherwise =
-                  remainderFunding account (allocationFunding allocation) transferLegs
-            buyerFunding = sideFunding buyOrder buyerAllocation match.buyerAccount
-            sellerFunding = sideFunding sellOrder sellerAllocation match.sellerAccount
-            buyerFinalized = Utils.mkFinalizedAllocation
-              buyerAllocationCid
-              (Utils.legsToSides match.buyerAccount transferLegs)
-              buyerFunding
-            sellerFinalized = Utils.mkFinalizedAllocation
-              sellerAllocationCid
-              (Utils.legsToSides match.sellerAccount transferLegs)
-              sellerFunding
-
-        settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
-          settlement
-          transferLegs
-          allocations = [buyerFinalized, sellerFinalized]
-          actors = [operator]
-          extraArgs
+        prepared <- prepareOrderMatch
+          operator match buyOrderCid sellOrderCid
+          buyerAllocationCid sellerAllocationCid
+        let settlementArguments =
+              prepared.preparedSettlementArguments with extraArgs = extraArgs
+        settleResult <- exercise factoryCid settlementArguments
 
         let nextIterCids = Utils.nextIterationAllocationCids settleResult
             buyerNext = case nextIterCids of
@@ -261,16 +271,18 @@ template OrderMatchExecution with
         -- Settlement and both order transitions are atomic. Every remainder is
         -- created in the same transaction as the next allocation it references.
         buyRemainderCid <- rollOrderForward
-          buyOrderCid buyOrder match.fillQty buyerFunding buyerNext
+          buyOrderCid prepared.preparedBuyOrder match.fillQty
+          prepared.preparedBuyerFunding buyerNext
         sellRemainderCid <- rollOrderForward
-          sellOrderCid sellOrder match.fillQty sellerFunding sellerNext
+          sellOrderCid prepared.preparedSellOrder match.fillQty
+          prepared.preparedSellerFunding sellerNext
 
         now <- getTime
         settledTradeCid <- create MT.SettledTrade with
           operator
-          admin = buyOrder.admin
+          admin = prepared.preparedBuyOrder.admin
           matchId
-          transferLegs
+          transferLegs = settlementArguments.transferLegs
           settledAt = now
 
         pure OrderMatch_ExecuteResult with

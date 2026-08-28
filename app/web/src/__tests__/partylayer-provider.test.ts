@@ -6,7 +6,7 @@ import {
   parsePartyLayerHoldings,
   type PartyLayerClient,
 } from "@/wallet/partylayer-provider";
-import type { WalletIntent } from "@/wallet/types";
+import type { RequestSwapIntent } from "@/wallet/types";
 
 // A fake @partylayer/sdk client: records the submitted command tree and returns
 // an updateId-only receipt, matching the provider contract.
@@ -101,7 +101,7 @@ function failingClient(error: Error) {
   return { client, disconnectCalls };
 }
 
-const swapIntent: WalletIntent = {
+const swapIntent: RequestSwapIntent = {
   kind: "request-swap",
   poolId: "pool-abc",
   settlement: { executors: ["op"], id: "s", cid: null, meta: { values: {} } },
@@ -112,13 +112,14 @@ const swapIntent: WalletIntent = {
     settlementDeadline: null,
     nextIterationFunding: null,
     committed: true,
-    meta: {},
+    meta: { values: {} },
   },
+  requestedAt: "2026-05-19T12:00:00.000Z",
   factoryCid: "fac",
   allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
   inputHoldingCids: ["h1"],
   disclosure: [],
-} as unknown as WalletIntent;
+};
 
 describe("PartyLayerProvider", () => {
   const ctx = () => new PartyLayerProvider("#canton-dex-trading", async () => fake.client);
@@ -170,6 +171,10 @@ describe("PartyLayerProvider", () => {
     expect(fake.calls[0].signedTx.actAs).toEqual(["alice::1220a"]);
     expect(fake.calls[0].signedTx.commandId).toMatch(/^swap-pool-abc-/);
     expect(fake.calls[0].signedTx.commands).toHaveLength(1);
+    expect(fake.calls[0].signedTx.commands[0]).toHaveProperty(
+      "ExerciseCommand.choiceArgument.requestedAt",
+      swapIntent.requestedAt,
+    );
   });
 
   it("rejects submit when the wallet receipt has no updateId", async () => {

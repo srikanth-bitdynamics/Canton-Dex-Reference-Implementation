@@ -2,7 +2,8 @@
 -- settlement concept. It walks a request-for-quote from competing dealer
 -- quotes through settlement, then checks holdings and outstanding locks.
 --
--- | The RFQ round trip, end to end, against holding-tracking settlement.
+-- | Daml Script integration for the RFQ round trip against holding-tracking
+-- settlement.
 --
 -- TokenStandardHarnessTests uses a holding-less registry. Its allocation
 -- factory returns an Allocation without locking holdings, and its settlement

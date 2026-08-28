@@ -1,8 +1,9 @@
 // HTTP surface over the operator backend services.
 //
-// Runs on Node's built-in http server (no framework dependency). Not
-// production-grade auth; production should put this behind an auth
-// proxy that validates the trader's session.
+// Runs on Node's built-in http server (no framework dependency). Bearer-token
+// gates protect operator/admin writes, and an optional caller JWT binds private
+// reads and trader-subject actions to the caller's Canton party. A hosted
+// deployment should issue those credentials through its authenticated BFF.
 //
 // Endpoints (single-source list; matches `app/web/src/services/ledger.ts`):
 //
@@ -47,9 +48,15 @@ import { mergeDisclosures } from "../ledger/disclosure.js";
 import * as dec from "../pool/decimal.js";
 import { DealersService } from "../dealers/index.js";
 import { checkAdminAuth, checkOperatorAuth, bearerMatches } from "./auth.js";
-import { checkCallerBinding, callerPartyFromRequest, type CallerAuthConfig } from "./caller-auth.js";
+import {
+  checkCallerBinding,
+  checkCallerRead,
+  callerPartyFromRequest,
+  type CallerAuthConfig,
+} from "./caller-auth.js";
 import { validateWriteBody, ValidationError } from "./validate.js";
 import { RfqAuthError } from "../rfq/index.js";
+import { OrderAuthError } from "../order/index.js";
 import { rootLogger } from "../lib/logger.js";
 
 const httpLog = rootLogger.child({ component: "http" });
@@ -105,29 +112,21 @@ function expectField<T = unknown>(o: unknown, field: string): T {
 }
 
 /**
- * Static context the dApp needs to build trader-authority intents. The
- * dApp does not derive these from queries — it would have to guess
- * which admin governs which instrument, which factory CID to use, etc.
- * Surfacing them here keeps that knowledge on the operator's side.
+ * Static venue context. Factory CIDs and choice contexts are discovered per
+ * operation from the relevant V2 registry after exact choice arguments exist.
  */
 export interface DexContext {
   operator: Party;
   lpRegistrar: Party;
   admin: Party;
-  allocationFactoryCid: string;
-  settlementFactoryCid: string;
-  allocationFactoryExtraArgs: {
-    context: { values: Record<string, unknown> };
-    meta: { values: Record<string, unknown> };
-  };
-  allocationFactoryDisclosure: DisclosedContract[];
   network: string;
 }
 
 export interface DexStatus {
   network: string;
-  /** Monotonic counter while this process runs. Stand-in for a real participant offset. */
+  /** Latest participant ledger-end offset, or a dev-only local counter. */
   slot: number;
+  /** Whether the most recent configured participant probe succeeded. */
   synced: boolean;
   /** ISO timestamp the server cut this snapshot. */
   serverTime: string;
@@ -152,10 +151,15 @@ export interface HttpServerConfig {
   /** Allowlist of actAs parties the wallet relay may forward for. */
   walletRelayParties?: string[];
   /**
-   * HS256 secret for per-caller party binding. When set, write
+   * Trusted hosted-RFQ relay. These routes submit with trader authority and
+   * therefore require deployment-specific trader rights. Testnet/production
+   * entrypoints should leave this false unless caller binding is mandatory.
+   */
+  hostedRfqEnabled?: boolean;
+  /**
+   * HS256 secret for per-caller party binding. When set, party-scoped reads and
    * routes that act on behalf of a trader require an X-Caller-Token JWT whose
-   * `sub` is the caller's party, and reject any request whose subject party is
-   * not the caller's own. Unset = binding disabled (single trusted backend).
+   * `sub` is the caller's party. Unset = binding disabled (single trusted backend).
    */
   callerJwtSecret?: string;
   /**
@@ -191,6 +195,24 @@ function pairParams(url: URL): { base: string; quote: string } | undefined {
   return base && quote ? { base, quote } : undefined;
 }
 
+function boundedPositiveInt(
+  url: URL,
+  name: string,
+  fallback: number,
+  maximum: number,
+): number {
+  const raw = url.searchParams.get(name);
+  if (raw === null) return fallback;
+  if (!/^\d+$/.test(raw)) {
+    throw new HttpError(400, "bad_request", `${name} must be a positive integer`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new HttpError(400, "bad_request", `${name} must be a positive integer`);
+  }
+  return Math.min(value, maximum);
+}
+
 export interface HttpServerHandle {
   close: () => Promise<void>;
   /** Base URL carrying the port actually bound, so `port: 0` is usable. */
@@ -202,48 +224,38 @@ export interface HttpServerHandle {
 export function startHttpServer(
   cfg: HttpServerConfig,
 ): Promise<HttpServerHandle> {
-  // Slot is the ledger's latest offset (ACS pruning watermark). We poll
-  // the participant every 2s and cache the result. Falls back to a local
-  // counter if the participant query fails so the UI's pill still moves.
+  // Poll the participant ledger end every 2s. A configured participant that
+  // cannot be reached must report synced=false; manufacturing a moving local
+  // slot here would make a broken testnet deployment look healthy. The local
+  // counter is used only by the in-memory dev server, which supplies no ledger
+  // URL/token at all.
   let slot = 0;
-  let lastPolledOk = false;
   const slotUrl = (cfg.ledgerUrl ?? "").replace(/\/$/, "");
   const slotToken = cfg.ledgerToken;
+  const hasParticipantProbe = Boolean(slotUrl && slotToken);
+  let lastPollSucceeded = !hasParticipantProbe;
   async function pollSlot(): Promise<void> {
-    if (!slotUrl || !slotToken) {
+    if (!hasParticipantProbe || !slotUrl || !slotToken) {
       slot += 1;
+      lastPollSucceeded = true;
       return;
     }
     try {
       const res = await fetch(
-        `${slotUrl}/v2/state/latest-pruned-offsets`,
+        `${slotUrl}/v2/state/ledger-end`,
         { headers: { Authorization: `Bearer ${slotToken}` } },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as {
-        participantPrunedUpToInclusive?: number;
-      };
-      const offset = body.participantPrunedUpToInclusive;
-      if (typeof offset === "number" && offset > 0) {
-        slot = offset;
-        lastPolledOk = true;
-      } else {
-        // Pruned offset is 0 (nothing pruned yet) — fall back to ACS end.
-        const ledgerEndRes = await fetch(
-          `${slotUrl}/v2/state/ledger-end`,
-          { headers: { Authorization: `Bearer ${slotToken}` } },
-        );
-        if (ledgerEndRes.ok) {
-          const end = (await ledgerEndRes.json()) as { offset?: number };
-          if (typeof end.offset === "number") {
-            slot = end.offset;
-            lastPolledOk = true;
-          }
-        }
+      const body = (await res.json()) as { offset?: number };
+      if (typeof body.offset !== "number") {
+        throw new Error("ledger-end response has no numeric offset");
       }
+      slot = body.offset;
+      lastPollSucceeded = true;
     } catch {
-      // Quiet on transient errors; keep the last good value or tick.
-      if (!lastPolledOk) slot += 1;
+      // Quiet on transient errors and keep the last genuine ledger offset, but
+      // expose the failed probe through /v1/status.
+      lastPollSucceeded = false;
     }
   }
   void pollSlot();
@@ -263,6 +275,7 @@ export function startHttpServer(
         cfg,
         cfg.context,
         () => slot,
+        () => lastPollSucceeded,
         cfg.db,
         allowedOrigins,
         req,
@@ -282,6 +295,11 @@ export function startHttpServer(
       }
       if (e instanceof RfqAuthError) {
         // Per-caller binding mismatch on a fetch-bound RFQ route.
+        reqLog.warn("request rejected", { status: 403, code: "forbidden", error: e.message });
+        respondJson(res, 403, { error: e.message, code: "forbidden", requestId });
+        return;
+      }
+      if (e instanceof OrderAuthError) {
         reqLog.warn("request rejected", { status: 403, code: "forbidden", error: e.message });
         respondJson(res, 403, { error: e.message, code: "forbidden", requestId });
         return;
@@ -336,6 +354,7 @@ async function routeRequest(
   cfg: HttpServerConfig,
   context: DexContext,
   getSlot: () => number,
+  getSynced: () => boolean,
   db: Db | undefined,
   allowedOrigins: string[],
   req: IncomingMessage,
@@ -361,7 +380,10 @@ async function routeRequest(
   if (corsOrigin) res.setHeader("Access-Control-Allow-Origin", corsOrigin);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Caller-Token, X-Request-Id",
+  );
   res.setHeader("Access-Control-Expose-Headers", "X-Request-Id");
   if (method === "OPTIONS") {
     res.statusCode = 204;
@@ -391,22 +413,35 @@ async function routeRequest(
   // === read endpoints ====================================================
 
   if (method === "GET" && path === "/v1/context") {
-    const [factories, choiceContext] = await Promise.all([
-      backend.registry.getFactories(context.admin),
-      backend.registry.getChoiceContext(context.admin),
-    ]);
+    respondJson(res, 200, context);
+    return;
+  }
+
+  // Canonical Token Standard V2 allocation-factory discovery. The caller
+  // supplies the exact Daml JSON AllocationFactory_Allocate argument.
+  if (method === "POST" && path === "/v1/registry/allocation-factory") {
+    const body = await readJson<{
+      admin: Party;
+      choiceArguments: Record<string, unknown>;
+    }>(req);
+    if (typeof body.admin !== "string" || body.admin.length === 0) {
+      throw new HttpError(400, "bad_request", "admin is required");
+    }
+    if (
+      typeof body.choiceArguments !== "object" ||
+      body.choiceArguments === null ||
+      Array.isArray(body.choiceArguments)
+    ) {
+      throw new HttpError(400, "bad_request", "choiceArguments must be an object");
+    }
+    const found = await backend.registry.getAllocationFactory(
+      body.admin,
+      body.choiceArguments,
+    );
     respondJson(res, 200, {
-      ...context,
-      allocationFactoryCid: factories.allocationFactoryCid,
-      settlementFactoryCid: factories.settlementFactoryCid,
-      allocationFactoryExtraArgs: {
-        context: choiceContext.context,
-        meta: { values: {} },
-      },
-      allocationFactoryDisclosure: mergeDisclosures(
-        factories.disclosure,
-        choiceContext.disclosure,
-      ),
+      factoryCid: found.factoryCid,
+      extraArgs: { context: found.context, meta: { values: {} } },
+      disclosure: found.disclosure,
     });
     return;
   }
@@ -415,7 +450,7 @@ async function routeRequest(
     const body: DexStatus = {
       network: context.network,
       slot: getSlot(),
-      synced: true,
+      synced: getSynced(),
       serverTime: new Date().toISOString(),
     };
     respondJson(res, 200, body);
@@ -444,6 +479,7 @@ async function routeRequest(
     if (!trader) {
       throw new HttpError(400, "bad_request", "missing ?trader= query parameter");
     }
+    requireCallerForPrivateRead(req, callerAuth, trader, adminToken);
     const all = await backend.order.listOpen();
     respondJson(
       res,
@@ -596,6 +632,7 @@ async function routeRequest(
     if (!owner) {
       throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
+    requireCallerForPrivateRead(req, callerAuth, owner, adminToken);
     // Per-contract (UTXO-style) rows. For a summed balance, use /v1/balances.
     respondJson(res, 200, await loadHoldings(backend, owner));
     return;
@@ -609,6 +646,7 @@ async function routeRequest(
     if (!owner) {
       throw new HttpError(400, "bad_request", "missing ?owner= query parameter");
     }
+    requireCallerForPrivateRead(req, callerAuth, owner, adminToken);
     const holdings = await loadHoldings(backend, owner);
     const byInstrument = new Map<string, { total: bigint; locked: bigint }>();
     for (const h of holdings) {
@@ -675,10 +713,7 @@ async function routeRequest(
       respondJson(res, 400, { error: "missing ?pair=BASE/QUOTE" });
       return;
     }
-    const hours = Math.max(
-      1,
-      Math.min(24 * 30, parseInt(url.searchParams.get("hours") ?? "24", 10)),
-    );
+    const hours = boundedPositiveInt(url, "hours", 24, 24 * 30);
     // `ts` is in milliseconds, so the bound must be too.
     const since = Date.now() - hours * 3600 * 1000;
     const rows = db
@@ -973,11 +1008,9 @@ async function routeRequest(
         "missing ?trader= query parameter; the unfiltered view requires the admin token",
       );
     }
+    if (trader) requireCallerForPrivateRead(req, callerAuth, trader, adminToken);
     const pair = url.searchParams.get("pair");
-    const limit = Math.min(
-      parseInt(url.searchParams.get("limit") ?? "50", 10),
-      500,
-    );
+    const limit = boundedPositiveInt(url, "limit", 50, 500);
     const where: string[] = [];
     const args: unknown[] = [];
     if (trader) {
@@ -1017,10 +1050,7 @@ async function routeRequest(
     // Default to swaps only: LP moves and pause/resume rotate the state too,
     // and existing callers pass no kind and expect the trade feed alone.
     const kind = kindParam ?? "swap";
-    const limit = Math.min(
-      parseInt(url.searchParams.get("limit") ?? "50", 10),
-      500,
-    );
+    const limit = boundedPositiveInt(url, "limit", 50, 500);
     const sql = pair
       ? `SELECT * FROM swaps WHERE kind = ? AND pair = ? ORDER BY ts DESC LIMIT ${limit}`
       : `SELECT * FROM swaps WHERE kind = ? ORDER BY ts DESC LIMIT ${limit}`;
@@ -1117,10 +1147,8 @@ async function routeRequest(
         "missing ?trader= query parameter; the unfiltered view requires the admin token",
       );
     }
-    const limit = Math.min(
-      parseInt(url.searchParams.get("limit") ?? "100", 10),
-      500,
-    );
+    if (trader) requireCallerForPrivateRead(req, callerAuth, trader, adminToken);
+    const limit = boundedPositiveInt(url, "limit", 100, 500);
     const sql = trader
       ? `SELECT * FROM rfq_history WHERE trader = ? ORDER BY ts DESC LIMIT ${limit}`
       : `SELECT * FROM rfq_history ORDER BY ts DESC LIMIT ${limit}`;
@@ -1183,6 +1211,7 @@ async function routeRequest(
       respondJson(res, 200, await backend.rfq.list());
       return;
     }
+    requireCallerForPrivateRead(req, callerAuth, owner, adminToken);
     const { rfqs, quotes } = await backend.rfq.list();
     respondJson(res, 200, {
       rfqs: rfqs.filter((r) => r.trader === owner || r.whitelist.includes(owner)),
@@ -1192,6 +1221,13 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/rfq") {
+    if (cfg.hostedRfqEnabled === false) {
+      respondJson(res, 404, {
+        error: "hosted RFQ relay disabled; use a trader-authorized wallet flow",
+        code: "not_found",
+      });
+      return;
+    }
     const body = await readValidatedJson<Parameters<typeof backend.rfq.create>[0]>(req, "POST /v1/rfq", callerAuth);
     const result = await backend.rfq.create(body);
     respondJson(res, 200, result);
@@ -1201,6 +1237,13 @@ async function routeRequest(
   // /v1/rfq/:cid/cancel
   const rfqCancelMatch = path.match(/^\/v1\/rfq\/([^/]+)\/cancel$/);
   if (method === "POST" && rfqCancelMatch) {
+    if (cfg.hostedRfqEnabled === false) {
+      respondJson(res, 404, {
+        error: "hosted RFQ relay disabled; use a trader-authorized wallet flow",
+        code: "not_found",
+      });
+      return;
+    }
     const rfqCid = decodeURIComponent(rfqCancelMatch[1]!);
     // Per-caller binding: cancel acts as the fetched
     // RFQ's trader, so the body-map binding can't cover it. Resolve the caller
@@ -1213,6 +1256,13 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/rfq/accept") {
+    if (cfg.hostedRfqEnabled === false) {
+      respondJson(res, 404, {
+        error: "hosted RFQ relay disabled; use a trader-authorized wallet flow",
+        code: "not_found",
+      });
+      return;
+    }
     const body = await readValidatedJson<Parameters<typeof backend.rfq.accept>[0]>(req, "POST /v1/rfq/accept", callerAuth);
     // Same fetch-based binding as cancel: accept acts as the RFQ's trader, so
     // an operator-token holder must not accept a quote on a trader's behalf.
@@ -1224,14 +1274,24 @@ async function routeRequest(
 
   if (method === "POST" && path === "/v1/orders/bind") {
     const body = await readValidatedJson<Parameters<typeof backend.order.bind>[0]>(req, "POST /v1/orders/bind", callerAuth);
-    const result = await backend.order.bind(body);
+    const requireTrader = requireCallerForFetchBoundRoute(
+      req,
+      callerAuth,
+      "binding an order request",
+    );
+    const result = await backend.order.bind({ ...body, requireTrader });
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/orders/fund") {
     const body = await readValidatedJson<Parameters<typeof backend.order.fund>[0]>(req, "POST /v1/orders/fund", callerAuth);
-    const result = await backend.order.fund(body);
+    const requireTrader = requireCallerForFetchBoundRoute(
+      req,
+      callerAuth,
+      "funding an order",
+    );
+    const result = await backend.order.fund({ ...body, requireTrader });
     respondJson(res, 200, result);
     return;
   }
@@ -1240,7 +1300,12 @@ async function routeRequest(
   const cancelMatch = path.match(/^\/v1\/orders\/([^/]+)\/cancel$/);
   if (method === "POST" && cancelMatch) {
     const orderCid = decodeURIComponent(cancelMatch[1]!);
-    await backend.order.cancel(orderCid as never);
+    const requireTrader = requireCallerForFetchBoundRoute(
+      req,
+      callerAuth,
+      "cancelling an order",
+    );
+    await backend.order.cancel(orderCid as never, requireTrader);
     respondJson(res, 204, {});
     return;
   }
@@ -1467,18 +1532,33 @@ async function loadHoldings(
   Array<{ owner: string; instrumentId: string; amount: string; locked: boolean }>
 > {
   type H = { owner: string; instrumentId: string; amount: string; locked: boolean };
-  const load = async (templateId: string): Promise<H[]> => {
-    try {
-      return await backend.ledger.query<H>({
-        templateId,
-        observingParty: owner as never,
-      });
-    } catch {
-      return [];
-    }
-  };
-  const holdings = await load("CantonDex.Registry.V2:Holding");
+  let holdings: H[];
+  try {
+    holdings = await backend.ledger.query<H>({
+      templateId: "CantonDex.Registry.V2:Holding",
+      observingParty: owner as never,
+    });
+  } catch {
+    throw new HttpError(
+      503,
+      "ledger_unavailable",
+      "unable to load holdings from the ledger",
+    );
+  }
   return holdings.filter((h) => h.owner === owner);
+}
+
+function requireCallerForPrivateRead(
+  req: IncomingMessage,
+  callerAuth: CallerAuthConfig,
+  subject: string,
+  adminToken: string | undefined,
+): void {
+  if (adminToken && bearerMatches(req.headers["authorization"], adminToken)) return;
+  const binding = checkCallerRead(req, callerAuth, subject);
+  if (!binding.ok) {
+    throw new HttpError(binding.status, binding.code, binding.message);
+  }
 }
 
 async function readValidatedJson<T>(

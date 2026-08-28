@@ -1,7 +1,7 @@
-// Dealer registry. The operator owns the list of RFQ counterparties:
-// who can quote, whose quotes get the "trusted" tier bump in the
-// matching policy, and per-dealer telemetry (latency, fill rate) that
-// the UI surfaces during compose.
+// Dealer directory. The operator curates who the hosted UI offers as an RFQ
+// counterparty and the telemetry shown during compose. On-ledger RfqQuote.tier
+// is dealer-declared; the operator endorses the considered quotes only when it
+// co-authorizes Rfq_Accept.
 //
 // Backed by the SQLite indexer DB. Read-only consumers query
 // `list()`; admin endpoints call `upsert()` / `remove()` behind the

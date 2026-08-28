@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "noEmit": true,
+    "typeRoots": ["./node_modules/@types"]
+  },
+  "include": [
+    "../../scripts/bootstrap-registry.ts",
+    "../../scripts/live-amm-roundtrip.ts",
+    "../../scripts/seed-testnet-pool.ts",
+    "../../scripts/testnet-v2registry-trade.ts"
+  ]
+}

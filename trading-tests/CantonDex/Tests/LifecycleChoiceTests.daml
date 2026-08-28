@@ -1,0 +1,295 @@
+-- | Focused lifecycle and recovery-choice tests.
+--
+-- Happy-path settlement suites prove how value moves. This module proves the
+-- explicit exits around those paths: who may cancel/reject/withdraw a market
+-- object, which contracts disappear, and whether locked holdings are returned.
+-- Design context: `docs/concepts/workflows.md#active-workflow-map`.
+module CantonDex.Tests.LifecycleChoiceTests where
+
+import DA.Assert
+import DA.Foldable (forA_)
+import DA.Optional (fromSome, isNone)
+import DA.TextMap qualified as TextMap
+import DA.Time (addRelTime, hours)
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+import Splice.Testing.Utils (emptyExtraArgs)
+
+import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Dex.Order qualified as Order
+import CantonDex.Dex.OrderFundingRequest qualified as OFR
+import CantonDex.Dex.OrderMatchExecution qualified as OME
+import CantonDex.Dex.Rfq qualified as Rfq
+import CantonDex.Registry.V2 qualified as RegV2
+import CantonDex.Trading.Utils qualified as Utils
+
+mintHolding
+  : Party -> Party -> Text -> Decimal -> Script (ContractId RegV2.Holding)
+mintHolding admin owner instrumentId amount =
+  submit (actAs [admin, owner]) $ createCmd RegV2.Holding with
+    admin
+    owner
+    instrumentId
+    amount
+    locked = False
+
+allocate
+  : ContractId RegV2.Registry
+  -> Party
+  -> V2.SettlementInfo
+  -> V2.AllocationSpecification
+  -> [ContractId V2.Holding]
+  -> Time
+  -> Script (ContractId V2.Allocation)
+allocate registryCid authorizer settlement allocation inputHoldingCids requestedAt = do
+  result <- submit authorizer $
+    exerciseCmd (toInterfaceContractId registryCid : ContractId V2.AllocationFactory)
+      V2.AllocationFactory_Allocate with
+        settlement
+        allocation
+        requestedAt
+        inputHoldingCids
+        actors = [authorizer]
+        extraArgs = emptyExtraArgs
+  case result.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "allocation must complete"
+
+createOrderRequest
+  : Party -> Party -> Party -> Text -> Script (ContractId OFR.OrderFundingRequest)
+createOrderRequest operator trader admin label =
+  submit trader $ createCmd OFR.OrderFundingRequest with
+    operator
+    trader
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    side = Order.Bid
+    limitPrice = 10.0
+    quantity = 2.0
+    expiry = None
+
+unlockedAmounts : Party -> Text -> Script [Decimal]
+unlockedAmounts owner instrumentId = do
+  holdings <- query @RegV2.Holding owner
+  pure
+    [ h.amount
+    | (_, h) <- holdings
+    , h.owner == owner
+    , h.instrumentId == instrumentId
+    , not h.locked
+    ]
+
+lockedAmounts : Party -> Text -> Script [Decimal]
+lockedAmounts owner instrumentId = do
+  holdings <- query @RegV2.Holding owner
+  pure
+    [ h.amount
+    | (_, h) <- holdings
+    , h.owner == owner
+    , h.instrumentId == instrumentId
+    , h.locked
+    ]
+
+-- Before the request is bound, trader cancellation and operator rejection are
+-- deliberately separate exits.
+-- | Proves trader cancel and operator reject authority on an unfunded order request.
+testOrderFundingRequestCancelAndRejectAuthority : Script ()
+testOrderFundingRequestCancelAndRejectAuthority = do
+  operator <- allocateParty "request-operator"
+  trader <- allocateParty "request-trader"
+  admin <- allocateParty "request-admin"
+
+  cancelCid <- createOrderRequest operator trader admin "cancel"
+  submitMustFail operator $
+    exerciseCmd cancelCid OFR.OrderFundingRequest_Cancel
+  submit trader $ exerciseCmd cancelCid OFR.OrderFundingRequest_Cancel
+  None <- queryContractId trader cancelCid
+
+  rejectCid <- createOrderRequest operator trader admin "reject"
+  submitMustFail trader $
+    exerciseCmd rejectCid OFR.OrderFundingRequest_Reject with reason = "unsupported pair"
+  submit operator $
+    exerciseCmd rejectCid OFR.OrderFundingRequest_Reject with reason = "unsupported pair"
+  None <- queryContractId operator rejectCid
+  pure ()
+
+-- A funded cancellation must close both records and unlock actual backing.
+-- | Proves funded-order cancellation releases the trader's real locked holding.
+testOrderCancelReleasesRealFunding : Script ()
+testOrderCancelReleasesRealFunding = do
+  operator <- allocateParty "cancel-order-operator"
+  trader <- allocateParty "cancel-order-trader"
+  admin <- allocateParty "cancel-order-admin"
+  registryCid <- submit admin $ createCmd RegV2.Registry with
+    admin
+    users = [operator, trader]
+  now <- getTime
+
+  requestCid <- createOrderRequest operator trader admin "fund-and-cancel"
+  bound <- submit operator $
+    exerciseCmd requestCid OFR.OrderFundingRequest_Bind with
+      settlementRef = "fund-and-cancel"
+  Some allocationRequest <- queryContractId operator bound.allocationRequestCid
+  holdingCid <- mintHolding admin trader "USDC" allocationRequest.lockAmount
+  let settlement = fromSome allocationRequest.allocationSettlement
+      specification = Order.orderFundingSpecification
+        admin trader allocationRequest.lockInstrumentId allocationRequest.lockAmount
+        allocationRequest.expiry
+  allocationCid <- allocate registryCid trader settlement specification
+    [toInterfaceContractId holdingCid] now
+  funded <- submit operator $ exerciseCmd bound.orderCid Order.Order_Fund with
+    allocationCid
+    allocationRequestCid = Some bound.allocationRequestCid
+
+  result <- submit (actAs [operator] <> readAs [admin]) $
+    exerciseCmd funded.orderCid Order.Order_Cancel with extraArgs = emptyExtraArgs
+  assertMsg "cancel returns the released holding ids"
+    (not (TextMap.null result.releasedHoldings))
+  None <- queryContractId operator funded.orderCid
+  allocationAfter <- queryInterfaceContractId @V2.Allocation operator allocationCid
+  assertMsg "cancel consumes the funding allocation" (isNone allocationAfter)
+  unlocked <- unlockedAmounts trader "USDC"
+  locked <- lockedAmounts trader "USDC"
+  unlocked === [20.0]
+  locked === []
+
+-- Cancelling the proposed trade must clean up its requests/allocations without
+-- executing its value-moving leg.
+-- | Proves matched-trade cancellation cleans up requests and releases real backing.
+testMatchedTradeCancelReleasesRealFunding : Script ()
+testMatchedTradeCancelReleasesRealFunding = do
+  operator <- allocateParty "trade-cancel-operator"
+  admin <- allocateParty "trade-cancel-admin"
+  alice <- allocateParty "trade-cancel-alice"
+  bob <- allocateParty "trade-cancel-bob"
+  registryCid <- submit admin $ createCmd RegV2.Registry with
+    admin
+    users = [operator, alice, bob]
+  now <- getTime
+  aliceHolding <- mintHolding admin alice "BTC" 1.0
+  let aliceAccount = Utils.basicAccount alice
+      bobAccount = Utils.basicAccount bob
+      leg = V2.TransferLeg with
+        transferLegId = "cancelled-leg"
+        sender = aliceAccount
+        receiver = bobAccount
+        amount = 1.0
+        instrumentId = "BTC"
+        meta = emptyMetadata
+  tradeCid <- submit operator $ createCmd MT.MatchedTrade with
+    venue = operator
+    admin
+    transferLegs = [leg]
+    settlementDeadline = None
+    policyReceipt = None
+  requestCids <- submit operator $
+    exerciseCmd tradeCid MT.MatchedTrade_RequestAllocations
+
+  allocationCids <- forA requestCids $ \requestCid -> do
+    Some request <- queryContractId operator requestCid
+    let party = fromSome request.authorizer.owner
+        specification = V2.AllocationSpecification with
+          admin
+          authorizer = request.authorizer
+          transferLegSides = Utils.legsToSides request.authorizer request.transferLegs
+          settlementDeadline = request.settlementDeadline
+          nextIterationFunding = None
+          committed = False
+          meta = emptyMetadata
+        inputs = if party == alice then [toInterfaceContractId aliceHolding] else []
+    allocate registryCid party request.settlement specification inputs now
+
+  cancelResult <- submit (actAs [operator] <> readAs [admin]) $
+    exerciseCmd tradeCid MT.MatchedTrade_Cancel with
+      allocationsToCancel = [(cid, emptyExtraArgs) | cid <- allocationCids]
+      allocationRequestCids = requestCids
+  length cancelResult.cancelResults === 2
+  None <- queryContractId operator tradeCid
+  forA_ requestCids $ \cid -> do
+    None <- queryContractId operator cid
+    pure ()
+  forA_ allocationCids $ \cid -> do
+    allocationAfter <- queryInterfaceContractId @V2.Allocation operator cid
+    assertMsg "cancel consumes each trade allocation" (isNone allocationAfter)
+  unlocked <- unlockedAmounts alice "BTC"
+  locked <- lockedAmounts alice "BTC"
+  unlocked === [1.0]
+  locked === []
+
+-- | Proves RFQ and quote exits are controlled by their own signatories.
+testRfqCancelAndQuoteWithdrawAuthority : Script ()
+testRfqCancelAndQuoteWithdrawAuthority = do
+  trader <- allocateParty "rfq-cancel-trader"
+  operator <- allocateParty "rfq-cancel-operator"
+  dealer <- allocateParty "rfq-cancel-dealer"
+  now <- getTime
+  let expiresAt = addRelTime now (hours 1)
+
+  rfqCid <- submit trader $ createCmd Rfq.Rfq with
+    trader
+    operator
+    rfqId = "rfq-cancel"
+    pair = "BTC/USDC"
+    side = Rfq.RFQ_Buy
+    size = 1.0
+    expiresAt
+    whitelist = [dealer]
+    createdAt = now
+  submitMustFail operator $ exerciseCmd rfqCid Rfq.Rfq_Cancel
+  submit trader $ exerciseCmd rfqCid Rfq.Rfq_Cancel
+  None <- queryContractId trader rfqCid
+
+  quoteCid <- submit dealer $ createCmd Rfq.RfqQuote with
+    dealer
+    trader
+    operator
+    rfqId = "rfq-cancel"
+    price = 100.0
+    expiresAt
+    postedAt = now
+    tier = Rfq.TierTrusted
+  submitMustFail trader $ exerciseCmd quoteCid Rfq.RfqQuote_Withdraw
+  submit dealer $ exerciseCmd quoteCid Rfq.RfqQuote_Withdraw
+  None <- queryContractId dealer quoteCid
+  pure ()
+
+-- Abort discards a stale proposal without fetching or mutating the referenced
+-- orders and allocations.
+-- | Proves match abort consumes only the proposal and requires operator authority.
+testOrderMatchExecutionAbort : Script ()
+testOrderMatchExecutionAbort = do
+  operator <- allocateParty "abort-operator"
+  admin <- allocateParty "abort-admin"
+  buyer <- allocateParty "abort-buyer"
+  seller <- allocateParty "abort-seller"
+  placeholderCid <- createOrderRequest operator buyer admin "abort-placeholder"
+  let placeholderOrderCid : ContractId Order.Order = coerceContractId placeholderCid
+      placeholderAllocationCid : ContractId V2.Allocation = coerceContractId placeholderCid
+  executionCid <- submit operator $ createCmd OME.OrderMatchExecution with
+    operator
+    matchId = "aborted-match"
+    match = OME.MatchedOrderPair with
+      buyerAccount = Utils.basicAccount buyer
+      sellerAccount = Utils.basicAccount seller
+      baseInstrumentId = "BTC"
+      quoteInstrumentId = "USDC"
+      fillQty = 1.0
+      fillPrice = 100.0
+    buyOrderCid = placeholderOrderCid
+    sellOrderCid = placeholderOrderCid
+    buyerAllocationCid = placeholderAllocationCid
+    sellerAllocationCid = placeholderAllocationCid
+    buyerCommittedFunding = TextMap.empty
+    sellerCommittedFunding = TextMap.empty
+
+  submitMustFail buyer $ exerciseCmd executionCid OME.OrderMatchExecution_Abort
+  submit operator $ exerciseCmd executionCid OME.OrderMatchExecution_Abort
+  None <- queryContractId operator executionCid
+  -- Abort deliberately does not fetch its referenced market state.
+  Some _ <- queryContractId buyer placeholderCid
+  pure ()

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 
 import { RegistryClient } from "@canton-dex/registry-client";
 import type {
-  ChoiceContextRef,
+  ChoiceArguments,
   ContractId,
   DisclosedContract,
-  FactoryRefs,
+  FactoryChoiceContextRef,
   Party,
 } from "@canton-dex/registry-client";
 
@@ -23,9 +23,43 @@ import type {
 
 class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
+  readonly submissions: SubmitRequest[] = [];
 
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.lastSubmit = req;
+    this.submissions.push(req);
+    const command = req.command as {
+      choice?: string;
+      argument?: {
+        plansByAdmin?: Array<[
+          Party,
+          {
+            transferLegs: V2TransferLeg[];
+            allocations: unknown[];
+          },
+        ]>;
+      };
+    };
+    if (command.choice === "MatchedTrade_PreviewSettlement") {
+      return (command.argument?.plansByAdmin ?? []).map(([admin, plan]) => [
+        admin,
+        {
+          settlement: {
+            executors: ["operator"],
+            id: `matched-trade:${admin}`,
+            cid: null,
+            meta: { values: {} },
+          },
+          transferLegs: plan.transferLegs,
+          allocations: plan.allocations,
+          actors: ["operator"],
+          extraArgs: {
+            context: { values: {} },
+            meta: { values: {} },
+          },
+        },
+      ]) as R;
+    }
     return "#result:0" as R;
   }
 
@@ -47,22 +81,39 @@ function disclosed(tag: string): DisclosedContract {
 }
 
 class ContextRegistry extends RegistryClient {
+  readonly settlementLookups: Array<{
+    admin: Party;
+    choiceArguments: ChoiceArguments;
+  }> = [];
+  readonly cancelLookups: Array<{ admin: Party; allocationId: string }> = [];
+
   constructor() {
     super({ baseUrl: "http://stub" });
   }
 
-  override async getFactories(admin: Party): Promise<FactoryRefs> {
+  override async getSettlementFactory(
+    admin: Party,
+    choiceArguments: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef> {
+    this.settlementLookups.push({ admin, choiceArguments });
     return {
-      allocationFactoryCid: `#alloc:${admin}` as ContractId<"AllocationFactory">,
-      settlementFactoryCid: `#settle:${admin}` as ContractId<"SettlementFactory">,
-      disclosure: [disclosed(`factory-${admin}`)],
+      factoryCid: `#settle:${admin}` as ContractId<"TokenStandardFactory">,
+      context: { values: { [`ctx.${admin}`]: true } },
+      disclosure: [
+        disclosed(`factory-${admin}`),
+        disclosed(`context-${admin}`),
+      ],
     };
   }
 
-  override async getChoiceContext(admin: Party): Promise<ChoiceContextRef> {
+  override async getAllocationCancelContext(
+    admin: Party,
+    allocationId: string,
+  ) {
+    this.cancelLookups.push({ admin, allocationId });
     return {
-      context: { values: { [`ctx.${admin}`]: true } },
-      disclosure: [disclosed(`context-${admin}`)],
+      context: { values: { [`ctx.${admin}.${allocationId}`]: true } },
+      disclosure: [disclosed(`cancel-${admin}-${allocationId}`)],
     };
   }
 }
@@ -81,9 +132,10 @@ function leg(id: string, instrumentId: string): V2TransferLeg {
 describe("MatchedTradeService", () => {
   it("settle threads per-admin choice context and legs into each SettlementBatchV2", async () => {
     const ledger = new CapturingLedger();
+    const registry = new ContextRegistry();
     const svc = new MatchedTradeService(
       ledger,
-      new ContextRegistry(),
+      registry,
       "operator" as Party,
     );
 
@@ -177,6 +229,22 @@ describe("MatchedTradeService", () => {
 
     assert.deepEqual(adminABatch!.extraArgs.context.values, { "ctx.adminA": true });
     assert.deepEqual(adminBBatch!.extraArgs.context.values, { "ctx.adminB": true });
+
+    const preview = ledger.submissions.find(
+      (s) => (s.command as { choice?: string }).choice === "MatchedTrade_PreviewSettlement",
+    );
+    assert.ok(preview, "settlement runs the on-ledger preview first");
+    assert.deepEqual(
+      registry.settlementLookups.map(({ admin }) => admin),
+      ["adminA", "adminB"],
+    );
+    for (const { admin, choiceArguments } of registry.settlementLookups) {
+      assert.equal(
+        (choiceArguments.settlement as { id: string }).id,
+        `matched-trade:${admin}`,
+        "the exact preview result is sent to that admin's settlement endpoint",
+      );
+    }
     const disclosureBlobs = submit.disclosure!.map((d) => d.createdEventBlob);
     assert.deepEqual(new Set(disclosureBlobs), new Set([
       "factory-adminA",
@@ -189,9 +257,10 @@ describe("MatchedTradeService", () => {
 
   it("cancel threads the matching admin context for each allocation group", async () => {
     const ledger = new CapturingLedger();
+    const registry = new ContextRegistry();
     const svc = new MatchedTradeService(
       ledger,
-      new ContextRegistry(),
+      registry,
       "operator" as Party,
     );
 
@@ -216,13 +285,22 @@ describe("MatchedTradeService", () => {
     };
     assert.equal(cmd.choice, "MatchedTrade_Cancel");
     assert.deepEqual(cmd.argument.allocationsToCancel, [
-      ["#a:0", { context: { values: { "ctx.adminA": true } }, meta: { values: {} } }],
-      ["#a:1", { context: { values: { "ctx.adminA": true } }, meta: { values: {} } }],
-      ["#b:0", { context: { values: { "ctx.adminB": true } }, meta: { values: {} } }],
+      ["#a:0", { context: { values: { "ctx.adminA.#a:0": true } }, meta: { values: {} } }],
+      ["#a:1", { context: { values: { "ctx.adminA.#a:1": true } }, meta: { values: {} } }],
+      ["#b:0", { context: { values: { "ctx.adminB.#b:0": true } }, meta: { values: {} } }],
+    ]);
+    assert.deepEqual(registry.cancelLookups, [
+      { admin: "adminA", allocationId: "#a:0" },
+      { admin: "adminA", allocationId: "#a:1" },
+      { admin: "adminB", allocationId: "#b:0" },
     ]);
     assert.deepEqual(
       new Set(submit.disclosure?.map((d) => d.createdEventBlob)),
-      new Set(["context-adminA", "context-adminB"]),
+      new Set([
+        "cancel-adminA-#a:0",
+        "cancel-adminA-#a:1",
+        "cancel-adminB-#b:0",
+      ]),
     );
   });
 });

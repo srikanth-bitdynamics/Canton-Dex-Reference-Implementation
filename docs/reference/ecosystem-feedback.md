@@ -4,57 +4,52 @@ This page records how the reference implementation was evaluated by external
 parties, what they found, and what changed as a result. It is maintained as the
 single summary of that loop.
 
+> **Status of the old hosted integration.** The evaluation below used a
+> separately operated deployment during a historical feedback round. This
+> repository does **not** provision a public hostname, public party faucet, or
+> `/v1/testnet/*` API, and it does not promise that the old deployment remains
+> available. Treat the linked reports as provenance for the feedback—not as
+> current setup instructions. The API implemented in this tree is listed in
+> [HTTP API](http-api.md); run it against a participant you control by following
+> the [local live-ledger guide](../guides/localnet.md).
+
 ## External integration (reuse proof point)
 
-The reference DEX is integrated as an adapter in
+During that feedback round, the reference DEX was integrated as an adapter in
 [**canton-trading-toolkit**](https://github.com/olevasyliev/canton-trading-toolkit),
 an independent, open-source, venue-agnostic trading client for the Canton
-Network. The toolkit is live-validated on mainnet against an unrelated spot AMM
-(Cantex) and connects to a perpetuals testnet (Ekiden); this DEX is a third
-adapter (`DexRefAdapter`). The same client code that
-trades on an unrelated mainnet venue drives quotes, swaps, orders, matching, RFQ
-and liquidity on this one, entirely through the hosted testnet routes: the only
-path open to a party with no wallet of its own.
-
-The integration is reproducible from outside with no operator credentials:
-
-```
-git clone https://github.com/olevasyliev/canton-trading-toolkit
-cd canton-trading-toolkit && pip install -e .
-PYTHONPATH=src python3 scripts/dexref_testnet_report.py            # reads only
-PYTHONPATH=src python3 scripts/dexref_testnet_report.py --execute  # trades
-```
-
-The client allocates its own parties from the public faucet and exercises every
-flow against `https://testnet-dex.bitdynamics.cc`. An external developer built a
-working integration against the hosted testnet, from the public repository, and
-published it.
+Network. Its `DexRefAdapter` supplied useful independent feedback on quotes,
+swaps, orders, matching, RFQ, and liquidity. The adapter and the reports are
+external artifacts. Their deployment wrapper—including any party provisioning,
+rate limits, or convenience endpoints—is not implemented by this repository.
 
 ## Evaluation and feedback
 
-The integrator ran six rounds against the hosted testnet between 2026-07-27 and
-2026-07-29, plus an earlier round against the repository's local demo mode. Each
-round is a scripted run of dozens of assertions measured through the public
-routes. The reports are public:
+The integrator reported six rounds against the separately operated deployment
+between 2026-07-27 and 2026-07-29, plus an earlier round against the
+repository's local demo mode. The reports are public:
 
 - Hosted testnet report:
   [srikanth-bitdynamics/Canton-Dex-Reference-Implementation#126](https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation/issues/126)
 - Local demo mode report:
   [canton-dev-fund#312 comment](https://github.com/canton-foundation/canton-dev-fund/issues/312#issuecomment-5044174855)
 
-Because the integrator has no privileged access, the findings are exactly what any
-external builder would hit.
+The reports document what that external client observed at the time. The
+regression tests named below are the durable evidence for behavior in the
+current repository.
 
 ## Findings and resulting changes
 
-Every finding from the six rounds was addressed. They fall into a few themes.
-Each theme below closes with the test that pins the fix.
+The findings that changed this repository fall into a few themes. Changes made
+only in the old external deployment wrapper are not presented as current API
+features. Each theme below closes with the checked-in test that pins the fix.
 
 ### Amounts are served at ledger precision
 
 Amounts must reach the client as exact decimal strings at ledger scale, never
-re-floated through IEEE-754. The fills feed routes deltas directly through
-`parseFloat().toFixed`; `/v1/swaps` serves the exact stored strings; and
+re-floated through IEEE-754. The indexer derives reserve deltas with the
+fixed-point decimal module, stores them as strings, and `/v1/swaps` serves those
+exact strings. In addition,
 `/v1/instruments` reports each instrument's `decimals` so a client can learn
 scale from the API. Existing projection rows can be reindexed after an upgrade.
 
@@ -91,7 +86,7 @@ recorded), and
 Two fixes concern funding and custody. Funding an order locks only what the
 order needs and returns the change, so a party can place more than one order
 at a time. An off-ratio liquidity add refunds the unmatched remainder, and the
-hosted receipt reports settled amounts rather than echoing requested amounts.
+settlement result reports settled amounts rather than echoing requested amounts.
 
 Proven by
 [`normalize-funding.test.ts`](../../app/web/src/__tests__/normalize-funding.test.ts)
@@ -101,15 +96,15 @@ split handed to the wallet) and `testDvpAddOffRatioRefundsExcess` in
 (the unmatched leg is refunded in the same settlement, never reaching the
 reserves).
 
-### The hosted routes are the only path in
+### External clients need a complete, documented API
 
-For a walletless integrator the hosted routes are the whole surface, so a gap in
-them blocks external evaluation entirely. RFQ gained a hosted cancel, so a round
-trip has an exit other than expiry. Order matching gained a hosted testnet
-trigger (`POST /v1/testnet/match`) so matching and its atomic settlement can be
-verified from outside. `/v1/swaps` accepts `?kind=` so liquidity events, not
-just swaps, are readable. The `/v1/testnet/*` surface and the faucet's per-IP
-party quota are documented with their consequences.
+The feedback exposed missing operations in the external deployment wrapper.
+The corresponding capabilities that remain in this repository use the normal
+operator API: `POST /v1/rfq/:cid/cancel`, operator-authenticated
+`POST /v1/orders/match`, and `GET /v1/swaps?kind=`. The first two are writes and
+therefore require the appropriate operator and caller authority described in
+[HTTP API](http-api.md#authorization). There is no
+`/v1/testnet/*` namespace or public faucet in this tree.
 
 Proven by
 [`swaps-kind-filter.test.ts`](../../services/operator-backend/test/swaps-kind-filter.test.ts)
@@ -120,10 +115,12 @@ collateral).
 
 ### Answered by design
 
-`Holding_Split` is refused by the hosted relay because the relay exposes only a
-fixed set of settlement choices, and splitting is a wallet concern it does not
-surface. The boundary is described in
-[Non-goals: the hosted testnet is a demo surface](../concepts/non-goals.md#the-hosted-testnet-is-a-demo-surface-not-a-wallet).
+Holding preparation is a wallet concern in self-custodial flows. The only
+generic command relay in this repository is the explicitly development-only
+`POST /v1/wallet/submit`; it is disabled by default, requires an operator token,
+and restricts `actAs` parties when enabled. It is not a public onboarding or
+custody service. The boundary is described in
+[Non-goals: the development relay is not a wallet](../concepts/non-goals.md#the-development-relay-is-not-a-wallet).
 
 ### Self-trade prevention
 
@@ -148,10 +145,11 @@ crosses a different maker's ask and skips its own).
 
 ## How this loop is expected to continue
 
-The reference tracks the same standard the ecosystem builds against, and its
-hosted testnet is open for exactly this kind of evaluation. New reports open as
-issues on the implementation repository; confirmed findings are fixed with a
-regression test and this summary is updated.
+The reference tracks the same standard the ecosystem builds against. Integrators
+can evaluate a checkout with the repository's local live-ledger proof or deploy
+their own instance, then open a reproducible issue on the implementation
+repository. Confirmed findings should be fixed with a regression test and this
+summary updated.
 
 ---
 

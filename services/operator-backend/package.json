@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/canton-foundation/canton-dex",
+    "url": "https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation.git",
     "directory": "services/operator-backend"
   },
   "private": true,
@@ -19,16 +19,24 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "typecheck:live-scripts": "tsc -p tsconfig.live-scripts.json",
     "test": "node --import tsx --test test/*.test.ts",
+    "test:live:rfq": "node --import tsx --test test/live/canton-live-rfq.test.ts",
     "dev": "node --import tsx src/dev-server.ts",
     "testnet": "node --import tsx src/testnet-server.ts",
     "start": "node --import tsx src/testnet-server.ts",
-    "localnet:dvp-e2e": "node --import tsx ../../scripts/localnet-dvp-e2e.ts",
-    "testnet:seed-pool": "node --import tsx ../../scripts/seed-testnet-pool.ts"
+    "live:roundtrip": "node --import tsx ../../scripts/live-amm-roundtrip.ts",
+    "live:add-liquidity": "node --import tsx ../../scripts/live-amm-roundtrip.ts --add-only",
+    "localnet:amm-roundtrip": "node --import tsx ../../scripts/live-amm-roundtrip.ts",
+    "testnet:seed-pool": "node --import tsx ../../scripts/seed-testnet-pool.ts",
+    "live:matched-trade": "node --import tsx ../../scripts/testnet-v2registry-trade.ts"
   },
   "dependencies": {
     "@canton-dex/registry-client": "file:../registry-client",
     "better-sqlite3": "^12.10.0"
+  },
+  "overrides": {
+    "esbuild": "^0.28.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

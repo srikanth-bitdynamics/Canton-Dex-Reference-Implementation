@@ -12,7 +12,7 @@ import type { WalletIntent, WalletResult } from '@/wallet/types';
 // holdings ACS through a controllable queue.
 
 const handToWalletMock =
-  vi.fn<[WalletIntent], Promise<WalletResult>>();
+  vi.fn<(intent: WalletIntent) => Promise<WalletResult>>();
 
 let activeProviderId: string | null = 'token-standard';
 

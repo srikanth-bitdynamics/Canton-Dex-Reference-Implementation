@@ -9,6 +9,7 @@ import type { IncomingMessage } from "node:http";
 
 import {
   checkCallerBinding,
+  checkCallerRead,
   routeBindsCaller,
   verifyHs256,
 } from "../src/http/caller-auth.js";
@@ -180,5 +181,30 @@ describe("checkCallerBinding", () => {
       { trader: ALICE },
     );
     assert.equal(r.ok, true);
+  });
+});
+
+describe("checkCallerRead", () => {
+  const cfg = { callerJwtSecret: SECRET };
+
+  it("is disabled when no caller secret is configured", () => {
+    assert.equal(
+      checkCallerRead(reqWith(), { callerJwtSecret: undefined }, BOB).ok,
+      true,
+    );
+  });
+
+  it("requires a valid caller token when enabled", () => {
+    const result = checkCallerRead(reqWith(), cfg, ALICE);
+    assert.equal(result.ok, false);
+    assert.equal((result as { status: number }).status, 401);
+  });
+
+  it("allows only the caller's own party", () => {
+    const req = reqWith(signHs256({ sub: ALICE }));
+    assert.equal(checkCallerRead(req, cfg, ALICE).ok, true);
+    const denied = checkCallerRead(req, cfg, BOB);
+    assert.equal(denied.ok, false);
+    assert.equal((denied as { status: number }).status, 403);
   });
 });

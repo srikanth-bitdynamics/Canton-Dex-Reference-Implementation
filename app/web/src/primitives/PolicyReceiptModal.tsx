@@ -143,9 +143,8 @@ export function PolicyReceiptModal({ trade, onClose }: Props) {
         at the time of accept. Inputs and ranking output are folded
         into <span className="mono">SettlementInfo.meta</span> via the{' '}
         <span className="mono">dex.policy.*</span> key prefix, so the
-        receipt rides on-ledger atomically with the trade. Disclosable
-        to regulators or counterparties without revealing the trade
-        itself.
+        receipt rides atomically with the trade in live-ledger mode. It can be
+        disclosed to regulators or counterparties without revealing the trade itself.
       </div>
     </Modal>
   );

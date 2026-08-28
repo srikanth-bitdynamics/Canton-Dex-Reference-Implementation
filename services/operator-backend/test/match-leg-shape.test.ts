@@ -12,21 +12,32 @@ import { join } from "node:path";
 
 import { OrderService } from "../src/order/index.js";
 import { InMemoryLedger } from "../src/ledger/in-memory.js";
-import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
+import { FixedRegistryClient } from "@canton-dex/registry-client";
+import type {
+  ChoiceArguments,
+  ContractId,
+  FactoryChoiceContextRef,
+  Party,
+} from "@canton-dex/registry-client";
 import type { Order } from "../src/types.js";
 
-class StubRegistry extends RegistryClient {
-  constructor() { super({ baseUrl: "http://stub" }); }
-  override async getFactories() {
-    return {
+class StubRegistry extends FixedRegistryClient {
+  settlementArguments: ChoiceArguments | null = null;
+
+  constructor() {
+    super(() => ({
       allocationFactoryCid: "#alloc:0" as ContractId<"AllocationFactory">,
       settlementFactoryCid: "#settle:0" as ContractId<"SettlementFactory">,
       disclosure: [] as never[],
-    };
+    }));
   }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
+
+  override async getSettlementFactory(
+    admin: Party,
+    choiceArguments: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef> {
+    this.settlementArguments = choiceArguments;
+    return super.getSettlementFactory(admin, choiceArguments);
   }
 }
 
@@ -36,9 +47,22 @@ class CapturingLedger extends InMemoryLedger {
   override async submit<R>(req: any): Promise<R> {
     this.captured.push(req.command);
     if (req.command.kind === "createAndExercise") {
+      if (req.command.choice === "OrderMatchExecution_PreviewSettlement") {
+        return {
+          settlement: {
+            executors: ["op"], id: "preview-match", cid: null, meta: { values: {} },
+          },
+          transferLegs: [],
+          allocations: [],
+          actors: ["op"],
+          extraArgs: { context: { values: {} }, meta: { values: {} } },
+        } as R;
+      }
       return {
         buyerNextAllocationCid: null,
         sellerNextAllocationCid: null,
+        buyRemainderCid: null,
+        sellRemainderCid: null,
       } as R;
     }
     return null as R;
@@ -62,14 +86,28 @@ class CapturingLedger extends InMemoryLedger {
 describe("match execution argument", () => {
   it("carries an Account-shaped pair the settle factory can settle", async () => {
     const ledger = new CapturingLedger();
-    const svc = new OrderService(ledger, new StubRegistry(), "op" as never);
+    const registry = new StubRegistry();
+    const svc = new OrderService(ledger, registry, "op" as never);
     await svc.runMatching({
       baseInstrumentId: "dBTC", quoteInstrumentId: "dUSD", admin: "ad" as never,
     });
-    const exec = ledger.captured.find((c) => c?.kind === "createAndExercise");
+    const previewIndex = ledger.captured.findIndex(
+      (c) => c?.choice === "OrderMatchExecution_PreviewSettlement",
+    );
+    const executeIndex = ledger.captured.findIndex(
+      (c) => c?.choice === "OrderMatchExecution_Execute",
+    );
+    const exec = ledger.captured[executeIndex];
     assert.ok(exec, "no OrderMatchExecution was submitted");
+    assert.ok(previewIndex >= 0, "the exact settlement argument was not previewed");
+    assert.ok(previewIndex < executeIndex, "registry discovery must happen before execution");
     assert.equal(exec.choice, "OrderMatchExecution_Execute");
     assert.equal(exec.choiceArgument.factoryCid, "#settle:0");
+    assert.equal(
+      (registry.settlementArguments?.settlement as { id?: string })?.id,
+      "preview-match",
+      "the registry receives the exact Daml preview result",
+    );
 
     const match = exec.argument.match;
     for (const side of ["buyerAccount", "sellerAccount"] as const) {

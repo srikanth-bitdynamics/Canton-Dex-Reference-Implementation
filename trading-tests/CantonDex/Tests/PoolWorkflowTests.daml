@@ -1,0 +1,303 @@
+-- | Pool lifecycle and swap choreography against MockRegistry.
+--
+-- Read in this order:
+--   1. testPoolFullLifecycle
+--   2. testPoolSwapWorkflow
+--   3. testPoolSwapViaRequestSwap
+--
+-- This suite proves controllers, quote/state binding, contract replacement, and
+-- settlement-choice assembly. MockRegistry has no holdings, so it does NOT prove
+-- balance movement or conservation; use the real-holding pool suites for that.
+-- Design context: `docs/concepts/design-tour.md#signed-pool-swaps`.
+module CantonDex.Tests.PoolWorkflowTests where
+
+import DA.Assert
+import DA.Optional (isSome)
+
+import Daml.Script
+
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Testing.Utils (emptyExtraArgs)
+
+import CantonDex.Dex.Pool qualified as Pool
+import CantonDex.Dex.PoolRules qualified as PRules
+import CantonDex.Dex.PoolModel qualified as PM
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.WorkflowConstructors qualified as WC
+import CantonDex.Tests.WorkflowTestFixtures
+
+-- Mock DvP choreography activates an unfunded pool ----------------------
+--
+-- A requested 10 BTC / 200,000 USDC add activates the pool and records those
+-- reserve and LP-supply accounting values. No Holding changes in this fixture.
+
+-- | Proves pool creation, initialization, pause, and resume state transitions.
+testPoolFullLifecycle : Script ()
+testPoolFullLifecycle = do
+  -- Roles: the venue operator, the LP-share registrar, the token admin, and
+  -- Alice, who supplies the liquidity.
+  operator <- allocateParty "operator"
+  lpRegistrar <- allocateParty "lp-registrar"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  now <- getTime
+
+  -- Stand up the mock registry and an empty BTC/USDC pool, then have Alice
+  -- authorize the mock DvP allocation specifications.
+  (factoryCid, _settleCid) <- setupRegistries admin [operator, lpRegistrar, alice]
+  setup <- setupPool operator lpRegistrar admin
+  let poolId = setup.setupPoolId
+      poolCid = setup.setupPoolCid
+      stateCid = setup.setupStateCid
+      rulesCid = setup.setupRulesCid
+      dvpCid = setup.setupLiquidityRulesCid
+      policyCid = setup.setupPolicyCid
+  initRes <- dvpFundPool
+    operator
+    lpRegistrar
+    factoryCid
+    _settleCid
+    poolId
+    poolCid
+    stateCid
+    policyCid
+    dvpCid
+    alice
+    10.0
+    200000.0
+    now
+    emptyExtraArgs
+
+  -- Check the outcome: shares minted match the formula, the pool is now
+  -- Active, and its reserves and total shares equal exactly what went in.
+  Some state <- queryContractId operator initRes.poolStateCid
+  Some _baseSlice <- queryContractId operator initRes.baseSliceCid
+  Some _quoteSlice <- queryContractId operator initRes.quoteSliceCid
+  let expectedLp = PM.sqrtDecimal 2000000.0
+  initRes.lpTokensMinted === expectedLp
+  state.status === Pool.PS_Active
+  state.reserves.baseAmount === 10.0
+  state.reserves.quoteAmount === 200000.0
+  state.totalLpSupply === expectedLp
+
+  -- The same operator-controlled lifecycle rules pause the funded pool and
+  -- recreate its hot state. A paused pool cannot swap; resume restores Active.
+  pausedCid <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Pause with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = initRes.poolStateCid
+  Some paused <- queryContractId operator pausedCid
+  paused.status === Pool.PS_Paused
+  None <- queryContractId operator initRes.poolStateCid
+
+  -- The lifecycle flag is an on-ledger gate, not display metadata. The swap
+  -- fails at the status check before the placeholder trader allocation can be
+  -- inspected or settlement attempted.
+  let pausedBinding = PRules.SwapQuoteBinding with
+        expectedPoolId = poolId
+        poolStateCid = pausedCid
+        inputSliceCid = initRes.quoteSliceCid
+        outputSliceCids = [initRes.baseSliceCid]
+        minOutputAmount = 0.0
+  submitMustFail operator $ exerciseCmd rulesCid PRules.PoolRules_Swap with
+    expectedPoolId = poolId; poolCid; poolStateCid = pausedCid
+    swapperAccount = Utils.basicAccount alice
+    inputInstrumentId = "USDC"; inputAmount = 1.0; minOutputAmount = 0.0
+    swapperAllocationCid = _baseSlice.allocationCid
+    inputSliceCid = initRes.quoteSliceCid
+    outputSliceCids = [initRes.baseSliceCid]
+    factoryCid = _settleCid; extraArgs = emptyExtraArgs
+    quoteBinding = Some pausedBinding
+
+  resumedCid <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Resume with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = pausedCid
+  Some resumed <- queryContractId operator resumedCid
+  resumed.status === Pool.PS_Active
+  resumed.reserves === state.reserves
+  resumed.totalLpSupply === state.totalLpSupply
+
+  pure ()
+
+-- PoolRules_Swap updates pool inventory ---------------------------------
+--
+-- Trader authorizes the exact two-sided allocation via the mock factory;
+-- operator drives PoolRules_Swap which adjusts both
+-- pool allocations + the trader allocation and batch-settles them.
+--
+-- Verifies:
+--   - the swap completes without error
+--   - reserves update correctly
+--   - the head pool allocation is replaced by its next-iteration CID
+--   - other pool allocations on the same side stay untouched
+
+-- | Proves the mock swap batch rewrites only the consumed reserve slices.
+testPoolSwapWorkflow : Script ()
+testPoolSwapWorkflow = do
+  operator <- allocateParty "operator-swap"
+  lpRegistrar <- allocateParty "lp-registrar-swap"
+  admin <- allocateParty "admin-swap"
+  alice <- allocateParty "alice-swap"  -- LP
+  bob <- allocateParty "bob-swap"      -- swapper
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
+
+  -- Initialize the pool through the mock DvP choreography.
+  setup <- setupPool operator lpRegistrar admin
+  let poolId = setup.setupPoolId
+      poolCid = setup.setupPoolCid
+      stateCid = setup.setupStateCid
+      rulesCid = setup.setupRulesCid
+      dvpCid = setup.setupLiquidityRulesCid
+      policyCid = setup.setupPolicyCid
+  initRes <- dvpFundPool
+    operator
+    lpRegistrar
+    factoryCid
+    settleCid
+    poolId
+    poolCid
+    stateCid
+    policyCid
+    dvpCid
+    alice
+    10.0
+    200000.0
+    now
+    emptyExtraArgs
+
+  let bobAccount = Utils.basicAccount bob
+      quoteBinding = Some (PRules.SwapQuoteBinding with
+        expectedPoolId = poolId
+        poolStateCid = initRes.poolStateCid
+        inputSliceCid = initRes.quoteSliceCid
+        outputSliceCids = [initRes.baseSliceCid]
+        minOutputAmount = 0.0)
+  reqRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+    poolCid
+    swapper = bob
+    inputInstrumentId = "USDC"
+    inputAmount = 100.0
+    quoteBinding
+  let bobAllocateArg = WC.mkAllocationFactoryAllocate
+        reqRes.settlement reqRes.allocationSpec now [] [bob] emptyExtraArgs
+
+  bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
+  bobAllocationCid <- case bobInstr.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "swap allocation must complete"
+
+  -- Operator drives the swap: input USDC into the quote slice, source
+  -- BTC out from the base slice.
+  swapRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Swap with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = initRes.poolStateCid
+    swapperAccount = bobAccount
+    inputInstrumentId = "USDC"
+    inputAmount = 100.0
+    minOutputAmount = 0.0
+    swapperAllocationCid = bobAllocationCid
+    inputSliceCid = initRes.quoteSliceCid
+    outputSliceCids = [initRes.baseSliceCid]
+    factoryCid = settleCid
+    extraArgs = emptyExtraArgs
+    quoteBinding = reqRes.quoteBinding
+
+  -- Verify reserves moved.
+  Some state <- queryContractId operator swapRes.poolStateCid
+  assertMsg "base reserve decreased" (state.reserves.baseAmount < 10.0)
+  assertMsg "quote reserve increased" (state.reserves.quoteAmount > 200000.0)
+  -- Input slice (quote) grew; output slice (base) re-allocated as boundary.
+  Some _newQuote <- queryContractId operator swapRes.inputSliceCid
+  assertMsg "boundary output slice produced" (isSome swapRes.boundaryOutputSliceCid)
+  -- The output amount is positive.
+  assertMsg "swap produced output" (swapRes.amountOut > 0.0)
+  pure ()
+
+-- PoolRules_RequestSwap produces a settleable allocation spec ------------
+--
+-- The operator builds the allocation specification, the trader authors that
+-- exact allocation, and PoolRules_Swap settles it against the reserves.
+
+-- | Proves the trader-signed request specification settles without mutation.
+testPoolSwapViaRequestSwap : Script ()
+testPoolSwapViaRequestSwap = do
+  operator <- allocateParty "operator-rswap"
+  lpRegistrar <- allocateParty "lp-registrar-rswap"
+  admin <- allocateParty "admin-rswap"
+  alice <- allocateParty "alice-rswap"  -- LP
+  bob <- allocateParty "bob-rswap"      -- swapper
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, lpRegistrar, alice, bob]
+
+  setup <- setupPool operator lpRegistrar admin
+  let poolId = setup.setupPoolId
+      poolCid = setup.setupPoolCid
+      stateCid = setup.setupStateCid
+      rulesCid = setup.setupRulesCid
+      dvpCid = setup.setupLiquidityRulesCid
+      policyCid = setup.setupPolicyCid
+  initRes <- dvpFundPool
+    operator
+    lpRegistrar
+    factoryCid
+    settleCid
+    poolId
+    poolCid
+    stateCid
+    policyCid
+    dvpCid
+    alice
+    10.0
+    200000.0
+    now
+    emptyExtraArgs
+
+  -- Operator builds the swapper's allocation specification, mirroring the
+  -- dApp's POST /v1/pools/swap/request call.
+  reqRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+    poolCid
+    swapper = bob
+    inputInstrumentId = "USDC"
+    inputAmount = 100.0
+    quoteBinding = Some (PRules.SwapQuoteBinding with
+      expectedPoolId = poolId
+      poolStateCid = initRes.poolStateCid
+      inputSliceCid = initRes.quoteSliceCid
+      outputSliceCids = [initRes.baseSliceCid]
+      minOutputAmount = 0.0)
+
+  -- Bob (the wallet) authors that exact spec via the allocation factory.
+  let bobAccount = Utils.basicAccount bob
+      bobAllocateArg = WC.mkAllocationFactoryAllocate
+        reqRes.settlement reqRes.allocationSpec now [] [bob] emptyExtraArgs
+  bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
+  bobAllocationCid <- case bobInstr.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "swap allocation must complete"
+
+  -- Operator settles the swap against the authored allocation.
+  swapRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Swap with
+    expectedPoolId = poolId
+    poolCid
+    poolStateCid = initRes.poolStateCid
+    swapperAccount = bobAccount
+    inputInstrumentId = "USDC"
+    inputAmount = 100.0
+    minOutputAmount = 0.0
+    swapperAllocationCid = bobAllocationCid
+    inputSliceCid = initRes.quoteSliceCid
+    outputSliceCids = [initRes.baseSliceCid]
+    factoryCid = settleCid
+    extraArgs = emptyExtraArgs
+    quoteBinding = reqRes.quoteBinding
+
+  Some state <- queryContractId operator swapRes.poolStateCid
+  assertMsg "base reserve decreased" (state.reserves.baseAmount < 10.0)
+  assertMsg "quote reserve increased" (state.reserves.quoteAmount > 200000.0)
+  assertMsg "swap via RequestSwap produced output" (swapRes.amountOut > 0.0)
+  pure ()

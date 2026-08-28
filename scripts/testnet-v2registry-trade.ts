@@ -2,6 +2,12 @@
 // V2 Registry as AllocationFactory + SettlementFactory + TransferFactory.
 // Registers an instrument, mints to alice, posts a MatchedTrade, runs
 // the V2 allocation accept on both sides, settles via SettleBatch.
+//
+// STATE WARNING: every run creates a registry, instrument, holdings, and trade
+// contracts. Use dedicated parties or a throwaway participant and retain the
+// printed run id for cleanup/audit.
+
+export {};
 
 function required(name: string): string {
   const v = process.env[name];
@@ -123,7 +129,7 @@ async function queryHoldings(party: string, instrumentId: string) {
 
 async function main() {
   console.log(`run id: ${RUN_ID}`);
-  console.log(`registry package: canton-dex-trading v0.0.3 (${cfg.pkgDex.slice(0, 12)}…)`);
+  console.log(`registry package: ${cfg.pkgDex.slice(0, 12)}…`);
   console.log(`venue:  ${cfg.venue}`);
   console.log(`admin:  ${cfg.admin}  (instrument issuer)`);
   console.log(`alice:  ${cfg.alice}  (sender)`);

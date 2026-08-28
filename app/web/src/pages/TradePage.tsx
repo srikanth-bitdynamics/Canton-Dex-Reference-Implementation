@@ -129,8 +129,9 @@ export function TradePage() {
         <div>
           <h1 className="page-title">Trade</h1>
           <p className="page-sub">
-            Swap directly against a Canton DEX liquidity pool. All amounts
-            settle on-ledger via Token Standard V2 allocations.
+            Explore swaps against a Canton DEX liquidity pool. In a configured
+            live deployment, Token Standard V2 allocations settle the amounts
+            on-ledger; the local preview uses seeded in-memory state.
           </p>
         </div>
         <div className="row" style={{ gap: 12 }}>

@@ -4,12 +4,18 @@ import {
   WalletConnectProvider,
   WalletStatusUnknownError,
 } from '@/wallet/walletconnect-provider';
-import type { WalletIntent } from '@/wallet/types';
+import type { PlaceOrderIntent } from '@/wallet/types';
 
-const swapIntent = {
-  kind: 'request-swap',
-  poolId: 'pool-1',
-} as unknown as WalletIntent;
+const placeOrderIntent: PlaceOrderIntent = {
+  kind: 'place-order',
+  pair: { base: 'BTC', quote: 'USDC' },
+  side: 'Bid',
+  limitPrice: '20000.0000000000',
+  quantity: '0.1000000000',
+  expiry: null,
+  operator: 'operator::1220a',
+  admin: 'admin::1220a',
+};
 
 // Inject a fake connector + connected status without driving the AppKit import.
 // `request` is a vitest mock; typed `any` so each test can return whatever
@@ -44,7 +50,7 @@ describe('WalletConnectProvider submit retry safety', () => {
     // Attach the rejection handler up front so the rejection is never orphaned
     // while the fake timer advances.
     let captured: unknown;
-    const submit = p.submit(swapIntent).catch((e) => {
+    const submit = p.submit(placeOrderIntent).catch((e) => {
       captured = e;
     });
     // Drive the 30s submit timeout.
@@ -65,7 +71,7 @@ describe('WalletConnectProvider submit retry safety', () => {
     }));
     const { p } = connectedProvider(request);
 
-    await p.submit(swapIntent);
+    await p.submit(placeOrderIntent);
 
     expect(request).toHaveBeenCalledTimes(1);
     const arg = (request.mock.calls as unknown[][])[0]![0] as {
@@ -73,7 +79,7 @@ describe('WalletConnectProvider submit retry safety', () => {
       params: Array<{ commandId?: string }>;
     };
     expect(arg.method).toBe('canton_prepareExecute');
-    expect(arg.params[0]!.commandId).toMatch(/^wc-request-swap-/);
+    expect(arg.params[0]!.commandId).toMatch(/^wc-place-order-/);
   });
 
   it('propagates non-timeout errors unchanged (e.g. user reject)', async () => {
@@ -82,7 +88,7 @@ describe('WalletConnectProvider submit retry safety', () => {
     });
     const { p } = connectedProvider(request);
 
-    await expect(p.submit(swapIntent)).rejects.toThrow('user rejected');
+    await expect(p.submit(placeOrderIntent)).rejects.toThrow('user rejected');
     expect(request).toHaveBeenCalledTimes(1);
   });
 });

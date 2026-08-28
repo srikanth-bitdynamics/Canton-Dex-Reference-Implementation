@@ -4,8 +4,8 @@ import type { DetectedWallet, WalletProvider } from "@/wallet/types";
 
 // discoverWallets() reads the provider registry + the default-provider id, so we
 // mock the registry module and drive it with fake providers. capabilities.ts is
-// left real so the "other providers become one row" mapping is exercised end to
-// end.
+// left real so the complete "other providers become one row" mapping is
+// exercised.
 const reg = vi.hoisted(() => ({
   map: new Map<string, WalletProvider>(),
   defaultId: null as string | null,

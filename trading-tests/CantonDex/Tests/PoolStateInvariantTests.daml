@@ -142,20 +142,16 @@ testReconcileAfterAddSwapRemove = do
     (PLT.mkSpec fx.registry aliceAcct [quoteOutLeg] False) [] now
   burnSender <- PLT.mkAlloc fx.factoryCid alice settlement
     (PLT.mkSpec fx.registry aliceAcct [burnLeg] True) [toInterfaceContractId lpHoldCid] now
-  remRes <- submit (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid
-      poolStateCid = swapRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = Some reqCid; acceptanceCid = None
-      holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
-      minBaseOut = 0.0; minQuoteOut = 0.0
-      baseSliceCids = [newBaseSliceCid]; quoteSliceCids = [swapRes.inputSliceCid]
-      holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
-      holderBurnSenderCid = burnSender
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  let preparation = Dvp.RemoveLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid
+        poolStateCid = swapRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+        requestCid = Some reqCid; acceptanceCid = None
+        holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
+        minBaseOut = 0.0; minQuoteOut = 0.0
+        baseSliceCids = [newBaseSliceCid]; quoteSliceCids = [swapRes.inputSliceCid]
+        holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
+        holderBurnSenderCid = burnSender
+  remRes <- PLT.settlePreparedRemove fx preparation now
   remRes.baseReturned === baseOut
   remRes.quoteReturned === quoteOut
   -- Drained pool reconciles against the empty slice set.

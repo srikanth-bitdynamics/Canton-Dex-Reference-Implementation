@@ -117,7 +117,7 @@ transaction — so holdings and reserves change co-atomically, or nothing change
   other, updating both reserves in the same choice.
 
 [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml)
-drives these end to end against the reference registry: an add funds base+quote
+drives each Daml settlement path against the reference registry: an add funds base+quote
 and mints the LP holding in one flow; a remove delivers base+quote to the
 *holder* (not the operator) and burns the LP tokens; a stale supply quote aborts
 the settle.
@@ -200,4 +200,6 @@ renewal problem. See [Non-goals](non-goals.md#lp-redemption-has-an-explicit-live
   the unmatched excess is refunded to the provider in the same batch and never
   reaches `reserves`.
 
-**Where to read next:** [LP Tokens](lp-tokens.md) · [Pricing](pricing.md) · [Registry Integration](../guides/registry-integration.md) · [All docs](../README.md)
+**Where to read next:** [LP Tokens](lp-tokens.md) · [Pricing](pricing.md) ·
+[Non-goals](non-goals.md) · [Registry Integration](../guides/registry-integration.md) ·
+[All docs](../README.md)

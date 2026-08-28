@@ -158,7 +158,7 @@ transaction and references the returned allocation. There is no separate
 funding-mutation step between settlement and order roll-forward.
 
 `testOrderRemainderFundingArithmetic` in
-[`trading-tests/CantonDex/Tests/EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
+[`OrderWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/OrderWorkflowTests.daml)
 checks the matcher-side residual calculation. The real-holding conservation
 checks are in
 [`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml),

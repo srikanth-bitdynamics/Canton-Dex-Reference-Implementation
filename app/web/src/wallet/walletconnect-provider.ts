@@ -9,7 +9,6 @@
 // Environment configuration:
 //   VITE_WC_PROJECT_ID       — Reown / WalletConnect Cloud project id (required)
 //   VITE_CANTON_NETWORK_ID   — CAIP network id, e.g. "canton:devnet" (default: canton:devnet)
-//   VITE_CANTON_LEDGER_URL   — Validator JSON Ledger API URL for non-signing reads
 //
 // Method-string note:
 //   The Canton WalletConnect namespace methods follow CIP-0103 verb names

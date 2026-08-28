@@ -8,6 +8,7 @@
 import {
   ChoiceContextRef,
   DisclosedContract,
+  FactoryChoiceContextRef,
   FactoryRefs,
   RegistryError,
 } from "./types.js";
@@ -70,16 +71,28 @@ export function validateFactoryRefs(v: unknown): FactoryRefs {
 }
 
 export function validateChoiceContextRef(v: unknown): ChoiceContextRef {
-  const w = "ChoiceContextRef";
+  const w = "ChoiceContext";
   const o = obj(v, w);
-  const ctx = obj(o.context, `${w}.context`);
+  const ctx = obj(o.choiceContextData, `${w}.choiceContextData`);
   if (typeof ctx.values !== "object" || ctx.values === null || Array.isArray(ctx.values)) {
-    fail(`${w}.context.values: expected object`);
+    fail(`${w}.choiceContextData.values: expected object`);
   }
   return {
     context: { values: ctx.values as Record<string, unknown> },
-    disclosure: arr(o, "disclosure", w).map((x) =>
-      disclosedContract(x, `${w}.disclosure[]`),
+    disclosure: arr(o, "disclosedContracts", w).map((x) =>
+      disclosedContract(x, `${w}.disclosedContracts[]`),
     ),
+  };
+}
+
+export function validateFactoryChoiceContextRef(
+  v: unknown,
+): FactoryChoiceContextRef {
+  const w = "FactoryWithChoiceContext";
+  const o = obj(v, w);
+  const choiceContext = validateChoiceContextRef(o.choiceContext);
+  return {
+    factoryCid: str(o, "factoryId", w) as FactoryChoiceContextRef["factoryCid"],
+    ...choiceContext,
   };
 }

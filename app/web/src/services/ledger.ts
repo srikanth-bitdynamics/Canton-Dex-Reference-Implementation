@@ -9,13 +9,13 @@
 // components below this layer should never reach past it.
 
 import { OperatorApi, type SwapQuoteBinding } from './operator-api';
+import { apiAuthHeaders } from './api-auth';
 import { handToWallet } from '@/wallet/handoff';
 import { getProvider } from '@/wallet/registry';
 import { coSignsAdmin } from '@/wallet/capabilities';
 import { useWalletStore } from '@/wallet/store';
 import type {
   ContractId,
-  DisclosedContract,
   V2AllocationSpecification,
   V2ExtraArgs,
   V2SettlementInfo,
@@ -40,12 +40,6 @@ interface RequestAddResult {
   quoteAmount: string;
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
-  depositFactoryCid: string;
-  lpFactoryCid: string;
-  depositFactoryExtraArgs: V2ExtraArgs;
-  lpFactoryExtraArgs: V2ExtraArgs;
-  depositFactoryDisclosure: DisclosedContract[];
-  lpFactoryDisclosure: DisclosedContract[];
 }
 interface RequestRemoveResult {
   requestCid: string;
@@ -56,12 +50,6 @@ interface RequestRemoveResult {
   quoteOuts: string[];
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
-  depositFactoryCid: string;
-  lpFactoryCid: string;
-  depositFactoryExtraArgs: V2ExtraArgs;
-  lpFactoryExtraArgs: V2ExtraArgs;
-  depositFactoryDisclosure: DisclosedContract[];
-  lpFactoryDisclosure: DisclosedContract[];
 }
 
 function connectedParty(): string {
@@ -73,6 +61,27 @@ function connectedParty(): string {
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
 
 const operator = new OperatorApi(API_BASE);
+
+async function discoverAllocationFactory(params: {
+  admin: string;
+  settlement: V2SettlementInfo;
+  allocation: V2AllocationSpecification;
+  requestedAt: string;
+  inputHoldingCids: string[];
+  actors: string[];
+}) {
+  return operator.getAllocationFactory({
+    admin: params.admin,
+    choiceArguments: {
+      settlement: params.settlement,
+      allocation: params.allocation,
+      requestedAt: params.requestedAt,
+      inputHoldingCids: params.inputHoldingCids,
+      actors: params.actors,
+      extraArgs: EMPTY_EXTRA_ARGS,
+    },
+  });
+}
 
 async function getWalletNativeHoldings(owner: string): Promise<Holding[] | null> {
   const walletState = useWalletStore.getState();
@@ -611,10 +620,6 @@ export interface DexContext {
   operator: string;
   lpRegistrar: string;
   admin: string;
-  allocationFactoryCid: string;
-  settlementFactoryCid: string;
-  allocationFactoryExtraArgs: V2ExtraArgs;
-  allocationFactoryDisclosure: DisclosedContract[];
   network: string;
 }
 
@@ -779,15 +784,26 @@ export const ledger = {
       quoteBinding: req.quoteBinding,
     });
 
+    const requestedAt = new Date().toISOString();
+    const factory = await discoverAllocationFactory({
+      admin: params.pool.admin,
+      settlement: req.settlement as V2SettlementInfo,
+      allocation: req.allocationSpec as V2AllocationSpecification,
+      requestedAt,
+      inputHoldingCids,
+      actors: [params.swapperParty],
+    });
+
     // 2. Wallet authors the exact terminal allocation.
     const walletResult = await handToWallet({
       kind: 'request-swap',
       poolId: params.pool.contractId,
       allocationSpec: req.allocationSpec as V2AllocationSpecification,
       settlement: req.settlement as V2SettlementInfo,
-      factoryCid: req.factoryCid,
-      allocationFactoryExtraArgs: req.allocationFactoryExtraArgs,
-      disclosure: req.allocationFactoryDisclosure,
+      requestedAt,
+      factoryCid: factory.factoryCid,
+      allocationFactoryExtraArgs: factory.extraArgs,
+      disclosure: factory.disclosure,
       inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
     });
     const swapperAllocationCid = walletResult.createdAllocationCids?.[0];
@@ -883,13 +899,23 @@ export const ledger = {
         );
       }
 
+      const requestedAt = new Date().toISOString();
+      const factory = await discoverAllocationFactory({
+        admin: params.context.admin,
+        settlement: bindRes.settlement as V2SettlementInfo,
+        allocation: bindRes.allocationSpec as V2AllocationSpecification,
+        requestedAt,
+        inputHoldingCids,
+        actors: [trader],
+      });
       const walletRes = await handToWallet({
         kind: 'fund-order',
-        factoryCid: params.context.allocationFactoryCid as ContractId<'AllocationFactory'>,
-        allocationFactoryExtraArgs: params.context.allocationFactoryExtraArgs,
-        disclosure: params.context.allocationFactoryDisclosure,
+        factoryCid: factory.factoryCid,
+        allocationFactoryExtraArgs: factory.extraArgs,
+        disclosure: factory.disclosure,
         settlement: bindRes.settlement as V2SettlementInfo,
         allocationSpec: bindRes.allocationSpec as V2AllocationSpecification,
+        requestedAt,
         inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
         hint: { instrumentId: lockInstrumentId, amount: lockAmount },
       });
@@ -968,20 +994,34 @@ export const ledger = {
         requestedAt,
       }),
     });
+    const holdingInputs = [
+      params.baseHoldingCids ?? [],
+      params.quoteHoldingCids ?? [],
+      [],
+    ];
+    const factories = await Promise.all(
+      req.allocations.map((allocation, index) =>
+        discoverAllocationFactory({
+          admin: allocation.admin,
+          settlement: req.settlement,
+          allocation,
+          requestedAt,
+          inputHoldingCids: holdingInputs[index] ?? [],
+          actors: [recipient],
+        }),
+      ),
+    );
     const walletRes = await handToWallet({
       kind: 'add-liquidity',
       requestCid: req.requestCid,
       settlement: req.settlement,
       allocations: req.allocations,
-      // Distinct factories per admin (deposits under pool.admin, LP receipt
-      // under pool.lpRegistrar) — both come from /request, not context.
-      depositFactoryCid: req.depositFactoryCid,
-      lpFactoryCid: req.lpFactoryCid,
-      depositFactoryExtraArgs: req.depositFactoryExtraArgs,
-      lpFactoryExtraArgs: req.lpFactoryExtraArgs,
+      requestedAt,
+      factoryCids: factories.map((f) => f.factoryCid),
+      allocationFactoryExtraArgs: factories.map((f) => f.extraArgs),
       // The request lives in our own DAR; accept needs no registry context.
       allocationRequestExtraArgs: EMPTY_EXTRA_ARGS,
-      disclosure: [...req.depositFactoryDisclosure, ...req.lpFactoryDisclosure],
+      disclosure: factories.flatMap((f) => f.disclosure),
       baseHoldingCids: params.baseHoldingCids ?? [],
       quoteHoldingCids: params.quoteHoldingCids ?? [],
     });
@@ -1068,17 +1108,29 @@ export const ledger = {
         requestedAt,
       }),
     });
+    const holdingInputs = [[], [], holderLpHoldingCids];
+    const factories = await Promise.all(
+      req.allocations.map((allocation, index) =>
+        discoverAllocationFactory({
+          admin: allocation.admin,
+          settlement: req.settlement,
+          allocation,
+          requestedAt,
+          inputHoldingCids: holdingInputs[index] ?? [],
+          actors: [params.holder],
+        }),
+      ),
+    );
     const walletRes = await handToWallet({
       kind: 'remove-liquidity',
       requestCid: req.requestCid,
       settlement: req.settlement,
       allocations: req.allocations,
-      depositFactoryCid: req.depositFactoryCid,
-      lpFactoryCid: req.lpFactoryCid,
-      depositFactoryExtraArgs: req.depositFactoryExtraArgs,
-      lpFactoryExtraArgs: req.lpFactoryExtraArgs,
+      requestedAt,
+      factoryCids: factories.map((f) => f.factoryCid),
+      allocationFactoryExtraArgs: factories.map((f) => f.extraArgs),
       allocationRequestExtraArgs: EMPTY_EXTRA_ARGS,
-      disclosure: [...req.depositFactoryDisclosure, ...req.lpFactoryDisclosure],
+      disclosure: factories.flatMap((f) => f.disclosure),
       lpHoldingCids: holderLpHoldingCids,
     });
     const cids = walletRes.createdAllocationCids;
@@ -1126,9 +1178,14 @@ async function fetchJson<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  const method = init.method ?? 'GET';
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
     ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...apiAuthHeaders(path, method),
+      ...(init.headers ?? {}),
+    },
   });
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   if (res.status === 204) return undefined as T;

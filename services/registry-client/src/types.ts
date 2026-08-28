@@ -1,5 +1,6 @@
-// Registry HTTP response shapes. A registry may use any on-ledger templates as
-// long as its API returns these validated integration fields.
+// Normalized Token Standard V2 registry HTTP shapes. The wire names follow the
+// upstream OpenAPI (`factoryId`, `choiceContextData`, `disclosedContracts`);
+// callers use the normalized names below when constructing Ledger API commands.
 
 export type Party = string;
 export type ContractId<_T> = string & { readonly __brand: unique symbol };
@@ -11,6 +12,9 @@ export interface FactoryRefs {
   settlementFactoryCid: ContractId<"SettlementFactory">;
   disclosure: DisclosedContract[];
 }
+
+/** Daml JSON encoding of a choice argument, with empty `extraArgs`. */
+export type ChoiceArguments = Record<string, unknown>;
 
 export interface DisclosedContract {
   contractId: string;
@@ -32,10 +36,43 @@ export interface ChoiceContextRef {
   disclosure: DisclosedContract[];
 }
 
+/** One operation-specific factory response from a V2 registry. */
+export interface FactoryChoiceContextRef extends ChoiceContextRef {
+  factoryCid: ContractId<"TokenStandardFactory">;
+}
+
+/**
+ * The backend depends on this operation-specific surface rather than on a
+ * concrete HTTP client. Fixed self-registries can implement the same contract
+ * without inventing non-standard discovery endpoints.
+ */
+export interface RegistryDiscovery {
+  getAllocationFactory(
+    admin: Party,
+    choiceArguments: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef>;
+  getSettlementFactory(
+    admin: Party,
+    choiceArguments: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef>;
+  getAllocationCancelContext(
+    admin: Party,
+    allocationId: string,
+    meta?: Record<string, string>,
+  ): Promise<ChoiceContextRef>;
+  getAllocationWithdrawContext(
+    admin: Party,
+    allocationId: string,
+    meta?: Record<string, string>,
+  ): Promise<ChoiceContextRef>;
+}
+
 export type RegistryErrorKind =
   | "factory-stale"
+  | "not-found"
   | "transport"
   | "auth"
+  | "unsupported"
   // The response did not match the declared integration shape.
   | "malformed";
 

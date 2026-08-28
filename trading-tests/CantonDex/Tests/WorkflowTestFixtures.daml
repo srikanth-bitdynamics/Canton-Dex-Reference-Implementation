@@ -1,0 +1,216 @@
+-- | Shared holding-less fixtures for the workflow-focused integration tests.
+--
+-- These helpers isolate DEX contract choreography from token accounting. The
+-- mock allocation and settlement factories create/consume interface contracts,
+-- but they do not lock, debit, or credit Holding contracts. Tests that claim
+-- value movement live in PoolLiquidityRulesTests, RegistryConservationTests,
+-- RfqSettlementTests, and RealRegistryDvpTests.
+--
+-- Imported by PoolWorkflowTests and ChoiceContextWorkflowTests; setupRegistries
+-- is also reused by the order and bilateral-trade suites.
+module CantonDex.Tests.WorkflowTestFixtures where
+
+import DA.List (head, tail)
+
+import Daml.Script
+
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+
+import CantonDex.Lp.Policy qualified as LP
+import CantonDex.Dex.Pool qualified as Pool
+import CantonDex.Dex.PoolState qualified as PState
+import CantonDex.Dex.PoolRules qualified as PRules
+import CantonDex.Dex.PoolModel qualified as PM
+import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
+import CantonDex.Testing.MockRegistry qualified as Mock
+
+-- Create the split pool contracts the operator uses for swap + DvP
+-- liquidity, plus the LP policy.
+data PoolSetup = PoolSetup with
+    setupPoolId : Pool.PoolId
+    setupPoolCid : ContractId Pool.Pool
+    setupStateCid : ContractId PState.PoolState
+    setupRulesCid : ContractId PRules.PoolRules
+    setupLiquidityRulesCid : ContractId Dvp.PoolLiquidityRules
+    setupPolicyCid : ContractId LP.LPTokenPolicy
+
+setupPool : Party -> Party -> Party -> Script PoolSetup
+setupPool operator lpRegistrar admin = do
+  -- One BTC/USDC pool. The pool mints its own "BTC-USDC-LP" share token to
+  -- liquidity providers, issued by the LP registrar. Fee is 0.30% (30 bps).
+  let poolId = "BTC-USDC"
+      lpInstrumentId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
+  -- Pool: the static config (the two sides, who runs it, the fee).
+  poolCid <- submit operator $ createCmd Pool.Pool with
+    poolId
+    operator
+    lpRegistrar
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    lpInstrumentId
+    feeBps = 30
+  -- PoolState: the pool's reserve and LP-supply accounting. It starts empty and
+  -- Unfunded; the first successful add transition flips it to Active.
+  stateCid <- submit operator $ createCmd PState.PoolState with
+    poolId
+    operator
+    lpRegistrar
+    status = Pool.PS_Unfunded
+    reserves = Pool.PoolReserves with baseAmount = 0.0; quoteAmount = 0.0
+    totalLpSupply = 0.0
+    publicReaders = []
+  -- PoolRules: the swap choices (trade against the pool).
+  rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
+  -- PoolLiquidityRules: the add/remove-liquidity choices, run jointly by the
+  -- operator and the LP registrar (both signatures are required).
+  dvpCid <- submit (actAs [operator, lpRegistrar]) $
+    createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar
+  -- LPTokenPolicy: tracks how many LP shares exist across all providers.
+  policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
+    lpRegistrar
+    operator
+    lpInstrumentId
+    totalSupply = 0.0
+    active = True
+  pure PoolSetup with
+    setupPoolId = poolId
+    setupPoolCid = poolCid
+    setupStateCid = stateCid
+    setupRulesCid = rulesCid
+    setupLiquidityRulesCid = dvpCid
+    setupPolicyCid = policyCid
+
+-- Stand up the holding-less registry fixture. Its allocation factory turns a
+-- specification into a mock Allocation contract, and its settlement factory
+-- completes the batch choices without debiting, locking, or crediting holdings.
+-- These replace a real token issuer so choice choreography can be isolated.
+setupRegistries : Party -> [Party] -> Script ( ContractId V2.AllocationFactory
+                                              , ContractId V2.SettlementFactory
+                                              )
+setupRegistries admin users = do
+  factoryCid <- submit admin $ createCmd Mock.MockAllocationFactory with admin; users; requireContext = False
+  settleCid <- submit admin $ createCmd Mock.MockSettlementFactory with admin; users; requireContext = False
+  pure (toInterfaceContractId factoryCid, toInterfaceContractId settleCid)
+
+-- Exercise the delivery-versus-payment (DvP) liquidity choreography through
+-- Token Standard interfaces. The operator opens the request; the depositor
+-- authorizes mock Allocation contracts for the two deposits and LP-mint
+-- receipt; then operator and LP registrar jointly settle all three. Because
+-- MockRegistry has no Holding contracts, this helper proves the requested
+-- specifications, controllers, and state transitions—not actual value movement.
+-- The pool's LP amount is the square root of base*quote.
+--
+-- The two `Decimal` arguments are base then quote, in that order.
+dvpFundPool
+  : Party
+  -> Party
+  -> ContractId V2.AllocationFactory
+  -> ContractId V2.SettlementFactory
+  -> Pool.PoolId
+  -> ContractId Pool.Pool
+  -> ContractId PState.PoolState
+  -> ContractId LP.LPTokenPolicy
+  -> ContractId Dvp.PoolLiquidityRules
+  -> Party
+  -> Decimal
+  -> Decimal
+  -> Time
+  -> ExtraArgs
+  -> Script Dvp.PoolLiquidityRules_SettleAddResult
+dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid policyCid dvpCid recipient baseAmount quoteAmount now extraArgs = do
+  let lpAmount = PM.sqrtDecimal (baseAmount * quoteAmount)
+  -- Operator opens the add-liquidity request; it lists three required mock
+  -- allocation specifications: base, quote, and the LP-mint receipt.
+  reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
+    poolCid; recipient; baseAmount; quoteAmount; lpAmount; requestedAt = now; settleAt = None
+  Some req <- queryContractId operator reqCid
+  -- The three specifications, in order, and a helper that creates one mock
+  -- Allocation contract for each (the fixture completes immediately).
+  let baseSpec = head req.allocations
+      quoteSpec = head (tail req.allocations)
+      receiptSpec = head (tail (tail req.allocations))
+      mkOne spec = do
+        res <- submit recipient $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
+          settlement = req.settlement
+          allocation = spec
+          requestedAt = now
+          inputHoldingCids = []
+          actors = [recipient]
+          extraArgs
+        case res.output of
+          V2.AllocationInstructionResult_Completed cid -> pure cid
+          _ -> abort "Mock factory should complete immediately"
+  baseAllocCid <- mkOne baseSpec
+  quoteAllocCid <- mkOne quoteSpec
+  receiptAllocCid <- mkOne receiptSpec
+
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = poolId
+        poolCid
+        poolStateCid = stateCid
+        lpPolicyCid = policyCid
+        requestCid = Some reqCid
+        acceptanceCid = None
+        recipient
+        lpBaseDepositCid = baseAllocCid
+        lpQuoteDepositCid = quoteAllocCid
+        lpReceiptCid = receiptAllocCid
+        baseAmount
+        quoteAmount
+        minLpTokens = 0.0
+        knownTotalLpSupply = 0.0
+      allocate actor arg = do
+        result <- submit actor $ exerciseCmd factoryCid
+          (arg with extraArgs = extraArgs)
+        case result.output of
+          V2.AllocationInstructionResult_Completed cid -> pure cid
+          _ -> abort "Mock factory should complete staged allocation immediately"
+
+  allocationPlan <- submit (actAs [operator, lpRegistrar]) $
+    exerciseCmd dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation
+      requestedAt = now
+  operatorBaseReceiverCid <- allocate operator allocationPlan.baseReceiver
+  operatorQuoteReceiverCid <- allocate operator allocationPlan.quoteReceiver
+  registrarMintCid <- allocate lpRegistrar allocationPlan.lpMintSender
+
+  -- Exercise the read-only batch preview too: this fixture mirrors the same
+  -- operation-specific discovery sequence used by the backend.
+  _settlementPlan <- submit (actAs [operator, lpRegistrar]) $
+    exerciseCmd dvpCid Dvp.PoolLiquidityRules_PreviewAddSettlement with
+      preparation
+      operatorBaseReceiverCid
+      operatorQuoteReceiverCid
+      registrarMintCid
+
+  submit (actAs [operator, lpRegistrar]) $
+    exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+      expectedPoolId = preparation.expectedPoolId
+      poolCid = preparation.poolCid
+      poolStateCid = preparation.poolStateCid
+      lpPolicyCid = preparation.lpPolicyCid
+      requestCid = preparation.requestCid
+      acceptanceCid = preparation.acceptanceCid
+      recipient = preparation.recipient
+      lpBaseDepositCid = preparation.lpBaseDepositCid
+      lpQuoteDepositCid = preparation.lpQuoteDepositCid
+      lpReceiptCid = preparation.lpReceiptCid
+      baseFactoryCid = factoryCid
+      quoteFactoryCid = factoryCid
+      lpFactoryCid = factoryCid
+      baseQuoteSettleCid = settleCid
+      lpSettleCid = settleCid
+      baseAmount = preparation.baseAmount
+      quoteAmount = preparation.quoteAmount
+      minLpTokens = preparation.minLpTokens
+      knownTotalLpSupply = preparation.knownTotalLpSupply
+      requestedAt = now
+      poolAdminExtraArgs = extraArgs
+      lpRegistrarExtraArgs = extraArgs
+      operatorBaseReceiverCid = Some operatorBaseReceiverCid
+      operatorQuoteReceiverCid = Some operatorQuoteReceiverCid
+      registrarMintCid = Some registrarMintCid

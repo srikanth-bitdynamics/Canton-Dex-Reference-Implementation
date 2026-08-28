@@ -27,7 +27,7 @@
 //     templates -- that's a guardrail violation.
 
 import type { LedgerSubmitter } from "./ledger/index.js";
-import type { RegistryClient } from "@canton-dex/registry-client";
+import type { RegistryDiscovery } from "@canton-dex/registry-client";
 
 import { AdminService } from "./admin/index.js";
 import { OrderService } from "./order/index.js";
@@ -44,7 +44,7 @@ import type { Party } from "./types.js";
 
 export interface OperatorBackendConfig {
   ledger: LedgerSubmitter;
-  registry: RegistryClient;
+  registry: RegistryDiscovery;
   operatorParty: Party;
 }
 
@@ -59,7 +59,7 @@ export class OperatorBackend {
   // that need to drive raw ledger commands. Production callers should
   // prefer the typed flow modules.
   readonly ledger: LedgerSubmitter;
-  readonly registry: RegistryClient;
+  readonly registry: RegistryDiscovery;
   readonly operatorParty: Party;
 
   constructor(cfg: OperatorBackendConfig) {

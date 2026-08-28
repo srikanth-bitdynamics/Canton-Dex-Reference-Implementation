@@ -129,6 +129,55 @@ prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount bindin
     preparedSwapInLeg = swapInLeg
     preparedOutputDelivery = outputDelivery
 
+prepareBoundSwap
+  : Party
+  -> PoolId
+  -> ContractId Pool
+  -> ContractId PoolState
+  -> V2.Account
+  -> Text
+  -> Decimal
+  -> Decimal
+  -> ContractId PoolSlice
+  -> [ContractId PoolSlice]
+  -> Optional SwapQuoteBinding
+  -> Update PreparedSwap
+prepareBoundSwap
+    operator expectedPoolId poolCid poolStateCid swapperAccount
+    inputInstrumentId inputAmount minOutputAmount inputSliceCid outputSliceCids
+    quoteBinding = do
+  let binding = fromSomeNote "PoolRules: quoteBinding is required" quoteBinding
+  assertMsg "Swap quote pool id mismatch" (expectedPoolId == binding.expectedPoolId)
+  assertMsg "Swap quote state mismatch" (poolStateCid == binding.poolStateCid)
+  assertMsg "Swap quote input slice mismatch" (inputSliceCid == binding.inputSliceCid)
+  assertMsg "Swap quote output slices mismatch" (outputSliceCids == binding.outputSliceCids)
+  assertMsg "Swap quote slippage minimum mismatch" (minOutputAmount == binding.minOutputAmount)
+  prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount binding
+
+swapSettlementArguments
+  : Party
+  -> ContractId Pool
+  -> ContractId V2.Allocation
+  -> PreparedSwap
+  -> ExtraArgs
+  -> V2.SettlementFactory_SettleBatch
+swapSettlementArguments operator poolCid swapperAllocationCid prepared extraArgs =
+  let poolAccount = Utils.basicAccount operator
+      inputSlice = prepared.preparedInputSlice
+      inputInstrumentId = prepared.preparedSwapInLeg.instrumentId
+      inputAmount = prepared.preparedSwapInLeg.amount
+      swapperFinalized = Utils.finalAllocation swapperAllocationCid
+      inputFinalized = Utils.mkFinalizedAllocation inputSlice.allocationCid
+        (Utils.legsToSides poolAccount [prepared.preparedSwapInLeg])
+        (Some (TextMap.fromList [(inputInstrumentId, inputSlice.amount + inputAmount)]))
+  in V2.SettlementFactory_SettleBatch with
+      settlement = poolSettlement poolCid operator
+      transferLegs = prepared.preparedSwapInLeg :: prepared.preparedOutputDelivery.legs
+      allocations =
+        swapperFinalized :: inputFinalized :: prepared.preparedOutputDelivery.sliceFinalizeds
+      actors = [operator]
+      extraArgs
+
 -- Result of PoolRules_ReconcileState: the audited slice totals.
 data PoolRules_ReconcileResult = PoolRules_ReconcileResult with
     sliceCount : Int
@@ -173,6 +222,32 @@ template PoolRules with
                 False
         pure PoolRules_RequestSwapResult with settlement; allocationSpec; quoteBinding
 
+    -- Return the exact SettleBatch argument used by `PoolRules_Swap`. The
+    -- backend sends this value to the instrument registry's canonical
+    -- settlement-factory endpoint, then supplies the returned factory and
+    -- choice context to the real swap.
+    nonconsuming choice PoolRules_PreviewSwapSettlement : V2.SettlementFactory_SettleBatch
+      with
+        expectedPoolId : PoolId
+        poolCid : ContractId Pool
+        poolStateCid : ContractId PoolState
+        swapperAccount : V2.Account
+        inputInstrumentId : Text
+        inputAmount : Decimal
+        minOutputAmount : Decimal
+        swapperAllocationCid : ContractId V2.Allocation
+        inputSliceCid : ContractId PoolSlice
+        outputSliceCids : [ContractId PoolSlice]
+        quoteBinding : Optional SwapQuoteBinding
+      controller operator
+      do
+        prepared <- prepareBoundSwap
+          operator expectedPoolId poolCid poolStateCid swapperAccount
+          inputInstrumentId inputAmount minOutputAmount inputSliceCid
+          outputSliceCids quoteBinding
+        pure $ swapSettlementArguments
+          operator poolCid swapperAllocationCid prepared Utils.emptyExtraArgs
+
     -- Constant-product swap (multi-slice): prices against global reserves,
     -- sources amountOut from an ordered output-slice prefix (draining full
     -- ones, re-allocating the boundary leftover); the input slice grows.
@@ -193,14 +268,10 @@ template PoolRules with
         quoteBinding : Optional SwapQuoteBinding
       controller operator
       do
-        let binding = fromSomeNote "PoolRules_Swap: quoteBinding is required" quoteBinding
-        assertMsg "Swap quote pool id mismatch" (expectedPoolId == binding.expectedPoolId)
-        assertMsg "Swap quote state mismatch" (poolStateCid == binding.poolStateCid)
-        assertMsg "Swap quote input slice mismatch" (inputSliceCid == binding.inputSliceCid)
-        assertMsg "Swap quote output slices mismatch" (outputSliceCids == binding.outputSliceCids)
-        assertMsg "Swap quote slippage minimum mismatch" (minOutputAmount == binding.minOutputAmount)
-        prepared <- prepareSwap
-          operator poolCid swapperAccount inputInstrumentId inputAmount binding
+        prepared <- prepareBoundSwap
+          operator expectedPoolId poolCid poolStateCid swapperAccount
+          inputInstrumentId inputAmount minOutputAmount inputSliceCid
+          outputSliceCids quoteBinding
         let pool = prepared.preparedPool
             state = prepared.preparedState
             inputSlice = prepared.preparedInputSlice
@@ -209,22 +280,12 @@ template PoolRules with
             swapInLeg = prepared.preparedSwapInLeg
             outDel = prepared.preparedOutputDelivery
             draw = prepared.preparedDraw
-            poolAccount = Utils.basicAccount operator
-            settlement = poolSettlement poolCid operator
+            settlementArgs = swapSettlementArguments
+              operator poolCid swapperAllocationCid prepared extraArgs
 
         -- The trader authored every leg side, so settlement cannot add or
         -- alter trader authority here. Pool allocations still roll forward.
-        let swapperFinalized = Utils.finalAllocation swapperAllocationCid
-            inputFinalized = Utils.mkFinalizedAllocation inputSlice.allocationCid
-              (Utils.legsToSides poolAccount [swapInLeg])
-              (Some (TextMap.fromList [(inputInstrumentId, inputSlice.amount + inputAmount)]))
-
-        settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
-          settlement
-          transferLegs = swapInLeg :: outDel.legs
-          allocations = swapperFinalized :: inputFinalized :: outDel.sliceFinalizeds
-          actors = [operator]
-          extraArgs
+        settleResult <- exercise factoryCid settlementArgs
 
         let nextIterCids = Utils.nextIterationAllocationCids settleResult
         -- SettleBatch order: [swapper, input, fully…, boundary?]. Guard the

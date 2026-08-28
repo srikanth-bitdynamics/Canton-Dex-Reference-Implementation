@@ -1,11 +1,14 @@
 # Understand the design in 15 minutes
 
-This page is the shortest path from Daml knowledge to the Canton DEX design. It
-explains which contracts carry market state, which party authorizes each step,
-and where Token Standard V2 moves value. Follow the links only when you need the
+This page is the shortest path from the core Daml vocabulary to the Canton DEX
+design. It explains which contracts carry market state, which party authorizes
+each step, and where Token Standard V2 moves value. If terms such as template,
+choice, controller, party, contract id, or active contract set are new, first
+read the [Canton and Daml primer](canton-daml-primer.md); it assumes no Canton
+background. Then return here and follow deeper links only when you need the
 detail behind a statement.
 
-## 1. Start with the boundary
+## Start with the boundary
 
 The DEX decides whether a market action is valid. A token registry owns holdings
 and performs value movement.
@@ -30,7 +33,7 @@ The recurring workflow is:
 The operator can decide when to propose an action. It cannot author a trader's
 allocation or settle transfer legs outside the checks in the DEX choice.
 
-## 2. Know the actors
+## Know the actors
 
 | Actor | What it controls | What it cannot do alone |
 |---|---|---|
@@ -39,11 +42,12 @@ allocation or settle transfer legs outside the checks in the DEX choice.
 | Asset registry admin | Registry implementation, factories, context, and token policy | Change a trader's signed DEX intent |
 | LP registrar | LP instrument policy and mint/burn recording | Move reserve assets without the pool settlement path |
 
-The hosted RFQ demo is different: its relay has act-as rights for hosted parties.
-That convenience is not the self-custodial authority model used by wallet-funded
-orders, swaps, and liquidity.
+The operator-mediated RFQ example is different: its backend ledger user has
+act-as rights for configured parties. That authority model is not the
+self-custodial path used by wallet-funded orders, swaps, and liquidity, and the
+repository does not expose it as a public relay service.
 
-## 3. The Token Standard settlement spine
+## The Token Standard settlement spine
 
 A `Holding` is spendable token value. An `Allocation` locks holdings for one
 settlement and describes the sides its authorizer permits. A
@@ -63,7 +67,7 @@ not a privileged registry. Production assets may come from another registry that
 implements the same V2 APIs. Read [Registry Integration](../guides/registry-integration.md)
 for the exact assumptions.
 
-## 4. Pair and governance state
+## Pair and governance state
 
 `DexPair` is the operator-signed listing record. It names one registry admin,
 the base and quote instrument ids, enabled trading modes, and fees. The operator
@@ -81,11 +85,16 @@ Read:
 - Workflow map: [Active workflows](workflows.md#active-workflow-map)
 - Guide: [Add a trading pair](../guides/add-a-trading-pair.md)
 
-## 5. Signed pool swaps
+## Signed pool swaps
 
 `PoolRules_RequestSwap` reads a precise pool snapshot and returns one allocation
 specification containing both the trader's input side and every pool-to-trader
 output side. The wallet signs that complete specification.
+
+A pool's reserves are not held as one balance per side: each side is a set of
+many small `PoolSlice` allocations (detailed in the next section). A swap
+consumes only an ordered few of them — the *output slice list* below — and leaves
+the rest untouched.
 
 `PoolRules_Swap` then:
 
@@ -104,7 +113,7 @@ Read:
 - Math: [Pricing](pricing.md)
 - Proofs: `testPoolSwapViaRequestSwap` and `testRealRegistryDvpSwapSettles`
 
-## 6. Liquidity and pool custody
+## Liquidity and pool custody
 
 The pool is split so each concern remains small:
 
@@ -124,28 +133,18 @@ batch per admin and passes each registry its own choice context.
 
 ### Why pool slices have no deadline
 
-Reserve slices are operator-authored with `committed = true` and
-`settlementDeadline = None`. Under the V2 withdrawal rule this means the
-authorizer cannot call `Allocation_Withdraw` later. This is intentional for the
-reference's long-lived inventory: the authorizer path and an LP cannot withdraw
-a routine slice. The operator remains the allocation executor and can cancel it
-when recovering or shutting down the pool.
+Reserve slices are `committed = true` with `settlementDeadline = None`, so under
+the V2 withdrawal rule no one — not even the LP — can unilaterally call
+`Allocation_Withdraw` on a routine slice. The operator holds custody: it is the
+settlement executor and the only party that can release reserves, and routine LP
+redemption needs the operator and LP registrar together. If either disappears,
+the reference has no trustless LP exit.
 
-The consequence is explicit operator custody:
-
-- the LP holder is not the reserve allocation authorizer and has no unilateral
-  slice withdrawal;
-- routine LP redemption requires the operator and LP registrar;
-- the operator is the settlement executor and can cancel reserve allocations;
-- if either service party disappears, the reference has no trustless LP exit.
-
-Adding an arbitrary deadline would not solve holder exit. It would instead give
-the operator authorizer a future withdrawal path and require a safe slice-renewal
-protocol. A production fork must choose and audit its own governed execution,
-allocation renewal, and emergency redemption design. See
+This is a deliberate long-lived-custody choice. The full rationale — including
+why simply adding a deadline would not give holders an exit — is in
 [Liquidity and Custody](liquidity-and-custody.md#availability-and-the-lp-exit-boundary).
 
-## 7. Prefunded orders
+## Prefunded orders
 
 An order has two objects: an operator-signed `Order` containing market terms and
 a trader-authored allocation containing the reserved funds.
@@ -177,10 +176,10 @@ Read:
 - Atomic fill: [`OrderMatchExecution.daml`](../../trading/CantonDex/Dex/OrderMatchExecution.daml)
 - Proof: `testOrderMatchRollsOrdersForwardAtomically`
 
-## 8. RFQ and OTC settlement
+## RFQ and OTC settlement
 
 An RFQ records a trader request and dealer quotes. `Rfq_Accept` jointly requires
-the hosted trader and operator, records the ranking in a `PolicyReceipt`, and
+the trader and operator, records the ranking in a `PolicyReceipt`, and
 creates a `MatchedTrade`. Each counterparty then authors an allocation and
 `MatchedTrade_Settle` groups the transfer legs by registry admin before calling
 that admin's settlement factory.
@@ -194,7 +193,7 @@ Read:
 - Settlement: [`MatchedTrade.daml`](../../trading/CantonDex/Dex/MatchedTrade.daml)
 - Real holdings proof: `testRfqBuySettlesAgainstRealHoldings`
 
-## 9. Cross-registry settlement
+## Cross-registry settlement
 
 Factory contract ids are not sufficient. Before a registry choice, the operator
 fetches that admin's choice context and disclosed contracts off-ledger. Context is
@@ -215,7 +214,7 @@ The evidence is intentionally both positive and negative:
 Read [Choice Context](../guides/choice-context.md) for backend assembly and
 submission details.
 
-## 10. Active and compatibility surfaces
+## Active and compatibility surfaces
 
 Public source can contain declarations that are not active workflow APIs. Code
 comments use one of these markers:
@@ -233,7 +232,7 @@ flows use `CantonDex.Registry.V2` or another V2 registry. `Order_Adjust` and
 `Order_RecordPartialFill` are `[RETIRED]`; use
 `OrderMatchExecution_Execute`.
 
-## 11. Choose the next detailed page
+## Choose the next detailed page
 
 | If you want to understand | Read next |
 |---|---|
@@ -243,3 +242,6 @@ flows use `CantonDex.Registry.V2` or another V2 registry. `Order_Adjust` and
 | Registry assumptions and context | [Registry Integration](../guides/registry-integration.md) |
 | What tests prove | [Testing](../reference/testing.md) |
 | Deliberate limitations | [Non-goals](non-goals.md) |
+
+**Next canonical step:** [Architecture](architecture.md). Use the other rows
+above as topic references when you need their detail.

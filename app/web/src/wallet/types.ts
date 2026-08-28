@@ -90,6 +90,7 @@ export interface FundOrderIntent {
   disclosure: DisclosedContract[];
   settlement: V2SettlementInfo;
   allocationSpec: V2AllocationSpecification;
+  requestedAt: string;
   /** Holdings the wallet should propose to lock. */
   inputHoldingCids: ContractId<"Holding">[];
   /**
@@ -127,6 +128,7 @@ export interface RequestSwapIntent {
   poolId: string;
   allocationSpec: V2AllocationSpecification;
   settlement: V2SettlementInfo;
+  requestedAt: string;
   factoryCid: ContractId<"AllocationFactory">;
   allocationFactoryExtraArgs: V2ExtraArgs;
   disclosure: DisclosedContract[];
@@ -155,24 +157,23 @@ export interface MergeHoldingsIntent {
 /**
  * Trader provides liquidity (DvP). The operator has created a
  * LiquidityAllocationRequest; the wallet authors the three allocations it
- * names — base deposit + quote deposit (under `depositFactoryCid` =
- * pool.admin) and the LP-token receipt (under `lpFactoryCid` =
- * pool.lpRegistrar) — via a CreateAndExercise of the token standard's
+ * names — base deposit + quote deposit (under pool.admin) and the LP-token
+ * receipt (under pool.lpRegistrar) — via a CreateAndExercise of the token standard's
  * `BatchingUtilityV2.ExecuteBatch`, which accepts the request (leaving the
  * acceptance receipt) and authors all three inside ONE Daml transaction / one
  * top-level command for gateways that accept one command. `allocations`
- * is the canonical order [base deposit, quote deposit, LP receipt]; the
- * created cids are recovered operator-side from the single updateId for /settle.
+ * is the canonical order [base deposit, quote deposit, LP receipt].
+ * `factoryCids` and `allocationFactoryExtraArgs` are parallel to that order;
+ * each pair comes from registry discovery for the exact Allocate arguments.
  */
 export interface AddLiquidityIntent {
   kind: "add-liquidity";
   requestCid: ContractId<"LiquidityAllocationRequest">;
   settlement: V2SettlementInfo;
   allocations: V2AllocationSpecification[];
-  depositFactoryCid: ContractId<"AllocationFactory">;
-  lpFactoryCid: ContractId<"AllocationFactory">;
-  depositFactoryExtraArgs: V2ExtraArgs;
-  lpFactoryExtraArgs: V2ExtraArgs;
+  requestedAt: string;
+  factoryCids: ContractId<"AllocationFactory">[];
+  allocationFactoryExtraArgs: V2ExtraArgs[];
   /** Context for the AllocationRequest_Accept call (empty for the self-registry). */
   allocationRequestExtraArgs: V2ExtraArgs;
   disclosure: DisclosedContract[];
@@ -183,19 +184,18 @@ export interface AddLiquidityIntent {
 /**
  * Trader removes liquidity (DvP). Symmetric to add: the wallet
  * authors the three allocations the request names — base receipt + quote
- * receipt (under `depositFactoryCid` = pool.admin) and the LP burn-sender
- * (under `lpFactoryCid` = pool.lpRegistrar, locking `lpHoldingCid`) — in
- * canonical order [base receipt, quote receipt, LP burn-sender].
+ * receipt (under pool.admin) and the LP burn-sender (under pool.lpRegistrar,
+ * locking `lpHoldingCids`) — in canonical order [base receipt, quote receipt,
+ * LP burn-sender]. The factory/context arrays use the same order.
  */
 export interface RemoveLiquidityIntent {
   kind: "remove-liquidity";
   requestCid: ContractId<"LiquidityAllocationRequest">;
   settlement: V2SettlementInfo;
   allocations: V2AllocationSpecification[];
-  depositFactoryCid: ContractId<"AllocationFactory">;
-  lpFactoryCid: ContractId<"AllocationFactory">;
-  depositFactoryExtraArgs: V2ExtraArgs;
-  lpFactoryExtraArgs: V2ExtraArgs;
+  requestedAt: string;
+  factoryCids: ContractId<"AllocationFactory">[];
+  allocationFactoryExtraArgs: V2ExtraArgs[];
   /** Context for the AllocationRequest_Accept call (empty for the self-registry). */
   allocationRequestExtraArgs: V2ExtraArgs;
   disclosure: DisclosedContract[];
@@ -230,9 +230,9 @@ export interface WalletResult {
    * For multi-allocation intents (add/remove-liquidity), the created
    * V2.Allocation cids in the SAME order as the intent's `allocations` —
    * i.e. the order the AllocationFactory_Allocate commands were emitted. The
-   * dApp forwards these to the operator-backend `/settle` call. Providers
-   * that cannot extract created-contract cids from their submit response
-   * MUST reject those intents rather than return this empty/partial.
+   * dApp forwards these to the operator-backend `/settle` call. An updateId-only
+   * provider omits this array and instead returns `auxiliaryCids.updateId`, which
+   * lets the operator recover the allocations from the transaction tree.
    */
   createdAllocationCids?: string[];
   /**

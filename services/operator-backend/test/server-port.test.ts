@@ -28,4 +28,54 @@ describe("server entrypoints", () => {
       );
     });
   }
+
+  it("testnet-server never enables the development write bypass", () => {
+    const source = readFileSync(join(SRC, "testnet-server.ts"), "utf8");
+    assert.match(source, /devOpen:\s*false/);
+    assert.doesNotMatch(
+      source,
+      /devOpen:\s*process\.env\.DEX_DEV_OPEN/,
+      "testnet-server must not honor the in-memory server's auth bypass",
+    );
+  });
+
+  it("testnet-server never enables the arbitrary-command wallet relay", () => {
+    const source = readFileSync(join(SRC, "testnet-server.ts"), "utf8");
+    assert.match(source, /walletRelayEnabled:\s*false/);
+    assert.doesNotMatch(
+      source,
+      /walletRelayEnabled:\s*process\.env\.DEX_DEV_WALLET_RELAY/,
+      "testnet-server must not forward wallet commands under its participant JWT",
+    );
+  });
+
+  it("testnet-server makes hosted trader-authority RFQ relay opt-in", () => {
+    const source = readFileSync(join(SRC, "testnet-server.ts"), "utf8");
+    assert.match(
+      source,
+      /hostedRfqEnabled\s*=\s*process\.env\.DEX_HOSTED_RFQ_RELAY\s*===\s*"1"/,
+    );
+    assert.match(source, /hostedRfqEnabled\s*&&\s*!callerJwtSecret/);
+    assert.match(source, /readOnly\s*&&\s*hostedRfqEnabled/);
+  });
+
+  it("testnet-server uses the per-admin fixed self-registry adapter", () => {
+    const source = readFileSync(join(SRC, "testnet-server.ts"), "utf8");
+    assert.match(source, /class ConfiguredRegistry extends FixedRegistryClient/);
+    assert.match(source, /super\(\(admin\)\s*=>/);
+    assert.match(source, /factoriesByAdmin\.get\(admin\)/);
+    assert.match(source, /registry:\s*new ConfiguredRegistry\(factoriesByAdmin\)/);
+    assert.match(source, /required\("CANTON_LP_ALLOC_FACTORY_CID"\)/);
+    assert.match(source, /required\("CANTON_LP_SETTLE_FACTORY_CID"\)/);
+  });
+
+  it("dev-server identifies seeded state as an in-memory preview", () => {
+    const source = readFileSync(join(SRC, "dev-server.ts"), "utf8");
+    assert.match(source, /network:\s*"preview:in-memory"/);
+    assert.doesNotMatch(
+      source,
+      /network:\s*process\.env\.CANTON_NETWORK/,
+      "The seeded server must not masquerade as a Canton network via an env label",
+    );
+  });
 });

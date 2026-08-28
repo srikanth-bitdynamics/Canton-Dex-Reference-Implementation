@@ -1,9 +1,9 @@
 // MatchedTrade flow.
 
 import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
-import { RegistryClient } from "@canton-dex/registry-client";
+import type { RegistryDiscovery } from "@canton-dex/registry-client";
 
-import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
+import { asChoiceContext } from "../ledger/choice-context.js";
 import { mergeDisclosures } from "../ledger/disclosure.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
@@ -49,13 +49,9 @@ export interface SettlementBatchV2 {
 export class MatchedTradeService {
   constructor(
     private readonly ledger: LedgerSubmitter,
-    private readonly registry: RegistryClient,
+    private readonly registry: RegistryDiscovery,
     private readonly operatorParty: Party,
   ) {}
-
-  private choiceContext(admin: Party): Promise<ChoiceContext> {
-    return fetchChoiceContext(this.registry, admin);
-  }
 
   async requestAllocations(
     input: MatchedTradeRequestAllocationsInput,
@@ -76,6 +72,31 @@ export class MatchedTradeService {
   }
 
   async settle(input: MatchedTradeSettleInput): Promise<unknown> {
+    const plansByAdmin = [...input.batchesByAdmin].map(([admin, batch]) => [
+      admin,
+      {
+        transferLegs: batch.transferLegs,
+        allocations: batch.allocationCids.map((allocationCid) => ({
+          allocationCid,
+          extraTransferLegSides: [],
+          nextIterationFunding: null,
+        })),
+      },
+    ]);
+    const preview = await retryOnContention(() =>
+      this.ledger.submit<Array<[Party, Record<string, unknown>]>>({
+        actAs: [this.operatorParty],
+        commandId: `mt-settle-preview:${input.tradeCid}`,
+        command: {
+          kind: "exercise",
+          templateId: "CantonDex.Dex.MatchedTrade:MatchedTrade",
+          contractId: input.tradeCid,
+          choice: "MatchedTrade_PreviewSettlement",
+          argument: { plansByAdmin },
+        },
+      }),
+    );
+    const argumentsByAdmin = new Map(preview);
     const adminEntries: Array<{
       admin: Party;
       batch: SettlementBatchV2;
@@ -87,16 +108,18 @@ export class MatchedTradeService {
       disclosure: DisclosedContract[];
     }> = [];
     for (const [admin, batch] of input.batchesByAdmin) {
-      const [factories, ctx] = await Promise.all([
-        this.registry.getFactories(admin),
-        this.choiceContext(admin),
-      ]);
+      const choiceArguments = argumentsByAdmin.get(admin);
+      if (!choiceArguments) {
+        throw new Error(`matched trade preview omitted registry admin ${admin}`);
+      }
+      const factory = await this.registry.getSettlementFactory(admin, choiceArguments);
+      const ctx = asChoiceContext(factory);
       adminEntries.push({
         admin,
         batch,
-        factoryCid: factories.settlementFactoryCid,
+        factoryCid: factory.factoryCid as ContractId<"SettlementFactory">,
         extraArgs: ctx.extraArgs,
-        disclosure: mergeDisclosures(factories.disclosure, ctx.disclosure),
+        disclosure: ctx.disclosure,
       });
     }
 
@@ -156,10 +179,15 @@ export class MatchedTradeService {
       >;
     }> = [];
     for (const [admin, allocationCids] of input.allocationsByAdmin) {
-      const ctx = await this.choiceContext(admin);
+      const contexts = await Promise.all(
+        allocationCids.map((cid) => this.registry.getAllocationCancelContext(admin, cid)),
+      );
       adminEntries.push({
-        disclosure: ctx.disclosure,
-        allocationsToCancel: allocationCids.map((cid) => [cid, ctx.extraArgs]),
+        disclosure: mergeDisclosures(...contexts.map((ctx) => ctx.disclosure)),
+        allocationsToCancel: allocationCids.map((cid, index) => [
+          cid,
+          asChoiceContext(contexts[index]!).extraArgs,
+        ]),
       });
     }
 

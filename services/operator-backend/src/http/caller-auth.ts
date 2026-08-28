@@ -1,4 +1,4 @@
-// Per-caller party binding for operator-authority write routes.
+// Per-caller party binding for private reads and operator-authority writes.
 //
 // The operator bearer token (checkOperatorAuth) authenticates the *backend
 // client* — but on its own it lets any holder name an arbitrary party as the
@@ -203,6 +203,39 @@ export function checkCallerBinding(
       status: 403,
       code: "forbidden",
       message: "caller may only act for its own party",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Bind a party-scoped read (for example `?owner=` or `?trader=`) to the
+ * verified caller. Admin callers are handled by the HTTP layer before this
+ * function. Like write binding, this is a no-op when no caller secret is
+ * configured and fail-closed when it is configured.
+ */
+export function checkCallerRead(
+  req: IncomingMessage,
+  cfg: CallerAuthConfig,
+  subject: string,
+): AuthCheck {
+  if (!cfg.callerJwtSecret) return { ok: true };
+  const caller = callerPartyFromRequest(req, cfg);
+  if (!caller) {
+    return {
+      ok: false,
+      status: 401,
+      code: "unauthorized",
+      message:
+        "this private read requires a valid X-Caller-Token (per-caller party JWT)",
+    };
+  }
+  if (caller !== subject) {
+    return {
+      ok: false,
+      status: 403,
+      code: "forbidden",
+      message: "caller may only read records for its own party",
     };
   }
   return { ok: true };

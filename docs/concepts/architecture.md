@@ -1,16 +1,14 @@
 # Canton DEX Architecture
 
-Canton DEX keeps market logic — orders, pools, RFQ — in its own Daml contracts,
-but it never moves value itself: every settlement runs through the Token
-Standard V2 (CIP-0112) allocation and batch-settlement APIs, so the exchange has
-no bespoke token-escrow contract; pool custody is expressed through standard
-V2 allocations. This page is the map of that
-split. [Non-goals](non-goals.md) records what the reference deliberately leaves
-out, and why.
+This is Step 6 of the
+[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+Complete the [15-minute design tour](design-tour.md) first.
 
-If this is your first code read, begin with the
-[15-minute design tour](design-tour.md). It follows one value movement at a time
-and links back into the templates and tests.
+Canton DEX keeps market logic—orders, pools, and RFQs—in its Daml contracts.
+Those contracts do not hold or move token value. Every settlement uses Token
+Standard V2 (CIP-0112) allocations and batch settlement, including pool
+custody. This page maps that boundary. [Non-goals](non-goals.md) records what
+the reference deliberately leaves out.
 
 ## The three layers
 
@@ -39,7 +37,7 @@ Three bands, top to bottom:
 - **Off-ledger orchestration** indexes the ledger, matches orders, prices pools,
   and submits operator-controlled choices. In the self-custodial order, swap,
   and LP flows it cannot lock a user's holdings; those funds are locked only by
-  an allocation the holder authors. The hosted RFQ relay is an explicitly
+  an allocation the holder authors. The operator-mediated RFQ path is an explicitly
   separate demo authority model, described below.
 - **On-ledger DEX contracts** enforce market rules — order limits,
   cancellation, pool accounting, and RFQ acceptance — and drive settlement,
@@ -55,7 +53,7 @@ The trust boundary is the pair of dashed edges crossing into the ledger. For
 self-custodial flows the operator drives DEX choices under its own authority,
 but it can neither fund a trade nor bypass the validation those choices perform
 on-ledger. [The executor-control constraint](#the-executor-control-constraint)
-makes that boundary precise. The hosted RFQ relay instead requires trader
+makes that boundary precise. The operator-mediated RFQ path instead requires trader
 act-as rights and must not be mistaken for the self-custodial path.
 
 ## What settles value: the Token Standard V2 spine
@@ -80,8 +78,10 @@ Two properties of the V2 allocation surface are load-bearing here:
 `Registry.V2` is the reference registry implementing these interfaces for the
 in-script tests, the testnet harness, and the live DEX. It is not privileged:
 any registry that implements the same V2 holding/allocation/settlement APIs can
-back a traded instrument, so the DEX treats `InstrumentId` and registry-supplied
-choice context as the stable integration boundary, not this template. The
+back a traded instrument. A listed base/quote pair currently keeps both ids under
+one registry admin; the LP registrar may differ. The DEX treats `InstrumentId`
+and registry-supplied choice context as the stable integration boundary, not
+this template. The
 guarantees the DEX relies on are enforced inside `SettlementFactory_SettleBatch`:
 allocation-to-leg coverage (exactly one allocation authorizes each side of each
 leg) and per-instrument sender/receiver balance across the whole batch.
@@ -105,7 +105,7 @@ validated DEX choice → V2 batch settlement**. Each workflow has a named choice
 because its validation differs; value movement itself always ends at the same
 Token Standard settlement interface.
 
-### Follow one order end to end
+### Follow one order from intent through settlement
 
 ```mermaid
 flowchart LR
@@ -306,36 +306,23 @@ The write surface is explicit rather than uniform:
   Ongoing market transitions use named choices that recheck their inputs.
 - Order funding, swap funding, and LP add/remove author trader allocations
   through the wallet before an operator choice can settle them.
-- The hosted RFQ routes directly submit as the hosted trader, and RFQ accept
+- The operator-mediated RFQ routes submit as the configured trader, and RFQ accept
   submits as both trader and operator. This requires corresponding ledger
-  rights and is a demo relay boundary, not a self-custodial wallet path.
+  rights and is an authority-boundary example, not a self-custodial wallet path
+  or a public relay service.
 
 The dApp (`app/web`) makes these paths visible through a wallet-provider boundary
 and a separate operator API client; neither path changes the on-ledger choice
 authorization.
 
-## What proves it end to end
+## Where the proof lives
 
-- [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
-  — fast choreography and authority checks against `MockRegistry`: order
-  placement → operator bind → trader-funded `Order_Fund`, RFQ accept,
-  swap construction, OTC settlement, and atomic order roll-forward. This suite
-  does not prove value movement because its fixture has no holdings.
-- [`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)
-  — the settlement spine rejects any batch whose allocations do not cover its
-  legs exactly or whose per-instrument sender/receiver totals do not balance,
-  and proves roll-forward funding stays within real locked backing across
-  iterations.
-- [`PoolStateInvariantTests.daml`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml)
-  — `PoolRules_ReconcileState` holds across a full add → swap → remove
-  lifecycle, and catches an omitted slice, a desynced operator-fabricated
-  `PoolState`, or a slice from a different pool.
-- [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml)
-  — add, remove, swap, and cross-admin matched-trade settlement against an
-  upstream context-requiring V2 registry plus the reference LP registry.
-- [`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml)
-  — RFQ buy and sell flows with exact holding deltas, no residual locks after a
-  successful settlement, and explicit expiry behavior for unsettled allocations.
+Use the [Daml proof map](../reference/daml-proof-map.md) to connect an
+architecture claim to its source choice and focused Daml Script test. Use the
+[testing reference](../reference/testing.md) to understand the difference
+between mock choreography, real-holding tests, backend/UI tests, and live
+Canton proofs. Keeping the suite catalog in those reference pages avoids
+duplicating volatile test names here.
 
 ---
 
@@ -360,8 +347,9 @@ Three concrete upstream inputs shaped the architecture:
 
 Two further principles run through the design: it is **workflow-first** (the
 shape of choices and state transitions matters more than AMM feature parity —
-see [Workflows](workflows.md)), and it trades **arbitrary `InstrumentId` pairs**,
-not hardcoded "cash vs asset" families.
+see [Workflows](workflows.md)), and it trades **arbitrary base/quote ids under
+one registry admin**, not hardcoded "cash vs asset" families. Pairing two asset
+admins is an explicit [app-layer limitation](non-goals.md#one-registry-admin-per-pair).
 
 ### Reference: reserves integrity in full
 
@@ -471,4 +459,6 @@ canton-dex/
 
 ---
 
-**Where to read next:** [Workflows](workflows.md) · [Pricing](pricing.md) · [Liquidity & Custody](liquidity-and-custody.md) · [Glossary](glossary.md) · [All docs](../README.md)
+**Next canonical step:** [Workflow design](workflows.md). Use
+[Pricing](pricing.md), [Liquidity and custody](liquidity-and-custody.md), and
+the [Glossary](glossary.md) as topic references.

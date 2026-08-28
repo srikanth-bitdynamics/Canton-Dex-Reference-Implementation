@@ -334,7 +334,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                 </div>
               </div>
 
-              <div className="section-h">On-ledger sequence</div>
+              <div className="section-h">Intended live-ledger sequence</div>
               <div
                 className="mono"
                 style={{
@@ -444,8 +444,9 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                   marginTop: 10,
                 }}
               >
-                By approving, your wallet locks the input in a single
-                allocation; the operator then settles the swap on-ledger.
+                With a live participant and supported wallet configured, your
+                wallet locks the input in one allocation and the operator
+                settles the swap on-ledger. Preview mode only simulates this handoff.
               </div>
             </div>
           </div>

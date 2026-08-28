@@ -18,6 +18,26 @@ import CantonDex.Dex.DexPair qualified as DexPair
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Trading.Utils qualified as Utils
 
+-- A settlement plan must identify each positive transfer leg exactly once.
+-- Registry settlement performs its own coverage checks; keeping the same basic
+-- shape invariant on the DEX contract makes malformed trades impossible to
+-- publish in the first place.
+validTransferLegs : [V2.TransferLeg] -> Bool
+validTransferLegs legs =
+  legs /= []
+    && all
+      (\leg ->
+        leg.transferLegId /= ""
+          && leg.instrumentId /= ""
+          && leg.amount > 0.0
+          && leg.sender /= leg.receiver)
+      legs
+    && uniqueTexts [leg.transferLegId | leg <- legs]
+  where
+    uniqueTexts xs =
+      length xs
+        == length (foldl (\seen x -> if x `elem` seen then seen else x :: seen) [] xs)
+
 data TradeAllocationRequestView = TradeAllocationRequestView with
     authorizer : V2.Account
     settlement : V2.SettlementInfo
@@ -34,6 +54,13 @@ template TradeAllocationRequest with
   where
     signatory settlement.executors
     observer Utils.accountParties authorizer
+
+    ensure
+      validTransferLegs transferLegs
+        && all
+          (\leg -> leg.sender == authorizer || leg.receiver == authorizer)
+          transferLegs
+        && optional True (\deadline -> requestedAt <= deadline) settlementDeadline
 
     interface instance V2.AllocationRequest for TradeAllocationRequest where
       view = V2.AllocationRequestView with
@@ -88,6 +115,14 @@ data SettlementBatchV2 = SettlementBatchV2 with
       --   Upgrades require new fields last, so this stays at the end.
   deriving (Eq, Show)
 
+-- Registry-discovery input without a factory or choice context. The preview
+-- turns each plan into the exact SettleBatch argument the consuming choice
+-- will exercise.
+data SettlementBatchPlanV2 = SettlementBatchPlanV2 with
+    allocations : [V2.FinalizedAllocation]
+    transferLegs : [V2.TransferLeg]
+  deriving (Eq, Show)
+
 data MatchedTrade_SettleResult = MatchedTrade_SettleResult with
     resultsByAdmin : Map.Map Party V2.SettlementFactory_SettleBatchResult
   deriving (Eq, Show)
@@ -102,6 +137,21 @@ mkTradeSettlementInfo tradeCid trade = V2.SettlementInfo with
   id = "MatchedTrade"
   cid = Some (coerceContractId tradeCid)
   meta = PR.foldPolicyReceiptIntoMetadata trade.policyReceipt emptyMetadata
+
+mkTradeSettlementArguments
+  : Party
+  -> V2.SettlementInfo
+  -> [V2.TransferLeg]
+  -> [V2.FinalizedAllocation]
+  -> ExtraArgs
+  -> V2.SettlementFactory_SettleBatch
+mkTradeSettlementArguments venue settlement transferLegs allocations extraArgs =
+  V2.SettlementFactory_SettleBatch with
+    settlement
+    transferLegs
+    allocations
+    actors = [venue]
+    extraArgs
 
 -- | Every account party appearing on the trade's legs, so a counterparty can
 -- see the trade directly rather than waiting for an AllocationRequest.
@@ -126,9 +176,10 @@ template MatchedTrade with
 
     -- The receipt's claimed signer must equal the trade's signatory.
     ensure
-      case policyReceipt of
-        None -> True
-        Some r -> r.signedBy == venue && PR.isWellFormed r
+      validTransferLegs transferLegs
+        && case policyReceipt of
+             None -> True
+             Some r -> r.signedBy == venue && PR.isWellFormed r
 
     nonconsuming choice MatchedTrade_RequestAllocations : [ContractId TradeAllocationRequest]
       with
@@ -144,6 +195,19 @@ template MatchedTrade with
             settlementDeadline = this.settlementDeadline
             transferLegs = legs
             requestedAt = now
+
+    nonconsuming choice MatchedTrade_PreviewSettlement
+      : Map.Map Party V2.SettlementFactory_SettleBatch
+      with
+        plansByAdmin : Map.Map Party SettlementBatchPlanV2
+      controller venue
+      do
+        let settlement = mkTradeSettlementInfo self this
+        pure $ Map.fromList
+          [ (batchAdmin, mkTradeSettlementArguments
+              venue settlement plan.transferLegs plan.allocations Utils.emptyExtraArgs)
+          | (batchAdmin, plan) <- Map.toList plansByAdmin
+          ]
 
     choice MatchedTrade_Settle : MatchedTrade_SettleResult
       with
@@ -163,12 +227,9 @@ template MatchedTrade with
             Some legs -> pure legs
             None -> abort
               "MatchedTrade_Settle: per-admin transfer legs are required on every settlement batch"
-          result <- exercise batch.factoryCid V2.SettlementFactory_SettleBatch with
-            settlement
-            transferLegs = batchLegs
-            allocations = batch.allocations
-            actors = [venue]
-            extraArgs = batch.extraArgs
+          let settlementArguments = mkTradeSettlementArguments
+                venue settlement batchLegs batch.allocations batch.extraArgs
+          result <- exercise batch.factoryCid settlementArguments
           pure (batchAdmin, result)
 
         forA_ dexPairCid $ \pairCid -> do

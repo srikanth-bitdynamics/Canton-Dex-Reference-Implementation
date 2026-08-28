@@ -1,8 +1,9 @@
--- | Token-standard-style end-to-end test of the matched-trade flow, mirroring
--- splice-token-standard-test-v2's TradingAppV2 exercise: drive a RegistryApi
--- registry (our DexRegistry over MockRegistry) through MatchedTrade ->
--- per-authorizer allocation accept -> MatchedTrade_Settle, and verify the
--- batch settles and the trade + requests are archived.
+-- | Token-standard-interface integration test of the matched-trade flow,
+-- mirroring splice-token-standard-test-v2's TradingAppV2 exercise: drive a
+-- RegistryApi registry (our DexRegistry over MockRegistry) through MatchedTrade
+-- -> per-authorizer allocation accept -> MatchedTrade_Settle, then verify the
+-- batch choice completes and the trade + requests are archived. This fixture
+-- has no holdings, so it proves the interface handshake, not value movement.
 -- Design context: `docs/concepts/design-tour.md#the-token-standard-settlement-spine`.
 module CantonDex.Tests.TokenStandardHarnessTests where
 

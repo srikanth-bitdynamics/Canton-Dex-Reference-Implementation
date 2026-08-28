@@ -17,24 +17,7 @@ import {
   isOperatorWrite,
   checkOperatorAuth,
 } from "../src/http/auth.js";
-import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
-
-class StubRegistry extends RegistryClient {
-  constructor() {
-    super({ baseUrl: "http://stub" });
-  }
-  override async getFactories() {
-    return {
-      allocationFactoryCid: "#alloc:0" as ContractId<"AllocationFactory">,
-      settlementFactoryCid: "#settle:0" as ContractId<"SettlementFactory">,
-      disclosure: [] as never[],
-    };
-  }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
-  }
-}
+import { StubRegistry } from "./stub-registry.js";
 
 function startServer(
   extra: Partial<HttpServerConfig>,
@@ -54,10 +37,6 @@ function startServer(
       operator: "op" as never,
       lpRegistrar: "lp" as never,
       admin: "ad" as never,
-      allocationFactoryCid: "#alloc:0",
-      settlementFactoryCid: "#settle:0",
-      allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
-      allocationFactoryDisclosure: [],
       network: "canton:test",
     },
     ...extra,
@@ -253,6 +232,52 @@ describe("wallet relay + CORS", () => {
       });
       await res.text();
       assert.equal(res.headers.get("access-control-allow-origin"), null);
+    } finally {
+      await close();
+    }
+  });
+
+  it("CORS preflight permits the per-caller JWT header", async () => {
+    const { url, close } = await startServer({ devOpen: true });
+    try {
+      const res = await fetch(`${url}/v1/pools/swap`, {
+        method: "OPTIONS",
+        headers: {
+          Origin: "http://localhost:5173",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "X-Caller-Token",
+        },
+      });
+      await res.text();
+      assert.equal(res.status, 204);
+      assert.match(
+        res.headers.get("access-control-allow-headers") ?? "",
+        /X-Caller-Token/i,
+      );
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("hosted RFQ relay", () => {
+  it("returns 404 when a deployment disables trader-authority relay", async () => {
+    const { url, close } = await startServer({
+      devOpen: true,
+      hostedRfqEnabled: false,
+    });
+    try {
+      const status = await post(url, "/v1/rfq", {
+        trader: "trader",
+        rfqId: "rfq-disabled",
+        pair: "BTC/USDC",
+        side: "RFQ_Buy",
+        size: "1.0",
+        expiresAt: "2030-01-01T00:00:00Z",
+        whitelist: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      assert.equal(status, 404);
     } finally {
       await close();
     }

@@ -34,9 +34,12 @@ function walk(dir: string): string[] {
   return out;
 }
 
-/** Every markdown file the guards read: docs/** plus the top-level README. */
+/** Canonical docs plus every top-level project Markdown file. */
 export function docFiles(): string[] {
-  return [...walk(join(ROOT, "docs")), join(ROOT, "README.md")];
+  const topLevel = readdirSync(ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+    .map((entry) => join(ROOT, entry.name));
+  return [...walk(join(ROOT, "docs")), ...topLevel];
 }
 
 /** Drop bold/italic markers: `does **not** define` must match `does not define`. */

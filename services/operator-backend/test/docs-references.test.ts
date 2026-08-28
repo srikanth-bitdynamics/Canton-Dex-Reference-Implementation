@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 
 import { ROOT, docFiles, sentences } from "./docs-harness.ts";
 
@@ -99,6 +99,101 @@ describe("documentation references", () => {
       }
     }
     assert.deepEqual(missing, []);
+  });
+
+  it("every line-linked Daml test points at its declaration", () => {
+    const stale: string[] = [];
+    for (const file of docFiles()) {
+      const source = readFileSync(file, "utf8");
+      for (const match of source.matchAll(
+        /\[`?(test[A-Z]\w*)`?\]\(([^)#]+\.daml)#L(\d+)\)/g,
+      )) {
+        const [, testName, rawPath, rawLine] = match;
+        const target = join(dirname(file), decodeURIComponent(rawPath!));
+        if (!existsSync(target)) continue;
+        const lineNumber = Number(rawLine);
+        const lines = readFileSync(target, "utf8").split("\n");
+        const line = lines[lineNumber - 1] ?? "";
+        const nextLine = lines[lineNumber] ?? "";
+        const declaration = new RegExp(`^${testName}\\s*:\\s*Script\\b`);
+        const pointsToDeclaration = declaration.test(line);
+        const pointsToInvariant = /^-- \| Proves\b/.test(line) && declaration.test(nextLine);
+        if (!pointsToDeclaration && !pointsToInvariant) {
+          stale.push(
+            `${relative(ROOT, file)} -> ${rawPath}#L${lineNumber} ` +
+              `(expected ${testName} declaration, found ${JSON.stringify(line.trim())})`,
+          );
+        }
+      }
+    }
+    assert.deepEqual(stale, []);
+  });
+
+  it("every line-linked Daml source symbol points at its declaration", () => {
+    const stale: string[] = [];
+    for (const file of docFiles()) {
+      const source = readFileSync(file, "utf8");
+      for (const match of source.matchAll(
+        /\[`([^`]+)`\]\(([^)#]+\.daml)#L(\d+)\)/g,
+      )) {
+        const [, symbol, rawPath, rawLine] = match;
+        const target = join(dirname(file), decodeURIComponent(rawPath!));
+        if (!existsSync(target) || !relative(ROOT, target).startsWith("trading/")) continue;
+        const lineNumber = Number(rawLine);
+        const line = readFileSync(target, "utf8").split("\n")[lineNumber - 1] ?? "";
+        const escaped = symbol!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const declaration = new RegExp(
+          `(?:template\\s+${escaped}\\b|(?:nonconsuming\\s+)?choice\\s+${escaped}\\b|` +
+            `${escaped}\\s*:\\s|interface instance\\s+(?:\\w+\\.)?${escaped}\\b)`,
+        );
+        if (!declaration.test(line)) {
+          stale.push(
+            `${relative(ROOT, file)} -> ${rawPath}#L${lineNumber} ` +
+              `(expected ${symbol} declaration, found ${JSON.stringify(line.trim())})`,
+          );
+        }
+      }
+    }
+    assert.deepEqual(stale, []);
+  });
+
+  it("the testing matrix accounts for every Daml Script declaration", () => {
+    const testFiles = filesBelow(
+      join(ROOT, "trading-tests", "CantonDex", "Tests"),
+      ".daml",
+    );
+    const actualByFile = new Map<string, number>();
+    for (const file of testFiles) {
+      const declarations = [
+        ...readFileSync(file, "utf8").matchAll(/^\s*test[A-Z]\w*\s*:\s*Script\b/gm),
+      ].length;
+      if (declarations > 0) {
+        actualByFile.set(basename(file), declarations);
+      }
+    }
+
+    const matrix = readFileSync(join(ROOT, "docs/reference/testing.md"), "utf8");
+    const documentedByFile = new Map<string, number>();
+    for (const match of matrix.matchAll(
+      /\[`([^`/]+Tests\.daml)`\]\([^)]*\)\s*\|\s*(\d+)\s*\|/g,
+    )) {
+      documentedByFile.set(match[1]!, Number(match[2]));
+    }
+
+    assert.deepEqual(
+      Object.fromEntries([...documentedByFile].sort()),
+      Object.fromEntries([...actualByFile].sort()),
+    );
+
+    const total = [...actualByFile.values()].reduce((sum, count) => sum + count, 0);
+    for (const relativePath of ["README.md", "docs/getting-started.md"]) {
+      const source = readFileSync(join(ROOT, relativePath), "utf8");
+      assert.match(
+        source,
+        new RegExp(`\\b${total}\\s+(?:Daml Script )?test`),
+        `${relativePath} does not advertise the actual ${total}-script total`,
+      );
+    }
   });
 
   it("every documented Daml choice identifier is still declared", () => {

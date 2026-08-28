@@ -2,9 +2,9 @@
 // order, attach the trader-authored funding allocation, then match or cancel.
 
 import type { ContractId } from "@canton-dex/registry-client";
-import { RegistryClient } from "@canton-dex/registry-client";
+import type { RegistryDiscovery } from "@canton-dex/registry-client";
 
-import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
+import { asChoiceContext } from "../ledger/choice-context.js";
 import { mergeDisclosures } from "../ledger/disclosure.js";
 import { LedgerSubmitter, type SubmitRequest } from "../ledger/index.js";
 import {
@@ -35,6 +35,8 @@ export interface OrderBindInput {
   // transaction tree.
   updateId?: string | null;
   settlementRef: string;
+  /** Verified caller party when per-caller binding is enabled. */
+  requireTrader?: Party;
 }
 
 export interface OrderBindResult {
@@ -54,6 +56,16 @@ export interface OrderFundInput {
   // The OrderAllocationRequest created at bind. Order_Fund consumes it together
   // with the pending order after validating the allocation specification.
   allocationRequestCid?: ContractId<"OrderAllocationRequest"> | null;
+  /** Verified caller party when per-caller binding is enabled. */
+  requireTrader?: Party;
+}
+
+/** Thrown when a caller tries to mutate another trader's order workflow. */
+export class OrderAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OrderAuthError";
+  }
 }
 
 export interface OrderCancelResult {
@@ -90,16 +102,16 @@ interface LiveOrder {
   allocationCid: ContractId<"Allocation"> | null;
 }
 
+function basicAccount(owner: Party): V2Account {
+  return { owner, provider: null, id: "" };
+}
+
 export class OrderService {
   constructor(
     private readonly ledger: LedgerSubmitter,
-    private readonly registry: RegistryClient,
+    private readonly registry: RegistryDiscovery,
     private readonly operatorParty: Party,
   ) {}
-
-  private choiceContext(admin: Party): Promise<ChoiceContext> {
-    return fetchChoiceContext(this.registry, admin);
-  }
 
   async bind(input: OrderBindInput): Promise<OrderBindResult> {
     // Recover the created request from the transaction tree when a wallet
@@ -116,6 +128,17 @@ export class OrderService {
       throw new Error(
         "order bind: supply fundingRequestCid or an updateId to recover it",
       );
+    }
+    if (input.requireTrader !== undefined) {
+      const requests = await this.ledger.query<{ contractId: string; trader: Party }>({
+        templateId: "CantonDex.Dex.OrderFundingRequest:OrderFundingRequest",
+        observingParty: this.operatorParty,
+      });
+      const request = requests.find((row) => row.contractId === fundingRequestCid);
+      if (!request) throw new Error(`Order funding request ${fundingRequestCid} not found`);
+      if (request.trader !== input.requireTrader) {
+        throw new OrderAuthError("caller may only bind its own order request");
+      }
     }
     const result = await retryOnContention(() =>
       this.ledger.submit<OrderBindResult>({
@@ -152,6 +175,13 @@ export class OrderService {
     if (!allocationCid) {
       throw new Error("order fund: supply allocationCid or an updateId to recover it");
     }
+    if (input.requireTrader !== undefined) {
+      const order = (await this.listOpen()).find((row) => row.contractId === input.orderCid);
+      if (!order) throw new Error(`Order ${input.orderCid} not found`);
+      if (order.trader !== input.requireTrader) {
+        throw new OrderAuthError("caller may only fund its own order");
+      }
+    }
     return retryOnContention(() =>
       this.ledger.submit<{ orderCid: ContractId<"Order"> }>({
         actAs: [this.operatorParty],
@@ -171,19 +201,25 @@ export class OrderService {
     );
   }
 
-  async cancel(orderCid: ContractId<"Order">): Promise<OrderCancelResult> {
+  async cancel(
+    orderCid: ContractId<"Order">,
+    requireTrader?: Party,
+  ): Promise<OrderCancelResult> {
     const order = (await this.listOpen()).find((o) => o.contractId === orderCid);
     if (!order) throw new Error(`Order ${orderCid} not found`);
-    const [factories, ctx] = await Promise.all([
-      this.registry.getFactories(order.admin),
-      this.choiceContext(order.admin),
-    ]);
+    if (requireTrader !== undefined && order.trader !== requireTrader) {
+      throw new OrderAuthError("caller may only cancel its own order");
+    }
+    const discovered = order.allocationCid
+      ? await this.registry.getAllocationCancelContext(order.admin, order.allocationCid)
+      : { context: { values: {} }, disclosure: [] };
+    const ctx = asChoiceContext(discovered);
     const req: SubmitRequest = {
       actAs: [this.operatorParty],
       // Cancellation may release holdings visible only to the owner and
       // registry admin, so include the registry's choice context and disclosure.
       commandId: `order-cancel:${orderCid}`,
-      disclosure: mergeDisclosures(factories.disclosure, ctx.disclosure),
+      disclosure: mergeDisclosures(ctx.disclosure),
       command: {
         kind: "exercise",
         templateId: "CantonDex.Dex.Order:Order",
@@ -250,13 +286,14 @@ export class OrderService {
 
   /**
    * Discover crossing orders for a pair and settle each one atomically via
-   * `OrderMatchExecution_Execute`: a single submission that re-checks the fill
+   * `OrderMatchExecution_Execute`: one value-moving submission that re-checks the fill
    * against both orders' own terms, builds the base/quote transfer legs, runs
    * the settle batch that consumes both funding allocations, rolls each order
    * onto the allocation that batch minted, and records the settled trade.
    *
-   * One submission per match, so there is no window in which the funds have
-   * moved but an order still points at the allocation the settle archived.
+   * A read-only Daml preview first supplies the registry with the exact batch.
+   * The subsequent execute still moves funds, rolls orders, and records the
+   * trade atomically.
    *
    * Each match is settled independently; one failure doesn't abort the
    * rest of the run.
@@ -268,10 +305,6 @@ export class OrderService {
   }): Promise<MatchRunResult[]> {
     const matches = await this.findMatches(input);
     if (matches.length === 0) return [];
-    const [factories, ctx] = await Promise.all([
-      this.registry.getFactories(input.admin),
-      this.choiceContext(input.admin),
-    ]);
     const out: MatchRunResult[] = [];
     // One order can fill against several counterparties in a single run, and
     // each fill archives it and consumes its allocation. Track what the
@@ -309,52 +342,58 @@ export class OrderService {
         if (!buy.allocationCid || !sell.allocationCid) {
           throw new Error(`match ${matchId}: a matched order has no funding allocation`);
         }
-        const acct = (owner: Party): V2Account => ({
-          owner,
-          provider: null,
-          id: "",
-        });
-        const executed = await retryOnContention(() =>
-          this.ledger.submit<OrderMatchExecuteResult>({
+        const executionArgument = {
+          operator: this.operatorParty,
+          matchId,
+          match: {
+            buyerAccount: basicAccount(m.buy.trader),
+            sellerAccount: basicAccount(m.sell.trader),
+            baseInstrumentId: m.buy.baseInstrumentId,
+            quoteInstrumentId: m.buy.quoteInstrumentId,
+            fillQty: m.quantity,
+            fillPrice: m.price,
+          },
+          buyOrderCid: buy.cid,
+          sellOrderCid: sell.cid,
+          buyerAllocationCid: buy.allocationCid,
+          sellerAllocationCid: sell.allocationCid,
+          buyerCommittedFunding: {},
+          sellerCommittedFunding: {},
+        };
+        const settlementArguments = await retryOnContention(() =>
+          this.ledger.submit<Record<string, unknown>>({
             actAs: [this.operatorParty],
-            // The settle fetches each order's funding allocation and the
-            // holdings it locked -- `signatory admin, owner`, which the
-            // operator is not a stakeholder of. readAs the instrument admin so
-            // it can see them; without it the settle fails CONTRACT_NOT_FOUND
-            // on the funding it is trying to move. Both orders share an admin
-            // (asserted by the choice), so one entry covers both sides.
             readAs: [input.admin],
-            commandId: `order-match:${matchId}`,
-            // Factory + choice-context disclosure for the registry's own
-            // contracts.
-            disclosure: mergeDisclosures(factories.disclosure, ctx.disclosure),
+            commandId: `order-match-preview:${matchId}`,
             command: {
               kind: "createAndExercise",
               templateId:
                 "CantonDex.Dex.OrderMatchExecution:OrderMatchExecution",
-              argument: {
-                operator: this.operatorParty,
-                matchId,
-                match: {
-                  buyerAccount: acct(m.buy.trader),
-                  sellerAccount: acct(m.sell.trader),
-                  baseInstrumentId: m.buy.baseInstrumentId,
-                  quoteInstrumentId: m.buy.quoteInstrumentId,
-                  fillQty: m.quantity,
-                  fillPrice: m.price,
-                },
-                buyOrderCid: buy.cid,
-                sellOrderCid: sell.cid,
-                buyerAllocationCid: buy.allocationCid,
-                sellerAllocationCid: sell.allocationCid,
-                // [COMPAT] These fields are retained for package lineage and
-                // ignored by the choice. Each budget comes from its allocation.
-                buyerCommittedFunding: {},
-                sellerCommittedFunding: {},
-              },
+              argument: executionArgument,
+              choice: "OrderMatchExecution_PreviewSettlement",
+              choiceArgument: {},
+            },
+          }),
+        );
+        const factory = await this.registry.getSettlementFactory(
+          input.admin,
+          settlementArguments,
+        );
+        const ctx = asChoiceContext(factory);
+        const executed = await retryOnContention(() =>
+          this.ledger.submit<OrderMatchExecuteResult>({
+            actAs: [this.operatorParty],
+            readAs: [input.admin],
+            commandId: `order-match:${matchId}`,
+            disclosure: ctx.disclosure,
+            command: {
+              kind: "createAndExercise",
+              templateId:
+                "CantonDex.Dex.OrderMatchExecution:OrderMatchExecution",
+              argument: executionArgument,
               choice: "OrderMatchExecution_Execute",
               choiceArgument: {
-                factoryCid: factories.settlementFactoryCid,
+                factoryCid: factory.factoryCid,
                 extraArgs: ctx.extraArgs,
               },
             },
@@ -366,13 +405,19 @@ export class OrderService {
         const buyRemainderCid = executed.buyRemainderCid ?? null;
         advance(
           m.buy,
-          buyRemainderCid && { cid: buyRemainderCid, allocationCid: buyNext },
+          buyRemainderCid && {
+            cid: buyRemainderCid,
+            allocationCid: buyNext,
+          },
         );
         const sellNext = executed.sellerNextAllocationCid ?? null;
         const sellRemainderCid = executed.sellRemainderCid ?? null;
         advance(
           m.sell,
-          sellRemainderCid && { cid: sellRemainderCid, allocationCid: sellNext },
+          sellRemainderCid && {
+            cid: sellRemainderCid,
+            allocationCid: sellNext,
+          },
         );
         out.push({
           buyCid: m.buy.contractId,

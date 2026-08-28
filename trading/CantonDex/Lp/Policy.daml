@@ -21,7 +21,10 @@ template LPTokenPolicy with
     signatory lpRegistrar
     observer operator
 
-    ensure lpInstrumentId.admin == lpRegistrar
+    ensure
+      lpInstrumentId.admin == lpRegistrar
+        && lpInstrumentId.id /= ""
+        && totalSupply >= 0.0
 
     choice LPTokenPolicy_RecordMint : ContractId LPTokenPolicy
       with
@@ -29,6 +32,7 @@ template LPTokenPolicy with
       controller lpRegistrar
       do
         assertMsg "Policy must be active" active
+        assertMsg "Mint amount must be positive" (amount > 0.0)
         create this with totalSupply = totalSupply + amount
 
     choice LPTokenPolicy_RecordBurn : ContractId LPTokenPolicy
@@ -37,6 +41,7 @@ template LPTokenPolicy with
       controller lpRegistrar
       do
         assertMsg "Policy must be active" active
+        assertMsg "Burn amount must be positive" (amount > 0.0)
         assertMsg "Cannot burn more than supply" (amount <= totalSupply)
         create this with totalSupply = totalSupply - amount
 

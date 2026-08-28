@@ -51,7 +51,8 @@ export function rankQuotes(
     const postedCmp = a.postedAt.localeCompare(b.postedAt);
     if (postedCmp !== 0) return postedCmp;
     // deterministic tie-breaker on dealer party id
-    return a.dealer.localeCompare(b.dealer);
+    // Daml compares Party text by code unit; localeCompare can disagree.
+    return a.dealer < b.dealer ? -1 : a.dealer > b.dealer ? 1 : 0;
   });
 }
 

@@ -1,6 +1,5 @@
 // Wallet provider registry. Single place to add or gate providers.
 
-import { CantonDirectProvider } from "./canton-direct-provider";
 import { MockWalletProvider } from "./mock-provider";
 import {
   DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
@@ -17,7 +16,6 @@ export type WalletProviderId =
   | "partylayer"
   | "token-standard"
   | "walletconnect"
-  | "canton-direct"
   | "mock";
 
 function optionalEnv(name: string): string | undefined {
@@ -56,36 +54,24 @@ function partyLayerClientFactory(networkId: string): () => Promise<PartyLayerCli
   };
 }
 
-/**
- * Read VITE_CANTON_AUTH_TOKEN only in dev builds. In prod this
- * returns "" and logs an error if a token was nonetheless baked in, so the
- * relay/direct providers that depend on it stay disabled rather than shipping
- * a long-lived bearer credential to end users.
- */
-export function devOnlyAuthToken(): string {
-  const raw = (import.meta.env.VITE_CANTON_AUTH_TOKEN ?? "") as string;
-  if (!raw) return "";
-  if (import.meta.env.DEV) return raw;
-  // eslint-disable-next-line no-console
-  console.error(
-    "[wallet] VITE_CANTON_AUTH_TOKEN is set in a production build; refusing to " +
-      "use it. Direct/relay wallet providers that require it are disabled. " +
-      "Remove this var from production env (see app/web/.env.example).",
-  );
-  return "";
-}
-
 let providers: Map<WalletProviderId, WalletProvider> | null = null;
 
 function buildRegistry(): Map<WalletProviderId, WalletProvider> {
+  // An older, now-disabled Direct Canton experiment persisted a participant
+  // bearer credential at this key. Remove it during app startup even though the
+  // provider itself is no longer constructed.
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.removeItem("canton-dex:direct:session");
+    } catch {
+      // Storage can be unavailable in locked-down browser contexts. Direct
+      // Canton is still absent from the registry, so fail closed without
+      // preventing the safe wallet adapters from loading.
+    }
+  }
   const projectId = (import.meta.env.VITE_WC_PROJECT_ID ?? "") as string;
   const networkId = (import.meta.env.VITE_CANTON_NETWORK_ID ??
     "canton:devnet") as string;
-  const ledgerUrl = (import.meta.env.VITE_CANTON_LEDGER_URL ?? "") as string;
-  // VITE_CANTON_AUTH_TOKEN is a long-lived bearer credential. It must never be
-  // read into a production bundle. In prod we refuse to read it and
-  // log an error so a misconfigured deploy is loud, not silently insecure.
-  const authToken = devOnlyAuthToken();
   const apiBase =
     (import.meta.env.VITE_API_BASE ?? "http://localhost:8080") as string;
   const enableSdk =
@@ -119,13 +105,16 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
       ),
     );
   }
-  map.set("token-standard", new TokenStandardProvider(ledgerUrl, authToken, apiBase));
-  if (projectId) map.set("walletconnect", new WalletConnectProvider(projectId, networkId));
-  // canton-direct relies on a long-lived bearer token in localStorage, so it is
-  // gated to dev like `mock`. `authToken` is already "" in prod.
-  if (import.meta.env.DEV && ledgerUrl && authToken) {
-    map.set("canton-direct", new CantonDirectProvider(ledgerUrl, authToken));
+  // This provider sends trader-authority commands through the operator relay.
+  // Keep the implementation available for local diagnosis, but do not expose
+  // it in a production bundle where it could be mistaken for self-custody.
+  if (import.meta.env.DEV) {
+    map.set("token-standard", new TokenStandardProvider(apiBase));
   }
+  if (projectId) map.set("walletconnect", new WalletConnectProvider(projectId, networkId));
+  // Direct Canton is intentionally not registered. A participant accepts
+  // concrete Ledger API commands, not DEX wallet intents, and a browser should
+  // never retain its bearer credential. See canton-direct-provider.ts.
   if (import.meta.env.DEV) map.set("mock", new MockWalletProvider());
 
   return map;
@@ -149,11 +138,11 @@ export function getProvider(id: WalletProviderId): WalletProvider {
 // operator effectively signs on the user's behalf. The relay is a dev-only
 // convenience and is gated behind `import.meta.env.DEV` below.
 //
-// Real-build preference order:
-//   1. PartyLayer when explicitly enabled (VITE_ENABLE_PARTYLAYER=1) — a real
-//      external multi-wallet connector.
-//   2. WalletConnect when a project id is configured — a real external wallet.
-//   3. SDK when enabled — a real CIP-0103 wallet.
+// Real-build recommendation order follows the capability table:
+//   1. SDK when enabled — the full DvP path is implemented.
+//   2. PartyLayer when explicitly enabled — the path is implemented but remains
+//      marked unproven until the selected wallet passes live validation.
+//   3. WalletConnect when configured — the current adapter is marked no-DvP.
 //   4. `null` (no auto-default): the user must pick a provider in the Connect
 //      menu. We deliberately do NOT silently fall back to the operator relay.
 // In dev builds we keep `token-standard` as the convenient default so local
@@ -163,9 +152,9 @@ function resolveDefaultProviderId(): WalletProviderId | null {
   const hasWalletConnect = !!(import.meta.env.VITE_WC_PROJECT_ID ?? "");
   const enableSdk = (import.meta.env.VITE_ENABLE_SDK ?? "") === "1";
 
+  if (enableSdk) return "sdk";
   if (enablePartyLayer) return "partylayer";
   if (hasWalletConnect) return "walletconnect";
-  if (enableSdk) return "sdk";
   // Dev convenience only: the operator relay default. Never in prod.
   if (import.meta.env.DEV) return "token-standard";
   // No safe real wallet configured: force an explicit pick rather than routing

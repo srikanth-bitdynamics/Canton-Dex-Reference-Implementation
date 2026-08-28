@@ -40,6 +40,8 @@ const operatorApi = new OperatorApi(
   (import.meta.env.VITE_API_BASE as string | undefined) ??
     'http://localhost:8080',
 );
+const HOSTED_RFQ_WRITES_ENABLED =
+  import.meta.env.DEV || import.meta.env.VITE_ENABLE_HOSTED_RFQ === '1';
 
 type Tab = 'active' | 'accepted' | 'expired';
 type SortMode = 'policy' | 'price' | 'earliest' | 'trusted';
@@ -313,6 +315,17 @@ export function RfqPage() {
           </button>
         </div>
       )}
+      {!HOSTED_RFQ_WRITES_ENABLED && (
+        <div
+          role="status"
+          className="bg-surface-card rounded-lg border border-surface-border p-4 text-sm text-text-secondary"
+        >
+          RFQ reads are available, but this production build has the custodial
+          RFQ write surface disabled. Use wallet-authored RFQ commands, or have
+          the operator deliberately enable both the frontend and the
+          caller-bound backend relay.
+        </div>
+      )}
       <div className="page-header">
         <div>
           <h2 className="page-title">RFQ</h2>
@@ -323,8 +336,14 @@ export function RfqPage() {
         <button
           className="btn primary"
           onClick={() => setComposing(true)}
-          disabled={!party}
-          title={!party ? 'Connect a wallet to compose an RFQ' : undefined}
+          disabled={!party || !HOSTED_RFQ_WRITES_ENABLED}
+          title={
+            !HOSTED_RFQ_WRITES_ENABLED
+              ? 'Hosted RFQ writes are disabled in this build'
+              : !party
+                ? 'Connect a wallet to compose an RFQ'
+                : undefined
+          }
         >
           + New RFQ
         </button>
@@ -428,6 +447,7 @@ export function RfqPage() {
             onCancelRfq={cancelRfq}
             onPolicyOpen={(id) => setPolicyOpenFor(id)}
             onComposeFirst={() => setComposing(true)}
+            writesEnabled={HOSTED_RFQ_WRITES_ENABLED}
           />
         )}
         {tab === 'accepted' && (
@@ -476,6 +496,7 @@ interface ActiveTabProps {
   onCancelRfq: (id: string) => void;
   onPolicyOpen: (id: string) => void;
   onComposeFirst: () => void;
+  writesEnabled: boolean;
 }
 
 function ActiveTab({
@@ -487,12 +508,18 @@ function ActiveTab({
   onCancelRfq,
   onPolicyOpen,
   onComposeFirst,
+  writesEnabled,
 }: ActiveTabProps) {
   if (rfqs.length === 0) {
     return (
       <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-2)' }}>
         <div style={{ fontSize: 14, marginBottom: 8 }}>No active RFQs</div>
-        <button className="btn primary tiny" onClick={onComposeFirst}>
+        <button
+          className="btn primary tiny"
+          onClick={onComposeFirst}
+          disabled={!writesEnabled}
+          title={!writesEnabled ? 'Hosted RFQ writes are disabled' : undefined}
+        >
           Compose your first RFQ
         </button>
       </div>
@@ -512,6 +539,7 @@ function ActiveTab({
           onAccept={(q) => onAccept(r, q)}
           onCancelRfq={() => onCancelRfq(r.contractId)}
           onPolicyOpen={() => onPolicyOpen(r.contractId)}
+          writesEnabled={writesEnabled}
         />
       ))}
     </div>
@@ -526,6 +554,7 @@ interface RfqRowProps {
   onAccept: (q: RfqQuote) => void;
   onCancelRfq: () => void;
   onPolicyOpen: () => void;
+  writesEnabled: boolean;
 }
 
 function RfqRow({
@@ -536,6 +565,7 @@ function RfqRow({
   onAccept,
   onCancelRfq,
   onPolicyOpen,
+  writesEnabled,
 }: RfqRowProps) {
   const { data: dealers } = useDealers();
   const lifecycle =
@@ -860,6 +890,8 @@ function RfqRow({
                         <button
                           className={`btn tiny ${isBest ? 'primary' : 'ghost'}`}
                           onClick={() => onAccept(q)}
+                          disabled={!writesEnabled}
+                          title={!writesEnabled ? 'Hosted RFQ writes are disabled' : undefined}
                         >
                           Accept
                         </button>
@@ -924,7 +956,12 @@ function RfqRow({
               className="row"
               style={{ justifyContent: 'flex-end', marginTop: 12, gap: 8 }}
             >
-              <button className="btn ghost tiny" onClick={onCancelRfq}>
+              <button
+                className="btn ghost tiny"
+                onClick={onCancelRfq}
+                disabled={!writesEnabled}
+                title={!writesEnabled ? 'Hosted RFQ writes are disabled' : undefined}
+              >
                 Cancel RFQ
               </button>
             </div>
@@ -1437,10 +1474,10 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
               lineHeight: 1.55,
             }}
           >
-            Off-ledger: the request reaches the selected dealers through a
-            private channel. On-ledger: accepting a quote creates a
-            MatchedTrade visible to the trader, dealer, and operator. Token
-            settlement is a later allocation-backed step.
+            Workflow design: the request reaches selected dealers through a
+            private off-ledger channel. In live-ledger mode, accepting a quote
+            creates a MatchedTrade visible to trader, dealer, and operator;
+            token settlement is a later allocation-backed step.
           </div>
         </div>
       </div>
@@ -1513,8 +1550,9 @@ function PolicyModal({ rfq, onClose }: { rfq: Rfq; onClose: () => void }) {
         <span className="mono" style={{ color: 'var(--text)' }}>
           {POLICY_VERSION}
         </span>{' '}
-        · published by operator. Both trader and dealer can audit this against
-        the on-chain config.
+        · published by operator. Trader and dealer can audit the version and
+        receipt inputs returned by the operator; this reference has no on-ledger
+        DexRules or policy-configuration contract.
       </div>
       <div
         style={{
@@ -1535,14 +1573,19 @@ function PolicyModal({ rfq, onClose }: { rfq: Rfq; onClose: () => void }) {
           2. Sort by <span style={{ color: 'var(--text)' }}>tier</span> (trusted
           before whitelist)
           <br />
-          3. Then by <span style={{ color: 'var(--text)' }}>price</span> (
-          {rfq.side === 'RFQ_Buy' ? 'lowest' : 'highest'})
+          3. Then by <span style={{ color: 'var(--text)' }}>expiry</span> (later
+          first)
           <br />
           4. Then by <span style={{ color: 'var(--text)' }}>postedAt</span>{' '}
           (earliest)
           <br />
           5. Tiebreaker:{' '}
-          <span style={{ color: 'var(--text)' }}>venue ID hash</span>
+          <span style={{ color: 'var(--text)' }}>dealer party ID</span>
+        </div>
+        <div style={{ marginTop: 8, color: 'var(--text-2)', lineHeight: 1.5 }}>
+          Price is intentionally not part of policy v2.0. A dealer declares its
+          quote tier; the operator endorses the considered set when it
+          co-authorizes acceptance.
         </div>
       </div>
       <div className="section-h">Ranking applied right now</div>

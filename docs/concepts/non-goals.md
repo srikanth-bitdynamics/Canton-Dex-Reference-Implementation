@@ -21,7 +21,7 @@ and points at the guide or contract where the excluded work would live.
 | Fair ordering and MEV resistance | The operator privately observes orders and chooses match timing and submission order | A production sequencing, auction, or independently attested matching design |
 | A rich instrument lifecycle | Token Standard V2 standardizes the holding, not lifecycle; the DEX needs only a holding | The registry that administers the `InstrumentId` — [add an instrument](../guides/add-lp-or-instrument.md) |
 | A privileged reference registry | `Registry.V2` is a convenience so the DEX runs standalone, not the mechanism value settles through | Any conforming TSv2 registry (Amulet, or another) |
-| Self-custody onboarding | The hosted relay is a testnet convenience, not a production wallet integration | The user's own compatible wallet or a deployment-specific delegation/co-submission flow |
+| Self-custody onboarding | The included signing relay is a development diagnostic, not a production wallet or public onboarding service | The user's own compatible wallet or a deployment-specific delegation/co-submission flow |
 | Trustless LP emergency redemption | Reserve slices are operator-authored and removal is co-controlled by the operator and LP registrar | A production pool-governance and emergency-exit design |
 | Operational hardening | HA, secrets management, and a rate-limited gateway are an operator's deployment decisions | Whoever runs an instance — [operator runbook](../guides/operator-runbook.md) |
 | Production off-ledger services | The on-ledger contracts are the specification; the backend and indexer are one implementation of the surface around them | The integrator's own service — [architecture](architecture.md#off-ledger-services-what-they-may-and-may-not-do) |
@@ -33,7 +33,7 @@ framework that a caller parameterises into arbitrary flows. The settlement
 pattern — allocate, then settle a batch atomically through the registry's
 `SettlementFactory_SettleBatch` — is meant to be read and reused, but the
 templates encode the DEX's own rules: constant-product pricing, price-time order
-priority, best-execution RFQ ranking. Lifting that pattern into a general engine
+priority, and deterministic RFQ eligibility ranking. Lifting that pattern into a general engine
 is a fork's job, not a configuration flag. See [architecture.md](architecture.md).
 
 ## One registry admin per pair
@@ -79,10 +79,11 @@ atomically against both traders' funding allocations, and
 `OrderMatchExecution_Execute` re-checks the fill against both orders' own limit
 prices, quantities, instruments, and bound allocations — so a buggy or malicious
 off-ledger matcher cannot settle a fill the traders never agreed to. Proven by
-[EndToEndTests.daml](../../trading-tests/CantonDex/Tests/EndToEndTests.daml):
-`testMatchedTradeFullSettle` (two trader allocations settle in one operator batch)
-and `testOrderMatchEnforcesLimitPrice` (`OrderMatchExecution_Execute` refuses a
-fill outside either order's limit price).
+[TradeWorkflowTests.daml](../../trading-tests/CantonDex/Tests/TradeWorkflowTests.daml)
+proves that two trader allocations settle in one operator batch.
+[OrderWorkflowTests.daml](../../trading-tests/CantonDex/Tests/OrderWorkflowTests.daml)
+proves that `OrderMatchExecution_Execute` refuses a fill outside either order's
+limit price.
 
 ## Fair ordering and private MEV
 
@@ -116,40 +117,40 @@ stays at the minimum it needs.
 
 ## The reference registry is one option, not the mechanism
 
-`CantonDex.Registry.V2` is a self-contained reference registry so the DEX can run
-end to end without depending on an external one. It is not the settlement
-mechanism, and it is not privileged. The dApp and operator reach any conforming
-TSv2 registry through its factories, choice context, and disclosure; the reference
+`CantonDex.Registry.V2` is a self-contained reference registry so the DEX can
+run a complete local settlement flow without depending on an external one. It
+is not the settlement mechanism, and it is not privileged. The dApp and
+operator reach any conforming TSv2 registry through its factories, choice
+context, and disclosure; the reference
 does not assume its own registry is present, nor that every registry exposes the
 same conveniences. [architecture.md](architecture.md#what-settles-value-the-token-standard-v2-spine)
 and [registry-integration.md](../guides/registry-integration.md) set out exactly
-what a registry must provide. On the public testnet the pair's assets happen to be
-issued by this registry. Integrating another conforming registry also requires
-its factory discovery, choice context, disclosures, and metadata endpoint.
+what a registry must provide. A deployment may issue its demo assets through
+this registry; integrating another conforming registry also requires its factory
+discovery, choice context, disclosures, and metadata endpoint.
 
-## The hosted testnet is a demo surface, not a wallet
+## The development relay is not a wallet
 
-The public deployment lets a visitor with no wallet trade, by minting a hosted
-demo party and relaying its signatures through a fixed, allowlisted set of choices
-under per-IP and daily caps. This is explicitly a testnet convenience, not
-self-custody: the walletless connect options are marked **DEV** and are never
-preselected in a testnet or production build
-([using-the-dapp.md](../guides/using-the-dapp.md#connecting-a-wallet)). A real user
-brings their own wallet (PartyLayer or the dapp-sdk) and signs for themselves; the
-hosted relay exists only so the reference flows can be exercised from a browser
-without one. The `/v1/testnet/*` relay surface and the faucet's per-IP party
-quota are documented in
-[ecosystem-feedback.md](../reference/ecosystem-feedback.md).
+The repository includes `POST /v1/wallet/submit` only for local developer
+diagnosis. It is disabled by default, requires `DEX_DEV_WALLET_RELAY=1`, is
+registered by the dApp only in a development build, and restricts submissions
+to `DEX_DEV_RELAY_PARTIES`. The production-oriented testnet server does not
+enable it. It does not create parties, mint faucet assets, impose public-user
+quotas, or implement a `/v1/testnet/*` surface.
 
-**Current deployment status.** On the public testnet at
-`testnet-dex.bitdynamics.cc`, every tester is onboarded as a hosted party on the
-operator's (BitDynamics) validator, and every traded asset (`dBTC`, `dUSD`, and the
-pool's LP token) is issued locally by the deployment's own Token Standard V2
-registry. This deployment choice does not change the application boundary:
-self-custodial users connect through a compatible wallet and registry, while a
-hosted party authorizes only the allowlisted demo operations exposed by the
-relay. Registry choice context and disclosures still determine whether a given
-external instrument can participate in a settlement.
+That relay is not self-custody: the backend forwards commands with its ledger
+credential and therefore needs permission to act for every requested party. A
+real deployment must instead use a compatible wallet (PartyLayer or a
+CIP-0103 provider), or deliberately design and secure its own delegation or
+co-submission service. The repository neither provisions nor promises a public
+hosted deployment. See [connecting a wallet](../guides/using-the-dapp.md#connecting-a-wallet)
+and the [historical ecosystem feedback](../reference/ecosystem-feedback.md).
+
+The separately named `DEX_HOSTED_RFQ_RELAY` option is narrower: it can enable
+the existing RFQ create/cancel/accept routes in `testnet-server.ts`, with
+mandatory caller-JWT binding. It still does not create or fund parties, publish
+a hostname, or add a `/v1/testnet/*` API. Whoever enables it owns the custodial
+authority, identity, abuse-prevention, and operations design.
 
 ## LP redemption has an explicit liveness dependency
 
@@ -182,8 +183,8 @@ reference settlement flow.
 
 The reference includes an operator runbook covering deployment, recovery, and
 observability ([operator-runbook.md](../guides/operator-runbook.md)), but it is not
-a hardened production service. There is no HA, no rate-limited public gateway
-beyond the testnet caps, no secrets-management integration, and the operator's
+a hardened production service. There is no HA, rate limiting, public gateway or
+faucet, secrets-management integration, and the operator's
 authority is a single party. These are an operator's deployment decisions,
 deliberately left to whoever runs an instance rather than baked into the reference
 — the runbook's own [out-of-scope
@@ -194,7 +195,7 @@ line.
 
 The operator backend and indexer are a working reference, not a prescription. The
 indexer is a single-writer SQLite projection sized for a testnet; the backend is
-one Node process. They show what an integrator needs to read and relay, not the
+one Node process. They show what an integrator needs to read and orchestrate, not the
 only way to build it. The on-ledger contracts are the specification; the off-ledger
 services are one implementation of the surface around them
 ([architecture.md](architecture.md#off-ledger-services-what-they-may-and-may-not-do)).

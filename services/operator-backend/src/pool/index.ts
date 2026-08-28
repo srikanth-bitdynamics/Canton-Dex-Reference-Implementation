@@ -3,10 +3,10 @@
 import { createHash } from "node:crypto";
 import { LedgerError } from "../ledger/index.js";
 
-import type { ContractId, DisclosedContract } from "@canton-dex/registry-client";
-import { RegistryClient } from "@canton-dex/registry-client";
+import type { ContractId } from "@canton-dex/registry-client";
+import type { RegistryDiscovery } from "@canton-dex/registry-client";
 
-import { fetchChoiceContext, type ChoiceContext } from "../ledger/choice-context.js";
+import { asChoiceContext } from "../ledger/choice-context.js";
 import { mergeDisclosures } from "../ledger/disclosure.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { recoverCreatedAllocations } from "../ledger/recover.js";
@@ -31,9 +31,52 @@ import type {
   V2SettlementInfo,
 } from "../types.js";
 
-interface RegistryExtraArgs {
-  context: { values: Record<string, unknown> };
-  meta: { values: Record<string, unknown> };
+type ChoiceArguments = Record<string, unknown>;
+
+interface AllocationInstructionResult {
+  output?: {
+    tag?: string;
+    value?: { allocationCid?: string };
+  };
+}
+
+interface AddLiquidityAllocationPlan {
+  baseReceiver: ChoiceArguments;
+  quoteReceiver: ChoiceArguments;
+  lpMintSender: ChoiceArguments;
+}
+
+interface AddLiquiditySettlementPlan {
+  baseQuoteBatch: ChoiceArguments;
+  lpBatch: ChoiceArguments;
+}
+
+interface RemoveLiquidityAllocationPlan {
+  lpBurnReceiver: ChoiceArguments;
+}
+
+interface RemoveLiquiditySettlementPlan {
+  baseQuoteBatch: ChoiceArguments;
+  lpBatch: ChoiceArguments;
+}
+
+function completedAllocationCid(
+  result: AllocationInstructionResult,
+  operation: string,
+): ContractId<"Allocation"> {
+  const tag = result.output?.tag;
+  const allocationCid = result.output?.value?.allocationCid;
+  if (
+    (tag !== "AllocationInstructionResult_Completed" && tag !== "Completed") ||
+    !allocationCid
+  ) {
+    throw new LedgerError(
+      "unsupported",
+      `${operation}: registry did not complete allocation creation synchronously`,
+      false,
+    );
+  }
+  return allocationCid as ContractId<"Allocation">;
 }
 
 export interface PoolSwapInput {
@@ -140,10 +183,6 @@ export interface PoolRequestSwapResult {
   allocationSpec: V2AllocationSpecification;
   settlement: V2SettlementInfo;
   quoteBinding: PoolSwapQuoteBinding;
-  // The pool-admin allocation factory the swapper allocates under.
-  factoryCid: ContractId<"AllocationFactory">;
-  allocationFactoryExtraArgs: RegistryExtraArgs;
-  allocationFactoryDisclosure: DisclosedContract[];
 }
 
 // === DvP liquidity ==========================================
@@ -187,13 +226,6 @@ export interface PoolRequestAddLiquidityResult extends LiquidityMatch {
   // The on-ledger specs the wallet authors, in canonical order.
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
-  // Distinct factories for pool-admin vs lpRegistrar allocations.
-  depositFactoryCid: ContractId<"AllocationFactory">;
-  lpFactoryCid: ContractId<"AllocationFactory">;
-  depositFactoryExtraArgs: RegistryExtraArgs;
-  lpFactoryExtraArgs: RegistryExtraArgs;
-  depositFactoryDisclosure: DisclosedContract[];
-  lpFactoryDisclosure: DisclosedContract[];
 }
 
 export interface PoolSettleAddLiquidityInput {
@@ -240,12 +272,6 @@ export interface PoolRequestRemoveLiquidityResult {
   // The on-ledger specs the holder authors.
   allocations: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
-  depositFactoryCid: ContractId<"AllocationFactory">;
-  lpFactoryCid: ContractId<"AllocationFactory">;
-  depositFactoryExtraArgs: RegistryExtraArgs;
-  lpFactoryExtraArgs: RegistryExtraArgs;
-  depositFactoryDisclosure: DisclosedContract[];
-  lpFactoryDisclosure: DisclosedContract[];
 }
 
 export interface PoolSettleRemoveLiquidityInput {
@@ -302,13 +328,9 @@ function normalizePoolStatus(raw: unknown): Pool["status"] {
 export class PoolService {
   constructor(
     private readonly ledger: LedgerSubmitter,
-    private readonly registry: RegistryClient,
+    private readonly registry: RegistryDiscovery,
     private readonly operatorParty: Party,
   ) {}
-
-  private choiceContext(admin: Party): Promise<ChoiceContext> {
-    return fetchChoiceContext(this.registry, admin);
-  }
 
   private async rulesCid(): Promise<ContractId<"PoolRules">> {
     const rules = await this.ledger.query<PoolRulesContract>({
@@ -534,8 +556,6 @@ export class PoolService {
         false,
       );
     }
-    const factories = await this.registry.getFactories(pool.admin);
-    const ctx = await this.choiceContext(pool.admin);
     const inputIsBase = input.inputInstrumentId === pool.baseInstrumentId;
     const inputSlices = inputIsBase ? pool.baseSlices : pool.quoteSlices;
     const outputSlices = inputIsBase ? pool.quoteSlices : pool.baseSlices;
@@ -564,31 +584,53 @@ export class PoolService {
         updateId: input.updateId ?? null,
       });
     const commandId = `pool-swap:${input.poolCid}:${swapKey}`;
+    const swapArgument = {
+      expectedPoolId: pool.poolId,
+      poolCid: input.poolCid,
+      poolStateCid: binding.poolStateCid,
+      swapperAccount: input.swapperAccount,
+      inputInstrumentId: input.inputInstrumentId,
+      inputAmount: input.inputAmount,
+      minOutputAmount: input.minOutputAmount,
+      swapperAllocationCid,
+      inputSliceCid: binding.inputSliceCid,
+      outputSliceCids: binding.outputSliceCids,
+      quoteBinding: binding,
+    };
+    const settlementArguments = await retryOnContention(() =>
+      this.ledger.submit<Record<string, unknown>>({
+        actAs: [this.operatorParty],
+        readAs: input.swapperAccount.owner ? [input.swapperAccount.owner] : [],
+        commandId: `${commandId}:preview`,
+        command: {
+          kind: "exercise",
+          templateId: "CantonDex.Dex.PoolRules:PoolRules",
+          contractId: pool.rulesCid,
+          choice: "PoolRules_PreviewSwapSettlement",
+          argument: swapArgument,
+        },
+      }),
+    );
+    const settlementFactory = await this.registry.getSettlementFactory(
+      pool.admin,
+      settlementArguments,
+    );
+    const settlementContext = asChoiceContext(settlementFactory);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
         readAs: input.swapperAccount.owner ? [input.swapperAccount.owner] : [],
         commandId,
-        disclosure: mergeDisclosures(factories.disclosure, ctx.disclosure),
+        disclosure: settlementContext.disclosure,
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolRules:PoolRules",
           contractId: pool.rulesCid,
           choice: "PoolRules_Swap",
           argument: {
-            expectedPoolId: pool.poolId,
-            poolCid: input.poolCid,
-            poolStateCid: binding.poolStateCid,
-            swapperAccount: input.swapperAccount,
-            inputInstrumentId: input.inputInstrumentId,
-            inputAmount: input.inputAmount,
-            minOutputAmount: input.minOutputAmount,
-            swapperAllocationCid,
-            inputSliceCid: binding.inputSliceCid,
-            outputSliceCids: binding.outputSliceCids,
-            factoryCid: factories.settlementFactoryCid,
-            extraArgs: ctx.extraArgs,
-            quoteBinding: binding,
+            ...swapArgument,
+            factoryCid: settlementFactory.factoryCid,
+            extraArgs: settlementContext.extraArgs,
           },
         },
       }),
@@ -626,10 +668,6 @@ export class PoolService {
       outputSliceCids: selectCoveringPrefix(outputSlices, amountOut),
       minOutputAmount: input.minOutputAmount,
     };
-    const [factories, ctx] = await Promise.all([
-      this.registry.getFactories(pool.admin),
-      this.choiceContext(pool.admin),
-    ]);
     const result = await this.ledger.submit<{
       settlement: V2SettlementInfo;
       allocationSpec: V2AllocationSpecification;
@@ -664,12 +702,6 @@ export class PoolService {
       allocationSpec: result.allocationSpec,
       settlement: result.settlement,
       quoteBinding: result.quoteBinding,
-      factoryCid: factories.allocationFactoryCid,
-      allocationFactoryExtraArgs: ctx.extraArgs,
-      allocationFactoryDisclosure: mergeDisclosures(
-        factories.disclosure,
-        ctx.disclosure,
-      ),
     };
   }
 
@@ -689,22 +721,42 @@ export class PoolService {
     return { pool, liquidityRulesCid: this.requirePoolLiquidityRules(pool) };
   }
 
-  private async loadLiquidityFactories(pool: Pool) {
-    const [depositFactories, lpFactories] = await Promise.all([
-      this.registry.getFactories(pool.admin),
-      this.registry.getFactories(pool.lpRegistrar),
-    ]);
-    return { depositFactories, lpFactories };
-  }
-
-  private async loadLiquiditySurface(pool: Pool) {
-    const [{ depositFactories, lpFactories }, depositContext, lpContext] =
-      await Promise.all([
-        this.loadLiquidityFactories(pool),
-        this.choiceContext(pool.admin),
-        this.choiceContext(pool.lpRegistrar),
-      ]);
-    return { depositFactories, lpFactories, depositContext, lpContext };
+  private async createRegistryAllocation(
+    admin: Party,
+    choiceArguments: ChoiceArguments,
+    commandId: string,
+    actAs: Party[],
+  ): Promise<{
+    allocationCid: ContractId<"Allocation">;
+    factoryCid: ContractId<"AllocationFactory">;
+  }> {
+    const discovered = await this.registry.getAllocationFactory(
+      admin,
+      choiceArguments,
+    );
+    const context = asChoiceContext(discovered);
+    const result = await retryOnContention(() =>
+      this.ledger.submit<AllocationInstructionResult>({
+        actAs,
+        commandId,
+        disclosure: context.disclosure,
+        command: {
+          kind: "exerciseInterface",
+          interfaceId:
+            "Splice.Api.Token.AllocationInstructionV2:AllocationFactory",
+          contractId: discovered.factoryCid,
+          choice: "AllocationFactory_Allocate",
+          argument: {
+            ...choiceArguments,
+            extraArgs: context.extraArgs,
+          },
+        },
+      }),
+    );
+    return {
+      allocationCid: completedAllocationCid(result, commandId),
+      factoryCid: discovered.factoryCid,
+    };
   }
 
   /** Read back a newly-created liquidity request. */
@@ -848,8 +900,6 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
-    const { depositFactories, lpFactories, depositContext, lpContext } =
-      await this.loadLiquiditySurface(pool);
     return {
       ...match,
       requestCid,
@@ -858,18 +908,6 @@ export class PoolService {
       quoteAmount: input.quoteAmount,
       allocations: req.allocations,
       settlement: req.settlement,
-      depositFactoryCid: depositFactories.allocationFactoryCid,
-      lpFactoryCid: lpFactories.allocationFactoryCid,
-      depositFactoryExtraArgs: depositContext.extraArgs,
-      lpFactoryExtraArgs: lpContext.extraArgs,
-      depositFactoryDisclosure: mergeDisclosures(
-        depositFactories.disclosure,
-        depositContext.disclosure,
-      ),
-      lpFactoryDisclosure: mergeDisclosures(
-        lpFactories.disclosure,
-        lpContext.disclosure,
-      ),
     };
   }
 
@@ -877,8 +915,6 @@ export class PoolService {
   async settleAddLiquidity(input: PoolSettleAddLiquidityInput): Promise<unknown> {
     const { pool, liquidityRulesCid } = await this.fetchLiquidityPool(input.poolCid);
     const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
-    const { depositFactories, lpFactories, depositContext, lpContext } =
-      await this.loadLiquiditySurface(pool);
 
     // Resolve the three created allocation cids + the binding. On the
     // operator-discovery path (updateId-only wallet, e.g. PartyLayer) the
@@ -896,23 +932,92 @@ export class PoolService {
         "settleAddLiquidity: supply the 3 allocation cids or an updateId to recover them",
       );
     }
+    const flowKey = requestCid ?? acceptanceCid ?? input.updateId;
+    if (!flowKey) {
+      throw new Error("settleAddLiquidity: request, acceptance, or update id is required");
+    }
+    const preparation = {
+      expectedPoolId: pool.poolId,
+      poolCid: input.poolCid,
+      poolStateCid: pool.poolStateCid,
+      lpPolicyCid,
+      requestCid: requestCid ?? null,
+      acceptanceCid: acceptanceCid ?? null,
+      recipient: input.recipient,
+      lpBaseDepositCid,
+      lpQuoteDepositCid,
+      lpReceiptCid,
+      baseAmount: input.baseAmount,
+      quoteAmount: input.quoteAmount,
+      minLpTokens: input.minLpTokens,
+      knownTotalLpSupply: input.knownTotalLpSupply,
+    };
+    const allocationPlan = await retryOnContention(() =>
+      this.ledger.submit<AddLiquidityAllocationPlan>({
+        actAs: [this.operatorParty, pool.lpRegistrar],
+        commandId: `lp-add-preview-allocations:${flowKey}`,
+        command: {
+          kind: "exercise",
+          templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
+          contractId: liquidityRulesCid,
+          choice: "PoolLiquidityRules_PreviewAddAllocations",
+          argument: { preparation, requestedAt: input.requestedAt },
+        },
+      }),
+    );
+    const [operatorBaseReceiver, operatorQuoteReceiver, registrarMint] =
+      await Promise.all([
+        this.createRegistryAllocation(
+          pool.admin,
+          allocationPlan.baseReceiver,
+          `lp-add-base-receiver:${flowKey}`,
+          [this.operatorParty],
+        ),
+        this.createRegistryAllocation(
+          pool.admin,
+          allocationPlan.quoteReceiver,
+          `lp-add-quote-receiver:${flowKey}`,
+          [this.operatorParty],
+        ),
+        this.createRegistryAllocation(
+          pool.lpRegistrar,
+          allocationPlan.lpMintSender,
+          `lp-add-mint-sender:${flowKey}`,
+          [pool.lpRegistrar],
+        ),
+      ]);
+    const settlementPlan = await retryOnContention(() =>
+      this.ledger.submit<AddLiquiditySettlementPlan>({
+        actAs: [this.operatorParty, pool.lpRegistrar],
+        commandId: `lp-add-preview-settlement:${flowKey}`,
+        command: {
+          kind: "exercise",
+          templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
+          contractId: liquidityRulesCid,
+          choice: "PoolLiquidityRules_PreviewAddSettlement",
+          argument: {
+            preparation,
+            operatorBaseReceiverCid: operatorBaseReceiver.allocationCid,
+            operatorQuoteReceiverCid: operatorQuoteReceiver.allocationCid,
+            registrarMintCid: registrarMint.allocationCid,
+          },
+        },
+      }),
+    );
+    const [poolSettlementFactory, lpSettlementFactory] = await Promise.all([
+      this.registry.getSettlementFactory(pool.admin, settlementPlan.baseQuoteBatch),
+      this.registry.getSettlementFactory(pool.lpRegistrar, settlementPlan.lpBatch),
+    ]);
+    const poolSettlementContext = asChoiceContext(poolSettlementFactory);
+    const lpSettlementContext = asChoiceContext(lpSettlementFactory);
 
-    // Split-admin DvP: the base/quote batch settles under pool.admin and the
-    // LP-mint batch under pool.lpRegistrar, so each carries its own registry
-    // choice context. For the self-registry both contexts are empty.
-    //
-    // The LP's deposit holdings are `signatory admin, owner`, so the operator
-    // cannot see them. Registry discovery supplies the transaction-wide
-    // disclosures needed to validate the nested choices.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        commandId: `lp-add-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
+        commandId: `lp-add-settle:${flowKey}`,
         disclosure: mergeDisclosures(
-          depositFactories.disclosure,
-          lpFactories.disclosure,
-          depositContext.disclosure,
-          lpContext.disclosure,
+          poolSettlementContext.disclosure,
+          lpSettlementContext.disclosure,
         ),
         command: {
           kind: "exercise",
@@ -920,28 +1025,18 @@ export class PoolService {
           contractId: liquidityRulesCid,
           choice: "PoolLiquidityRules_SettleAddLiquidity",
           argument: {
-            expectedPoolId: pool.poolId,
-            poolCid: input.poolCid,
-            poolStateCid: pool.poolStateCid,
-            lpPolicyCid,
-            requestCid: requestCid ?? null,
-            acceptanceCid: acceptanceCid ?? null,
-            recipient: input.recipient,
-            lpBaseDepositCid,
-            lpQuoteDepositCid,
-            lpReceiptCid,
-            baseFactoryCid: depositFactories.allocationFactoryCid,
-            quoteFactoryCid: depositFactories.allocationFactoryCid,
-            lpFactoryCid: lpFactories.allocationFactoryCid,
-            baseQuoteSettleCid: depositFactories.settlementFactoryCid,
-            lpSettleCid: lpFactories.settlementFactoryCid,
-            baseAmount: input.baseAmount,
-            quoteAmount: input.quoteAmount,
-            minLpTokens: input.minLpTokens,
-            knownTotalLpSupply: input.knownTotalLpSupply,
+            ...preparation,
+            baseFactoryCid: operatorBaseReceiver.factoryCid,
+            quoteFactoryCid: operatorQuoteReceiver.factoryCid,
+            lpFactoryCid: registrarMint.factoryCid,
+            baseQuoteSettleCid: poolSettlementFactory.factoryCid,
+            lpSettleCid: lpSettlementFactory.factoryCid,
             requestedAt: input.requestedAt,
-            poolAdminExtraArgs: depositContext.extraArgs,
-            lpRegistrarExtraArgs: lpContext.extraArgs,
+            poolAdminExtraArgs: poolSettlementContext.extraArgs,
+            lpRegistrarExtraArgs: lpSettlementContext.extraArgs,
+            operatorBaseReceiverCid: operatorBaseReceiver.allocationCid,
+            operatorQuoteReceiverCid: operatorQuoteReceiver.allocationCid,
+            registrarMintCid: registrarMint.allocationCid,
           },
         },
       }),
@@ -1012,8 +1107,6 @@ export class PoolService {
       }),
     );
     const req = await this.fetchRequest(requestCid);
-    const { depositFactories, lpFactories, depositContext, lpContext } =
-      await this.loadLiquiditySurface(pool);
     return {
       requestCid,
       knownTotalLpSupply: pool.totalLpSupply,
@@ -1023,18 +1116,6 @@ export class PoolService {
       quoteOuts: plan.quote.outs,
       allocations: req.allocations,
       settlement: req.settlement,
-      depositFactoryCid: depositFactories.allocationFactoryCid,
-      lpFactoryCid: lpFactories.allocationFactoryCid,
-      depositFactoryExtraArgs: depositContext.extraArgs,
-      lpFactoryExtraArgs: lpContext.extraArgs,
-      depositFactoryDisclosure: mergeDisclosures(
-        depositFactories.disclosure,
-        depositContext.disclosure,
-      ),
-      lpFactoryDisclosure: mergeDisclosures(
-        lpFactories.disclosure,
-        lpContext.disclosure,
-      ),
     };
   }
 
@@ -1044,8 +1125,6 @@ export class PoolService {
     // Re-derive from current state; drift since /request aborts at settle.
     const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, input.knownTotalLpSupply);
     const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
-    const { depositFactories, lpFactories, depositContext, lpContext } =
-      await this.loadLiquiditySurface(pool);
 
     // Operator-discovery path (updateId-only wallet): recover the 3 created
     // allocation cids [base receipt, quote receipt, burn-sender] + acceptance.
@@ -1061,23 +1140,77 @@ export class PoolService {
         "settleRemoveLiquidity: supply the 3 allocation cids or an updateId to recover them",
       );
     }
+    const flowKey = requestCid ?? acceptanceCid ?? input.updateId;
+    if (!flowKey) {
+      throw new Error("settleRemoveLiquidity: request, acceptance, or update id is required");
+    }
+    const preparation = {
+      expectedPoolId: pool.poolId,
+      poolCid: input.poolCid,
+      poolStateCid: pool.poolStateCid,
+      lpPolicyCid,
+      requestCid: requestCid ?? null,
+      acceptanceCid: acceptanceCid ?? null,
+      holder: input.holder,
+      lpTokensToRedeem: input.lpTokensToRedeem,
+      knownTotalLpSupply: input.knownTotalLpSupply,
+      minBaseOut: input.minBaseOut,
+      minQuoteOut: input.minQuoteOut,
+      baseSliceCids: plan.base.sliceCids,
+      quoteSliceCids: plan.quote.sliceCids,
+      holderBaseReceiptCid,
+      holderQuoteReceiptCid,
+      holderBurnSenderCid,
+    };
+    const allocationPlan = await retryOnContention(() =>
+      this.ledger.submit<RemoveLiquidityAllocationPlan>({
+        actAs: [this.operatorParty, pool.lpRegistrar],
+        commandId: `lp-remove-preview-allocations:${flowKey}`,
+        command: {
+          kind: "exercise",
+          templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
+          contractId: liquidityRulesCid,
+          choice: "PoolLiquidityRules_PreviewRemoveAllocations",
+          argument: { preparation, requestedAt: input.requestedAt },
+        },
+      }),
+    );
+    const registrarBurnReceiver = await this.createRegistryAllocation(
+      pool.lpRegistrar,
+      allocationPlan.lpBurnReceiver,
+      `lp-remove-burn-receiver:${flowKey}`,
+      [pool.lpRegistrar],
+    );
+    const settlementPlan = await retryOnContention(() =>
+      this.ledger.submit<RemoveLiquiditySettlementPlan>({
+        actAs: [this.operatorParty, pool.lpRegistrar],
+        commandId: `lp-remove-preview-settlement:${flowKey}`,
+        command: {
+          kind: "exercise",
+          templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
+          contractId: liquidityRulesCid,
+          choice: "PoolLiquidityRules_PreviewRemoveSettlement",
+          argument: {
+            preparation,
+            registrarBurnReceiverCid: registrarBurnReceiver.allocationCid,
+          },
+        },
+      }),
+    );
+    const [poolSettlementFactory, lpSettlementFactory] = await Promise.all([
+      this.registry.getSettlementFactory(pool.admin, settlementPlan.baseQuoteBatch),
+      this.registry.getSettlementFactory(pool.lpRegistrar, settlementPlan.lpBatch),
+    ]);
+    const poolSettlementContext = asChoiceContext(poolSettlementFactory);
+    const lpSettlementContext = asChoiceContext(lpSettlementFactory);
 
-    // Split-admin DvP: base/quote batch under pool.admin, LP-burn batch under
-    // pool.lpRegistrar — each carries its own registry choice context.
-    // For the self-registry both contexts are empty.
-    //
-    // The holder's allocations can reference contracts the operator cannot
-    // see. Registry discovery supplies the transaction-wide disclosures needed
-    // to validate the nested choices.
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
-        commandId: `lp-remove-settle:${requestCid ?? acceptanceCid ?? input.updateId}`,
+        commandId: `lp-remove-settle:${flowKey}`,
         disclosure: mergeDisclosures(
-          depositFactories.disclosure,
-          lpFactories.disclosure,
-          depositContext.disclosure,
-          lpContext.disclosure,
+          poolSettlementContext.disclosure,
+          lpSettlementContext.disclosure,
         ),
         command: {
           kind: "exercise",
@@ -1085,30 +1218,18 @@ export class PoolService {
           contractId: liquidityRulesCid,
           choice: "PoolLiquidityRules_SettleRemoveLiquidity",
           argument: {
-            expectedPoolId: pool.poolId,
-            poolCid: input.poolCid,
-            poolStateCid: pool.poolStateCid,
-            lpPolicyCid,
-            requestCid: requestCid ?? null,
-            acceptanceCid: acceptanceCid ?? null,
-            holder: input.holder,
-            lpTokensToRedeem: input.lpTokensToRedeem,
-            knownTotalLpSupply: input.knownTotalLpSupply,
-            minBaseOut: input.minBaseOut,
-            minQuoteOut: input.minQuoteOut,
-            baseSliceCids: plan.base.sliceCids,
-            quoteSliceCids: plan.quote.sliceCids,
-            holderBaseReceiptCid,
-            holderQuoteReceiptCid,
-            holderBurnSenderCid,
-            baseFactoryCid: depositFactories.allocationFactoryCid,
-            quoteFactoryCid: depositFactories.allocationFactoryCid,
-            lpFactoryCid: lpFactories.allocationFactoryCid,
-            baseQuoteSettleCid: depositFactories.settlementFactoryCid,
-            lpSettleCid: lpFactories.settlementFactoryCid,
+            ...preparation,
+            // These two fields are retained for the deployed choice shape.
+            // Remove-liquidity does not create base/quote allocations here.
+            baseFactoryCid: registrarBurnReceiver.factoryCid,
+            quoteFactoryCid: registrarBurnReceiver.factoryCid,
+            lpFactoryCid: registrarBurnReceiver.factoryCid,
+            baseQuoteSettleCid: poolSettlementFactory.factoryCid,
+            lpSettleCid: lpSettlementFactory.factoryCid,
             requestedAt: input.requestedAt,
-            poolAdminExtraArgs: depositContext.extraArgs,
-            lpRegistrarExtraArgs: lpContext.extraArgs,
+            poolAdminExtraArgs: poolSettlementContext.extraArgs,
+            lpRegistrarExtraArgs: lpSettlementContext.extraArgs,
+            registrarBurnReceiverCid: registrarBurnReceiver.allocationCid,
           },
         },
       }),

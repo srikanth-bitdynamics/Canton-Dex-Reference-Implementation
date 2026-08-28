@@ -3,14 +3,12 @@
 
 import { createHash, createHmac } from "node:crypto";
 
-import { parseDecimal } from "../pool/decimal.js";
 import type {
   Decimal,
   Party,
   PolicyReceipt,
   RankedDealer,
   RfqQuote,
-  RfqSide,
   Time,
 } from "../types.js";
 
@@ -19,24 +17,14 @@ import type {
 export const POLICY_VERSION = "v2.0";
 export const POLICY_HASH = "sha256:rfq-policy-v2.0";
 
-// Compare two Daml Decimal strings exactly (10dp, no IEEE-754) so the
-// ranking agrees with the on-ledger Decimal ordering in
-// trading/CantonDex/Dex/Rfq.daml. Returns -1 / 0 / 1.
-export function compareDecimal(a: string, b: string): number {
-  const da = parseDecimal(a);
-  const db = parseDecimal(b);
-  return da < db ? -1 : da > db ? 1 : 0;
-}
-
 export function rankQuotes(
-  side: RfqSide,
   quotes: RfqQuote[],
   now: Time,
 ): RfqQuote[] {
   const valid = quotes.filter(
     (q) => Date.parse(q.expiresAt) > Date.parse(now),
   );
-  // Reproduces `policyCmp` (Rfq.daml:241-256) exactly: trusted tier first,
+  // Reproduces `policyCmp` in Rfq.daml exactly: trusted tier first,
   // then LATER expiresAt (more time to act), then EARLIER postedAt
   // (first-mover), then a deterministic dealer-party tie-break.
   //
@@ -70,7 +58,6 @@ export function rankedDealersOf(ranked: RfqQuote[]): RankedDealer[] {
 
 export function buildReceipt(args: {
   rfqId: string;
-  side: RfqSide;
   quotes: RfqQuote[];
   acceptedDealer: Party;
   signedBy: Party;
@@ -78,7 +65,7 @@ export function buildReceipt(args: {
   now?: Time;
 }): PolicyReceipt {
   const now = args.now ?? args.signedAt;
-  const ranked = rankQuotes(args.side, args.quotes, now);
+  const ranked = rankQuotes(args.quotes, now);
   const rankedDealers = rankedDealersOf(ranked);
   const idx = rankedDealers.findIndex((d) => d.party === args.acceptedDealer);
   if (idx < 0) {

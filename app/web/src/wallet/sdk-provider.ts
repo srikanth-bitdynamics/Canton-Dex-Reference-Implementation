@@ -39,7 +39,7 @@ export interface SdkProviderOptions {
 }
 
 // Structural mirror of core-wallet-discovery's WalletPickerEntry/Result (not
-// re-exported by @canton-network/dapp-sdk 1.1.0). The SDK calls our walletPicker
+// re-exported by @canton-network/dapp-sdk). The SDK calls our walletPicker
 // with the discovered adapters and expects one back.
 interface PickerEntry {
   providerId: string;
@@ -53,7 +53,7 @@ interface PickerEntry {
 
 // --- Browser CIP-103 wallet discovery ------------------------------------
 //
-// @canton-network/dapp-sdk 1.1.0 does not re-export its internal
+// @canton-network/dapp-sdk does not re-export its internal
 // injected/announced discovery helpers, so we mirror the standard CIP-103
 // browser handshake here (same shape the SDK uses internally): read the
 // `window.canton` injection namespace, and dispatch `canton:requestProvider`
@@ -371,7 +371,12 @@ export class SdkProvider implements WalletProvider {
     try {
       result = await this.sdk.prepareExecuteAndWait({
         commandId: composed.commandId,
-        commands: composed.commands as unknown as Record<string, unknown>,
+        // The SDK deliberately types each Ledger API command payload as opaque;
+        // our composer supplies the same tagged command union with stricter
+        // inner fields.
+        commands: composed.commands as unknown as Parameters<
+          DappSDK["prepareExecuteAndWait"]
+        >[0]["commands"],
         actAs: composed.actAs,
         // Off-participant factory/request contracts (AllocationFactory, the
         // AllocationRequest) the trader's participant does not host must be
@@ -379,7 +384,7 @@ export class SdkProvider implements WalletProvider {
         ...(composed.disclosedContracts && composed.disclosedContracts.length > 0
           ? { disclosedContracts: composed.disclosedContracts }
           : {}),
-      } as Parameters<DappSDK["prepareExecuteAndWait"]>[0]);
+      });
     } catch (e) {
       // Surface the wallet or gateway's normalized error.
       throw new Error(`wallet submission failed: ${describeWalletError(e)}`);

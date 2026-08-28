@@ -13,7 +13,7 @@
 //               Registry_Mint on the existing registry
 //   2. add   -- the wallet-authored DvP add (request -> the LP authors its
 //               three allocations -> settle), the flow proven headlessly in
-//               scripts/localnet-dvp-e2e.ts
+//               scripts/live-amm-roundtrip.ts
 //   3. swap  -- PoolRules_RequestSwap -> the swapper authors its input
 //               allocation -> PoolRules_Swap, then asserts against the
 //               ledger that the reserves moved by exactly the
@@ -23,6 +23,11 @@
 //               (on-ledger, via PoolRules_ReconcileState)
 //
 // Every assertion is fatal: a failure exits non-zero.
+//
+// STATE WARNING: mint/add/swap transactions permanently change the selected
+// pool and participant holdings, and an interrupted run can leave partial
+// state. Use a dedicated test pool, retain the printed run id, and do not point
+// this script at production liquidity.
 //
 // Env (ledger + parties):
 //   CANTON_LEDGER_URL, CANTON_LEDGER_TOKEN, CANTON_SYNCHRONIZER,
@@ -126,7 +131,18 @@ interface InstrumentConfigArg { admin: string; instrumentId: string }
 interface RulesArg { operator: string }
 interface LiquidityRulesArg { operator: string; lpRegistrar: string }
 interface RequestArg { allocations: unknown[]; settlement: unknown }
-interface SwapRequestResult { settlement: unknown; allocationSpec: unknown }
+interface SwapQuoteBinding {
+  expectedPoolId: string;
+  poolStateCid: string;
+  inputSliceCid: string;
+  outputSliceCids: string[];
+  minOutputAmount: string;
+}
+interface SwapRequestResult {
+  settlement: unknown;
+  allocationSpec: unknown;
+  quoteBinding: SwapQuoteBinding | null;
+}
 
 const argOf = <T>(c: Created): T => c.createArgument as unknown as T;
 
@@ -242,9 +258,14 @@ async function retrying<T>(what: string, fn: (attempt: number) => Promise<T>, at
 // The Daml floors the result to 10dp afterwards, which is a no-op on a value
 // that already carries 10 decimals.
 function constantProductOut(reserveIn: bigint, reserveOut: bigint, feeBps: number, inputAmount: bigint): bigint {
-  const feeMultiplier = dec.div(dec.parseDecimal(String(10000 - feeBps)), dec.parseDecimal("10000"));
-  const amountInAfterFee = dec.mul(inputAmount, feeMultiplier);
-  return dec.div(dec.mul(amountInAfterFee, reserveOut), reserveIn + amountInAfterFee);
+  const amountInAfterFee = dec.divFloor(
+    dec.mulFloor(inputAmount, dec.parseDecimal(String(10000 - feeBps))),
+    dec.parseDecimal("10000"),
+  );
+  return dec.divFloor(
+    dec.mulFloor(amountInAfterFee, reserveOut),
+    reserveIn + amountInAfterFee,
+  );
 }
 
 // The LP entitlement PoolLiquidityRules_SettleAddLiquidity bounds the receipt
@@ -305,8 +326,8 @@ async function authorAlloc(
   return only(creates(tx, "CantonDex.Registry.V2:Allocation"), `${label} allocation`).contractId;
 }
 
-// The Registry is `signatory admin, observer users`, so a party outside `users`
-// -- every faucet-created tester -- cannot see the factory it must exercise.
+// The Registry is `signatory admin, observer users`, so a separately allocated
+// test party outside `users` cannot see the factory it must exercise.
 // Explicit contract disclosure is the mechanism for exactly this: fetch the
 // contract's createdEventBlob as someone who CAN see it (the admin) and attach
 // it to the submitter's command. This is what a registry's off-ledger API
@@ -553,6 +574,13 @@ async function main() {
   if (covered < expectedOut) {
     throw new Error(`${outputId} slices cover ${dec.formatDecimal(covered)}, need ${dec.formatDecimal(expectedOut)}`);
   }
+  const quoteBinding: SwapQuoteBinding = {
+    expectedPoolId: pool.poolId,
+    poolStateCid: addState.cid,
+    inputSliceCid: headInput.contractId,
+    outputSliceCids,
+    minOutputAmount: dec.formatDecimal(expectedOut),
+  };
 
   const inBefore = await balance(swapper, pool.admin, inputId);
   const outBefore = await balance(swapper, pool.admin, outputId);
@@ -565,30 +593,26 @@ async function main() {
         choiceArgument: {
           poolCid: ctx.poolC.contractId, swapper,
           inputInstrumentId: inputId, inputAmount: cfg.swapIn,
+          quoteBinding,
         },
       },
     }]);
     const result = exercisedResult(tx, "PoolRules_RequestSwap")
       ?? (await treeExercisedResult(tx.transaction.updateId, cfg.operator, "PoolRules_RequestSwap"));
-    if (result) return result as SwapRequestResult;
-    // The participant served neither the choice result nor a tree, so rebuild
-    // what the choice returns (PoolModel.poolSettlement +
-    // Utils.mkPrefundedAllocationSpecification). Nothing is taken on trust:
-    // the registry re-checks the funding at allocate and PoolRules_Swap
-    // re-checks every leg at settle, so a wrong spec aborts the swap.
-    console.log("  ..  choice result unavailable, rebuilding the allocation spec locally");
-    return {
-      settlement: { executors: [cfg.operator], id: "DexPool", cid: ctx.poolC.contractId, meta: { values: {} } },
-      allocationSpec: {
-        admin: pool.admin, authorizer: acct(swapper), transferLegSides: [],
-        settlementDeadline: null, nextIterationFunding: { [inputId]: cfg.swapIn },
-        committed: false, meta: { values: {} },
-      },
-    } satisfies SwapRequestResult;
+    if (!result) {
+      throw new Error(
+        "participant did not expose the PoolRules_RequestSwap result in the transaction or transaction tree",
+      );
+    }
+    const request = result as SwapRequestResult;
+    if (!request.quoteBinding) throw new Error("PoolRules_RequestSwap returned no quote binding");
+    eq(request.quoteBinding.poolStateCid, quoteBinding.poolStateCid, "swap request state binding");
+    eq(request.quoteBinding.minOutputAmount, quoteBinding.minOutputAmount, "swap request minimum binding");
+    return request;
   });
 
-  // The swapper is an arbitrary party (a faucet tester in the real flow), so it
-  // is not an observer of the asset registry. Disclose the registry to it.
+  // The swapper is an arbitrary, separately allocated party, so it is not an
+  // observer of the asset registry. Disclose the registry to it.
   const registryDisclosure = await step("disclose registry to the swapper", () =>
     discloseRegistry(pool.admin, ctx.registryCid));
 
@@ -612,6 +636,7 @@ async function main() {
           swapperAllocationCid: swapAlloc,
           inputSliceCid: headInput.contractId, outputSliceCids,
           factoryCid: ctx.registryCid, extraArgs: EXTRA,
+          quoteBinding,
         },
       },
     }], [swapper]);
@@ -661,6 +686,7 @@ async function main() {
   console.log(`swapper balances: ${inputId} ${dec.formatDecimal(inBefore)} -> ${dec.formatDecimal(inAfter)}, ${outputId} ${dec.formatDecimal(outBefore)} -> ${dec.formatDecimal(outAfter)}`);
   console.log(`LP supply ${swapState.arg.totalLpSupply}`);
   console.log("PASS: existing pool seeded via the wallet-authored DvP add, and a swap settled and asserted against it");
+  console.log(`state changed on participant: run=${RUN}, pool=${pool.poolId}`);
 }
 
 /** Unlocked balance of one instrument, as issued by `admin`. */

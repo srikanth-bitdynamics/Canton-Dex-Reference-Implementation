@@ -51,6 +51,7 @@ Operator-signed, submitted by the operator backend:
 
 ```bash
 curl -X POST http://localhost:8080/v1/admin/pairs \
+  -H "Authorization: Bearer $OPERATOR_ADMIN_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "baseInstrumentId": "ETH",
@@ -90,6 +91,7 @@ needs:
 
 ```bash
 curl -X POST http://localhost:8080/v1/admin/pools \
+  -H "Authorization: Bearer $OPERATOR_ADMIN_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "baseInstrumentId": "ETH",
@@ -132,9 +134,11 @@ add-liquidity DvP used for every later deposit:
 
 ## Step 4 — Surface and verify
 
-The dApp's `/v1/pairs` returns the new pair on the next backend tick; the Pools page
-shows the pool once it is seeded. For the pair to appear on the trader's Trade page,
-`active` must be `true` and `tradingMode` must be `TM_OrderBook` or `TM_Both`.
+The dApp's `/v1/pairs` returns the new listing and the Pools page shows the pool
+once it is seeded. The current Trade page is pool-driven: it reads active pools
+and does not filter them through `DexPair.active` or `tradingMode`. Treat those
+fields as discovery metadata unless your application adds an off-ledger filter
+or an on-ledger terminal-choice gate.
 
 ```bash
 curl -s http://localhost:8080/v1/pairs | jq '.[] | select(.baseInstrumentId=="ETH")'

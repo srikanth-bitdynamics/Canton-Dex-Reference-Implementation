@@ -17,28 +17,11 @@ import { Indexer } from "../src/indexer/index.js";
 import { OrderService } from "../src/order/index.js";
 import { MatchingLedger } from "./matching-ledger.js";
 import type { Order } from "../src/types.js";
-import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
+import { StubRegistry } from "./stub-registry.js";
 
 const OPERATOR = "operator::1220ab";
 const BUYER = "alice::1220ab";
 const SELLER = "bob::1220ab";
-
-class StubRegistry extends RegistryClient {
-  constructor() {
-    super({ baseUrl: "http://stub" });
-  }
-  override async getFactories() {
-    return {
-      allocationFactoryCid: "#alloc-fac:0" as ContractId<"AllocationFactory">,
-      settlementFactoryCid: "#settle-fac:0" as ContractId<"SettlementFactory">,
-      disclosure: [] as never[],
-    };
-  }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
-  }
-}
 
 function mkOrder(
   contractId: string,

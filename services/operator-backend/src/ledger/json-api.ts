@@ -1,9 +1,9 @@
 // JsonApiLedger -- LedgerSubmitter implementation that talks to a
 // real Canton participant via the JSON Ledger API.
 //
-// This is the production driver. Tests can use it to drive against a
-// live `daml start` (or a deployed Canton participant); the in-memory
-// driver in `in-memory.ts` is the fast unit-test path.
+// This is the live-participant driver. Tests can use it against the repository's
+// default `dpm sandbox` proof or a separately operated Canton participant; the
+// in-memory driver in `in-memory.ts` is the fast unit-test path.
 //
 // JSON API reference:
 //   https://docs.daml.com/json-api/ (general)

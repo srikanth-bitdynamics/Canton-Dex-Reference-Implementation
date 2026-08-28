@@ -48,6 +48,12 @@ template PoolState with
     signatory operator
     observer (lpRegistrar :: publicReaders)
 
+    ensure
+      poolId /= ""
+        && reserves.baseAmount >= 0.0
+        && reserves.quoteAmount >= 0.0
+        && totalLpSupply >= 0.0
+
     -- The lpRegistrar records post-mint/burn LP supply back onto the pool
     -- state.
     choice PoolState_RecordLPSupply : ContractId PoolState

@@ -7,21 +7,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { OrderService } from "../src/order/index.js";
+import { OrderAuthError, OrderService } from "../src/order/index.js";
 import type {
   LedgerSubmitter,
   SubmitRequest,
   SubscriptionFilter,
   LedgerEvent,
 } from "../src/ledger/index.js";
-import { RegistryClient } from "@canton-dex/registry-client";
 import type { ContractId } from "@canton-dex/registry-client";
-
-class StubRegistry extends RegistryClient {
-  constructor() {
-    super({ baseUrl: "http://stub" });
-  }
-}
+import { StubRegistry } from "./stub-registry.js";
 
 const FUNDING_TEMPLATE =
   "abcdef:CantonDex.Dex.OrderFundingRequest:OrderFundingRequest";
@@ -54,6 +48,7 @@ const BIND_SPEC = {
 class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
   treeEvents: Array<{ contractId: string; templateId: string }> = [];
+  queryRows: unknown[] = [];
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.lastSubmit = req;
     return {
@@ -72,7 +67,7 @@ class CapturingLedger implements LedgerSubmitter {
     // no streaming in this stub
   }
   async query<T>(_f: SubscriptionFilter): Promise<T[]> {
-    return [];
+    return this.queryRows as T[];
   }
 }
 
@@ -134,5 +129,55 @@ describe("OrderService.bind", () => {
       () => svc.bind({ updateId: "1220cafe", settlementRef: "ref-4" }),
       /expected 1 OrderFundingRequest create/,
     );
+  });
+});
+
+describe("OrderService caller binding", () => {
+  it("binds only the funding request owned by the verified caller", async () => {
+    const ledger = new CapturingLedger();
+    ledger.queryRows = [{ contractId: "00abc", trader: "alice" }];
+    const svc = new OrderService(ledger, new StubRegistry(), "op" as never);
+
+    await assert.rejects(
+      () => svc.bind({
+        fundingRequestCid: "00abc" as ContractId<"OrderFundingRequest">,
+        settlementRef: "ref-auth",
+        requireTrader: "mallory" as never,
+      }),
+      OrderAuthError,
+    );
+    assert.equal(ledger.lastSubmit, null);
+
+    await svc.bind({
+      fundingRequestCid: "00abc" as ContractId<"OrderFundingRequest">,
+      settlementRef: "ref-auth",
+      requireTrader: "alice" as never,
+    });
+    assert.equal(commandOf(ledger).contractId, "00abc");
+  });
+
+  it("fund and cancel reject another trader's order", async () => {
+    const ledger = new CapturingLedger();
+    ledger.queryRows = [{
+      contractId: "00order",
+      trader: "alice",
+      status: "Pending",
+      allocationCid: null,
+    }];
+    const svc = new OrderService(ledger, new StubRegistry(), "op" as never);
+
+    await assert.rejects(
+      () => svc.fund({
+        orderCid: "00order" as ContractId<"Order">,
+        allocationCid: "00alloc" as ContractId<"Allocation">,
+        requireTrader: "mallory" as never,
+      }),
+      OrderAuthError,
+    );
+    await assert.rejects(
+      () => svc.cancel("00order" as ContractId<"Order">, "mallory" as never),
+      OrderAuthError,
+    );
+    assert.equal(ledger.lastSubmit, null);
   });
 });

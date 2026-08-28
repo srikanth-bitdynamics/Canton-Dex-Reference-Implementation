@@ -1,4 +1,4 @@
-// End-to-end test for the operator backend's RFQ accept flow.
+// Service-level integration test for the operator backend's RFQ accept flow.
 // Drives the InMemoryLedger with handlers that mimic Daml choice
 // semantics, then exercises RfqService.accept and asserts on the
 // resulting MatchedTrade + PolicyReceipt.
@@ -21,26 +21,15 @@ import type {
   PolicyReceipt,
 } from "../src/types.ts";
 import { RfqAuthError } from "../src/rfq/index.ts";
-import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef } from "@canton-dex/registry-client";
+import { FixedRegistryClient } from "@canton-dex/registry-client";
 
-class StubRegistry extends RegistryClient {
+class StubRegistry extends FixedRegistryClient {
   constructor() {
-    super({ baseUrl: "http://stub" });
-  }
-  override async getFactories(): Promise<{
-    allocationFactoryCid: ContractId<"AllocationFactory">;
-    settlementFactoryCid: ContractId<"SettlementFactory">;
-    disclosure: never[];
-  }> {
-    return {
+    super(() => ({
       allocationFactoryCid: "#alloc-fac:0" as ContractId<"AllocationFactory">,
       settlementFactoryCid: "#settle-fac:0" as ContractId<"SettlementFactory">,
       disclosure: [],
-    };
-  }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
+    }));
   }
 }
 
@@ -161,7 +150,7 @@ function setupLedger(): InMemoryLedger {
   return ledger;
 }
 
-test("RFQ accept end-to-end through operator backend", async () => {
+test("RFQ accept across the operator service boundary", async () => {
   const ledger = setupLedger();
   const registry = new StubRegistry();
   const operator: Party = "operator::test";

@@ -1,4 +1,4 @@
-# Registry Prerequisites
+# Registry integration prerequisites
 
 What the DEX assumes from an asset registry. Token Standard V2 standardizes the
 holding/allocation/settlement interfaces; it does not standardize a particular
@@ -22,15 +22,15 @@ flowchart LR
     AF["AllocationFactory"]
     SF["SettlementFactory"]
     H[("Holding")]
-    CC(["Choice-context endpoint<br/>(off-ledger)"])
+    CC(["Operation-specific V2 endpoints<br/>(off-ledger HTTP)"])
   end
   W -->|"AllocationFactory_Allocate<br/>locks holdings into an Allocation"| AF
   OB -->|"SettlementFactory_SettleBatch<br/>atomic net settlement"| SF
   W -.->|"observe / select"| H
   AF --> H
   SF --> H
-  OB -.->|"fetch disclosures"| CC
-  CC -.->|"extraArgs"| SF
+  OB -.->|"POST exact choiceArguments"| CC
+  CC -.->|"factory + context + disclosures"| SF
 ```
 
 Solid arrows are on-ledger interface choices; dashed arrows are off-ledger
@@ -99,7 +99,7 @@ trades, the registry must provide:
 | Assumption | Where it shows up |
 |---|---|
 | `instrumentId` is stable across the instrument's lifetime | Order, Pool, MatchedTrade, Rfq all key on it |
-| Factory and choice-context discovery is admin-controlled | The operator fetches these off-ledger and flushes its registry-client cache after a registry republishes factories or disclosures |
+| Factory and choice-context discovery is admin-controlled | The app performs a fresh operation-specific V2 lookup with the concrete choice arguments; it does not reuse one admin-level cached context across operations |
 | Allocation creation can consume one or more holdings and return change | The trader's wallet selects holdings; the registry factory validates and locks them |
 | Allocation factory accepts arbitrary `AllocationSpecification` shapes (prefunded, with-legs, committed or uncommitted, with `nextIterationFunding`) | Orders require both deadline-committed and trader-withdrawable GTC shapes; pools require committed inventory |
 | Settlement factory enforces transfer-leg consistency with allocations | OTC / matched-trade settlement and `PoolRules_Swap` rely on the factory to validate, not the DEX |
@@ -115,15 +115,25 @@ TTL; that does not imply another registry will accept the same lifetime.
 
 ## Registry API surface (Daml + OpenAPI)
 
-Token Standard V2 registries are expected to expose both the Daml
-interfaces and the standard OpenAPI endpoints (the specs ship alongside
-each API package in `canton-network/splice` under `token-standard/`). The
-reference registry implements the Daml surfaces used by this DEX; its
-off-ledger integration is represented by the factory and choice-context
-endpoints the backend's registry-client consumes
-(see [Choice Context](choice-context.md)). A production registry should
-implement the standard OpenAPI so V2-compliant wallets and apps can discover
-factories and context without bespoke integration.
+Token Standard V2 registries are expected to expose both the Daml interfaces
+and the standard OpenAPI endpoints. The specs used here are committed beside
+the vendored packages under [`vendor/splice/token-standard`](../../vendor/splice/token-standard/).
+The backend client uses the canonical operation-specific POST endpoints for
+allocation-factory discovery, settlement-factory discovery, and per-allocation
+cancel/withdraw context. Every factory request includes the concrete Daml JSON
+`choiceArguments`; responses are runtime-validated and are not cached. See
+[Choice context](choice-context.md#3-canonical-v2-http-endpoints) for the exact
+paths, bodies, and response shape.
+
+The configured reference self-registry is a deliberate adapter, not a second
+HTTP protocol. `FixedRegistryClient` resolves deployed factory CIDs per admin
+and returns empty context. This is also the only backend adapter currently able
+to drive atomic add/remove liquidity: those Daml choices create temporary
+allocations and settle them in the same transaction, so their future CIDs
+cannot appear in an exact HTTP preflight request. Generic HTTP discovery fails
+with `RegistryError("unsupported", ...)` before submission for that workflow.
+Swaps, matched trades, order matches, allocation creation, and cancellation use
+the canonical operation-specific discovery path.
 
 The DEX's own flows are exercised against a standard-shaped registry, not only
 its reference one. `testMatchedTradeViaTokenStandardRegistry` in
@@ -134,7 +144,10 @@ a bespoke one. `testRealRegistryDvpAddSettles` and `testRealRegistryDvpSwapSettl
 in [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml)
 settle add-liquidity and swap DvPs against a genuinely context-requiring
 registry, and `testRealRegistryDvpRejectsMissingContext` proves the settle
-aborts when that registry's disclosed context is dropped.
+aborts when that registry's disclosed context is dropped. These are Daml
+composition proofs: the tests already possess the context contracts. They do
+not remove the off-ledger future-CID limitation for the backend's atomic
+liquidity HTTP preflight.
 
 ## Mint / Burn / Transfer prerequisites
 
@@ -209,14 +222,18 @@ registries are expected to enforce at least what `Registry.V2` does.
 ## Choice-context retrieval the DEX needs
 
 When the operator or trader builds a transaction that touches a registry
-contract, the registry may require extra disclosed contracts or context. In the
-reference registry this context is empty. External registries may return
-disclosed configuration, rights, or credential contracts. The DEX
-operator backend's **registry-client** module is responsible for fetching the
-registry-specific context and attaching it to the choice arguments.
+contract, the registry may require extra disclosed contracts or context. The
+reference self-registry's context is empty. External registries may return
+disclosed configuration, rights, or credential contracts.
 
-See [Choice Context](choice-context.md) for the exact
-inputs each registry choice expects.
+The DEX's `registry-client` takes the exact operation arguments, calls the
+matching standard endpoint, validates the wire response, and returns the
+factory CID, context, and disclosures as one value. Settlement arguments come
+from non-value-moving Daml previews for swaps and matched trades, and from an
+ephemeral create-and-exercise preview for order matches. Cancel/withdraw
+context is looked up per allocation ID, not once per admin. See
+[Choice context](choice-context.md) for the complete choreography and the
+atomic-liquidity exception.
 
 ## Registry-specific lifecycle changes
 
@@ -265,10 +282,13 @@ legs — is rejected rather than settled.
 
 ## What the DEX does not assume
 
-- It does not require the reference registry for base or quote assets. An
-  alternative must implement the V2 holding, allocation, and settlement APIs
-  used by the workflow and provide compatible factory/context discovery. The
-  included LP path still uses the concrete `LPTokenPolicy` component.
+- It does not require the reference registry for base or quote assets in the
+  allocation, swap, order, or matched-trade flows. An alternative must
+  implement the V2 holding, allocation, and settlement APIs and the canonical
+  operation-specific discovery endpoints. Atomic add/remove liquidity is the
+  documented exception: the current backend requires the configured
+  empty-context self-registry adapter until that workflow is redesigned. The
+  included LP path also uses the concrete `LPTokenPolicy` component.
 - It does not assume holding precision is uniform. Each registry may expose its
   own display scale or amount constraints; the DEX treats amounts as `Decimal`
   and lets the registry enforce its own limits.

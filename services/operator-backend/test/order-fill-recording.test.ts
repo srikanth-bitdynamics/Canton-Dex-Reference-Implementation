@@ -5,24 +5,7 @@ import { OrderService } from "../src/order/index.js";
 import type { LedgerSubmitter, SubmitRequest } from "../src/ledger/index.js";
 import type { Order } from "../src/types.js";
 import { MatchingLedger, type ExecuteArgument } from "./matching-ledger.js";
-import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
-
-class StubRegistry extends RegistryClient {
-  constructor() {
-    super({ baseUrl: "http://stub" });
-  }
-  override async getFactories() {
-    return {
-      allocationFactoryCid: "#alloc-fac:0" as ContractId<"AllocationFactory">,
-      settlementFactoryCid: "#settle-fac:0" as ContractId<"SettlementFactory">,
-      disclosure: [] as never[],
-    };
-  }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
-  }
-}
+import { StubRegistry } from "./stub-registry.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mkOrder(o: Record<string, any>): Order {
@@ -79,15 +62,20 @@ const bid = (o: Record<string, unknown>): Order =>
   });
 
 describe("OrderService.runMatching settlement", () => {
-  it("settles a match in exactly one submission", async () => {
+  it("settles a match in one value-moving submission after a read-only preview", async () => {
     const ledger = new MatchingLedger([ask({}), bid({})]);
 
     const results = await service(ledger).runMatching(RUN);
 
     assert.equal(results.length, 1);
     assert.equal(results[0]!.error, undefined);
-    // Settlement, both order transitions, and the trade record are atomic.
-    assert.equal(ledger.submissions.length, 1);
+    // Discovery gets an exact on-ledger preview first. Settlement, both order
+    // transitions, and the trade record then remain one atomic submission.
+    assert.equal(ledger.submissions.length, 2);
+    assert.equal(
+      (ledger.submissions[0]!.command as { choice?: string }).choice,
+      "OrderMatchExecution_PreviewSettlement",
+    );
     assert.equal(
       ledger.executes[0]!.templateId,
       "CantonDex.Dex.OrderMatchExecution:OrderMatchExecution",
@@ -97,7 +85,7 @@ describe("OrderService.runMatching settlement", () => {
     // without readAs the admin the operator cannot see them and the settle
     // fails CONTRACT_NOT_FOUND on a real ledger.
     assert.ok(
-      (ledger.submissions[0]!.readAs ?? []).includes(RUN.admin),
+      (ledger.submissions[1]!.readAs ?? []).includes(RUN.admin),
       "the settle must readAs the instrument admin",
     );
     assert.equal(
@@ -109,11 +97,12 @@ describe("OrderService.runMatching settlement", () => {
 
   it("records a partial-fill remainder in the settlement transaction", async () => {
     const ledger = new MatchingLedger([ask({}), bid({ remainingQty: "3" })]);
-    // The ledger rejects any second submission. A correct match still succeeds
-    // because it records its funded remainder in the settlement transaction.
+    // The ledger allows preview + execute but rejects any third submission. A
+    // correct match succeeds because it records its funded remainder inside
+    // the value-moving settlement transaction.
     const flaky: LedgerSubmitter = {
       submit: async <R>(req: SubmitRequest): Promise<R> => {
-        if (ledger.submissions.length > 0) throw new Error("ledger unavailable");
+        if (ledger.submissions.length > 1) throw new Error("ledger unavailable");
         return ledger.submit<R>(req);
       },
       subscribe: ledger.subscribe.bind(ledger),
@@ -332,7 +321,7 @@ describe("OrderService.runMatching settlement", () => {
 
     assert.equal(results[0]!.buyRemainderCid, null, "the bid did not close out");
     assert.equal(results.length, 1);
-    assert.equal(ledger.submissions.length, 1);
+    assert.equal(ledger.submissions.length, 2, "preview + one value-moving execute");
     assert.deepEqual(
       ledger.executes.map((e) => (e.argument as ExecuteArgument).buyOrderCid),
       ["#bid:1"],

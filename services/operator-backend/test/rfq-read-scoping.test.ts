@@ -5,33 +5,32 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 
 import { InMemoryLedger } from "../src/ledger/in-memory.js";
 import type { SubscriptionFilter } from "../src/ledger/index.js";
 import { OperatorBackend } from "../src/index.js";
 import { startHttpServer } from "../src/http/index.js";
-import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
+import { StubRegistry } from "./stub-registry.js";
 
 const ALICE = "alice";
 const BOB = "bob";
 const DEALER = "northwind";
 const ADMIN_TOKEN = "admin-secret";
+const CALLER_SECRET = "caller-secret";
 
-class StubRegistry extends RegistryClient {
-  constructor() {
-    super({ baseUrl: "http://stub" });
-  }
-  override async getFactories() {
-    return {
-      allocationFactoryCid: "#alloc:0" as ContractId<"AllocationFactory">,
-      settlementFactoryCid: "#settle:0" as ContractId<"SettlementFactory">,
-      disclosure: [] as never[],
-    };
-  }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
-  }
+function callerToken(sub: string): string {
+  const encode = (value: string | Buffer) =>
+    Buffer.from(value).toString("base64url");
+  const header = encode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payload = encode(JSON.stringify({
+    sub,
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const signature = encode(
+    createHmac("sha256", CALLER_SECRET).update(`${header}.${payload}`).digest(),
+  );
+  return `${header}.${payload}.${signature}`;
 }
 
 class RfqLedger extends InMemoryLedger {
@@ -66,14 +65,11 @@ before(async () => {
     port: 0,
     host: "127.0.0.1",
     adminToken: ADMIN_TOKEN,
+    callerJwtSecret: CALLER_SECRET,
     context: {
       operator: "op" as never,
       lpRegistrar: "lp" as never,
       admin: "ad" as never,
-      allocationFactoryCid: "#alloc:0",
-      settlementFactoryCid: "#settle:0",
-      allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
-      allocationFactoryDisclosure: [],
       network: "canton:test",
     },
     devOpen: true,
@@ -86,9 +82,12 @@ after(async () => {
   await close();
 });
 
-const get = async (path: string, token?: string) => {
+const get = async (path: string, token?: string, caller?: string) => {
   const res = await fetch(`${baseUrl}${path}`, {
-    headers: token ? { authorization: `Bearer ${token}` } : {},
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(caller ? { "x-caller-token": callerToken(caller) } : {}),
+    },
   });
   return { status: res.status, body: await res.json().catch(() => ({})) as any };
 };
@@ -101,14 +100,14 @@ describe("GET /v1/rfq scoping", () => {
   });
 
   it("a trader sees only their own RFQs and quotes", async () => {
-    const r = await get(`/v1/rfq?owner=${ALICE}`);
+    const r = await get(`/v1/rfq?owner=${ALICE}`, undefined, ALICE);
     assert.equal(r.status, 200);
     assert.deepEqual(r.body.rfqs.map((x: any) => x.rfqId), ["a1"]);
     assert.deepEqual(r.body.quotes.map((x: any) => x.rfqId), ["a1"]);
   });
 
   it("one trader cannot see another's size or the prices quoted to them", async () => {
-    const r = await get(`/v1/rfq?owner=${ALICE}`);
+    const r = await get(`/v1/rfq?owner=${ALICE}`, undefined, ALICE);
     const leaked = JSON.stringify(r.body);
     assert.ok(!leaked.includes("b1"), "bob's RFQ id leaked");
     assert.ok(!leaked.includes("50.0"), "bob's size leaked");
@@ -116,9 +115,17 @@ describe("GET /v1/rfq scoping", () => {
   });
 
   it("a whitelisted dealer sees the RFQ and its own quotes", async () => {
-    const r = await get(`/v1/rfq?owner=${DEALER}`);
+    const r = await get(`/v1/rfq?owner=${DEALER}`, undefined, DEALER);
     assert.deepEqual(r.body.rfqs.map((x: any) => x.rfqId), ["a1"], "whitelisted on a1 only");
     assert.equal(r.body.quotes.length, 2, "its own quotes on both");
+  });
+
+  it("rejects a missing or mismatched caller on a scoped RFQ read", async () => {
+    assert.equal((await get(`/v1/rfq?owner=${ALICE}`)).status, 401);
+    assert.equal(
+      (await get(`/v1/rfq?owner=${ALICE}`, undefined, BOB)).status,
+      403,
+    );
   });
 
   it("refuses an unscoped /v1/rfq/history without the admin token", async () => {

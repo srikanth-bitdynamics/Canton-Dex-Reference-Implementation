@@ -1,0 +1,112 @@
+-- | Focused executable documentation for the DexPair listing record.
+--
+-- DexPair is operator-owned venue metadata. Its update choices recreate the
+-- listing, but `active` and `tradingMode` are not on-ledger gates for PoolRules
+-- or OrderMatchExecution. These tests therefore prove listing state,
+-- authorization, visibility, and fee-accounting only.
+-- Design context: `docs/concepts/design-tour.md#pair-and-governance-state`.
+module CantonDex.Tests.DexPairTests where
+
+import DA.Assert
+import DA.Optional (fromSome)
+import DA.TextMap qualified as TextMap
+import Daml.Script
+
+import CantonDex.Dex.DexPair
+
+initialFeeModel : FeeModel
+initialFeeModel = FeeModel with
+  makerFeeBps = 10
+  takerFeeBps = 20
+  poolFeeBps = 30
+
+createPair : Party -> Party -> Script (ContractId DexPair)
+createPair operator admin =
+  submit operator $ createCmd DexPair with
+    operator
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    tradingMode = TM_Both
+    feeModel = initialFeeModel
+    active = True
+    publicReaders = None
+    accumulatedMakerFees = None
+    accumulatedTakerFees = None
+
+-- Each listing update is consuming and should preserve unrelated fields.
+-- | Proves operator-controlled DexPair updates recreate and preserve the listing.
+testDexPairLifecycleUpdates : Script ()
+testDexPairLifecycleUpdates = do
+  operator <- allocateParty "pair-operator"
+  admin <- allocateParty "pair-admin"
+  reader <- allocateParty "pair-reader"
+  pair0 <- createPair operator admin
+
+  let replacementFees = FeeModel with
+        makerFeeBps = 5
+        takerFeeBps = 15
+        poolFeeBps = 25
+
+  -- Fee rates are basis-point fractions and can never be negative or reach
+  -- 100%; a failed update leaves the original pair active.
+  submitMustFail operator $ exerciseCmd pair0 DexPair_UpdateFeeModel with
+    newFeeModel = replacementFees with takerFeeBps = 10000
+  pair1 <- submit operator $ exerciseCmd pair0 DexPair_UpdateFeeModel with
+    newFeeModel = replacementFees
+  pair2 <- submit operator $ exerciseCmd pair1 DexPair_SetActive with
+    newActive = False
+  pair3 <- submit operator $ exerciseCmd pair2 DexPair_UpdateTradingMode with
+    newTradingMode = TM_Pool
+  pair4 <- submit operator $ exerciseCmd pair3 DexPair_UpdatePublicReaders with
+    newReaders = [reader]
+
+  Some pair <- queryContractId reader pair4
+  pair.baseInstrumentId === "BTC"
+  pair.quoteInstrumentId === "USDC"
+  pair.feeModel === replacementFees
+  pair.active === False
+  pair.tradingMode === TM_Pool
+  pair.publicReaders === Some [reader]
+
+  -- Every update is consuming: only the newest listing remains active.
+  None <- queryContractId operator pair0
+  None <- queryContractId operator pair1
+  None <- queryContractId operator pair2
+  None <- queryContractId operator pair3
+  pure ()
+
+-- | Proves the registry admin may observe a listing but cannot mutate it.
+testDexPairUpdatesRequireOperator : Script ()
+testDexPairUpdatesRequireOperator = do
+  operator <- allocateParty "pair-auth-operator"
+  admin <- allocateParty "pair-auth-admin"
+  pairCid <- createPair operator admin
+
+  submitMustFail admin $ exerciseCmd pairCid DexPair_SetActive with
+    newActive = False
+  Some pair <- queryContractId operator pairCid
+  pair.active === True
+
+-- The counters are accounting records, not holdings or a fee-collection path.
+-- | Proves DexPair fee counters accumulate without pretending to move assets.
+testDexPairRecordsMatchedTradeFees : Script ()
+testDexPairRecordsMatchedTradeFees = do
+  operator <- allocateParty "pair-fee-operator"
+  admin <- allocateParty "pair-fee-admin"
+  pair0 <- createPair operator admin
+
+  submitMustFail operator $ exerciseCmd pair0 DexPair_RecordMatchedTrade with
+    legNotionals = TextMap.fromList [("BTC", -1.0)]
+  pair1 <- submit operator $ exerciseCmd pair0 DexPair_RecordMatchedTrade with
+    legNotionals = TextMap.fromList [("BTC", 2.0), ("USDC", 100.0)]
+  pair2 <- submit operator $ exerciseCmd pair1 DexPair_RecordMatchedTrade with
+    legNotionals = TextMap.fromList [("BTC", 3.0)]
+
+  Some pair <- queryContractId operator pair2
+  let maker = fromSome pair.accumulatedMakerFees
+      taker = fromSome pair.accumulatedTakerFees
+  TextMap.lookup "BTC" maker === Some 0.005
+  TextMap.lookup "USDC" maker === Some 0.1
+  TextMap.lookup "BTC" taker === Some 0.01
+  TextMap.lookup "USDC" taker === Some 0.2

@@ -1,11 +1,14 @@
 # Canton DEX workflow design
 
-Each state transition has a named app choice. A terminal, value-moving choice
-validates the workflow's business rules and delegates settlement to Token
-Standard V2. It may call more than one `SettlementFactory_SettleBatch` when the
-instruments have different registry admins, but those calls remain atomic inside
-one Daml transaction. The app contracts own market state; the registry owns
-holdings and settlement.
+This is Step 7 of the
+[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+Complete [Architecture](architecture.md) first.
+
+Each state transition has a named app choice. A value-moving choice validates
+the business rules, then asks Token Standard V2 to settle. Different registry
+admins may require more than one `SettlementFactory_SettleBatch`, but all
+batches remain atomic inside one Daml transaction. App contracts own market
+state; the registry owns holdings and settlement.
 
 ## The common workflow in five steps
 
@@ -60,7 +63,7 @@ may exercise them.
 | Place order | `OrderFundingRequest_Bind` | `AllocationFactory_Allocate` | `Order_Fund` | pending order becomes funded |
 | Match orders | funded buy + sell orders | already prefunded | `OrderMatchExecution_Execute` | atomic fill; each remainder rolls forward |
 | Cancel order | funded or partially filled order | already prefunded | `Order_Cancel` | order closes and remaining funding unlocks |
-| Accept RFQ | `Rfq` + `RfqQuote` | `Rfq_Accept` under the hosted authority model | `Rfq_Accept` | `MatchedTrade` and policy receipt are created; no value moves yet |
+| Accept RFQ | `Rfq` + `RfqQuote` | `Rfq_Accept` under the operator-mediated authority model | `Rfq_Accept` | `MatchedTrade` and policy receipt are created; no value moves yet |
 | Settle RFQ / OTC | `MatchedTrade` allocation requests | each counterparty authors its allocation | `MatchedTrade_Settle` | bilateral legs settle atomically |
 
 ## Actors and core contracts
@@ -76,6 +79,12 @@ separate from the pool-accounting objects (`Pool`, `PoolState`, `PoolSlice`) and
 the LP-token policy (`LPTokenPolicy`). This is a template boundary, not a custom
 Daml-interface boundary: the DAR implements upstream Token Standard V2
 interfaces but defines no app-facing interface of its own.
+
+`DexPair.active` and `DexPair.tradingMode` are listing metadata for off-ledger
+discovery and routing. They are deliberately absent from the value-moving table
+above: neither `PoolRules` nor `OrderMatchExecution` fetches a pair contract, so
+changing those fields does not itself block a direct Daml settlement. Bind and
+validate `DexPair` in terminal choices if a fork needs an on-ledger market gate.
 
 ## The settlement shape every workflow shares
 
@@ -145,12 +154,8 @@ settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
   extraArgs
 ```
 
-Proven in
-[`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml) —
-`testPoolSwapEndToEnd` (reserves move, the consumed input slice is replaced by
-its next-iteration slice, sibling slices stay untouched) and
-`testPoolSwapViaRequestSwap` (the spec `PoolRules_RequestSwap` emits settles
-end to end).
+For the focused choreography and real-holding checks behind this section, see
+[Daml proof map — AMM pool](../reference/daml-proof-map.md#amm-pool).
 
 ## Add and remove liquidity
 
@@ -169,12 +174,23 @@ sequenceDiagram
     LP->>L: BatchingUtility_ExecuteBatch
     Note over LP,L: one wallet approval: Accept + 3 Allocate actions
     D->>O: POST /v1/pools/add-liquidity/settle (allocation cids)
+    O->>L: PreviewAddAllocations
+    O->>O: discover exact allocation factories + choice contexts
+    O->>L: allocate operator/registrar sides
+    O->>L: PreviewAddSettlement
+    O->>O: discover exact settlement factories + choice contexts
     O->>L: PoolLiquidityRules_SettleAddLiquidity
     Note over O,L: base/quote batch under pool.admin,<br/>LP mint batch under pool.lpRegistrar
     L-->>O: funds in pool, LP tokens minted, PoolState rewritten
 ```
 
-`PoolLiquidityRules_SettleAddLiquidity` runs the split-admin DvP: the LP's
+The previews are read-only Daml choices. They return the exact canonical V2
+choice arguments, which the backend sends to each registry's operation-specific
+off-ledger discovery endpoint before exercising the real allocate or settle
+choice. This avoids guessing a factory contract or reusing context from a
+different operation.
+
+`PoolLiquidityRules_SettleAddLiquidity` then runs the split-admin DvP: the LP's
 committed deposits and LP-mint receipt settle together, the operator's receiver
 allocations roll forward into the two new `PoolSlice`s, and the registrar mints
 LP tokens to the provider. Only the ratio-matched part of an off-ratio deposit
@@ -210,12 +226,8 @@ LP has no unilateral exit if the operator or registrar becomes unavailable.
 See [Availability and the LP exit boundary](liquidity-and-custody.md#availability-and-the-lp-exit-boundary)
 and [LP redemption has an explicit liveness dependency](non-goals.md#lp-redemption-has-an-explicit-liveness-dependency).
 
-Proven in
-[`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml) —
-`testDvpAddLiquidity` (LP funds base+quote and receives real LP holdings in one
-flow), `testDvpAddOffRatioRefundsExcess` (the unmatched leg is refunded, not
-donated), `testDvpRemoveDeliversToHolder` (base+quote go to the holder, LP burns),
-and `testDvpMultiSliceRemove` (a redemption draws across multiple slices).
+The add, refund, remove, and full-redemption proofs are cataloged in
+[Daml proof map — AMM pool](../reference/daml-proof-map.md#amm-pool).
 
 ## Order lifecycle
 
@@ -285,11 +297,8 @@ expiry, instruments, and backing, but cannot prove fair intake ordering or stop
 censorship and private reordering among valid fills. This distinction is
 documented as [Fair ordering and private MEV](non-goals.md#fair-ordering-and-private-mev).
 
-Proven in
-[`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml) —
-`testOrderMatchEnforcesLimitPrice` (a fill outside `[ask, bid]` is rejected) and
-`testOrderMatchRollsOrdersForwardAtomically` (both orders roll onto the minted
-allocations and the trade is recorded, in one transaction).
+For the limit, roll-forward, backing, and cancellation proofs, see
+[Daml proof map — Resting orders](../reference/daml-proof-map.md#resting-orders).
 
 ## RFQ and OTC block trades
 
@@ -299,8 +308,8 @@ ranked.
 
 ```mermaid
 sequenceDiagram
-    actor T as Hosted trader
-    actor Dl as Hosted dealer
+    actor T as Trader
+    actor Dl as Dealer
     participant O as Operator backend
     participant L as Ledger
     T->>O: POST /v1/rfq (create Rfq)
@@ -321,18 +330,25 @@ ranks the considered quotes, records the winner and its rank in a
 published policy was applied, not that the price was good), and copies the RFQ's
 `expiresAt` onto the trade's `settlementDeadline`.
 
+`RfqQuote.tier` is dealer-declared in this reference. The operator observes the
+quote and endorses the considered set by co-authorizing `Rfq_Accept`; there is no
+separate on-ledger tier-administration contract. Policy v2.0 ranks tier, later
+expiry, earlier posting time, then dealer party id; price is deliberately not a
+ranking key, and the trader still chooses which considered quote to accept.
+
 The included RFQ page covers creation, quote review, and acceptance through
-hosted-party relay routes: the backend ledger user
-must have act-as rights for the trader (and dealer when it authors quotes), while
+operator-mediated API routes: the backend ledger user must have act-as rights
+for the trader (and dealer when it authors quotes), while
 accept also needs operator authority. This is distinct from the wallet-authored
 allocation flow used by pools and orders. A self-custodial deployment must
-replace the relay with a wallet, delegation, or co-submission mechanism that
-supplies the same controllers.
+replace that example with a wallet, delegation, or co-submission mechanism that
+supplies the same controllers. The repository does not provision a public RFQ
+relay or party-onboarding service.
 
 The page's **Accepted** tab means that `Rfq_Accept` created the `MatchedTrade`;
 it does not mean balances moved. The following allocation requests and
 `MatchedTrade_Settle` are available through the Daml and operator-service flow
-and are covered by the settlement tests, but the hosted RFQ page does not drive
+and are covered by the settlement tests, but the RFQ page does not drive
 those later steps.
 
 ```daml
@@ -349,13 +365,15 @@ that trade cannot settle after the deadline; their owners must cancel or
 withdraw them to release the locked holdings. Integrators therefore need to
 leave enough time between acceptance, wallet funding, and settlement.
 
-Proven in
-[`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml),
-which runs against real `Registry.V2` holdings —
-`testRfqBuySettlesAgainstRealHoldings` (balances and the rank-1 receipt are
-exactly as expected, no locks stranded) and
-`testExpiryBetweenAcceptAndSettleBlocksTheSettle` (past the inherited deadline
-the settle fails and the funds stay locked).
+For receipt, real-holding, deadline, and cancellation proofs, see
+[Daml proof map — RFQ and OTC](../reference/daml-proof-map.md#rfq-and-otc).
+
+### Explicit exits and recovery choices
+
+Failure and abandonment are explicit choices, not hidden background cleanup.
+The [resting-order](../reference/daml-proof-map.md#resting-orders) and
+[RFQ/OTC](../reference/daml-proof-map.md#rfq-and-otc) proof tables identify the
+controller and resulting contract/fund-state checks for each exit.
 
 ## Pool lifecycle
 
@@ -366,10 +384,14 @@ emergency stop:
 stateDiagram-v2
   [*] --> Unfunded: pool created
   Unfunded --> Active: first add-liquidity settles
-  Active --> Active: swap / add / remove
+  Active --> Active: swap / add / partial remove
+  Active --> Unfunded: final LP removal
   Active --> Paused: PoolRules_Pause
   Paused --> Active: PoolRules_Resume
 ```
+
+The mock lifecycle, real first-funding, and complete-redemption checks are in
+[Daml proof map — AMM pool](../reference/daml-proof-map.md#amm-pool).
 
 ---
 
@@ -378,9 +400,12 @@ stateDiagram-v2
 ### Secondary workflows
 
 - **Pair listing.** `DexOperator` creates a `DexPair` recording the base/quote
-  `InstrumentId`s, fee model, and trading mode (RFQ, order book, or pool). There
-  is no separate `DexRules` admission contract yet; a production fork can add one
-  if listing needs multi-party approval.
+  `InstrumentId`s, fee model, and mode (`TM_OrderBook`, `TM_Pool`, or `TM_Both`).
+  `active` and `tradingMode` guide off-ledger listing/routing only; they are not
+  fetched by the active settlement choices. There is no separate `DexRules`
+  admission contract yet; a production fork can add one if listing needs
+  multi-party approval. Source and focused checks are in
+  [Daml proof map — Pair listing metadata](../reference/daml-proof-map.md#pair-listing-metadata).
 - **Pool creation.** `DexOperator` creates a `Pool` for a `DexPair` and the LP
   instrument definition (an `InstrumentConfig` in the reference
   registry). The pool starts `Unfunded` with a constant-product invariant until
@@ -430,4 +455,7 @@ interfaces and no separate `DexRules` governance contract.
 
 ---
 
-**Where to read next:** [Architecture](architecture.md) · [Liquidity and custody](liquidity-and-custody.md) · [Non-goals](non-goals.md) · [Pricing](pricing.md) · [Builder Guide](../guides/builder-guide.md) · [Allocation Surface](../reference/allocation-surface.md) · [All docs](../README.md)
+**Next canonical step:** [Make your first AMM code change](../tutorials/make-your-first-amm-change.md).
+Use [Liquidity and custody](liquidity-and-custody.md),
+[Pricing](pricing.md), [Non-goals](non-goals.md), and the
+[Allocation Surface](../reference/allocation-surface.md) as topic references.

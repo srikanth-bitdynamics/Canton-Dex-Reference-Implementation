@@ -11,6 +11,7 @@ import {
 import type { WalletIntent, RequestSwapIntent } from '@/wallet/types';
 
 const FIXED_NOW = new Date('2026-05-19T12:00:00.000Z');
+const REQUESTED_AT = FIXED_NOW.toISOString();
 
 const ctx: ComposeContext = {
   party: 'alice::1220a',
@@ -60,6 +61,7 @@ describe('composeCommands', () => {
         committed: true,
         meta: { values: {} },
       },
+      requestedAt: REQUESTED_AT,
       inputHoldingCids: ['holding1', 'holding2'],
       hint: { instrumentId: 'USDC', amount: '100.0' },
     };
@@ -205,6 +207,7 @@ describe('composeCommands', () => {
       poolId: 'pool1234567890',
       allocationSpec: swapAllocationSpec,
       settlement: swapSettlement,
+      requestedAt: REQUESTED_AT,
       factoryCid: 'factory1',
       allocationFactoryExtraArgs,
       disclosure,
@@ -220,6 +223,10 @@ describe('composeCommands', () => {
       'ExerciseCommand.templateId',
       '#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory',
     );
+    expect(composed.commands[0]).toHaveProperty(
+      'ExerciseCommand.choiceArgument.requestedAt',
+      REQUESTED_AT,
+    );
   });
 
   it('request-swap refuses unconfigured factory', () => {
@@ -228,6 +235,7 @@ describe('composeCommands', () => {
       poolId: 'pool1',
       allocationSpec: swapAllocationSpec,
       settlement: swapSettlement,
+      requestedAt: REQUESTED_AT,
       factoryCid: 'PENDING_FACTORY',
       allocationFactoryExtraArgs,
       disclosure,
@@ -267,10 +275,13 @@ describe('composeCommands', () => {
       requestCid: 'reqABCDEFGH12',
       settlement,
       allocations: [baseSpec, quoteSpec, receiptSpec],
-      depositFactoryCid: 'depF',
-      lpFactoryCid: 'lpF',
-      depositFactoryExtraArgs: allocationFactoryExtraArgs,
-      lpFactoryExtraArgs,
+      requestedAt: REQUESTED_AT,
+      factoryCids: ['depF', 'depF', 'lpF'],
+      allocationFactoryExtraArgs: [
+        allocationFactoryExtraArgs,
+        allocationFactoryExtraArgs,
+        lpFactoryExtraArgs,
+      ],
       allocationRequestExtraArgs,
       disclosure,
       baseHoldingCids: ['b1'],
@@ -304,6 +315,7 @@ describe('composeCommands', () => {
     expect(arg.actions.slice(1).map((a) => a.value.cid)).toEqual(['depF', 'depF', 'lpF']);
     for (const a of arg.actions.slice(1)) {
       expect(a.value.arg.inputHoldingCids).toEqual([]);
+      expect(a.value.arg.requestedAt).toBe(REQUESTED_AT);
     }
     expect(arg.actions.slice(1).map((a) => a.value.arg.extraArgs)).toEqual([
       allocationFactoryExtraArgs,
@@ -329,10 +341,13 @@ describe('composeCommands', () => {
       requestCid: 'reqREMOVE1234',
       settlement,
       allocations: [baseRcpt, quoteRcpt, burnSpec],
-      depositFactoryCid: 'depF',
-      lpFactoryCid: 'lpF',
-      depositFactoryExtraArgs: allocationFactoryExtraArgs,
-      lpFactoryExtraArgs,
+      requestedAt: REQUESTED_AT,
+      factoryCids: ['depF', 'depF', 'lpF'],
+      allocationFactoryExtraArgs: [
+        allocationFactoryExtraArgs,
+        allocationFactoryExtraArgs,
+        lpFactoryExtraArgs,
+      ],
       allocationRequestExtraArgs,
       disclosure,
       lpHoldingCids: ['lp1', 'lp2'],
@@ -344,11 +359,14 @@ describe('composeCommands', () => {
     expect(cmd.choice).toBe('BatchingUtility_ExecuteBatch');
     const arg = cmd.choiceArgument as {
       inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
-      actions: { tag: string; value: { cid: string } }[];
+      actions: { tag: string; value: { cid: string; arg: { requestedAt: string } } }[];
     };
     expect(arg.actions[0].tag).toBe('TSA_AllocationRequest_AcceptV2');
     expect(arg.actions[0].value.cid).toBe('reqREMOVE1234');
     expect(arg.actions.slice(1).map((a) => a.value.cid)).toEqual(['depF', 'depF', 'lpF']);
+    expect(
+      arg.actions.slice(1).map((a) => a.value.arg.requestedAt),
+    ).toEqual([REQUESTED_AT, REQUESTED_AT, REQUESTED_AT]);
     // Only the burn-sender (LP) funds from holdings; the two receipts lock
     // nothing. ALL fragmented LP holdings are threaded so any position redeems.
     expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
@@ -367,10 +385,13 @@ describe('composeCommands', () => {
         mkSpec('lp-quote-deposit', 'USDC', 'SenderSide', true),
         mkSpec('lp-mint', 'BTC-USDC-LP', 'ReceiverSide', false),
       ],
-      depositFactoryCid: 'depF',
-      lpFactoryCid: 'lpF',
-      depositFactoryExtraArgs: allocationFactoryExtraArgs,
-      lpFactoryExtraArgs,
+      requestedAt: REQUESTED_AT,
+      factoryCids: ['depF', 'depF', 'lpF'],
+      allocationFactoryExtraArgs: [
+        allocationFactoryExtraArgs,
+        allocationFactoryExtraArgs,
+        lpFactoryExtraArgs,
+      ],
       allocationRequestExtraArgs,
       disclosure,
       baseHoldingCids: ['b1'],

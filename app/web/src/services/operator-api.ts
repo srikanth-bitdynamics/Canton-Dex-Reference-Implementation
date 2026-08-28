@@ -3,6 +3,8 @@
 // through `wallet/handoff.ts`; hosted RFQ routes are the documented relay
 // exception.
 
+import { apiAuthHeaders } from "./api-auth";
+
 export type Party = string;
 export type ContractId<_T> = string;
 export type Decimal = string;
@@ -19,6 +21,12 @@ export interface DisclosedContract {
   // Canton's JSON Ledger API disclosed-contract field (was mis-named `payloadBlob`).
   createdEventBlob: string;
   synchronizerId?: string;
+}
+
+export interface AllocationFactorySurface {
+  factoryCid: ContractId<"AllocationFactory">;
+  extraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
 }
 
 export interface SwapQuoteBinding {
@@ -114,6 +122,13 @@ export class OperatorApi {
     return this.post("/v1/swaps/quote", req);
   }
 
+  async getAllocationFactory(req: {
+    admin: Party;
+    choiceArguments: Record<string, unknown>;
+  }): Promise<AllocationFactorySurface> {
+    return this.post("/v1/registry/allocation-factory", req);
+  }
+
   // Operator builds the exact two-sided allocation against one pool snapshot;
   // the wallet authorizes it and swap() settles that same quote binding.
   async requestSwap(req: {
@@ -126,9 +141,6 @@ export class OperatorApi {
     allocationSpec: unknown;
     settlement: unknown;
     quoteBinding: SwapQuoteBinding;
-    factoryCid: ContractId<"AllocationFactory">;
-    allocationFactoryExtraArgs: V2ExtraArgs;
-    allocationFactoryDisclosure: DisclosedContract[];
   }> {
     return this.post("/v1/pools/swap/request", req);
   }
@@ -169,9 +181,10 @@ export class OperatorApi {
   }
 
   async cancelRfq(rfqCid: ContractId<"Rfq">): Promise<void> {
+    const path = `/v1/rfq/${encodeURIComponent(rfqCid)}/cancel`;
     const res = await fetch(
-      `${this.baseUrl}/v1/rfq/${encodeURIComponent(rfqCid)}/cancel`,
-      { method: "POST" },
+      `${this.baseUrl}${path}`,
+      { method: "POST", headers: apiAuthHeaders(path, "POST") },
     );
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   }
@@ -260,7 +273,9 @@ export class OperatorApi {
   // === internals ============================================================
 
   private async get<T>(path: string): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`);
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      headers: apiAuthHeaders(path, "GET"),
+    });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     return (await res.json()) as T;
   }
@@ -268,7 +283,10 @@ export class OperatorApi {
   private async post<T>(path: string, body: unknown): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...apiAuthHeaders(path, "POST"),
+      },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);

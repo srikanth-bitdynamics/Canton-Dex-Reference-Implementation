@@ -5,9 +5,10 @@
 Only the `main` branch is supported. We do not backport fixes to
 older tags or releases.
 
-The `canton-dex-trading` Daml package version on the public testnet
-is the deployed surface; older versions remain queryable via Daml
-smart-upgrade but are not supported for new contracts.
+This repository does not provision or promise a public testnet deployment. An
+operator's supported ledger surface is the exact DAR/package id they deploy from
+`main`; the committed upgrade baseline exists only to validate Daml package
+compatibility and is not evidence that a public service is currently running.
 
 ## Reporting a vulnerability
 

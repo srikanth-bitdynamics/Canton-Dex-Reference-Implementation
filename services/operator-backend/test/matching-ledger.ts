@@ -139,7 +139,8 @@ export class MatchingLedger implements LedgerSubmitter {
 
   get executes(): CreateAndExerciseCommand[] {
     return this.commands.filter(
-      (c): c is CreateAndExerciseCommand => c.kind === "createAndExercise",
+      (c): c is CreateAndExerciseCommand =>
+        c.kind === "createAndExercise" && c.choice === "OrderMatchExecution_Execute",
     );
   }
 
@@ -157,6 +158,14 @@ export class MatchingLedger implements LedgerSubmitter {
     const cmd = req.command;
     if (cmd.kind !== "createAndExercise") {
       throw new Error(`unexpected ${cmd.kind} submission`);
+    }
+    if (cmd.choice === "OrderMatchExecution_PreviewSettlement") {
+      const arg = cmd.argument as ExecuteArgument;
+      return {
+        previewFor: arg.matchId,
+        actors: [arg.operator],
+        extraArgs: { context: { values: {} }, meta: { values: {} } },
+      } as R;
     }
     return this.execute(cmd.argument as ExecuteArgument) as R;
   }

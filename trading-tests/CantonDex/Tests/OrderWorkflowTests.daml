@@ -1,0 +1,478 @@
+-- | Prefunded-order choreography and matching rules against MockRegistry.
+--
+-- Read testOrderFundingFlow first, then the arithmetic and rejection tests, and
+-- finish with testOrderMatchRollsOrdersForwardAtomically. The suite proves
+-- trader/operator authority, allocation binding, price limits, and atomic
+-- remainder creation. Its holding-less fixture does NOT prove locked backing;
+-- RegistryConservationTests supplies those value-conservation proofs.
+-- Design context: `docs/concepts/design-tour.md#prefunded-orders`.
+module CantonDex.Tests.OrderWorkflowTests where
+
+import DA.Assert
+import DA.List (sort)
+import DA.Optional (isSome, isNone, fromSome)
+import DA.TextMap qualified as TextMap
+import DA.Time
+
+import Daml.Script
+
+import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+import Splice.Testing.Utils (emptyExtraArgs)
+
+import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Dex.Order qualified as Order
+import CantonDex.Dex.OrderFundingRequest qualified as OFR
+import CantonDex.Dex.OrderMatchExecution qualified as OME
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.WorkflowConstructors qualified as WC
+import CantonDex.Tests.WorkflowTestFixtures
+
+-- The trader authorizes a pending order allocation ---------------------
+--
+-- Contract transitions under test:
+--   OrderFundingRequest --Bind--> Pending Order + OrderAllocationRequest
+--   trader --Allocate--> committed V2.Allocation
+--   Pending Order --Fund--> Funded Order (request consumed)
+-- The trader, not the operator, authorizes the allocation. The operator can
+-- only attach it to the pending order. This holding-less fixture does not lock
+-- funds; real-backing coverage lives in RegistryConservationTests.
+
+-- | Proves trader funding binds the exact requested allocation to an order.
+testOrderFundingFlow : Script ()
+testOrderFundingFlow = do
+  operator <- allocateParty "operator"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  now <- getTime
+
+  (factoryCid, _) <- setupRegistries admin [operator, alice]
+
+  -- Arrange: Alice asks to place a bid for 0.5 BTC at 60,000 USDC.
+  reqCid <- submit alice $ createCmd OFR.OrderFundingRequest with
+    operator
+    trader = alice
+    admin
+    baseInstrumentId = "BTC"
+    quoteInstrumentId = "USDC"
+    side = Order.Bid
+    limitPrice = 60000.0
+    quantity = 0.5
+    expiry = Some (addRelTime now (hours 1))
+
+  -- Act 1: the operator turns the intent into a pending market object and a
+  -- standard allocation request describing the required funding.
+  bindRes <- submit operator $ exerciseCmd reqCid OFR.OrderFundingRequest_Bind with
+    settlementRef = "ord-test-1"
+
+  -- Assert the intermediate state before any mock allocation is attached.
+  Some order <- queryContractId operator bindRes.orderCid
+  order.status === Order.OS_Pending
+  Some allocReq <- queryContractId operator bindRes.allocationRequestCid
+
+  -- Act 2: Alice's wallet authors the committed funding allocation under her
+  -- own authority. The request remains live as the correlation record until
+  -- the operator binds the resulting allocation.
+  let aliceAccount = Utils.basicAccount alice
+      settlement = fromSome allocReq.allocationSettlement
+      specification = Order.orderFundingSpecification
+        admin alice allocReq.lockInstrumentId allocReq.lockAmount
+        allocReq.expiry
+      allocateArg = V2.AllocationFactory_Allocate with
+        settlement
+        allocation = specification
+        requestedAt = now
+        inputHoldingCids = []
+        actors = [alice]
+        extraArgs = emptyExtraArgs
+
+  instrResult <- submit alice $ exerciseCmd factoryCid allocateArg
+  case instrResult.output of
+    V2.AllocationInstructionResult_Completed allocCid -> do
+      -- Funding without the request correlation is rejected; otherwise the
+      -- request would remain live after the order becomes funded.
+      submitMustFail operator $ exerciseCmd bindRes.orderCid Order.Order_Fund with
+        allocationCid = allocCid
+        allocationRequestCid = None
+      -- Act 3: the operator binds Alice's allocation. Order_Fund consumes both
+      -- the pending order and its allocation request, then creates the funded
+      -- successor.
+      fundRes <- submit operator $ exerciseCmd bindRes.orderCid Order.Order_Fund with
+        allocationCid = allocCid
+        allocationRequestCid = Some bindRes.allocationRequestCid
+      Some funded <- queryContractId operator fundRes.orderCid
+      funded.status === Order.OS_Funded
+      funded.allocationCid === Some allocCid
+      pendingGone <- queryContractId operator bindRes.orderCid
+      assertMsg "pending Order consumed by Order_Fund" (isNone pendingGone)
+      reqGone <- queryContractId operator bindRes.allocationRequestCid
+      assertMsg "OrderAllocationRequest consumed by Order_Fund" (isNone reqGone)
+    _ -> abort "Mock factory should complete immediately"
+
+  pure ()
+
+
+-- Partial fills carry only unspent funding ------------------------------
+--
+-- The matcher carries only the unspent portion of each allocation into a
+-- partial-fill remainder. This focused helper test checks both a partial and a
+-- full fill; RegistryConservationTests proves the corresponding SettleBatch
+-- behavior against real holdings.
+-- | Proves order remainder quantities and reserved funding use exact arithmetic.
+testOrderRemainderFundingArithmetic : Script ()
+testOrderRemainderFundingArithmetic = do
+  -- Build accounts from real allocatable parties so the legs route correctly.
+  alice <- allocateParty "ome-buyer"
+  bob <- allocateParty "ome-seller"
+  let buyerAcct = Utils.basicAccount alice
+      sellerAcct = Utils.basicAccount bob
+      -- A bid for 10 base @ 5 quote locks 50 quote; a partial fill of 4 base
+      -- spends 4*5 = 20 quote, leaving 30. The ask locks 10 base; the fill
+      -- spends 4 base, leaving 6.
+      partialMatch = OME.MatchedOrderPair with
+        buyerAccount = buyerAcct
+        sellerAccount = sellerAcct
+        baseInstrumentId = "BTC"
+        quoteInstrumentId = "USDC"
+        fillQty = 4.0
+        fillPrice = 5.0
+      partialLegs = OME.mkMatchTransferLegs partialMatch
+      buyerBudget = TextMap.fromList [("USDC", 50.0)]
+      sellerBudget = TextMap.fromList [("BTC", 10.0)]
+
+  -- Partial fill: residual = committed - spent on the locked instrument.
+  OME.remainderFunding buyerAcct buyerBudget partialLegs
+    === Some (TextMap.fromList [("USDC", 30.0)])
+  OME.remainderFunding sellerAcct sellerBudget partialLegs
+    === Some (TextMap.fromList [("BTC", 6.0)])
+
+  -- Exact full fill: 10 base @ 5 spends the whole 50-quote / 10-base budget,
+  -- so the residual is empty -> None (the allocation fully settles).
+  let fullMatch = partialMatch with fillQty = 10.0
+      fullLegs = OME.mkMatchTransferLegs fullMatch
+  OME.remainderFunding buyerAcct buyerBudget fullLegs === None
+  OME.remainderFunding sellerAcct sellerBudget fullLegs === None
+  pure ()
+
+-- Order matching enforces both limit prices -----------------------------
+--
+-- A resting bid @ 100 and ask @ 90 cross; any cleared price must sit in
+-- [90, 100]. OrderMatchExecution_Execute fetches both orders and refuses a
+-- fill outside that band (or with mismatched instruments / quantities /
+-- accounts), so a buggy or malicious matcher cannot fill a resting order on
+-- terms its owner never agreed to.
+-- Prefunded (no legs, next-iteration funding) allocation, as a trader authors
+-- it before the operator binds it onto a resting order.
+omeAlloc
+  : Party -> Party -> ContractId V2.AllocationFactory -> Party -> V2.Account
+  -> TextMap.TextMap Decimal -> Time -> Script (ContractId V2.Allocation)
+omeAlloc operator admin factoryCid party acct funding now = do
+  let settlement = V2.SettlementInfo with
+        executors = [operator]; id = "OrderMatch-m1"; cid = None
+        meta = emptyMetadata
+      arg = WC.mkPrefundedAllocationFactoryAllocate
+        admin acct settlement None funding now [] [party] emptyExtraArgs
+  r <- submit party $ exerciseCmd factoryCid arg
+  case r.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "alloc must complete"
+
+-- A resting BTC/USDC order for 10 base at the given limit price, side, and
+-- status, optionally bound to a funding allocation.
+omeOrder
+  : Party -> Party -> Party -> Order.Side -> Decimal -> Order.OrderStatus
+  -> Optional (ContractId V2.Allocation) -> Text -> Script (ContractId Order.Order)
+omeOrder operator admin trader side limitPrice status allocationCid ref =
+  submit operator $ createCmd Order.Order with
+    operator; trader; admin
+    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    side; limitPrice; remainingQty = 10.0
+    expiry = None; status; allocationCid
+    settlementRef = Order.makeOrderRefFromText ref
+
+-- A proposed fill of 4 base at the given price, naming the two orders and the
+-- two allocations it intends to spend. Exercising its _Execute choice is what
+-- the matching tests accept or reject.
+omeExec
+  : Party -> V2.Account -> V2.Account -> ContractId Order.Order
+  -> ContractId Order.Order -> ContractId V2.Allocation -> ContractId V2.Allocation
+  -> Decimal -> OME.OrderMatchExecution
+omeExec operator buyerAcct sellerAcct buyOrderCid sellOrderCid
+        buyerAllocationCid sellerAllocationCid fillPrice =
+  OME.OrderMatchExecution with
+    operator; matchId = "m1"
+    match = OME.MatchedOrderPair with
+      buyerAccount = buyerAcct; sellerAccount = sellerAcct
+      baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+      fillQty = 4.0; fillPrice
+    buyOrderCid; sellOrderCid
+    buyerAllocationCid; sellerAllocationCid
+    buyerCommittedFunding = TextMap.empty
+    sellerCommittedFunding = TextMap.empty
+
+-- | Proves a match outside either resting order's limit price is rejected.
+testOrderMatchEnforcesLimitPrice : Script ()
+testOrderMatchEnforcesLimitPrice = do
+  operator <- allocateParty "ome-op"
+  admin <- allocateParty "ome-admin"
+  buyer <- allocateParty "ome-bid"
+  seller <- allocateParty "ome-ask"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, buyer, seller]
+
+  let buyerAcct = Utils.basicAccount buyer
+      sellerAcct = Utils.basicAccount seller
+
+  -- Each side creates a mock allocation carrying the declared quote/base budget.
+  buyerAllocationCid <- omeAlloc operator admin factoryCid buyer buyerAcct
+    (TextMap.fromList [("USDC", 400.0)]) now
+  sellerAllocationCid <- omeAlloc operator admin factoryCid seller sellerAcct
+    (TextMap.fromList [("BTC", 10.0)]) now
+
+  -- Resting bid: willing to pay up to 100 quote/base for 10 base.
+  buyOrderCid <- omeOrder operator admin buyer Order.Bid 100.0 Order.OS_Funded
+    (Some buyerAllocationCid) "bid"
+  -- Resting ask: willing to sell down to 90 quote/base for 10 base.
+  sellOrderCid <- omeOrder operator admin seller Order.Ask 90.0 Order.OS_Funded
+    (Some sellerAllocationCid) "ask"
+
+  let mkExec = omeExec operator buyerAcct sellerAcct buyOrderCid sellOrderCid
+        buyerAllocationCid sellerAllocationCid
+
+  -- Above the bid limit: the buyer would overpay -> rejected.
+  tooHigh <- submit operator $ createCmd (mkExec 101.0)
+  submitMustFail operator $ exerciseCmd tooHigh OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  -- Below the ask limit: the seller would undersell -> rejected.
+  tooLow <- submit operator $ createCmd (mkExec 89.0)
+  submitMustFail operator $ exerciseCmd tooLow OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  -- Inside the band [90, 100]: accepted, settles both allocations.
+  ok <- submit operator $ createCmd (mkExec 95.0)
+  res <- submit operator $ exerciseCmd ok OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+  length res.settleResult.allocationSettleResults === 2
+  pure ()
+
+-- A match can spend only the allocations bound to its orders ------------
+--
+-- The buyer rests two orders with different mock allocation ids. Filling the
+-- first while substituting the second's allocation keeps the declared
+-- per-instrument batch totals balanced, so the binding check must reject it.
+-- | Proves a match cannot substitute another order's funding allocation.
+testOrderMatchRejectsAnotherOrdersAllocation : Script ()
+testOrderMatchRejectsAnotherOrdersAllocation = do
+  operator <- allocateParty "ome2-op"
+  admin <- allocateParty "ome2-admin"
+  buyer <- allocateParty "ome2-bid"
+  seller <- allocateParty "ome2-ask"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, buyer, seller]
+
+  let buyerAcct = Utils.basicAccount buyer
+      sellerAcct = Utils.basicAccount seller
+      quoteFunding = TextMap.fromList [("USDC", 400.0)]
+
+  firstAllocCid <- omeAlloc operator admin factoryCid buyer buyerAcct quoteFunding now
+  secondAllocCid <- omeAlloc operator admin factoryCid buyer buyerAcct quoteFunding now
+  sellerAllocationCid <- omeAlloc operator admin factoryCid seller sellerAcct
+    (TextMap.fromList [("BTC", 10.0)]) now
+
+  buyOrderCid <- omeOrder operator admin buyer Order.Bid 100.0 Order.OS_Funded
+    (Some firstAllocCid) "bid-1"
+  _secondBidCid <- omeOrder operator admin buyer Order.Bid 100.0 Order.OS_Funded
+    (Some secondAllocCid) "bid-2"
+  sellOrderCid <- omeOrder operator admin seller Order.Ask 90.0 Order.OS_Funded
+    (Some sellerAllocationCid) "ask"
+
+  let mkExec buyerAllocationCid = omeExec operator buyerAcct sellerAcct
+        buyOrderCid sellOrderCid buyerAllocationCid sellerAllocationCid 95.0
+
+  foreign_ <- submit operator $ createCmd (mkExec secondAllocCid)
+  submitMustFail operator $ exerciseCmd foreign_ OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  ok <- submit operator $ createCmd (mkExec firstAllocCid)
+  res <- submit operator $ exerciseCmd ok OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+  length res.settleResult.allocationSettleResults === 2
+  pure ()
+
+-- Pending orders cannot be matched --------------------------------------
+--
+-- The execution proposal names an allocation, but the pending order itself is
+-- correctly unfunded. The status gate must reject it before settlement.
+-- | Proves an unfunded pending order cannot enter settlement.
+testOrderMatchRejectsPendingOrder : Script ()
+testOrderMatchRejectsPendingOrder = do
+  operator <- allocateParty "ome3-op"
+  admin <- allocateParty "ome3-admin"
+  buyer <- allocateParty "ome3-bid"
+  seller <- allocateParty "ome3-ask"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, buyer, seller]
+
+  let buyerAcct = Utils.basicAccount buyer
+      sellerAcct = Utils.basicAccount seller
+
+  buyerAllocationCid <- omeAlloc operator admin factoryCid buyer buyerAcct
+    (TextMap.fromList [("USDC", 400.0)]) now
+  sellerAllocationCid <- omeAlloc operator admin factoryCid seller sellerAcct
+    (TextMap.fromList [("BTC", 10.0)]) now
+
+  pendingBidCid <- omeOrder operator admin buyer Order.Bid 100.0 Order.OS_Pending
+    None "bid"
+  sellOrderCid <- omeOrder operator admin seller Order.Ask 90.0 Order.OS_Funded
+    (Some sellerAllocationCid) "ask"
+
+  pending <- submit operator $ createCmd (omeExec operator buyerAcct sellerAcct
+    pendingBidCid sellOrderCid buyerAllocationCid sellerAllocationCid 95.0)
+  submitMustFail operator $ exerciseCmd pending OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  fundedBidCid <- omeOrder operator admin buyer Order.Bid 100.0 Order.OS_Funded
+    (Some buyerAllocationCid) "bid"
+  ok <- submit operator $ createCmd (omeExec operator buyerAcct sellerAcct
+    fundedBidCid sellOrderCid buyerAllocationCid sellerAllocationCid 95.0)
+  res <- submit operator $ exerciseCmd ok OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+  length res.settleResult.allocationSettleResults === 2
+  pure ()
+
+-- Settlement and order roll-forward are atomic -------------------------
+--
+-- The settle archives both funding allocations, so an order left behind
+-- pointing at one is uncancellable (Order_Cancel exercises the archived cid)
+-- and unfillable. Nothing outside this choice may observe that state, so the
+-- choice itself archives the filled orders, rolls each remainder onto the
+-- allocation the settle minted, and records the trade.
+-- | Proves one transaction settles a partial fill and rolls both orders forward.
+testOrderMatchRollsOrdersForwardAtomically : Script ()
+testOrderMatchRollsOrdersForwardAtomically = do
+  operator <- allocateParty "ome5-op"
+  admin <- allocateParty "ome5-admin"
+  buyer <- allocateParty "ome5-bid"
+  seller <- allocateParty "ome5-ask"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, buyer, seller]
+
+  let buyerAcct = Utils.basicAccount buyer
+      sellerAcct = Utils.basicAccount seller
+
+  buyerAllocationCid <- omeAlloc operator admin factoryCid buyer buyerAcct
+    (TextMap.fromList [("USDC", 400.0)]) now
+  sellerAllocationCid <- omeAlloc operator admin factoryCid seller sellerAcct
+    (TextMap.fromList [("BTC", 10.0)]) now
+
+  buyOrderCid <- omeOrder operator admin buyer Order.Bid 100.0 Order.OS_Funded
+    (Some buyerAllocationCid) "bid"
+  sellOrderCid <- omeOrder operator admin seller Order.Ask 90.0 Order.OS_Funded
+    (Some sellerAllocationCid) "ask"
+
+  execCid <- submit operator $ createCmd (omeExec operator buyerAcct sellerAcct
+    buyOrderCid sellOrderCid buyerAllocationCid sellerAllocationCid 95.0)
+  res <- submit operator $ exerciseCmd execCid OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  -- Both orders filled 4 of 10, so both roll forward onto the allocation the
+  -- same transaction minted for them. The cids the orders were bound to are
+  -- gone with the settle.
+  isSome res.buyRemainderCid === True
+  isSome res.sellRemainderCid === True
+  liveOrders <- query @Order.Order operator
+  -- The ACS comes back ordered by contract id, so compare as a set.
+  sort (map fst liveOrders)
+    === sort [fromSome res.buyRemainderCid, fromSome res.sellRemainderCid]
+  Some buyRemainder <- queryContractId operator (fromSome res.buyRemainderCid)
+  Some sellRemainder <- queryContractId operator (fromSome res.sellRemainderCid)
+  buyRemainder.allocationCid === res.buyerNextAllocationCid
+  sellRemainder.allocationCid === res.sellerNextAllocationCid
+  [buyRemainder.remainingQty, sellRemainder.remainingQty] === [6.0, 6.0]
+  [buyRemainder.status, sellRemainder.status]
+    === [Order.OS_PartiallyFilled, Order.OS_PartiallyFilled]
+
+  -- The fill is durable trade history: OrderMatchExecution is consumed by the
+  -- choice, so nothing about the match would survive in the ACS without it.
+  settled <- query @MT.SettledTrade operator
+  map (Some . fst) settled === [res.settledTradeCid]
+  [ t.transferLegs | (_, t) <- settled ] === [OME.mkMatchTransferLegs
+    (OME.MatchedOrderPair with
+       buyerAccount = buyerAcct; sellerAccount = sellerAcct
+       baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+       fillQty = 4.0; fillPrice = 95.0)]
+  pure ()
+
+-- Exhausting the funding budget closes the order ------------------------
+--
+-- A tiny residual quantity is not recreated when decimal rounding has already
+-- consumed the entire declared committed budget. Any remainder contract must
+-- point to a non-empty next-allocation budget.
+-- | Proves an exhausted budget closes the remainder instead of creating an orphan.
+testOrderMatchClosesRemainderWhenBudgetIsExhausted : Script ()
+testOrderMatchClosesRemainderWhenBudgetIsExhausted = do
+  operator <- allocateParty "ome6-op"
+  admin <- allocateParty "ome6-admin"
+  buyer <- allocateParty "ome6-bid"
+  seller <- allocateParty "ome6-ask"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, buyer, seller]
+
+  let buyerAcct = Utils.basicAccount buyer
+      sellerAcct = Utils.basicAccount seller
+      price = 0.000001
+      restingQty = 1000.0
+      fillQty = 999.99996
+      committedQuote = restingQty * price
+
+  -- The collision: a strictly partial fill whose spend equals the whole budget.
+  (fillQty < restingQty) === True
+  fillQty * price === committedQuote
+
+  buyerAllocationCid <- omeAlloc operator admin factoryCid buyer buyerAcct
+    (TextMap.fromList [("USDC", committedQuote)]) now
+  sellerAllocationCid <- omeAlloc operator admin factoryCid seller sellerAcct
+    (TextMap.fromList [("BTC", fillQty)]) now
+
+  let mkOrder trader side limitPrice remainingQty allocationCid ref =
+        submit operator $ createCmd Order.Order with
+          operator; trader; admin
+          baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+          side; limitPrice; remainingQty
+          expiry = None; status = Order.OS_Funded
+          allocationCid = Some allocationCid
+          settlementRef = Order.makeOrderRefFromText ref
+  buyOrderCid <- mkOrder buyer Order.Bid price restingQty buyerAllocationCid "dust-bid"
+  sellOrderCid <- mkOrder seller Order.Ask price fillQty sellerAllocationCid "dust-ask"
+
+  execCid <- submit operator $ createCmd OME.OrderMatchExecution with
+    operator; matchId = "dust"
+    match = OME.MatchedOrderPair with
+      buyerAccount = buyerAcct; sellerAccount = sellerAcct
+      baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+      fillQty; fillPrice = price
+    buyOrderCid; sellOrderCid
+    buyerAllocationCid; sellerAllocationCid
+    buyerCommittedFunding = TextMap.empty
+    sellerCommittedFunding = TextMap.empty
+  res <- submit operator $ exerciseCmd execCid OME.OrderMatchExecution_Execute with
+    factoryCid = settleCid; extraArgs = emptyExtraArgs
+
+  -- 0.00004 base is unfilled and the quote behind it is gone, so nothing rolls
+  -- forward on the bid.
+  restingQty - fillQty === 0.00004
+  res.buyerNextAllocationCid === None
+  res.buyRemainderCid === None
+  res.sellRemainderCid === None
+  liveOrders <- query @Order.Order operator
+  [ cid | (cid, o) <- liveOrders, isNone o.allocationCid ] === []
+  liveOrders === []
+  pure ()

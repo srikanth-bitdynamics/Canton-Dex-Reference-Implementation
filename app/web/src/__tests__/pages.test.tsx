@@ -1,7 +1,7 @@
 // Page-render smoke tests. Each top-level page must render without
 // crashing when wired with mocked operator-backend responses.
-// We don't assert specific UI semantics — that's what e2e is for. We
-// only catch "throws on mount" regressions.
+// We don't assert specific interaction semantics or browser-to-ledger flows.
+// These tests only catch "throws on mount" regressions.
 
 import { render } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';

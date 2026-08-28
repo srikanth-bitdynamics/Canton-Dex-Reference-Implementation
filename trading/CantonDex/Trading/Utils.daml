@@ -8,7 +8,14 @@ import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as HoldingV2
-import Splice.Api.Token.MetadataV1 (emptyMetadata)
+import Splice.Api.Token.MetadataV1 (ExtraArgs (..), emptyChoiceContext, emptyMetadata)
+
+-- | Empty context used only when constructing an off-ledger discovery preview.
+-- The registry response replaces it before the corresponding choice executes.
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with
+  context = emptyChoiceContext
+  meta = emptyMetadata
 
 type Funding = TextMap.TextMap Decimal
 

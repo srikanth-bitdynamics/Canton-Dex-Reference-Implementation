@@ -1,6 +1,6 @@
-// Testnet server. Same HTTP shim as dev-server.ts, but pointed at a
-// real Canton participant via JsonApiLedger. Used for the smoke-test
-// path against the deployed DEX on a remote testnet.
+// Remote-participant runtime entrypoint. It uses the same HTTP API surface as
+// dev-server.ts, but JsonApiLedger submits to a real Canton participant and a
+// DEX package that the operator has deployed to a controlled testnet.
 //
 // Required env vars:
 //   CANTON_LEDGER_URL    Base URL of the JSON Ledger API.
@@ -8,14 +8,31 @@
 //   CANTON_OPERATOR      Operator party (DEX market venue).
 //   CANTON_LP_REGISTRAR  LP registrar party.
 //   CANTON_ADMIN         Asset admin party.
+//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex-trading`) for template ids.
+//
+// Defaulted / optional:
 //   CANTON_USER_ID       JSON Ledger API user id (default: ledger-api-user).
 //   CANTON_NETWORK       Display label, e.g. canton:devnet.
 //   CANTON_SYNCHRONIZER  Synchronizer id, e.g. global-domain::1220...
-//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex-trading`) for template ids.
 //
-// Optional:
-//   CANTON_ALLOC_FACTORY_CID  AllocationFactory contract id.
-//   CANTON_SETTLE_FACTORY_CID SettlementFactory contract id.
+// Required in full/write mode (optional only with DEX_READ_ONLY=1):
+//   DEX_OPERATOR_API_TOKEN  Bearer token for non-admin state-changing routes.
+//   OPERATOR_ADMIN_TOKEN    Bearer token for /v1/admin/* writes.
+//   CANTON_ALLOC_FACTORY_CID  Asset-admin AllocationFactory contract id.
+//   CANTON_SETTLE_FACTORY_CID Asset-admin SettlementFactory contract id.
+//   CANTON_LP_ALLOC_FACTORY_CID  LP-registry AllocationFactory contract id
+//                                when lpRegistrar != admin.
+//   CANTON_LP_SETTLE_FACTORY_CID LP-registry SettlementFactory contract id
+//                                when lpRegistrar != admin.
+//   DEX_READ_ONLY=1          Start without API write tokens; state-changing
+//                            routes fail closed, while reads/read-only quotes
+//                            remain usable.
+//
+// Optional trusted relay (disabled by default):
+//   DEX_HOSTED_RFQ_RELAY=1   Allow the HTTP RFQ create/cancel/accept routes to
+//                            submit with trader authority. Requires
+//                            DEX_CALLER_JWT_SECRET and participant rights for
+//                            every hosted trader. This is not self-custody.
 //
 // Why this lives next to dev-server.ts and not in place of it: the
 // in-memory dev server is the fast local path for UI development. The
@@ -29,8 +46,12 @@ import { openDb } from "./indexer/db.js";
 import { Indexer } from "./indexer/index.js";
 import { IdempotentLedger } from "./indexer/idempotency.js";
 import { DealersService } from "./dealers/index.js";
-import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
+import { FixedRegistryClient, RegistryError } from "@canton-dex/registry-client";
+import type {
+  ContractId,
+  FactoryRefs,
+  Party,
+} from "@canton-dex/registry-client";
 import { rootLogger } from "./lib/logger.js";
 
 const log = rootLogger.child({ component: "testnet-server" });
@@ -44,24 +65,24 @@ function required(name: string): string {
   return v;
 }
 
-// Lightweight registry client: returns the configured factory CIDs for
-// every admin. Production deployments use a real registry index.
-class FixedRegistry extends RegistryClient {
-  constructor(
-    private readonly allocCid: ContractId<"AllocationFactory">,
-    private readonly settleCid: ContractId<"SettlementFactory">,
-  ) {
-    super({ baseUrl: "http://fixed-registry" });
-  }
-  override async getFactories() {
-    return {
-      allocationFactoryCid: this.allocCid,
-      settlementFactoryCid: this.settleCid,
-      disclosure: [] as never[],
-    };
-  }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
+// Lightweight registry client for the two reference registrars. It is
+// intentionally explicit per admin: returning one registry CID for every
+// party breaks LP issuance as soon as asset governance and LP custody are
+// separated. Deployments that list arbitrary third-party assets should replace
+// this map with the registry HTTP discovery client.
+class ConfiguredRegistry extends FixedRegistryClient {
+  constructor(factoriesByAdmin: ReadonlyMap<Party, FactoryRefs>) {
+    super((admin) => {
+      const factories = factoriesByAdmin.get(admin);
+      if (!factories) {
+        throw new RegistryError(
+          "factory-stale",
+          `no configured factory mapping for admin=${admin}`,
+          false,
+        );
+      }
+      return factories;
+    });
   }
 }
 
@@ -71,18 +92,68 @@ async function main(): Promise<void> {
   const operator = required("CANTON_OPERATOR");
   const lpRegistrar = required("CANTON_LP_REGISTRAR");
   const admin = required("CANTON_ADMIN");
+  const dexPackageId = required("CANTON_DEX_PACKAGE_ID");
   const userId = process.env.CANTON_USER_ID ?? "ledger-api-user";
   const network = process.env.CANTON_NETWORK ?? "canton:devnet";
-  const allocCid = (process.env.CANTON_ALLOC_FACTORY_CID ??
-    "PENDING_ALLOC_FACTORY") as ContractId<"AllocationFactory">;
-  const settleCid = (process.env.CANTON_SETTLE_FACTORY_CID ??
-    "PENDING_SETTLE_FACTORY") as ContractId<"SettlementFactory">;
+  const readOnly = process.env.DEX_READ_ONLY === "1";
+  const hostedRfqEnabled = process.env.DEX_HOSTED_RFQ_RELAY === "1";
+  const callerJwtSecret = process.env.DEX_CALLER_JWT_SECRET || undefined;
+  if (readOnly && hostedRfqEnabled) {
+    log.error("invalid mode: DEX_HOSTED_RFQ_RELAY cannot be enabled with DEX_READ_ONLY");
+    process.exit(1);
+  }
+  if (hostedRfqEnabled && !callerJwtSecret) {
+    required("DEX_CALLER_JWT_SECRET");
+  }
+  // Fail at startup instead of presenting a deceptively healthy but unusable
+  // full-mode server. Read-only operation must be chosen explicitly.
+  const operatorToken = readOnly
+    ? undefined
+    : required("DEX_OPERATOR_API_TOKEN");
+  const adminToken = readOnly
+    ? undefined
+    : required("OPERATOR_ADMIN_TOKEN");
+  const allocCid = (readOnly
+    ? process.env.CANTON_ALLOC_FACTORY_CID || "PENDING_ALLOC_FACTORY"
+    : required("CANTON_ALLOC_FACTORY_CID")) as ContractId<"AllocationFactory">;
+  const settleCid = (readOnly
+    ? process.env.CANTON_SETTLE_FACTORY_CID || "PENDING_SETTLE_FACTORY"
+    : required("CANTON_SETTLE_FACTORY_CID")) as ContractId<"SettlementFactory">;
+  const lpAllocCid = (lpRegistrar === admin
+    ? allocCid
+    : readOnly
+      ? process.env.CANTON_LP_ALLOC_FACTORY_CID || "PENDING_LP_ALLOC_FACTORY"
+      : required("CANTON_LP_ALLOC_FACTORY_CID")) as ContractId<"AllocationFactory">;
+  const lpSettleCid = (lpRegistrar === admin
+    ? settleCid
+    : readOnly
+      ? process.env.CANTON_LP_SETTLE_FACTORY_CID || "PENDING_LP_SETTLE_FACTORY"
+      : required("CANTON_LP_SETTLE_FACTORY_CID")) as ContractId<"SettlementFactory">;
+
+  const factoriesByAdmin = new Map<Party, FactoryRefs>([
+    [
+      admin,
+      {
+        allocationFactoryCid: allocCid,
+        settlementFactoryCid: settleCid,
+        disclosure: [],
+      },
+    ],
+    [
+      lpRegistrar,
+      {
+        allocationFactoryCid: lpAllocCid,
+        settlementFactoryCid: lpSettleCid,
+        disclosure: [],
+      },
+    ],
+  ]);
 
   const rawLedger = new JsonApiLedger({
     baseUrl,
     token,
     applicationId: userId,
-    templateIdPrefix: process.env.CANTON_DEX_PACKAGE_ID,
+    templateIdPrefix: dexPackageId,
     synchronizerId: process.env.CANTON_SYNCHRONIZER,
   });
 
@@ -98,7 +169,7 @@ async function main(): Promise<void> {
 
   const backend = new OperatorBackend({
     ledger,
-    registry: new FixedRegistry(allocCid, settleCid),
+    registry: new ConfiguredRegistry(factoriesByAdmin),
     operatorParty: operator,
   });
 
@@ -141,27 +212,26 @@ async function main(): Promise<void> {
       operator,
       lpRegistrar,
       admin,
-      allocationFactoryCid: allocCid,
-      settlementFactoryCid: settleCid,
-      allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
-      allocationFactoryDisclosure: [],
       network,
     },
     db,
-    adminToken: process.env.OPERATOR_ADMIN_TOKEN,
+    adminToken,
     // Operator token gates all non-admin writes; fail-closed on testnet
     // (no DEX_DEV_OPEN bypass here).
-    operatorToken: process.env.DEX_OPERATOR_API_TOKEN,
-    devOpen: process.env.DEX_DEV_OPEN === "1",
-    // Wallet relay OFF unless explicitly enabled, with a party allowlist.
-    walletRelayEnabled: process.env.DEX_DEV_WALLET_RELAY === "1",
-    walletRelayParties: (process.env.DEX_DEV_RELAY_PARTIES ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-    // Per-caller party binding: when set, trader-subject write routes
-    // require an X-Caller-Token JWT whose `sub` is the caller's party.
-    callerJwtSecret: process.env.DEX_CALLER_JWT_SECRET || undefined,
+    operatorToken,
+    // The in-memory dev server is the only entrypoint allowed to honor
+    // DEX_DEV_OPEN. A stray deployment environment variable must never bypass
+    // the testnet/production write gate (including explicit read-only mode).
+    devOpen: false,
+    // The arbitrary-command wallet relay is confined to dev-server.ts. A
+    // deployment must use a real wallet/BFF boundary; testnet-server never
+    // honors DEX_DEV_WALLET_RELAY even if it leaks into the environment.
+    walletRelayEnabled: false,
+    walletRelayParties: [],
+    hostedRfqEnabled,
+    // Per-caller party binding: when set, party-scoped reads and trader-subject
+    // writes require an X-Caller-Token JWT whose `sub` is the caller's party.
+    callerJwtSecret,
     // Optional `aud` claim the caller JWT must carry (defence against a token
     // minted for another service being replayed here).
     callerJwtAudience: process.env.DEX_CALLER_JWT_AUDIENCE || undefined,
@@ -177,6 +247,9 @@ async function main(): Promise<void> {
     network,
     db: dbPath,
     indexerIntervalMs: Number(process.env.INDEXER_INTERVAL_MS ?? 5000),
+    mode: readOnly ? "read-only" : "full",
+    registryAdmins: Array.from(factoriesByAdmin.keys()),
+    hostedRfqEnabled,
   });
 
   // Graceful shutdown: drain HTTP requests, stop indexer, flush DB.

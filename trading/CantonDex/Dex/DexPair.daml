@@ -3,6 +3,11 @@
 -- counters, and active flag. Pair lifecycle changes go through the choices
 -- defined here.
 --
+-- `active` and `tradingMode` are listing/orchestration policy in this reference.
+-- PoolRules and OrderMatchExecution do not fetch a DexPair, so these fields are
+-- not an on-ledger settlement gate. Deployments that need such a gate must bind
+-- the pair contract into their terminal choices and validate it there.
+--
 -- Design guide: `docs/concepts/design-tour.md#pair-and-governance-state`.
 module CantonDex.Dex.DexPair where
 
@@ -22,6 +27,15 @@ data FeeModel = FeeModel with
     poolFeeBps : Int  -- ^ Pool swap fee retained for LPs, bps.
   deriving (Eq, Show)
 
+validFeeBps : Int -> Bool
+validFeeBps fee = fee >= 0 && fee < 10000
+
+validFeeModel : FeeModel -> Bool
+validFeeModel fees =
+  validFeeBps fees.makerFeeBps
+    && validFeeBps fees.takerFeeBps
+    && validFeeBps fees.poolFeeBps
+
 template DexPair with
     operator : Party
     admin : Party
@@ -32,11 +46,13 @@ template DexPair with
     quoteInstrumentId : Text
       -- ^ `id` component of the quote instrument, under `admin`.
     tradingMode : TradingMode
-      -- ^ Which surfaces (order book, pool, or both) the pair exposes.
+      -- ^ Which surfaces off-ledger discovery and routing should expose. Active
+      --   Daml settlement choices do not fetch this listing record.
     feeModel : FeeModel
       -- ^ Maker/taker/pool fee schedule in bps.
     active : Bool
-      -- ^ When False, the pair is listed but trading is gated off.
+      -- ^ Off-ledger listing/routing flag. When False the pair remains listed;
+      --   this field alone does not prevent a direct Daml settlement exercise.
     publicReaders : Optional [Party]
       -- ^ Parties allowed to observe the listing; None/[] = operator-private
       --   except for admin.
@@ -47,6 +63,12 @@ template DexPair with
   where
     signatory operator
     observer admin :: optional [] identity publicReaders
+
+    ensure
+      baseInstrumentId /= ""
+        && quoteInstrumentId /= ""
+        && baseInstrumentId /= quoteInstrumentId
+        && validFeeModel feeModel
 
     choice DexPair_UpdateFeeModel : ContractId DexPair
       with
@@ -80,6 +102,8 @@ template DexPair with
           -- ^ Notional touched per instrument id by the matched trade.
       controller operator
       do
+        assertMsg "Trade notionals must be non-negative"
+          (all (\(_, notional) -> notional >= 0.0) (TextMap.toList legNotionals))
         let curMaker = optional TextMap.empty identity accumulatedMakerFees
             curTaker = optional TextMap.empty identity accumulatedTakerFees
             bumpedMaker = foldl

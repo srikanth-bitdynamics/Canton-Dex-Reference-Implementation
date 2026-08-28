@@ -25,7 +25,12 @@ template OrderFundingRequest with
     signatory trader
     observer operator
 
-    ensure quantity > 0.0 && limitPrice > 0.0
+    ensure
+      baseInstrumentId /= ""
+        && quoteInstrumentId /= ""
+        && baseInstrumentId /= quoteInstrumentId
+        && quantity > 0.0
+        && limitPrice > 0.0
 
     choice OrderFundingRequest_Cancel : ()
       controller trader

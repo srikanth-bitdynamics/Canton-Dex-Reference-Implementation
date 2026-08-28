@@ -6,8 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { PoolService } from "../src/pool/index.ts";
-import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef } from "@canton-dex/registry-client";
+import { StubRegistry } from "./stub-registry.js";
 import type {
   LedgerEvent,
   LedgerSubmitter,
@@ -17,22 +16,6 @@ import type {
 import type { Party } from "../src/types.ts";
 
 const OPERATOR = "operator::test" as Party;
-
-class StubRegistry extends RegistryClient {
-  constructor() {
-    super({ baseUrl: "http://stub" });
-  }
-  override async getFactories() {
-    return {
-      allocationFactoryCid: "#f:0" as never,
-      settlementFactoryCid: "#f:0" as never,
-      disclosure: [],
-    };
-  }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
-  }
-}
 
 /** Serves one pool whose PoolState carries whatever status the test sets. */
 function ledgerServing(status: string): LedgerSubmitter {

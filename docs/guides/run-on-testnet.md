@@ -1,72 +1,150 @@
 # Run against a Canton testnet
 
 The DEX runs as two long-lived processes against a Canton participant: the
-**operator backend** (operator-authority commands, ledger reads, the indexer)
-and the **web app** (reads plus wallet-authority commands). This guide points
-both at a participant that already has the DEX and Token Standard V2 packages
-uploaded and vetted, and its parties allocated. The one-time build, upload,
-party allocation, registry bootstrap, and pair/pool seeding are automated by
-[`scripts/deploy-testnet.sh`](../../scripts/deploy-testnet.sh) — run that first,
-or perform its steps by hand, then use this guide to bring up and verify the two
-processes.
+**operator backend** (configured operator/LP authority, ledger reads, the
+indexer) and the **web app** (reads plus wallet-authority commands). This guide points
+both at a participant whose operator, LP registrar, and asset-admin parties are
+already allocated. The repository automates package build/upload, registry
+bootstrap, and optional pair/unfunded-pool creation. It deliberately does **not**
+allocate parties or claim to fund a pool: party allocation is participant-
+specific, and first funding requires an LP-authorized wallet flow.
 
 One invariant throughout: tokens, concrete party ids, and validator-specific
 package hashes live in the environment, never in the repo.
 
 ## Prerequisites
 
-- A Canton participant JSON Ledger API URL and a JWT that can `actAs` the
-  operator party and any bootstrap parties used by the commands you submit.
-- Uploaded and vetted DARs for `canton-dex-trading` (built from `trading/`) and
-  the Token Standard V2 packages under `vendor/splice/token-standard`.
+- Node.js 24, Java 17, DPM with the SDK pinned by `trading/daml.yaml`, and the
+  backend/frontend dependencies installed with `npm ci`.
+- A Canton participant JSON Ledger API URL. For a compact validator setup, its
+  server-side JWT can `actAs` the operator and LP registrar and read the
+  configured registrars; pool creation and LP settlement require those control
+  roles. Registry bootstrap additionally needs `actAs` for each registry admin.
+  In production, prefer separate least-privilege bootstrap and runtime users.
+- The target network must accept the exact Token Standard V2 package hashes in
+  `vendor/splice/dars/`. A production network may require its governance/vetting
+  process before upload.
 - Operator, LP registrar, and asset-admin parties allocated on the participant.
 - The `lpRegistrar`'s `Registry.V2` and the asset admins' registry factory
   contracts created — the registry bootstrap in
   [`scripts/bootstrap-registry.ts`](../../scripts/bootstrap-registry.ts) does
   this; without the LP registry no pool can allocate a liquidity move.
 
-## Start the operator backend
+## 1. Prepare the ledger
 
-The backend runs `src/testnet-server.ts`. It requires five variables and reads
-the rest with defaults. Pass the token through the environment; the process
-reads it and does not write it to disk.
+Copy the backend environment template, fill the participant values, and load it
+into the current shell. `npm run testnet` does not implicitly read `.env`.
+
+```bash
+cp services/operator-backend/.env.example services/operator-backend/.env
+# Edit services/operator-backend/.env. Do not commit it.
+
+set -a
+source services/operator-backend/.env
+set +a
+```
+
+Use two different high-entropy HTTP API tokens:
+
+```bash
+export DEX_OPERATOR_API_TOKEN="<short-lived-operator-api-token>"
+export OPERATOR_ADMIN_TOKEN="<short-lived-admin-api-token>"
+```
+
+These are credentials for the DEX HTTP service, not the participant JWT. A
+full-mode testnet server refuses to start without both. For an intentional
+read-only deployment, set `DEX_READ_ONLY=1`; every state-changing HTTP route
+then returns 401 (the read-only `POST /v1/swaps/quote` computation remains open).
+
+Build, upload, and bootstrap the on-ledger registries:
+
+```bash
+bash scripts/deploy-testnet.sh
+```
+
+Expected final line:
+
+```text
+==> Deployment phases completed without a suppressed error
+```
+
+The script does not allocate parties, start the backend, create a market by
+default, mint holdings, or fund a pool. Each successful phase mutates the target
+ledger and is not rolled back if a later phase fails.
+
+Record the `assetRegistryCid` and `lpRegistryCid` fields printed by the final
+`bootstrap complete` log. Each reference `Registry.V2` implements both factory
+interfaces for its own admin, so the two values within a factory pair are the
+same registry cid:
+
+```bash
+export CANTON_ALLOC_FACTORY_CID="<assetRegistryCid>"
+export CANTON_SETTLE_FACTORY_CID="<assetRegistryCid>"
+
+# Required only when CANTON_LP_REGISTRAR differs from CANTON_ADMIN:
+export CANTON_LP_ALLOC_FACTORY_CID="<lpRegistryCid>"
+export CANTON_LP_SETTLE_FACTORY_CID="<lpRegistryCid>"
+```
+
+The included server maps the configured asset admin and LP registrar
+separately. A venue that lists additional third-party admins should replace
+this two-admin configuration with discovery from each admin's registry API, as
+described in [Registry integration](registry-integration.md).
+
+## 2. Start the operator backend
+
+The backend runs `src/testnet-server.ts`. Keep the loaded environment in this
+terminal. The process reads credentials from the environment and does not write
+them to disk.
 
 ```bash
 cd services/operator-backend
 
-export CANTON_LEDGER_TOKEN="<participant-jwt>"
-
-CANTON_LEDGER_URL="https://<participant-host>" \
-CANTON_OPERATOR="<operator-party>" \
-CANTON_LP_REGISTRAR="<lp-registrar-party>" \
-CANTON_ADMIN="<asset-admin-party>" \
-CANTON_NETWORK="canton:testnet" \
-CANTON_SYNCHRONIZER="<synchronizer-id>" \
-CANTON_DEX_PACKAGE_ID="#canton-dex-trading" \
-PORT=8080 \
 npm run testnet
 ```
 
 | Variable | Required | Purpose |
 |---|---|---|
 | `CANTON_LEDGER_URL` | yes | JSON Ledger API base URL of the participant. |
-| `CANTON_LEDGER_TOKEN` | yes | Bearer JWT that can `actAs` the operator party. |
+| `CANTON_LEDGER_TOKEN` | yes | Server-side JWT with the read/actAs rights required by the enabled operator and LP flows. |
 | `CANTON_OPERATOR` | yes | Operator (venue) party id. |
 | `CANTON_LP_REGISTRAR` | yes | LP registrar party id. |
 | `CANTON_ADMIN` | yes | Asset-admin party id. |
+| `DEX_OPERATOR_API_TOKEN` | yes in full mode | Bearer token for every non-admin HTTP write. |
+| `OPERATOR_ADMIN_TOKEN` | yes in full mode | Separate bearer token for `/v1/admin/*` writes. |
+| `DEX_READ_ONLY` | optional | Set `1` to start without API tokens and reject every state-changing route. |
 | `CANTON_SYNCHRONIZER` | recommended | Synchronizer id, e.g. `global-domain::1220...`. `submit-and-wait` requires it on a shared synchronizer. |
-| `CANTON_DEX_PACKAGE_ID` | recommended | Template-id prefix. A concrete package hash, or `#canton-dex-trading` to resolve by package name. |
+| `CANTON_DEX_PACKAGE_ID` | yes | Template-id prefix. Use the vetted concrete package hash, or `#canton-dex-trading` only where package-name resolution is acceptable. |
 | `CANTON_NETWORK` | optional | Display label surfaced by `/v1/status` (default `canton:devnet`). |
-| `CANTON_ALLOC_FACTORY_CID`, `CANTON_SETTLE_FACTORY_CID` | optional | Registry factory CIDs from the bootstrap; set them before the allocation/settlement flows (add/remove liquidity, swaps, order funding) can run. See [Deployment](deployment.md#environment-variables). |
+| `CANTON_ALLOC_FACTORY_CID`, `CANTON_SETTLE_FACTORY_CID` | yes in full mode | Asset-admin Registry cid, repeated because it implements both interfaces. |
+| `CANTON_LP_ALLOC_FACTORY_CID`, `CANTON_LP_SETTLE_FACTORY_CID` | yes in full mode when LP registrar differs | LP registrar's Registry cid, again repeated for both interfaces. |
+| `ALLOWED_ORIGINS` | yes for cross-origin browser access | Exact comma-separated web origins. Unset is default-deny. |
+| `DEX_CALLER_JWT_SECRET`, `DEX_CALLER_JWT_AUDIENCE` | optional | Bind private reads and trader-subject writes to `X-Caller-Token.sub` in a multi-user deployment. |
+| `DEX_HOSTED_RFQ_RELAY` | optional, default `0` | Custodial RFQ create/cancel/accept under hosted trader authority; enabling it requires caller binding and participant rights for those traders. |
 
 The exact variable contract is the header of
 [`testnet-server.ts`](../../services/operator-backend/src/testnet-server.ts);
 the full list with defaults is
 [`services/operator-backend/.env.example`](../../services/operator-backend/.env.example).
 
-## Start the web app
+Verify the backend before opening a browser:
 
-The dApp reads its network and backend base URL at build time.
+```bash
+curl -fsS http://localhost:8080/v1/status
+```
+
+Do not continue unless the response contains `"synced":true`. HTTP 200 with
+`synced:false` means the most recent participant ledger-end probe failed; check
+the URL, participant token, and startup/indexer logs.
+
+## 3. Start the web app
+
+The dApp reads its public network/backend settings at build time. A production
+build deliberately excludes Mock, Direct Canton, and the operator command
+relay, so **choose and configure at least one real wallet provider**. This
+example enables PartyLayer; replace the wallet ids with adapters supported by
+your target network. The alternatives are the dApp SDK gateway
+(`VITE_ENABLE_SDK=1`) or WalletConnect (`VITE_WC_PROJECT_ID=...`).
 
 ```bash
 cd app/web
@@ -74,16 +152,43 @@ cd app/web
 VITE_API_BASE="http://localhost:8080" \
 VITE_CANTON_NETWORK_ID="canton:testnet" \
 VITE_CANTON_SYNCHRONIZER="<synchronizer-id>" \
+VITE_ENABLE_PARTYLAYER=1 \
+VITE_PARTYLAYER_NETWORK="canton:testnet" \
+VITE_PARTYLAYER_WALLET_IDS="console,nightly,send" \
+VITE_DOCS_URL="https://srikanth-bitdynamics.github.io/Canton-Dex-Reference-Implementation/" \
 npm run build
 
 npm run preview
 ```
 
-Open <http://localhost:4173>. The header should show the configured network and
-the backend status should report `synced: true`. The full frontend variable list
-is [`app/web/.env.example`](../../app/web/.env.example).
+Open <http://localhost:4173>. The backend must allow this exact origin:
 
-## Smoke checks
+```bash
+export ALLOWED_ORIGINS="http://localhost:4173"
+```
+
+Set `ALLOWED_ORIGINS` before starting (or restart) the backend. The header
+should show the configured network, `/v1/status` should report `synced: true`,
+and **Connect Wallet** should list the provider you deliberately enabled. If it
+lists no production-capable provider, stop—the browser cannot author the
+trader allocations required by the flow. The full frontend variable list is
+[`app/web/.env.example`](../../app/web/.env.example).
+
+### Authorize protected writes in the validator browser
+
+Open **Admin → API session credentials** and enter short-lived copies of
+`DEX_OPERATOR_API_TOKEN` and `OPERATOR_ADMIN_TOKEN`. They are stored only in
+that tab's `sessionStorage`, never in the built JavaScript. Trader settle calls
+use the operator token; `/v1/admin/*` calls use the admin token. If per-caller
+binding is enabled, also enter the caller JWT issued for the connected party.
+
+This manual token handoff is for a validator/operator acceptance run. A public
+multi-user dApp should obtain scoped, expiring credentials from its authenticated
+BFF/session service. Do not distribute the venue's long-lived shared tokens to
+ordinary traders and do not create `VITE_*` token variables—Vite embeds them in
+public assets.
+
+## 4. Smoke checks
 
 ```bash
 curl -s http://localhost:8080/v1/status  | python3 -m json.tool
@@ -99,22 +204,62 @@ Expected:
 - `/v1/pairs` and `/v1/pools` return the on-ledger contracts visible to the
   operator party.
 
-## Bootstrap a pair and pool
+## 5. Create a pair and an unfunded pool
 
-Use the admin endpoints in [operator-guide.md](operator-guide.md):
+With the backend still running, use a second terminal that has the same
+environment loaded:
 
-- `POST /v1/admin/pairs`
-- `POST /v1/admin/pools`
+```bash
+set -a
+source services/operator-backend/.env
+set +a
 
-New pools start in `PS_Unfunded`. The first LP funds the pool through the same
-add-liquidity request/allocate/settle flow used for later deposits.
+DEPLOY_SKIP_BUILD=1 \
+DEPLOY_SKIP_UPLOAD=1 \
+DEPLOY_SKIP_BOOTSTRAP=1 \
+DEPLOY_SEED_MARKETS=1 \
+bash scripts/deploy-testnet.sh
+```
 
-## Wallet boundary
+This phase first requires `/v1/status` to succeed. It queries existing pairs and
+pools, creates only missing BTC/USDC metadata, and stops on any HTTP failure. It
+creates an **unfunded** pool; it does not fabricate reserves or LP holdings.
 
-Operator-authority calls go through the backend. Trader-authority calls — such
-as authoring allocations for add/remove liquidity, swaps, and order funding —
-must go through a wallet or another user-authorized submitter. The backend must
-not sign as traders.
+Expected checkpoint:
+
+```bash
+curl -fsS http://localhost:8080/v1/pairs
+curl -fsS http://localhost:8080/v1/pools
+```
+
+The pair should be present, and the pool should report an unfunded/zero-reserve
+state. The first LP must next run the same wallet-authorized
+request → allocations → settle flow used for later deposits. Exact admin curl
+alternatives are in [Operator Guide](operator-guide.md).
+
+## 6. Wallet and HTTP authorization boundaries
+
+Operator/LP-authority calls go through the backend. Trader-authority calls —
+such as authoring allocations for add/remove liquidity, swaps, and order
+funding — must go through a wallet or another user-authorized submitter. The
+arbitrary command relay cannot be enabled in the deployed server.
+
+The RFQ HTTP create/cancel/accept endpoints are a separate custodial exception:
+they submit as the RFQ trader and are disabled by default in
+`testnet-server.ts`. A deployment that deliberately enables
+`DEX_HOSTED_RFQ_RELAY=1` must give its participant user rights for each hosted
+trader and configure `DEX_CALLER_JWT_SECRET` so `X-Caller-Token.sub` binds every
+request to that trader. Its production UI controls also require
+`VITE_ENABLE_HOSTED_RFQ=1`; leaving either side off keeps writes disabled. Do
+not describe that mode as self-custodial.
+
+The browser's follow-up request to the backend is still a protected HTTP write:
+it carries the operator API token entered for this tab. That token authorizes
+the backend client; it does not replace the wallet's on-ledger authorization.
+When per-caller binding is enabled, `X-Caller-Token.sub` must also equal the
+trader party named by the request. The dApp sends the same token on its scoped
+orders, holdings, balances, trades, and RFQ reads; an admin token may bypass the
+party comparison for operational inspection.
 
 ---
 
@@ -148,20 +293,22 @@ adapter id. Optional registry overrides are documented in
 
 **Validate the flow.**
 
-1. Open the app, click **Connect Wallet**, and select **PartyLayer**. Approve
+1. In **Admin → API session credentials**, configure the short-lived operator
+   token and, when enabled, the connected party's caller JWT.
+2. Open the app, click **Connect Wallet**, and select **PartyLayer**. Approve
    the connection in the wallet and confirm the connected party is the party
    that owns the test holdings.
-2. Confirm holdings load in **Portfolio**. The PartyLayer provider reads
+3. Confirm holdings load in **Portfolio**. The PartyLayer provider reads
    holdings through its `ledgerApi` bridge for the connected party.
-3. Run a small trader-authority action, such as:
+4. Run a small trader-authority action, such as:
    - **Trade** → small pool swap
    - **Pools** → add liquidity or remove liquidity
    - **Orders** → place a prefunded order
-4. Confirm the wallet approval returns an `updateId`. PartyLayer receipts may
+5. Confirm the wallet approval returns an `updateId`. PartyLayer receipts may
    not include created contract ids directly; the operator backend recovers the
    created `Allocation`, `LiquidityAllocationAcceptance`, or order-funding
    evidence by reading the committed transaction tree for that `updateId`.
-5. Confirm the operator settle step completes and the app refreshes holdings,
+6. Confirm the operator settle step completes and the app refreshes holdings,
    pool reserves, orders, or activity from the backend/indexer.
 
 **What to record.** For each wallet adapter tested:

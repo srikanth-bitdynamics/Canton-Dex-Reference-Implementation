@@ -8,24 +8,7 @@ import assert from "node:assert/strict";
 import { InMemoryLedger } from "../src/ledger/in-memory.js";
 import { OperatorBackend } from "../src/index.js";
 import { startHttpServer } from "../src/http/index.js";
-import { RegistryClient } from "@canton-dex/registry-client";
-import type { ChoiceContextRef, ContractId } from "@canton-dex/registry-client";
-
-class StubRegistry extends RegistryClient {
-  constructor() {
-    super({ baseUrl: "http://stub" });
-  }
-  override async getFactories() {
-    return {
-      allocationFactoryCid: "#alloc:0" as ContractId<"AllocationFactory">,
-      settlementFactoryCid: "#settle:0" as ContractId<"SettlementFactory">,
-      disclosure: [] as never[],
-    };
-  }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
-  }
-}
+import { StubRegistry } from "./stub-registry.js";
 
 let baseUrl: string;
 let close: () => Promise<void>;
@@ -46,10 +29,6 @@ before(async () => {
       operator: "op" as never,
       lpRegistrar: "lp" as never,
       admin: "ad" as never,
-      allocationFactoryCid: "#alloc:0",
-      settlementFactoryCid: "#settle:0",
-      allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
-      allocationFactoryDisclosure: [],
       network: "canton:test",
     },
     // Dev-open so the operator-auth gate does not 401 the write
@@ -113,7 +92,7 @@ describe("HTTP input validation", () => {
     const body = r.body as { network: string; slot: number; synced: boolean };
     assert.equal(typeof body.network, "string");
     assert.equal(typeof body.slot, "number");
-    assert.equal(typeof body.synced, "boolean");
+    assert.equal(body.synced, true);
   });
 
   it("GET /v1/context returns shaped context", async () => {

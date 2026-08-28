@@ -83,4 +83,5 @@ for (const abs of walk(DOCS)) {
   writeFileSync(outAbs, `---\ntitle: ${JSON.stringify(title)}\n---\n\n${src}`);
   count++;
 }
+
 console.log(`sync-docs: wrote ${count} pages to ${relative(REPO, OUT)}`);

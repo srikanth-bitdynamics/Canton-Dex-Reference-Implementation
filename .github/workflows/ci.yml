@@ -53,6 +53,8 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run typecheck
+      - name: Typecheck live driver sources (no Canton connection)
+        run: npm run typecheck:live-scripts
       - name: Test
         run: npm test
 
@@ -77,6 +79,12 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+      - name: Verify production bundle excludes development authority adapters
+        run: |
+          if grep -R -E '/v1/wallet/(submit|execute)|VITE_CANTON_AUTH_TOKEN|Direct Canton|Operator Relay' dist; then
+            echo "development-only wallet authority leaked into the production bundle" >&2
+            exit 1
+          fi
 
   docs:
     name: Documentation build
@@ -97,7 +105,7 @@ jobs:
         run: npm run build
 
   docker:
-    name: Docker build smoke
+    name: Container build + backend runtime smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,6 +116,30 @@ jobs:
           else
             echo "Dockerfile.backend not present on this branch; skipping"
           fi
+      - name: Runtime-smoke backend image
+        run: |
+          cid="$(docker run --rm -d -p 127.0.0.1:18082:8080 \
+            -e DEX_READ_ONLY=1 \
+            -e CANTON_LEDGER_URL=http://127.0.0.1:1 \
+            -e CANTON_LEDGER_TOKEN=ci-ledger-token \
+            -e CANTON_OPERATOR=Operator::ci \
+            -e CANTON_LP_REGISTRAR=LpRegistrar::ci \
+            -e CANTON_ADMIN=Admin::ci \
+            -e 'CANTON_DEX_PACKAGE_ID=#canton-dex-trading' \
+            canton-dex-backend:ci)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18082/v1/status > /tmp/dex-status.json; then
+              break
+            fi
+            sleep 1
+          done
+          grep -q '"synced":false' /tmp/dex-status.json
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -d '{}' \
+            http://127.0.0.1:18082/v1/admin/pairs)" = 401
+          docker exec "$cid" node -e \
+            'if (process.getuid?.() === 0) throw new Error("backend runs as root"); const Database=require("better-sqlite3"); const db=new Database(":memory:"); db.exec("select 1"); db.close()'
       - name: Build frontend image
         run: |
           if [ -f Dockerfile.frontend ]; then

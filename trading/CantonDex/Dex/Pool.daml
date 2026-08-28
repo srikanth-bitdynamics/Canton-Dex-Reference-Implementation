@@ -53,3 +53,13 @@ template Pool with
   where
     signatory operator
     observer lpRegistrar
+
+    ensure
+      poolId /= ""
+        && baseInstrumentId /= ""
+        && quoteInstrumentId /= ""
+        && baseInstrumentId /= quoteInstrumentId
+        && lpInstrumentId.id /= ""
+        && lpInstrumentId.admin == lpRegistrar
+        && feeBps >= 0
+        && feeBps < 10000

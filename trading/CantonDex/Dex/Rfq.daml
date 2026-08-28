@@ -64,7 +64,15 @@ template Rfq with
     signatory trader
     observer operator :: whitelist
 
-    ensure size > 0.0
+    ensure
+      rfqId /= ""
+        && validPair pair
+        && size > 0.0
+        && createdAt < expiresAt
+        && whitelist /= []
+        && uniqueParties whitelist
+        && trader `notElem` whitelist
+        && operator `notElem` whitelist
 
     choice Rfq_Cancel : ()
       controller trader
@@ -98,6 +106,9 @@ template Rfq with
       controller trader, operator
       do
         assertMsg "RFQ must not be expired" (currentTime < expiresAt)
+        assertMsg "Signature must not be empty" (signature /= "")
+        assertMsg "Considered quotes must be unique"
+          (length consideredQuoteCids == length (dedupContractIds consideredQuoteCids))
 
         consideredPairs <- forA consideredQuoteCids (\cid -> do q <- fetch cid; pure (cid, q))
         accepted <- fetch acceptedQuoteCid
@@ -111,6 +122,12 @@ template Rfq with
         forA_ consideredPairs $ \(_, q) -> do
           assertMsg "All considered quotes must reference this RFQ" $
             q.rfqId == rfqId
+          assertMsg "Considered quote names a different trader" $
+            q.trader == trader
+          assertMsg "Considered quote names a different operator" $
+            q.operator == operator
+          assertMsg "Considered quote is from a dealer outside the RFQ whitelist" $
+            q.dealer `elem` whitelist
           assertMsg "Considered quote must still be valid" $
             currentTime < q.expiresAt
 
@@ -217,12 +234,16 @@ template RfqQuote with
       -- ^ Deadline after which this quote is no longer valid.
     postedAt : Time
     tier : DealerTier
-      -- ^ Operator-assigned tier at post time; operator observes the quote.
+      -- ^ Dealer-declared policy tier. The operator observes it and endorses
+      --   the considered quote set when jointly authorizing Rfq_Accept.
   where
     signatory dealer
     observer trader, operator
 
-    ensure price > 0.0
+    ensure
+      rfqId /= ""
+        && price > 0.0
+        && postedAt < expiresAt
 
     choice RfqQuote_Withdraw : ()
       controller dealer
@@ -263,3 +284,15 @@ splitPair : Text -> (Text, Text)
 splitPair pair = case Text.splitOn "/" pair of
   [b, q] -> (b, q)
   _ -> ("", "")
+
+validPair : Text -> Bool
+validPair pair = case splitPair pair of
+  (base, quote) -> base /= "" && quote /= "" && base /= quote
+
+uniqueParties : [Party] -> Bool
+uniqueParties parties =
+  length parties
+    == length (foldl (\seen p -> if p `elem` seen then seen else p :: seen) [] parties)
+
+dedupContractIds : [ContractId RfqQuote] -> [ContractId RfqQuote]
+dedupContractIds = foldl (\seen cid -> if cid `elem` seen then seen else cid :: seen) []

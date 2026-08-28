@@ -89,8 +89,8 @@ export function PoolsPage() {
         <div>
           <h1 className="page-title">Liquidity pools</h1>
           <p className="page-sub">
-            Provide liquidity to earn a share of swap fees. LP positions are
-            minted as on-ledger LP tokens.
+            Explore liquidity and swap-fee shares. In a configured live
+            deployment, positions are minted as on-ledger LP tokens.
           </p>
         </div>
       </div>

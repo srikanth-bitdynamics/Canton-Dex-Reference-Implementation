@@ -1,104 +1,122 @@
-// Registry client. Single integration point between the operator
-// backend and an asset registrar's HTTP endpoints.
-//
-// Endpoints (matching docs/guides/choice-context.md):
-//   GET  /registry/factories/:admin
-//   GET  /registry/choice-context/:admin
-//
-// The client owns its caches. Operator modules use this boundary rather than
-// calling registry endpoints directly, keeping validation and invalidation in
-// one place.
+// Token Standard V2 registry client. Every lookup is operation-specific and
+// carries the exact Daml JSON choice argument, as required by the upstream
+// allocation/allocation-instruction OpenAPI. Choice contexts are deliberately
+// not cached: the standard permits them to be specific to one exercise.
 
-import { TtlCache } from "./cache.js";
 import {
+  ChoiceArguments,
   ChoiceContextRef,
-  FactoryRefs,
+  FactoryChoiceContextRef,
   Party,
+  RegistryDiscovery,
   RegistryError,
+  FactoryRefs,
 } from "./types.js";
 import {
   validateChoiceContextRef,
-  validateFactoryRefs,
+  validateFactoryChoiceContextRef,
 } from "./validate.js";
 
 export * from "./types.js";
 
 export interface RegistryClientConfig {
-  baseUrl: string;
+  /** One registry URL, or a resolver for deployments listing several admins. */
+  baseUrl: string | ((admin: Party) => string);
   authToken?: string;
-  choiceContextTtlMs?: number;
   /** Override fetch for tests. */
   fetchImpl?: typeof fetch;
 }
 
-export class RegistryClient {
-  private readonly factoryCache = new TtlCache<Party, FactoryRefs>(
-    (a) => `fac:${a}`,
-  );
-  private readonly choiceContextCache = new TtlCache<Party, ChoiceContextRef>(
-    (a) => `ctx:${a}`,
-  );
+export class RegistryClient implements RegistryDiscovery {
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly config: RegistryClientConfig) {
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
-  async getFactories(admin: Party): Promise<FactoryRefs> {
-    const cached = this.factoryCache.get(admin);
-    if (cached) return cached;
-    const refs = await this.fetchJson(
-      `/registry/factories/${encodeURIComponent(admin)}`,
-      validateFactoryRefs,
+  async getAllocationFactory(
+    admin: Party,
+    choiceArguments: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef> {
+    return this.requireJson(
+      admin,
+      "/registry/allocation-instruction/v2/allocation-factory",
+      { choiceArguments },
+      validateFactoryChoiceContextRef,
     );
-    if (!refs) {
-      throw new RegistryError("factory-stale", `admin=${admin}`, true);
-    }
-    this.factoryCache.set(admin, refs);
-    return refs;
   }
 
-  /**
-   * Off-ledger choice context for token-standard factory choices.
-   * Token-standard registries compute this (disclosed config contracts,
-   * featured-app rights, …) and the caller threads it into the choice's
-   * ExtraArgs. Registries that need no context may return 404; callers
-   * treat that as empty context + no disclosure.
-   */
-  async getChoiceContext(admin: Party): Promise<ChoiceContextRef> {
-    const cached = this.choiceContextCache.get(admin);
-    if (cached) return cached;
-    const ctx =
-      (await this.fetchJson(
-        `/registry/choice-context/${encodeURIComponent(admin)}`,
-        validateChoiceContextRef,
-      )) ?? { context: { values: {} }, disclosure: [] };
-    this.choiceContextCache.set(admin, ctx, this.config.choiceContextTtlMs);
-    return ctx;
+  async getSettlementFactory(
+    admin: Party,
+    choiceArguments: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef> {
+    return this.requireJson(
+      admin,
+      "/registry/allocation/v2/settlement-factory",
+      { choiceArguments },
+      validateFactoryChoiceContextRef,
+    );
   }
 
-  invalidateAll(): void {
-    this.factoryCache.invalidateAll();
-    this.choiceContextCache.invalidateAll();
+  async getAllocationCancelContext(
+    admin: Party,
+    allocationId: string,
+    meta: Record<string, string> = {},
+  ): Promise<ChoiceContextRef> {
+    return this.requireJson(
+      admin,
+      `/registry/allocations/v2/${encodeURIComponent(allocationId)}/choice-contexts/cancel`,
+      { meta },
+      validateChoiceContextRef,
+    );
+  }
+
+  async getAllocationWithdrawContext(
+    admin: Party,
+    allocationId: string,
+    meta: Record<string, string> = {},
+  ): Promise<ChoiceContextRef> {
+    return this.requireJson(
+      admin,
+      `/registry/allocations/v2/${encodeURIComponent(allocationId)}/choice-contexts/withdraw`,
+      { meta },
+      validateChoiceContextRef,
+    );
   }
 
   /**
    * Fetch + validate a registry response. `validate` turns the parsed JSON
    * into a checked `T`, throwing RegistryError("malformed", ...) on a shape
    * mismatch. Registry output is never trusted via a bare `as T` cast.
-   * Returns null on 404 (callers treat absent as empty/not-found).
+   * A missing canonical endpoint is an integration error, not permission to
+   * silently submit empty context.
    */
-  private async fetchJson<T>(
+  private async requireJson<T>(
+    admin: Party,
     path: string,
+    body: Record<string, unknown>,
     validate: (raw: unknown) => T,
-  ): Promise<T | null> {
-    const url = new URL(path, this.config.baseUrl);
-    const headers: Record<string, string> = { Accept: "application/json" };
+  ): Promise<T> {
+    const baseUrl =
+      typeof this.config.baseUrl === "function"
+        ? this.config.baseUrl(admin)
+        : this.config.baseUrl;
+    const url = new URL(path, baseUrl);
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    };
     if (this.config.authToken) {
       headers.Authorization = `Bearer ${this.config.authToken}`;
     }
-    const res = await this.fetchImpl(url.toString(), { headers });
-    if (res.status === 404) return null;
+    const res = await this.fetchImpl(url.toString(), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (res.status === 404) {
+      throw new RegistryError("not-found", `${path}: admin=${admin}`, false);
+    }
     if (res.status === 401 || res.status === 403) {
       throw new RegistryError("auth", `status=${res.status}`, false);
     }
@@ -121,4 +139,56 @@ export class RegistryClient {
     }
     return validate(raw);
   }
+}
+
+/**
+ * Adapter for the repository's self-registry, whose factory CIDs are deployed
+ * and configured together with the operator. It implements the same
+ * operation-specific interface without exposing made-up HTTP endpoints.
+ */
+export class FixedRegistryClient implements RegistryDiscovery {
+  constructor(
+    private readonly factoriesForAdmin: (admin: Party) => FactoryRefs,
+  ) {}
+
+  async getAllocationFactory(
+    admin: Party,
+    _choiceArguments: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef> {
+    const refs = this.factoriesForAdmin(admin);
+    return {
+      factoryCid: refs.allocationFactoryCid,
+      context: { values: {} },
+      disclosure: refs.disclosure,
+    };
+  }
+
+  async getSettlementFactory(
+    admin: Party,
+    _choiceArguments: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef> {
+    const refs = this.factoriesForAdmin(admin);
+    return {
+      factoryCid: refs.settlementFactoryCid,
+      context: { values: {} },
+      disclosure: refs.disclosure,
+    };
+  }
+
+  async getAllocationCancelContext(
+    _admin: Party,
+    _allocationId: string,
+    _meta: Record<string, string> = {},
+  ): Promise<ChoiceContextRef> {
+    return { context: { values: {} }, disclosure: [] };
+  }
+
+  async getAllocationWithdrawContext(
+    _admin: Party,
+    _allocationId: string,
+    _meta: Record<string, string> = {},
+  ): Promise<ChoiceContextRef> {
+    return { context: { values: {} }, disclosure: [] };
+  }
+
 }

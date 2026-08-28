@@ -12,7 +12,6 @@ const ALL_IDS: WalletProviderId[] = [
   "partylayer",
   "token-standard",
   "walletconnect",
-  "canton-direct",
   "mock",
 ];
 
@@ -38,9 +37,13 @@ describe("wallet capabilities", () => {
     expect(cap.note.toLowerCase()).not.toContain("recommended");
   });
 
-  it("relay-only providers are marked no-DvP", () => {
+  it("WalletConnect is marked no-DvP", () => {
     expect(capabilityFor("walletconnect").dvp).toBe("unsupported");
-    expect(capabilityFor("canton-direct").dvp).toBe("unsupported");
+  });
+
+  it("both non-wallet development adapters are marked dev-only", () => {
+    expect(capabilityFor("token-standard").dvp).toBe("dev-only");
+    expect(capabilityFor("mock").dvp).toBe("dev-only");
   });
 
   it("dvpBadge maps readiness → tone", () => {

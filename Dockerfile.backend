@@ -1,35 +1,43 @@
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 
-COPY services/registry-client/package.json services/registry-client/
+# better-sqlite3 is a native dependency. Prebuilt binaries are used when one
+# exists for the current architecture; these tools provide the deterministic
+# node-gyp fallback instead of silently skipping its install script.
+RUN apk add --no-cache python3 make g++
+
+COPY services/registry-client/package.json services/registry-client/package-lock.json services/registry-client/
 COPY services/operator-backend/package.json services/operator-backend/package-lock.json services/operator-backend/
 
 WORKDIR /app/services/registry-client
-RUN npm install --ignore-scripts
+RUN npm ci --ignore-scripts
 
 WORKDIR /app/services/operator-backend
-RUN npm install --ignore-scripts
+RUN npm ci
 
 COPY services/registry-client/ /app/services/registry-client/
 COPY services/operator-backend/ /app/services/operator-backend/
 
 RUN npx tsc --noEmit
 
-FROM node:20-alpine
+FROM node:24-alpine
 
 WORKDIR /app
 
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chown node:node /app/data
 
-COPY --from=builder /app/services/registry-client /app/services/registry-client
-COPY --from=builder /app/services/operator-backend /app/services/operator-backend
+COPY --chown=node:node --from=builder /app/services/registry-client /app/services/registry-client
+COPY --chown=node:node --from=builder /app/services/operator-backend /app/services/operator-backend
 
 WORKDIR /app/services/operator-backend
 
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV HOST=0.0.0.0
 
 EXPOSE 8080
+
+USER node
 
 CMD ["node", "--import", "tsx", "src/testnet-server.ts"]

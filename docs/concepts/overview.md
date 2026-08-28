@@ -1,26 +1,26 @@
 # Overview
 
-This is your first stop. It says what Canton DEX is, shows the whole system on
-one diagram, and points you at the doc that answers your next question.
+This is Step 2 of the
+[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+Complete the [Canton and Daml primer](canton-daml-primer.md) first. This page
+shows what the DEX does, where authority sits, and how its main pieces connect.
 
 ## What Canton DEX is
 
-Canton DEX is a runnable **Token Standard V2 (CIP-0112) reference exchange** for
-the Canton Network. An exchange has two separate jobs: decide the terms of a
-trade, then move both sides' assets without either party taking settlement risk.
-This reference shows four ways to decide the terms:
+Canton DEX is a runnable **Token Standard V2 (CIP-0112) reference exchange** on
+Canton. An exchange first agrees the terms, then moves both assets atomically.
+This reference shows four ways to agree the terms:
 
 - an **automated market maker (AMM)** calculates a price from two pool reserves;
 - an **order book** crosses compatible buy and sell limit orders;
 - a **request for quote (RFQ)** lets selected dealers quote a larger trade; and
 - an **OTC matched trade** records terms the two parties already agreed.
 
-All four use the same value-movement boundary. The holder locks funds in a Token
-Standard V2 allocation, the DEX choice validates the market-specific terms, and
-the registry settles every transfer leg atomically. There is no custom
-off-ledger balance model. Self-custodial swap, order, and liquidity flows keep
-trader authority in the wallet; the hosted RFQ demo uses an explicitly
-documented operator relay.
+All four move value the same way. The holder locks funds in a Token Standard V2
+allocation. A DEX choice validates the terms. The registry then settles every
+leg atomically. There is no custom off-ledger balance model. For swaps, orders,
+and liquidity, the trader keeps authority in the wallet. The RFQ demo uses a
+separate operator-mediated authority model.
 
 The repo ships the Daml package, operator backend, React dApp with a CIP-0103
 wallet boundary, tests, and runbooks. Its demo stack runs without a Canton
@@ -49,18 +49,21 @@ Suppose a trader wants to sell `0.1 BTC` into a BTC/USDC pool:
    `PoolSlice` contracts reference the committed allocations that actually back
    those reserves.
 2. The backend reads `PoolState` to show an estimated USDC output.
-   `PoolRules_RequestSwap` returns the exact input-allocation specification the
-   wallet must authorize; it does not fix the eventual execution price.
+   `PoolRules_RequestSwap` validates a named state and ordered slice snapshot,
+   calculates the exact output from that snapshot, and returns the complete
+   input-and-output allocation specification the wallet must authorize.
 3. The trader's wallet locks `0.1 BTC` in a V2 allocation. The operator cannot
    create this allocation on the trader's behalf in the self-custodial flow.
 4. The backend submits `PoolRules_Swap` with that allocation and the reserve
-   slices needed for the output.
-5. The choice calculates the execution price from current state, checks the trader's
-   minimum output, verifies every allocation, and calls
+   slices bound into the request.
+5. The choice re-derives the same output from the bound state, checks the
+   minimum, bound contract IDs, exact signed legs, and allocations, then calls
    `SettlementFactory_SettleBatch`.
 6. BTC moves to the pool and USDC moves to the trader atomically. The choice
    recreates `PoolState` and binds the remaining reserve value to successor
-   slices. If any check fails, neither side moves.
+   slices. If the pool changed after the request, the bound contract IDs are
+   stale and the swap fails instead of silently repricing; the request must be
+   recreated. If any check fails, neither side moves.
 
 The other workflows change how terms are formed and what state is recreated;
 they do not invent a different custody or settlement mechanism.
@@ -82,10 +85,11 @@ decentralized operator; [Non-goals](non-goals.md) explains each boundary.
 
 There are two submission paths, split by **who is allowed to sign what**. A
 wallet signs trader-authored allocations for orders, swaps, and liquidity. The
-operator backend submits listing, matching, and settlement commands. The hosted
-RFQ demo also relays trader-authority commands, so its ledger user must have
-act-as rights for the hosted trader; that exception is not a self-custodial
-wallet model. Both paths submit into `canton-dex-trading`, whose trading
+operator backend submits listing, matching, and settlement commands. The
+operator-mediated RFQ example also submits trader-authority commands, so its
+ledger user must have act-as rights for the configured trader; that exception is
+not a self-custodial wallet model or a public relay service. Both paths submit
+into `canton-dex-trading`, whose trading
 surfaces settle through a Token Standard V2 registry.
 
 ```mermaid
@@ -103,7 +107,7 @@ flowchart TB
 
   Trader -->|"reads + orchestration APIs"| Operator
   Trader -->|"signs trader-authority commands"| Wallet
-  Operator -->|"operator submissions + hosted RFQ relay"| Ledger
+  Operator -->|"operator submissions + mediated RFQ"| Ledger
   Wallet -->|"trader-authority submissions"| Ledger
 ```
 
@@ -144,6 +148,12 @@ allocate-then-settle-a-batch pattern:
 | **RFQ** | `Rfq` / `RfqQuote` → `Rfq_Accept` → `MatchedTrade` | the dealer's quoted price |
 | **OTC** | `MatchedTrade` → `MatchedTrade_Settle` | leg amounts both sides pre-agreed |
 
+`DexPair.active` and `DexPair.tradingMode` tell off-ledger discovery and routing
+which surfaces to expose. In this reference they are not on-ledger settlement
+gates: `PoolRules` and `OrderMatchExecution` do not fetch `DexPair`. A production
+fork that needs a ledger-enforced listing pause must bind and validate the pair
+contract in its terminal choices.
+
 Settlement is **grouped by registry admin**. One DEX choice can call one batch
 per admin inside the same Daml transaction, so every batch succeeds or the
 whole transaction aborts. `MatchedTrade_Settle` shows the shape:
@@ -180,14 +190,15 @@ settlement rather than a call into a router.
 For DvP settlement, the operator cannot spend a trader's holdings without a
 trader-authored allocation. When a trader funds an order, adds liquidity, or
 authorizes a swap, the dApp composes that command and the trader's **wallet**
-signs it over CIP-0103. The hosted RFQ UI uses a different trust model: its
-backend co-submits as the hosted trader and operator, and therefore needs both
-ledger authorities. [Architecture](architecture.md) draws these boundaries;
+signs it over CIP-0103. The operator-mediated RFQ UI uses a different trust
+model: its backend co-submits as the configured trader and operator, and
+therefore needs both ledger authorities. [Architecture](architecture.md) draws these boundaries;
 [Workflows](workflows.md) shows how each flow choreographs them.
 
-## How to read these docs
+## Reference map
 
-Read top to bottom for the design, or jump to the row that matches your question.
+The canonical learning order lives in the [documentation index](../README.md#canonical-newcomer-learning-path).
+Use this table only to look up a topic while reading:
 
 | Doc | What you'll learn |
 |---|---|
@@ -197,6 +208,7 @@ Read top to bottom for the design, or jump to the row that matches your question
 | [Pricing](pricing.md) | Where every executable price comes from (pool curve, limit price, quote) and why there is no oracle. |
 | [LP Tokens](lp-tokens.md) | Why each pool's LP share is a single, unversioned V2 instrument. |
 | [Liquidity & Custody](liquidity-and-custody.md) | How the pool custodies reserves as committed slices and crosses the LP boundary via DvP. |
+| [Daml proof map](../reference/daml-proof-map.md) | Exact source choices, focused Daml Script tests, and commands for each design claim. |
 | [Glossary](glossary.md) | The vocabulary: allocation, commitment, iterated settlement, DvP, slice, registrar. |
 | [Non-goals](non-goals.md) | What the reference leaves out on purpose, and why. |
 
@@ -205,21 +217,13 @@ Read top to bottom for the design, or jump to the row that matches your question
 > do their own security review, operational hardening, compliance work, and
 > version-compatibility checks.
 
-The tests separate fast workflow choreography from real-value settlement:
+## Where the executable proof lives
 
-- **AMM pool** — [`testPoolSwapEndToEnd`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
-  checks the choice choreography against `MockRegistry`, while
-  [`testRealRegistryDvpSwapSettles`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml)
-  proves exact value movement against a context-requiring V2 registry.
-- **Order book** — [`testOrderFundingFlow`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
-  proves intent → operator binding → trader-authored allocation → funded
-  order; [`testPartialFillUsesRolledFundingBudget`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)
-  proves a partial fill retains real locked backing.
-- **RFQ** — [`testRfqBuySettlesAgainstRealHoldings`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml)
-  proves the accepted quote, policy receipt, exact balance deltas, and lock
-  cleanup against real holdings.
-- **OTC** — [`testMatchedTradeSettlesPerAdminLegSubsets`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml)
-  settles a cross-admin trade atomically against real registry holdings.
+The [Daml proof map](../reference/daml-proof-map.md) connects each design claim
+to its current source choice and focused test. The
+[testing reference](../reference/testing.md) explains what mock choreography,
+real-holding Daml Script, backend, UI, and live-Canton tests each prove. Test
+names stay there so this concept page remains readable when suites move.
 
 ---
 
@@ -238,4 +242,5 @@ the exact Splice release is recorded in
 [Allocation Surface](../reference/allocation-surface.md) reference records the
 committed-allocation and iterated-settlement semantics the pool depends on.
 
-**Where to read next:** [Getting Started](../getting-started.md) · [Architecture](architecture.md) · [Workflows](workflows.md) · [All docs](../README.md)
+**Next canonical step:** [Getting started](../getting-started.md).
+Keep the [Glossary](glossary.md) open as a companion reference.

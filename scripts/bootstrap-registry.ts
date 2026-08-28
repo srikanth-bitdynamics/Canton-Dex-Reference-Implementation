@@ -13,15 +13,17 @@
 //   node --import tsx scripts/bootstrap-registry.ts
 //
 // Required env vars (see services/operator-backend/.env.example):
-//   CANTON_LEDGER_URL, CANTON_LEDGER_TOKEN, CANTON_USER_ID,
+//   CANTON_LEDGER_URL, CANTON_LEDGER_TOKEN, CANTON_DEX_PACKAGE_ID,
 //   CANTON_ADMIN, CANTON_LP_REGISTRAR, CANTON_OPERATOR.
 //
 // Optional:
 //   BOOTSTRAP_CONFIG       path to a JSON config (default: scripts/bootstrap-registry.json)
 //   BOOTSTRAP_DRY_RUN      "1" to print the plan without submitting
-//   CANTON_DEX_PACKAGE_ID  package hash prefix for template ids
+//   CANTON_USER_ID        JSON Ledger API user id (default: ledger-api-user)
 
 import { readFileSync, existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { JsonApiLedger } from "../services/operator-backend/src/ledger/json-api.js";
 import { rootLogger } from "../services/operator-backend/src/lib/logger.js";
 
@@ -75,7 +77,15 @@ function required(name: string): string {
 }
 
 function loadConfig(): BootstrapConfig {
-  const path = process.env.BOOTSTRAP_CONFIG ?? "scripts/bootstrap-registry.json";
+  // The deploy script intentionally runs this module from
+  // services/operator-backend so `tsx` resolves from that package. Anchor the
+  // default beside this source file instead of silently changing behavior with
+  // the caller's working directory. Explicit relative overrides remain
+  // relative to the caller, as shell users expect.
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const path = process.env.BOOTSTRAP_CONFIG
+    ? resolve(process.cwd(), process.env.BOOTSTRAP_CONFIG)
+    : resolve(scriptDir, "bootstrap-registry.json");
   if (!existsSync(path)) {
     log.info("config file not found, using defaults", { path });
     return DEFAULT_CONFIG;
@@ -175,6 +185,7 @@ async function main(): Promise<void> {
   const lpRegistrar = required("CANTON_LP_REGISTRAR");
   // Lazy: only needed once there is a registry to create.
   const operator = () => required("CANTON_OPERATOR");
+  const dexPackageId = required("CANTON_DEX_PACKAGE_ID");
   const userId = process.env.CANTON_USER_ID ?? "ledger-api-user";
   const dryRun = process.env.BOOTSTRAP_DRY_RUN === "1";
 
@@ -183,7 +194,7 @@ async function main(): Promise<void> {
     baseUrl,
     token,
     applicationId: userId,
-    templateIdPrefix: process.env.CANTON_DEX_PACKAGE_ID,
+    templateIdPrefix: dexPackageId,
     synchronizerId: process.env.CANTON_SYNCHRONIZER,
   });
 
@@ -229,7 +240,13 @@ async function main(): Promise<void> {
     }
   }
 
-  log.info("bootstrap complete", { dryRun });
+  log.info("bootstrap complete", {
+    dryRun,
+    assetAdmin: admin,
+    assetRegistryCid: assetRegistryCid ?? null,
+    lpRegistrar,
+    lpRegistryCid: lpRegistryCid ?? null,
+  });
 }
 
 main().catch((e) => {

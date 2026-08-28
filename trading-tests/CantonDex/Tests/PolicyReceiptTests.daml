@@ -20,6 +20,8 @@ import DA.TextMap qualified as TextMap
 
 import Daml.Script
 
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
 import CantonDex.Dex.MatchedTrade qualified as MT
@@ -44,6 +46,17 @@ mkValidReceipt venue ranked acceptedDealer acceptedRank now =
     signedBy = venue
     signedAt = now
     signature = "0xdeadbeef"
+
+-- A minimal valid bilateral leg keeps the receipt tests focused on receipt
+-- validation rather than relying on an empty, non-settleable trade.
+mkLeg : Party -> Party -> V2.TransferLeg
+mkLeg sender receiver = V2.TransferLeg with
+  transferLegId = "receipt-test-leg"
+  sender = V2.Account with owner = Some sender; provider = None; id = ""
+  receiver = V2.Account with owner = Some receiver; provider = None; id = ""
+  amount = 1.0
+  instrumentId = "TEST"
+  meta = emptyMetadata
 
 -- 1. Encoding test ----------------------------------------------------------
 
@@ -157,7 +170,7 @@ testMatchedTradeWithNoReceipt = do
   cid <- submit venue $ createCmd MT.MatchedTrade with
     venue
     admin
-    transferLegs = []
+    transferLegs = [mkLeg venue admin]
     settlementDeadline = None
     policyReceipt = None
   Some _ <- queryContractId venue cid
@@ -175,7 +188,7 @@ testMatchedTradeWithGoodReceipt = do
   cid <- submit venue $ createCmd MT.MatchedTrade with
     venue
     admin
-    transferLegs = []
+    transferLegs = [mkLeg venue admin]
     settlementDeadline = None
     policyReceipt = Some r
   Some _ <- queryContractId venue cid
@@ -195,7 +208,7 @@ testMatchedTradeRejectsWrongSigner = do
   submitMustFail venue $ createCmd MT.MatchedTrade with
     venue
     admin
-    transferLegs = []
+    transferLegs = [mkLeg venue admin]
     settlementDeadline = None
     policyReceipt = Some r
   pure ()
@@ -213,7 +226,7 @@ testMatchedTradeRejectsMalformed = do
   submitMustFail venue $ createCmd MT.MatchedTrade with
     venue
     admin
-    transferLegs = []
+    transferLegs = [mkLeg venue admin]
     settlementDeadline = None
     policyReceipt = Some r
   pure ()
@@ -235,7 +248,7 @@ testSettlementInfoCarriesReceipt = do
   cid <- submit venue $ createCmd MT.MatchedTrade with
     venue
     admin
-    transferLegs = []
+    transferLegs = [mkLeg venue admin]
     settlementDeadline = None
     policyReceipt = Some r
   Some trade <- queryContractId venue cid
@@ -256,7 +269,7 @@ testSettlementInfoEmptyWithoutReceipt = do
   cid <- submit venue $ createCmd MT.MatchedTrade with
     venue
     admin
-    transferLegs = []
+    transferLegs = [mkLeg venue admin]
     settlementDeadline = None
     policyReceipt = None
   Some trade <- queryContractId venue cid

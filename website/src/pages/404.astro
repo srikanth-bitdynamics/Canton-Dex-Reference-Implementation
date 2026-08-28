@@ -1,0 +1,24 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+
+Astro.response.status = 404;
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Page not found',
+    template: 'splash',
+    editUrl: false,
+    pagefind: false,
+    hero: {
+      tagline: 'The documentation page you requested does not exist.',
+      actions: [
+        {
+          text: 'Go to the documentation home',
+          link: '/Canton-Dex-Reference-Implementation/',
+        },
+      ],
+    },
+  }}
+>
+</StarlightPage>

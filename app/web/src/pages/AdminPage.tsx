@@ -2,6 +2,12 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ledger } from '@/services/ledger';
 import { OperatorApi } from '@/services/operator-api';
+import {
+  clearApiSessionCredentials,
+  getApiSessionCredentials,
+  setApiSessionCredentials,
+  type ApiSessionCredentials,
+} from '@/services/api-auth';
 
 const operatorApi = new OperatorApi(
   (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:8080',
@@ -11,6 +17,10 @@ type TradingMode = 'TM_OrderBook' | 'TM_Pool' | 'TM_Both';
 
 export function AdminPage() {
   const qc = useQueryClient();
+  const [apiCredentials, setApiCredentials] = useState<ApiSessionCredentials>(
+    () => getApiSessionCredentials(),
+  );
+  const [credentialNotice, setCredentialNotice] = useState('');
   const { data: pairs } = useQuery({
     queryKey: ['pairs'],
     queryFn: ledger.getPairs,
@@ -71,6 +81,27 @@ export function AdminPage() {
 
   return (
     <div className="space-y-6">
+      <ApiCredentialsPanel
+        credentials={apiCredentials}
+        notice={credentialNotice}
+        onChange={setApiCredentials}
+        onSave={() => {
+          setApiSessionCredentials(apiCredentials);
+          setCredentialNotice(
+            'Saved for this browser tab. Protected API writes will now attach the matching credential.',
+          );
+        }}
+        onClear={() => {
+          clearApiSessionCredentials();
+          setApiCredentials({
+            operatorToken: '',
+            adminToken: '',
+            callerToken: '',
+          });
+          setCredentialNotice('Cleared this tab’s API credentials.');
+        }}
+      />
+
       <div className="bg-surface-card rounded-lg border border-surface-border p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-text-primary font-sans font-semibold">
@@ -335,6 +366,89 @@ export function AdminPage() {
         />
       )}
     </div>
+  );
+}
+
+interface ApiCredentialsPanelProps {
+  credentials: ApiSessionCredentials;
+  notice: string;
+  onChange: (credentials: ApiSessionCredentials) => void;
+  onSave: () => void;
+  onClear: () => void;
+}
+
+function ApiCredentialsPanel({
+  credentials,
+  notice,
+  onChange,
+  onSave,
+  onClear,
+}: ApiCredentialsPanelProps) {
+  const update = (field: keyof ApiSessionCredentials, value: string) =>
+    onChange({ ...credentials, [field]: value });
+
+  return (
+    <section className="bg-surface-card rounded-lg border border-surface-border p-5">
+      <h3 className="text-text-primary font-sans font-semibold">
+        API session credentials
+      </h3>
+      <p className="mt-2 max-w-4xl text-sm text-text-secondary font-sans">
+        Real-Canton backends fail closed on writes. Enter short-lived tokens
+        issued by your deployment before using the Admin screen or a
+        trader-flow settle action. Values stay in this tab’s session storage;
+        they are never compiled into the dApp bundle.
+      </p>
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        <Field label="Operator API token">
+          <input
+            className="input"
+            type="password"
+            autoComplete="off"
+            value={credentials.operatorToken}
+            onChange={(e) => update('operatorToken', e.target.value)}
+            placeholder="DEX_OPERATOR_API_TOKEN"
+          />
+        </Field>
+        <Field label="Admin API token">
+          <input
+            className="input"
+            type="password"
+            autoComplete="off"
+            value={credentials.adminToken}
+            onChange={(e) => update('adminToken', e.target.value)}
+            placeholder="OPERATOR_ADMIN_TOKEN"
+          />
+        </Field>
+        <Field label="Caller JWT (optional)">
+          <input
+            className="input"
+            type="password"
+            autoComplete="off"
+            value={credentials.callerToken}
+            onChange={(e) => update('callerToken', e.target.value)}
+            placeholder="X-Caller-Token"
+          />
+        </Field>
+      </div>
+      <p className="mt-3 text-xs text-text-muted font-sans">
+        A public multi-user deployment should obtain scoped, short-lived
+        credentials from an authenticated BFF or session service. Do not share
+        the venue’s long-lived operator/admin tokens with ordinary traders.
+      </p>
+      <div className="mt-4 flex items-center gap-3">
+        <button className="btn primary" type="button" onClick={onSave}>
+          Save for this tab
+        </button>
+        <button className="btn" type="button" onClick={onClear}>
+          Clear
+        </button>
+        {notice && (
+          <span role="status" className="text-xs text-text-secondary">
+            {notice}
+          </span>
+        )}
+      </div>
+    </section>
   );
 }
 

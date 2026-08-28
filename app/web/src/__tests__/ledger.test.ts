@@ -30,10 +30,6 @@ const swapAuthorityFixture = (): Parameters<typeof assertSwapAuthority>[0] => ({
     operator: 'op::1',
     lpRegistrar: 'lp::1',
     admin: 'default-ad::1',
-    allocationFactoryCid: 'factory',
-    settlementFactoryCid: 'settlement-factory',
-    allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
-    allocationFactoryDisclosure: [],
     network: 'local',
   },
   pool: {

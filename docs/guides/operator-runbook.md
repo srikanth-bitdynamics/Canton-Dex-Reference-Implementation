@@ -13,9 +13,10 @@ Canton operational concern, not a DEX one — see [Out of scope](#out-of-scope-f
 
 ## Roles and party model
 
-The reference deployment expects four distinct parties. Keeping them logically
-separate is part of the design. Collapsing them is acceptable for a single-
-operator dev instance but should not be the production posture.
+The reference uses four logical roles and can involve many trader, LP, and
+asset-admin parties. Keeping control roles separate is the recommended
+production posture; a local learning instance may intentionally share a party
+where the setup guide says so.
 
 | Party         | Owns                                                                          | Signs                                                               |
 | ------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------- |
@@ -35,17 +36,17 @@ In rough order of dependency:
 
 1. **Allocate parties.** `operator`, `lpRegistrar`, base-asset `admin`,
    quote-asset `admin`, and any traders / LPs you want to onboard.
-2. **Bring up registries.** For each `admin`, create:
-   - `MockAllocationFactory` (or the production registry's allocation
-     factory) with `users` = the parties that will exercise on it
-   - `MockSettlementFactory` (or production) with the same `users`
-   - the registry-specific instrument definition for each instrument the admin
-     manages. In the reference registry this is `InstrumentConfig`; keep its
-     requirement lists empty unless your registry replaces the placeholder
-     verifier with issuer-authorized evidence checks
+2. **Bring up real registries.** Run the idempotent
+   [`bootstrap-registry.ts`](../../scripts/bootstrap-registry.ts) path to create
+   `Registry.V2` plus each `InstrumentConfig`, or configure a conforming
+   external Token Standard V2 registry. `MockAllocationFactory` and
+   `MockSettlementFactory` are Daml-test fixtures only: they do not create or
+   move holdings and must not be used as a deployment recipe. When asset admin
+   and LP registrar differ, record both registry cids for the backend's
+   per-admin factory mapping.
 3. **List trading pairs.** Operator creates a `DexPair` per pair with the
-   chosen `tradingMode` and `feeModel`. Pairs are toggled `active` to gate
-   trading without archiving the pair record.
+   chosen `tradingMode` and `feeModel`. These fields are listing metadata in
+   this revision; they do not independently gate pool/order terminal choices.
 4. **Create LP infrastructure (per pool).**
    - `lpRegistrar` creates the LP token's registry-specific instrument
      definition. In the reference registry this is one `InstrumentConfig`
@@ -58,14 +59,19 @@ In rough order of dependency:
    add-liquidity DvP request/allocate/settle flow as later LPs; the settle
    creates the first `PoolSlice` contracts and transitions the state to
    `PS_Active`.
-6. **Open the order book / swap surface.** Once pools are funded and pairs
-   are active, traders may submit `OrderFundingRequest`, liquidity adds/removes
-   via the DvP `/request` flow, `Rfq`, etc.
+6. **Open the order book / swap surface.** Once registries and holdings are
+   live, pools are funded, `PoolRules` is active, and the operator's off-ledger
+   routing policy allows the market, traders may submit `OrderFundingRequest`,
+   liquidity adds/removes via the DvP `/request` flow, `Rfq`, etc.
 
-The dev / testnet path in
-[`trading-tests/CantonDex/Tests/EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
-walks every step above against the mock registry — treat it as the canonical
-bring-up script (it proves the full deploy sequence settles end to end).
+The focused [`PoolWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/PoolWorkflowTests.daml),
+[`OrderWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/OrderWorkflowTests.daml),
+[`TradeWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/TradeWorkflowTests.daml),
+and [`ChoiceContextWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/ChoiceContextWorkflowTests.daml)
+walk DEX choices against mock factories, but those fixtures do not hold value.
+They are not deployment validators. Use the [testnet guide](run-on-testnet.md)
+for bring-up and the [Daml proof map](../reference/daml-proof-map.md) plus the
+self-contained live AMM round trip for value movement.
 
 ## Operator-driven cleanup (on-ledger)
 
@@ -146,7 +152,7 @@ operators do not need a parallel database to explain a trade.
 | Question                                              | Where to look on-ledger                                                                                |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Why did this RFQ accept go to this dealer?            | `MatchedTrade.policyReceipt`, also folded into `SettlementInfo.meta` via `dex.policy.*` keys           |
-| What pair / fee policy applied at trade time?         | `DexPair.feeModel`, `DexPair.tradingMode`, `DexPair.active` at the trade's `createdAt`                 |
+| What pool fee was executed?                           | The immutable `Pool.feeBps` used by `PoolRules`; `DexPair.feeModel` is listing metadata and is not consumed by that choice |
 | Where did this pool's reserves come from?             | Each `PoolSlice` is an `Allocation` CID, each carrying its admin, authorizer, and committed funding    |
 | What's the current head slice / boundary candidate?   | each active `PoolSlice` for the pool (query the ACS by `poolId`); the aggregate is `PoolState.reserves.baseAmount`/`quoteAmount`                                            |
 | Did this trader's funding accept?                     | The `OrderAllocationRequest` archive event plus the corresponding `Allocation` create event           |
@@ -155,8 +161,9 @@ operators do not need a parallel database to explain a trade.
 
 Off-ledger telemetry the operator should also collect:
 
-- **Latency** per workflow (`OrderFundingRequest_Bind` → `Order_Fund`,
-  `Rfq_Accept` → `MatchedTrade_Settle`, `PoolRules_Swap` end-to-end).
+- **Latency** per explicitly named workflow boundary
+  (`OrderFundingRequest_Bind` → `Order_Fund`, `Rfq_Accept` →
+  `MatchedTrade_Settle`, or request → settlement around `PoolRules_Swap`).
 - **Failure counts** per choice, especially slippage rejections, allocation
   conservation failures, and registry choice-context rejections.
 - **Slice-count distributions** per pool side, to flag when consolidation
@@ -370,12 +377,15 @@ guard.
 
 ## Single-operator dev shortcut
 
-For local exploration, collapse `operator` / `lpRegistrar` / `admin` into one
-party, and run the dev server with `DEX_DEV_OPEN=1` so the operator-token gate
-is bypassed (in-memory dev only). Tests under `trading-tests/` show the
-multi-party shape, but the same contracts compile and run with one party
-signing everything. Production should keep the parties distinct so audit-trail
-and key-management responsibilities stay decoupled, and must set
+For local exploration, the control roles `operator` / `lpRegistrar` / `admin`
+may share one party, and the in-memory dev server may use `DEX_DEV_OPEN=1` to
+bypass the operator-token gate. Do not collapse a value-moving counterparty
+into that party: a real registry rejects the self-transfer created when the LP
+or swapper equals the operator. The portable sandbox proof therefore allocates
+distinct LP/trader and swapper parties even though its three control roles
+share the bootstrap party. Production should normally separate the control
+roles too so audit-trail and key-management responsibilities stay decoupled,
+and must set
 `DEX_OPERATOR_API_TOKEN` / `OPERATOR_ADMIN_TOKEN` — both gates fail closed
 otherwise, proven in
 [`auth.test.ts`](../../services/operator-backend/test/auth.test.ts)

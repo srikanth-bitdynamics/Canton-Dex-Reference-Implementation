@@ -77,6 +77,7 @@ const OPERATOR_WRITE_EXACT = new Set<string>([
   // (It is additionally gated by walletRelayEnabled + a party allowlist in
   // the handler, but the auth gate is the first line of defence.)
   "/v1/wallet/submit",
+  "/v1/registry/allocation-factory",
   "/v1/pools/swap",
   "/v1/pools/swap/request",
   "/v1/pools/add-liquidity/request",

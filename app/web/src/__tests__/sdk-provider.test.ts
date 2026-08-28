@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-import type { RequestSwapIntent, WalletIntent } from "@/wallet/types";
+import type { RequestSwapIntent } from "@/wallet/types";
 
 // SdkProvider owns a private DappSDK instance (with a custom walletPicker) and
 // a RemoteAdapter for the configured gateway. We mock those two classes so every
@@ -59,7 +59,7 @@ vi.mock("@canton-network/dapp-sdk", () => ({
 
 import { SdkProvider } from "@/wallet/sdk-provider";
 
-const swapIntent: WalletIntent = {
+const swapIntent: RequestSwapIntent = {
   kind: "request-swap",
   poolId: "pool1234567890",
   allocationSpec: {
@@ -75,6 +75,7 @@ const swapIntent: WalletIntent = {
     executor: "op::1",
     settlementRef: { id: "DexPool", cid: "pool1234567890" },
   } as unknown as RequestSwapIntent["settlement"],
+  requestedAt: "2026-05-19T12:00:00.000Z",
   factoryCid: "factory1",
   allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
   disclosure: [

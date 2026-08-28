@@ -165,7 +165,7 @@ export function Portfolio({
         <div>
           <h1 className="page-title">Portfolio</h1>
           <p className="page-sub">
-            All holdings, LP positions, and on-ledger activity for your party.
+            Holdings, LP positions, and activity reported by the configured backend.
           </p>
         </div>
       </div>

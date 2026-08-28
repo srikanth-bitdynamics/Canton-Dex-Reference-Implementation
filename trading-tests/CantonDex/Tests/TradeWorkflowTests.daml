@@ -1,0 +1,338 @@
+-- | Allocation-request, RFQ, and bilateral-trade choreography.
+--
+-- Suggested reading order:
+--   1. testTradeAllocationRequestAcceptArchivesRequest
+--   2. testRfqAcceptProducesMatchedTradeWithReceipt
+--   3. testRfqExpireOperatorCleanup
+--   4. testMatchedTradeFullSettle
+--
+-- These tests prove request consumption, ranking receipts, expiry authority, and
+-- two-party settlement assembly. The matched-trade fixture has no holdings, so
+-- it proves interface choreography rather than balance movement.
+-- Design context: `docs/concepts/design-tour.md#rfq-and-otc-settlement`.
+module CantonDex.Tests.TradeWorkflowTests where
+
+import DA.Assert
+import DA.Map qualified as Map
+import DA.Time
+
+import Daml.Script
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
+import Splice.Api.Token.AllocationRequestV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+import Splice.Testing.Utils (emptyExtraArgs)
+
+import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Dex.PolicyReceipt qualified as PR
+import CantonDex.Dex.Rfq qualified as Rfq
+import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Tests.WorkflowTestFixtures
+
+-- Accepting a trade allocation request consumes it ----------------------
+--
+-- A TradeAllocationRequest implements the standard V2 AllocationRequest
+-- interface. Accept is the holder's acknowledgement of the allocation
+-- specification; it consumes the request. The wallet composes Accept with the
+-- corresponding AllocationFactory_Allocate command in the real trade flow.
+
+-- | Proves accepting a trade allocation request consumes that one-shot request.
+testTradeAllocationRequestAcceptArchivesRequest : Script ()
+testTradeAllocationRequestAcceptArchivesRequest = do
+  operator <- allocateParty "operator"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  bob <- allocateParty "bob"
+  now <- getTime
+
+  -- Arrange: one requested leg moves 10 BTC from Alice to Bob, with the
+  -- operator as settlement executor.
+  let aliceAccount = Utils.basicAccount alice
+      bobAccount = Utils.basicAccount bob
+      leg = V2.TransferLeg with
+        transferLegId = "leg-1"
+        sender = aliceAccount
+        receiver = bobAccount
+        amount = 10.0
+        instrumentId = "BTC"
+        meta = emptyMetadata
+      settlement = V2.SettlementInfo with
+        executors = [operator]
+        id = "test-trade"
+        cid = None
+        meta = emptyMetadata
+
+  reqCid <- submit operator $ createCmd MT.TradeAllocationRequest with
+    authorizer = aliceAccount
+    admin
+    settlement
+    settlementDeadline = Some (addRelTime now (hours 1))
+    transferLegs = [leg]
+    requestedAt = now
+
+  -- Act: Alice accepts through the standard interface.
+  let reqIfaceCid : ContractId V2.AllocationRequest = toInterfaceContractId reqCid
+  acceptRes <- submit alice $ exerciseCmd reqIfaceCid V2.AllocationRequest_Accept with
+    actors = [alice]
+    extraArgs = emptyExtraArgs
+  -- Assert: Accept returns the request metadata and consumes the request.
+  acceptRes.meta === emptyMetadata
+  None <- queryContractId alice reqCid
+
+  pure ()
+
+-- RFQ acceptance records the ranking decision ---------------------------
+--
+-- RFQ = request-for-quote: the trader asks dealers to bid, then accepts one.
+-- Asserts that when three dealers quote and the trader accepts, the winner is
+-- ranked by the stated policy (trusted tier, later expiry, earlier posting,
+-- dealer id), a trade is created, and it carries a signed receipt proving that
+-- ranking. Price is displayed in the receipt but is not a policy sort key.
+
+-- | Proves RFQ acceptance selects a quote and records its policy receipt.
+testRfqAcceptProducesMatchedTradeWithReceipt : Script ()
+testRfqAcceptProducesMatchedTradeWithReceipt = do
+  operator <- allocateParty "operator"
+  admin <- allocateParty "admin"
+  alice <- allocateParty "alice"
+  orca <- allocateParty "orca-mm"
+  jump <- allocateParty "jump-tr"
+  galaxy <- allocateParty "galaxy-otc"
+  now <- getTime
+
+  let expiresAt = addRelTime now (hours 1)
+      rfqId = "rfq-test-001"
+
+  -- Alice creates an RFQ.
+  rfqCid <- submit alice $ createCmd Rfq.Rfq with
+    trader = alice
+    operator
+    rfqId
+    pair = "BTC/USDC"
+    side = Rfq.RFQ_Buy
+    size = 5.0
+    expiresAt
+    whitelist = [orca, jump, galaxy]
+    createdAt = now
+
+  -- Three dealers post quotes. Trusted dealers rank above whitelisted dealers;
+  -- Jump and Orca have equal expiry, so Jump's earlier posting ranks first.
+  quoteOrca <- submit orca $ createCmd Rfq.RfqQuote with
+    dealer = orca
+    trader = alice
+    operator
+    rfqId
+    price = 60530.00
+    expiresAt = addRelTime now (seconds 30)
+    postedAt = now
+    tier = Rfq.TierTrusted
+
+  quoteJump <- submit jump $ createCmd Rfq.RfqQuote with
+    dealer = jump
+    trader = alice
+    operator
+    rfqId
+    price = 60510.00
+    expiresAt = addRelTime now (seconds 30)
+    postedAt = addRelTime now (seconds (-3))
+    tier = Rfq.TierTrusted
+
+  quoteGalaxy <- submit galaxy $ createCmd Rfq.RfqQuote with
+    dealer = galaxy
+    trader = alice
+    operator
+    rfqId
+    price = 60509.50
+    expiresAt = addRelTime now (seconds 30)
+    postedAt = addRelTime now (seconds 8)
+    tier = Rfq.TierWhitelist
+
+  -- Alice + operator jointly exercise Rfq_Accept (operator's authority
+  -- is needed because the resulting MatchedTrade is operator-signed).
+  -- Accept Jump's quote. It ranks first by tier and posting time even though
+  -- Galaxy has a marginally lower price.
+  acceptRes <- submit (actAs [alice, operator]) $
+    exerciseCmd rfqCid Rfq.Rfq_Accept with
+      acceptedQuoteCid = quoteJump
+      consideredQuoteCids = [quoteOrca, quoteJump, quoteGalaxy]
+      admin
+      currentTime = now
+      signature = "0xtest-signature"
+
+  -- Verify the receipt:
+  let r = acceptRes.receipt
+  r.acceptedDealer === jump
+  r.acceptedRank === 1
+  r.consideredCount === 3
+  PR.isWellFormed r === True
+
+  -- Verify the MatchedTrade exists and carries the receipt.
+  Some trade <- queryContractId operator acceptRes.tradeCid
+  case trade.policyReceipt of
+    Some embedded -> embedded === r
+    None -> abort "Trade should carry a policy receipt"
+
+  pure ()
+
+-- The operator expires stale RFQs ---------------------------------------
+--
+-- Only the operator can sweep an RFQ, and only after its deadline.
+-- | Proves RFQ expiry cleanup is operator-only and deadline-gated.
+testRfqExpireOperatorCleanup : Script ()
+testRfqExpireOperatorCleanup = do
+  operator <- allocateParty "operator-exp"
+  alice <- allocateParty "alice-exp"
+  orca <- allocateParty "orca-exp"
+  now <- getTime
+
+  let expiresAt = addRelTime now (hours 1)
+
+  rfqCid <- submit alice $ createCmd Rfq.Rfq with
+    trader = alice
+    operator
+    rfqId = "rfq-expire-001"
+    pair = "BTC/USDC"
+    side = Rfq.RFQ_Buy
+    size = 1.0
+    expiresAt
+    whitelist = [orca]
+    createdAt = now
+
+  -- Before the deadline the operator cannot expire it.
+  submitMustFail operator $ exerciseCmd rfqCid Rfq.Rfq_Expire with
+    currentTime = now
+
+  -- The trader is not the controller of Rfq_Expire.
+  submitMustFail alice $ exerciseCmd rfqCid Rfq.Rfq_Expire with
+    currentTime = addRelTime now (hours 2)
+
+  -- After the deadline the operator sweeps it.
+  submit operator $ exerciseCmd rfqCid Rfq.Rfq_Expire with
+    currentTime = addRelTime now (hours 2)
+
+  remaining <- queryContractId operator rfqCid
+  remaining === None
+
+
+-- A bilateral MatchedTrade settles atomically ---------------------------
+--
+-- Verifies the OTC (over-the-counter, dealt directly not via the order book)
+-- settlement choreography: the operator requests allocations, each side
+-- authorizes its own mock Allocation, and the operator settles both in one
+-- batch. MockRegistry neither locks funds nor creates final holdings.
+
+-- | Proves both mock allocations are consumed by one settlement exercise.
+testMatchedTradeFullSettle : Script ()
+testMatchedTradeFullSettle = do
+  operator <- allocateParty "venue"
+  admin <- allocateParty "admin-mt"
+  alice <- allocateParty "alice-mt"
+  bob <- allocateParty "bob-mt"
+  now <- getTime
+
+  (factoryCid, settleCid) <- setupRegistries admin [operator, alice, bob]
+
+  -- Build a MatchedTrade with two-way legs (alice <-> bob in BTC).
+  let aliceAccount = Utils.basicAccount alice
+      bobAccount = Utils.basicAccount bob
+      legs =
+        [ V2.TransferLeg with
+            transferLegId = "leg-1"
+            sender = aliceAccount
+            receiver = bobAccount
+            amount = 1.0
+            instrumentId = "BTC"
+            meta = emptyMetadata
+        ]
+  tradeCid <- submit operator $ createCmd MT.MatchedTrade with
+    venue = operator
+    admin
+    transferLegs = legs
+    settlementDeadline = None
+    policyReceipt = None
+
+  -- Operator requests allocations.
+  reqCids <- submit operator $ exerciseCmd tradeCid MT.MatchedTrade_RequestAllocations
+  length reqCids === 2  -- one per authorizer
+
+  -- Each authorizer accepts via the V2 interface, then creates their
+  -- allocation under their own authority. Alice is sender of "leg-1";
+  -- Bob is receiver. Both need an allocation.
+  let mkAlloc party cid = do
+        -- The accept choice consumes the request; we then create the
+        -- allocation via the factory.
+        let reqIface : ContractId V2.AllocationRequest = toInterfaceContractId cid
+        _ <- submit party $ exerciseCmd reqIface V2.AllocationRequest_Accept with
+          actors = [party]
+          extraArgs = emptyExtraArgs
+        -- Build allocation for this party using the trade's settlement.
+        let acct = Utils.basicAccount party
+            settlement = MT.mkTradeSettlementInfo tradeCid
+              (MT.MatchedTrade with
+                 venue = operator
+                 admin
+                 transferLegs = legs
+                 settlementDeadline = None
+                 policyReceipt = None)
+            spec = V2.AllocationSpecification with
+              admin
+              authorizer = acct
+              transferLegSides = Utils.legsToSides acct legs
+              settlementDeadline = None
+              nextIterationFunding = None
+              committed = False
+              meta = emptyMetadata
+            allocateArg = AllocationInstructionV2.AllocationFactory_Allocate with
+              settlement
+              allocation = spec
+              requestedAt = now
+              inputHoldingCids = []
+              actors = [party]
+              extraArgs = emptyExtraArgs
+        instr <- submit party $ exerciseCmd factoryCid allocateArg
+        case instr.output of
+          V2.AllocationInstructionResult_Completed allocCid -> pure allocCid
+          _ -> abort "allocation must complete"
+
+  -- We need to know which request belongs to whom. Query and split.
+  reqs <- query @MT.TradeAllocationRequest operator
+  let reqsByOwner = [ (Utils.accountOwner req.authorizer, cid) | (cid, req) <- reqs ]
+  -- The active req cids may differ from the freshly-returned reqCids
+  -- because authorizers haven't accepted yet. Find the per-party CIDs.
+  let aliceReqCid = case [ c | (p, c) <- reqsByOwner, p == alice ] of
+        (c :: _) -> c
+        [] -> error "alice request missing"
+      bobReqCid = case [ c | (p, c) <- reqsByOwner, p == bob ] of
+        (c :: _) -> c
+        [] -> error "bob request missing"
+
+  let aliceReqIface : ContractId V2.AllocationRequest =
+        toInterfaceContractId aliceReqCid
+  submitMustFail (actAs [bob] <> readAs [operator]) $
+    exerciseCmd aliceReqIface V2.AllocationRequest_Accept with
+      actors = [bob]
+      extraArgs = emptyExtraArgs
+
+  aliceAllocCid <- mkAlloc alice aliceReqCid
+  bobAllocCid <- mkAlloc bob bobReqCid
+
+  -- Operator settles. Both allocations belong to admin's batch.
+  settleResult <- submit operator $ exerciseCmd tradeCid MT.MatchedTrade_Settle with
+    batchesByAdmin = Map.fromList
+      [ (admin, MT.SettlementBatchV2 with
+          transferLegs = Some legs
+          allocations =
+            [ Utils.finalAllocation aliceAllocCid
+            , Utils.finalAllocation bobAllocCid
+            ]
+          factoryCid = settleCid
+          extraArgs = emptyExtraArgs)
+      ]
+    allocationRequests = []  -- already consumed via Accept
+    dexPairCid = None
+
+  -- Verify the result has one per-admin entry.
+  Map.size settleResult.resultsByAdmin === 1
+  pure ()

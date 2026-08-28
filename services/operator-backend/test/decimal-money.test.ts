@@ -1,13 +1,11 @@
-// On-ledger amounts must go through the BigInt decimal module, not
-// IEEE-754. Pins (1) the matching-engine quote-leg amount = price*quantity at
-// 10dp round-half-even, and (2) rankQuotes price ordering via exact decimal
-// comparison.
+// On-ledger amounts must go through the BigInt decimal module, not IEEE-754.
+// The RFQ cases also pin the exact non-price policy ordering used on-ledger.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import * as dec from "../src/pool/decimal.js";
-import { rankQuotes, compareDecimal } from "../src/policy/index.js";
+import { rankQuotes } from "../src/policy/index.js";
 import type { RfqQuote } from "../src/types.js";
 
 describe("quote-leg amount via decimal module", () => {
@@ -71,16 +69,6 @@ describe("floored decimal ops mirror the pool's payout rounding", () => {
   });
 });
 
-describe("compareDecimal is exact", () => {
-  it("orders by decimal value, not float", () => {
-    assert.equal(compareDecimal("60510.00", "60530.00"), -1);
-    assert.equal(compareDecimal("60530.00", "60510.00"), 1);
-    assert.equal(compareDecimal("1.0", "1.0000000000"), 0);
-    // A pair where float subtraction could lose precision but decimal must not.
-    assert.equal(compareDecimal("0.1000000001", "0.1000000002"), -1);
-  });
-});
-
 function mkQuote(o: {
   dealer: string;
   price?: string;
@@ -117,7 +105,7 @@ describe("rankQuotes reproduces the on-ledger policyCmp (v2.0)", () => {
       mkQuote({ dealer: "mid", expiresAt: "2026-01-01T05:00:00Z" }),
     ];
     assert.deepEqual(
-      rankQuotes("RFQ_Buy", quotes, now).map((q) => q.dealer),
+      rankQuotes(quotes, now).map((q) => q.dealer),
       ["latest", "mid", "soon"],
     );
   });
@@ -129,13 +117,11 @@ describe("rankQuotes reproduces the on-ledger policyCmp (v2.0)", () => {
     ];
     // Same expiry and postedAt, so the dealer tie-break decides -- price does
     // not enter the comparison at all, and the side does not change it.
-    for (const side of ["RFQ_Buy", "RFQ_Sell"] as const) {
-      assert.deepEqual(
-        rankQuotes(side, quotes, now).map((q) => q.dealer),
-        ["cheap", "dear"],
-        `${side}: ordered by dealer tie-break, not price`,
-      );
-    }
+    assert.deepEqual(
+      rankQuotes(quotes, now).map((q) => q.dealer),
+      ["cheap", "dear"],
+      "ordered by dealer tie-break, not price",
+    );
   });
 
   it("trusted tier ranks ahead of whitelist regardless of expiry", () => {
@@ -151,7 +137,7 @@ describe("rankQuotes reproduces the on-ledger policyCmp (v2.0)", () => {
         expiresAt: "2026-01-01T02:00:00Z",
       }),
     ];
-    assert.equal(rankQuotes("RFQ_Buy", quotes, now)[0]?.dealer, "sooner-trusted");
+    assert.equal(rankQuotes(quotes, now)[0]?.dealer, "sooner-trusted");
   });
 
   it("breaks an expiry tie by earlier postedAt, then by dealer", () => {
@@ -161,7 +147,7 @@ describe("rankQuotes reproduces the on-ledger policyCmp (v2.0)", () => {
       mkQuote({ dealer: "c-late", postedAt: "2026-01-01T00:00:05Z" }),
     ];
     assert.deepEqual(
-      rankQuotes("RFQ_Buy", quotes, now).map((q) => q.dealer),
+      rankQuotes(quotes, now).map((q) => q.dealer),
       ["a-early", "b-late", "c-late"],
     );
   });
@@ -172,7 +158,7 @@ describe("rankQuotes reproduces the on-ledger policyCmp (v2.0)", () => {
       mkQuote({ dealer: "lapsed", expiresAt: "2025-12-31T23:00:00Z" }),
     ];
     assert.deepEqual(
-      rankQuotes("RFQ_Buy", quotes, now).map((q) => q.dealer),
+      rankQuotes(quotes, now).map((q) => q.dealer),
       ["live"],
     );
   });

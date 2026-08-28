@@ -1,9 +1,11 @@
 # Builder guide
 
-How to read and extend this reference. Start after
-[Getting Started](../getting-started.md) (which runs the stack) and the
-[Overview](../concepts/overview.md) and [Architecture](../concepts/architecture.md)
-(which explain the design).
+This is Step 9, the final step in the
+[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+Complete [Make your first AMM code change](../tutorials/make-your-first-amm-change.md)
+first. This guide helps you plan a behavior-changing extension without
+crossing the DEX, Token Standard, registry, backend, or wallet boundaries by
+accident.
 
 ## Three layers, one boundary
 
@@ -57,23 +59,32 @@ oracle integration, custody, and a compliance/KYC layer. Those belong in forks o
 deployment-specific services, not the shared templates. See
 [Non-goals](../concepts/non-goals.md).
 
+## Before extending the AMM
+
+Do not start a second learning route here. Follow the canonical path through
+the tested first-change tutorial, then use the
+[Daml proof map — AMM pool](../reference/daml-proof-map.md#amm-pool) to locate
+the exact source choice and smallest proof for the behavior you plan to alter.
+The [allocation surface](../reference/allocation-surface.md) is the lookup page
+for the Token Standard contracts beneath those choices.
+
 ## The four workflow families
 
-The Daml test suite exercises four families. Reading them in order is the fastest
-way to understand the venue; each lists its contracts, its entry choice, and the
-test that proves it.
+The Daml test suite exercises four families. Treat the sections below as a
+builder's lookup map; the newcomer curriculum remains the canonical path in the
+documentation index.
 
 ### A. Pair and instrument listing
 Register a tradable pair, and for pool mode its instruments.
 
 - `Dex/DexPair.daml` — the listing: base + quote instrument ids, fee model, trading
-  mode (`OrderBook` / `Pool` / `Both`), and an `active` flag.
+  mode (`OrderBook` / `Pool` / `Both`), and an `active` flag. The mode and flag
+  guide off-ledger discovery/routing; they are not fetched by `PoolRules` or
+  `OrderMatchExecution` and therefore are not on-ledger settlement gates.
 - `Registry/V2.daml` — the reference registry's V2 interfaces plus its
   registry-specific `InstrumentConfig` (precision, supply bookkeeping,
   placeholder requirement records, optional ISIN/CUSIP).
-- Proven by
-  [`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)
-  and [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml).
+- Source and focused checks: [Daml proof map — Pair listing metadata](../reference/daml-proof-map.md#pair-listing-metadata).
 
 ### B. OTC and RFQ settlement
 A bilateral block trade settles as one atomic batch.
@@ -84,9 +95,7 @@ A bilateral block trade settles as one atomic batch.
 - `Dex/Rfq.daml` + `PolicyReceipt.daml` — trader RFQ, dealer quotes, then a joint
   `Rfq_Accept` that emits a `MatchedTrade` carrying an operator-signed
   `PolicyReceipt` in `SettlementInfo.meta`.
-- Proven by
-  [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
-  (`testMatchedTradeFullSettle`, `testRfqAcceptProducesMatchedTradeWithReceipt`).
+- Source and focused checks: [Daml proof map — RFQ and OTC](../reference/daml-proof-map.md#rfq-and-otc).
 
 ### C. Resting orders backed by a V2 allocation
 A limit order rests in the book, funded by the trader's own locked allocation.
@@ -99,9 +108,7 @@ A limit order rests in the book, funded by the trader's own locked allocation.
   uncommitted, allowing the trader to withdraw through the standard allocation
   interface if the venue is unavailable; a later match then fails safely.
 - `Dex/OrderMatchExecution.daml` — the atomic match (see the matcher section below).
-- Proven by
-  [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
-  (`testOrderFundingFlow`, `testOrderRemainderFundingArithmetic`).
+- Source and focused checks: [Daml proof map — Resting orders](../reference/daml-proof-map.md#resting-orders).
 
 ### D. Constant-product pool
 An AMM whose reserves are committed allocations.
@@ -116,10 +123,7 @@ An AMM whose reserves are committed allocations.
   pair), co-signed by `operator` and `lpRegistrar`.
 - `Lp/Policy.daml` + `Lp/Instrument.daml` — the LP token, owned by `lpRegistrar`,
   keyed by a `V2.InstrumentId`, and unaware of pools or orders.
-- Proven by
-  [`EndToEndTests.daml`](../../trading-tests/CantonDex/Tests/EndToEndTests.daml)
-  (`testPoolFullLifecycle`, `testPoolSwapEndToEnd`) and
-  [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml).
+- Source and focused checks: [Daml proof map — AMM pool](../reference/daml-proof-map.md#amm-pool).
 
 ## The off-ledger matcher: where a fork does most of its work
 
@@ -159,8 +163,9 @@ go through the connected wallet over the CIP-0103 dApp standard
 specifications, the dApp composes the command, and the wallet signs and submits.
 `Rfq_Accept` is jointly controlled by trader and operator; deployments must
 provide both authorities through wallet/delegation or an explicitly enabled
-co-submission path. The included RFQ page uses the last option for hosted demo
-parties; it is not part of the wallet-intent surface.
+co-submission path. The included RFQ page demonstrates the last option with
+configured parties; it is not part of the wallet-intent surface or a public
+relay service.
 
 Read endpoints (`/v1/pools`, `/v1/trades`, …) are operator-observed and served from
 the backend's indexer cache. Keep self-custodial allocation writes on the wallet
@@ -180,9 +185,9 @@ named allocation in one transaction. Deploy that DAR alongside the DEX DAR.
 |---|---|
 | Add a trading pair (BTC/EUR, ETH/USDT, …) | Create a `DexPair`; add a `Pool` for pool mode. See [Add a trading pair](add-a-trading-pair.md). |
 | Issue a new LP token or lifecycle-rich instrument (vested, dividend-bearing) | See [Add an LP or instrument](add-lp-or-instrument.md). |
-| Use a different registry | Swap `CantonDex.Testing.MockRegistry` for the real registry's `AllocationFactory` + `SettlementFactory`. See [Registry integration](registry-integration.md). |
+| Use a different registry | Keep the DEX services behind `registry-client`, then configure discovery, choice context, disclosures, and metadata for the target registry. `CantonDex.Testing.MockRegistry` appears only in Daml test fixtures and is not the deployed backend. See [Registry integration](registry-integration.md). |
 | Add a pricing curve (StableSwap, weighted) | Add curve-specific configuration and rules, then reuse the V2 allocation and settlement pattern. No generic curve interface is defined by this package. |
-| Add a fee policy | Extend `Pool.feeBps` / `DexPair.feeModel` and the `constantProductOut` quote math. |
+| Change the executable pool fee | Update `Pool.feeBps` and the `constantProductOut` quote math. Mirror the value into `DexPair.feeModel` only where off-ledger listing consumers need it; that record does not gate or price `PoolRules_Swap`. |
 | Add an RFQ policy (oracle-weighted, multi-tier) | `Rfq.policyCmp` defines the ordering used by `applyPolicyPairs`; bump `policyVersion`/`policyHash` and mirror it in `app/web/src/services/rfq-policy.ts`. |
 | Point at a different participant | Set `CANTON_LEDGER_URL`, `CANTON_LEDGER_TOKEN`, `CANTON_SYNCHRONIZER`. See [Run on a testnet](run-on-testnet.md). |
 
@@ -192,21 +197,14 @@ contracts own asset semantics.
 
 ## Your first change
 
-A concrete loop for extending a choice — say, adding an optional referral party
-to a swap:
+Use [Make your first AMM code change](../tutorials/make-your-first-amm-change.md)
+for the complete red/green loop: exact edits, focused test, layer-impact check,
+full local suite, and live sandbox proof.
 
-1. **Edit the Daml.** Append an `Optional` field (e.g. `referral : Optional
-   Party`) to `Pool`, or add a clearly named referral choice to `PoolRules` — see
-   [Upgrade discipline](#upgrade-discipline) for why additions go at the end of
-   the record.
-2. **Build the DAR:** `(cd trading && dpm build)`.
-3. **Run the tests:** `(cd trading-tests && dpm test)`. The suite includes
-   `EndToEndTests.daml::testPoolSwapEndToEnd`, which exercises the full swap path
-   your change touches.
-4. **Verify the boundary:** run `bash scripts/run-local-daml-tests.sh`, then
-   exercise the affected HTTP and wallet path. A separate package can consume
-   the DAR as a data dependency, but this repository does not claim a generic
-   pool interface that makes curve implementations interchangeable.
+For later changes, distinguish a new choice from a new template field. A new
+choice can leave existing contract construction sites intact. A new field
+changes the serialized template shape and every construction site must supply
+it; follow [Upgrade discipline](#upgrade-discipline) before making that edit.
 
 ## Upgrade discipline
 
@@ -220,14 +218,20 @@ fresh lineage.
 ## Testing
 
 ```bash
-cd trading-tests && dpm test            # in-script Daml suites
+cd trading-tests
+dpm test                                # every in-script Daml suite
+dpm test -p testDexPairLifecycleUpdates # one named design proof
+dpm test --files CantonDex/Tests/LifecycleChoiceTests.daml
 ```
 
-The commands and expected outcomes are in [Getting Started](../getting-started.md).
+Use `-p <test-name>` while reading one workflow, then run the whole suite before
+handoff. Exact source/test links and focused commands are in the
+[Daml proof map](../reference/daml-proof-map.md); broader commands and expected
+outcomes are in [Getting Started](../getting-started.md).
 Testnet smoke test:
 
 ```bash
-node --import tsx scripts/testnet-v2registry-trade.ts   # real V2-standard trade
+npm --prefix services/operator-backend run live:matched-trade  # real V2-standard trade
 ```
 
 Keep deployment-specific responsibilities outside the reference core — custody,
@@ -278,6 +282,9 @@ app/web/
 
 ## Where to read next
 
-- **Reference:** [HTTP API](../reference/http-api.md) · [Allocation surface](../reference/allocation-surface.md)
-- **Deeper design:** [Workflows](../concepts/workflows.md) · [Liquidity and custody](../concepts/liquidity-and-custody.md)
+You have completed the canonical newcomer path. Choose the task that matches
+your extension:
+
+- **Reference:** [HTTP API](../reference/http-api.md) · [Allocation surface](../reference/allocation-surface.md) · [Daml proof map](../reference/daml-proof-map.md)
+- **Deeper design:** [Liquidity and custody](../concepts/liquidity-and-custody.md) · [Pricing](../concepts/pricing.md) · [Non-goals](../concepts/non-goals.md)
 - **Recipes:** [Add a trading pair](add-a-trading-pair.md) · [Add an LP or instrument](add-lp-or-instrument.md)

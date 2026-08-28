@@ -30,6 +30,7 @@ import Splice.Testing.Utils (emptyExtraArgs)
 import Splice.Util.Token.Wallet.BatchingUtilityV2 qualified as BU
 
 import CantonDex.Dex.Pool
+import CantonDex.Dex.PoolSlice qualified as Slice
 import CantonDex.Dex.PoolState qualified as PS
 import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
@@ -162,6 +163,174 @@ requestRemove fx holder baseOuts quoteOuts lpBurnAmount settleAt now =
     poolCid = fx.poolCid; holder; baseOuts; quoteOuts; lpBurnAmount
     requestedAt = now; settleAt
 
+-- Complete one allocation returned by a PoolLiquidityRules preview. The
+-- fixture uses one Registry.V2 for both asset and LP-token operations.
+completePlannedAllocation
+  : Fixture -> Party -> V2.AllocationFactory_Allocate
+  -> Script (ContractId V2.Allocation)
+completePlannedAllocation fx actor allocationArg = do
+  result <- submit actor $ exerciseCmd fx.factoryCid allocationArg
+  case result.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "planned allocation must complete"
+
+settlePreparedAdd
+  : Fixture -> Dvp.AddLiquidityPreparationArgs -> Time
+  -> Script Dvp.PoolLiquidityRules_SettleAddResult
+settlePreparedAdd fx preparation requestedAt = do
+  allocationPlan <- submit (actAs [fx.operator, fx.registry]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation
+      requestedAt
+  operatorBaseReceiverCid <-
+    completePlannedAllocation fx fx.operator allocationPlan.baseReceiver
+  operatorQuoteReceiverCid <-
+    completePlannedAllocation fx fx.operator allocationPlan.quoteReceiver
+  registrarMintCid <-
+    completePlannedAllocation fx fx.registry allocationPlan.lpMintSender
+  _settlementPlan <- submit (actAs [fx.operator, fx.registry]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddSettlement with
+      preparation
+      operatorBaseReceiverCid
+      operatorQuoteReceiverCid
+      registrarMintCid
+  submit (actAs [fx.operator, fx.registry]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+      expectedPoolId = preparation.expectedPoolId
+      poolCid = preparation.poolCid
+      poolStateCid = preparation.poolStateCid
+      lpPolicyCid = preparation.lpPolicyCid
+      requestCid = preparation.requestCid
+      acceptanceCid = preparation.acceptanceCid
+      recipient = preparation.recipient
+      lpBaseDepositCid = preparation.lpBaseDepositCid
+      lpQuoteDepositCid = preparation.lpQuoteDepositCid
+      lpReceiptCid = preparation.lpReceiptCid
+      baseFactoryCid = fx.factoryCid
+      quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid
+      lpSettleCid = fx.settleCid
+      baseAmount = preparation.baseAmount
+      quoteAmount = preparation.quoteAmount
+      minLpTokens = preparation.minLpTokens
+      knownTotalLpSupply = preparation.knownTotalLpSupply
+      requestedAt
+      poolAdminExtraArgs = emptyExtraArgs
+      lpRegistrarExtraArgs = emptyExtraArgs
+      operatorBaseReceiverCid = Some operatorBaseReceiverCid
+      operatorQuoteReceiverCid = Some operatorQuoteReceiverCid
+      registrarMintCid = Some registrarMintCid
+
+-- Exercise the deployed settle shape without the optional staged-allocation
+-- cids. The choice must create those allocations through the original factory
+-- fields, preserving callers compiled against the previous package version.
+settlePreparedAddLegacy
+  : Fixture -> Dvp.AddLiquidityPreparationArgs -> Time
+  -> Script Dvp.PoolLiquidityRules_SettleAddResult
+settlePreparedAddLegacy fx preparation requestedAt =
+  submit (actAs [fx.operator, fx.registry]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
+      expectedPoolId = preparation.expectedPoolId
+      poolCid = preparation.poolCid
+      poolStateCid = preparation.poolStateCid
+      lpPolicyCid = preparation.lpPolicyCid
+      requestCid = preparation.requestCid
+      acceptanceCid = preparation.acceptanceCid
+      recipient = preparation.recipient
+      lpBaseDepositCid = preparation.lpBaseDepositCid
+      lpQuoteDepositCid = preparation.lpQuoteDepositCid
+      lpReceiptCid = preparation.lpReceiptCid
+      baseFactoryCid = fx.factoryCid
+      quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid
+      lpSettleCid = fx.settleCid
+      baseAmount = preparation.baseAmount
+      quoteAmount = preparation.quoteAmount
+      minLpTokens = preparation.minLpTokens
+      knownTotalLpSupply = preparation.knownTotalLpSupply
+      requestedAt
+      poolAdminExtraArgs = emptyExtraArgs
+      lpRegistrarExtraArgs = emptyExtraArgs
+      operatorBaseReceiverCid = None
+      operatorQuoteReceiverCid = None
+      registrarMintCid = None
+
+settlePreparedRemove
+  : Fixture -> Dvp.RemoveLiquidityPreparationArgs -> Time
+  -> Script Dvp.PoolLiquidityRules_SettleRemoveResult
+settlePreparedRemove fx preparation requestedAt = do
+  allocationPlan <- submit (actAs [fx.operator, fx.registry]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewRemoveAllocations with
+      preparation
+      requestedAt
+  registrarBurnReceiverCid <-
+    completePlannedAllocation fx fx.registry allocationPlan.lpBurnReceiver
+  _settlementPlan <- submit (actAs [fx.operator, fx.registry]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewRemoveSettlement with
+      preparation
+      registrarBurnReceiverCid
+  submit (actAs [fx.operator, fx.registry]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
+      expectedPoolId = preparation.expectedPoolId
+      poolCid = preparation.poolCid
+      poolStateCid = preparation.poolStateCid
+      lpPolicyCid = preparation.lpPolicyCid
+      requestCid = preparation.requestCid
+      acceptanceCid = preparation.acceptanceCid
+      holder = preparation.holder
+      lpTokensToRedeem = preparation.lpTokensToRedeem
+      knownTotalLpSupply = preparation.knownTotalLpSupply
+      minBaseOut = preparation.minBaseOut
+      minQuoteOut = preparation.minQuoteOut
+      baseSliceCids = preparation.baseSliceCids
+      quoteSliceCids = preparation.quoteSliceCids
+      holderBaseReceiptCid = preparation.holderBaseReceiptCid
+      holderQuoteReceiptCid = preparation.holderQuoteReceiptCid
+      holderBurnSenderCid = preparation.holderBurnSenderCid
+      baseFactoryCid = fx.factoryCid
+      quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid
+      lpSettleCid = fx.settleCid
+      requestedAt
+      poolAdminExtraArgs = emptyExtraArgs
+      lpRegistrarExtraArgs = emptyExtraArgs
+      registrarBurnReceiverCid = Some registrarBurnReceiverCid
+
+settlePreparedRemoveLegacy
+  : Fixture -> Dvp.RemoveLiquidityPreparationArgs -> Time
+  -> Script Dvp.PoolLiquidityRules_SettleRemoveResult
+settlePreparedRemoveLegacy fx preparation requestedAt =
+  submit (actAs [fx.operator, fx.registry]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
+      expectedPoolId = preparation.expectedPoolId
+      poolCid = preparation.poolCid
+      poolStateCid = preparation.poolStateCid
+      lpPolicyCid = preparation.lpPolicyCid
+      requestCid = preparation.requestCid
+      acceptanceCid = preparation.acceptanceCid
+      holder = preparation.holder
+      lpTokensToRedeem = preparation.lpTokensToRedeem
+      knownTotalLpSupply = preparation.knownTotalLpSupply
+      minBaseOut = preparation.minBaseOut
+      minQuoteOut = preparation.minQuoteOut
+      baseSliceCids = preparation.baseSliceCids
+      quoteSliceCids = preparation.quoteSliceCids
+      holderBaseReceiptCid = preparation.holderBaseReceiptCid
+      holderQuoteReceiptCid = preparation.holderQuoteReceiptCid
+      holderBurnSenderCid = preparation.holderBurnSenderCid
+      baseFactoryCid = fx.factoryCid
+      quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
+      baseQuoteSettleCid = fx.settleCid
+      lpSettleCid = fx.settleCid
+      requestedAt
+      poolAdminExtraArgs = emptyExtraArgs
+      lpRegistrarExtraArgs = emptyExtraArgs
+      registrarBurnReceiverCid = None
+
 -- Drive a DvP add of `baseAmount` BTC + `quoteAmount` USDC by `lp`,
 -- returning the settle result. Builds the LP's deposit + receipt
 -- allocations matching the legs PoolLiquidityRules settles.
@@ -194,17 +363,15 @@ dvpAdd fx stateCid policyCid lp baseAmount quoteAmount knownSupply reserveBase r
   lpBaseDeposit <- mkAlloc fx.factoryCid lp settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid lp settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid lp settlement receiptSpec [] now
-  submit (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
-      lpPolicyCid = policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = lp
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = knownSupply
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
+        lpPolicyCid = policyCid; requestCid = Some reqCid; acceptanceCid = None
+        recipient = lp
+        lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+        lpReceiptCid = lpReceipt
+        baseAmount; quoteAmount; minLpTokens = 0.0
+        knownTotalLpSupply = knownSupply
+  settlePreparedAddLegacy fx preparation now
 
 -- First-funding add with an explicit receipt amount, allowing a test to place
 -- the requested mint immediately above or below the symmetric dust bound.
@@ -232,17 +399,14 @@ dvpAddWithLp fx stateCid policyCid lp baseAmount quoteAmount lpAmount now = do
   lpBaseDeposit <- mkAlloc fx.factoryCid lp settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid lp settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid lp settlement receiptSpec [] now
-  submit (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
-      lpPolicyCid = policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = lp
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = 0.0
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = stateCid
+        lpPolicyCid = policyCid; requestCid = Some reqCid; acceptanceCid = None
+        recipient = lp
+        lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+        lpReceiptCid = lpReceipt
+        baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = 0.0
+  settlePreparedAdd fx preparation now
 
 -- Happy path: a first add funds an empty pool and mints LP tokens to the
 -- provider, all in one atomic settlement. Asserts the pool turns Active with the
@@ -275,6 +439,19 @@ testDvpAddLiquidity = do
   let lpHoldings = filter (\(_, h) -> h.instrumentId == lpId && h.owner == alice && not h.locked) aliceHoldings
   length lpHoldings === 1
   (snd (head lpHoldings)).amount === expectedLp
+
+  -- Policy supply changes and reserve-slice records must represent real,
+  -- positive value. Failed submissions leave the live policy untouched.
+  submitMustFail fx.registry $ exerciseCmd res.lpPolicyCid LP.LPTokenPolicy_RecordMint with
+    amount = 0.0
+  submitMustFail fx.registry $ exerciseCmd res.lpPolicyCid LP.LPTokenPolicy_RecordBurn with
+    amount = expectedLp + 0.0000000001
+  submitMustFail fx.operator $ createCmd Slice.PoolSlice with
+    poolId = fx.poolId
+    operator = fx.operator
+    side = BaseSide
+    allocationCid = baseSlice.allocationCid
+    amount = 0.0
   pure ()
 
 -- Off-ratio add: LP tokens are minted against the limiting side, so the
@@ -367,20 +544,16 @@ testDvpRemoveDeliversToHolder = do
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec [toInterfaceContractId lpHoldCid] now
 
-  remRes <- submit (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid
-      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = Some reqCid; acceptanceCid = None
-      holder = alice; lpTokensToRedeem = lpToRedeem; knownTotalLpSupply = lpAmount
-      minBaseOut = 0.0; minQuoteOut = 0.0
-      baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
-      holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
-      holderBurnSenderCid = burnSender
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  let preparation = Dvp.RemoveLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid
+        poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+        requestCid = Some reqCid; acceptanceCid = None
+        holder = alice; lpTokensToRedeem = lpToRedeem; knownTotalLpSupply = lpAmount
+        minBaseOut = 0.0; minQuoteOut = 0.0
+        baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
+        holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
+        holderBurnSenderCid = burnSender
+  remRes <- settlePreparedRemoveLegacy fx preparation now
 
   -- Reserves, slices, and LP supply all retain the same 60% remainder.
   Some state <- queryContractId fx.operator remRes.poolStateCid
@@ -438,17 +611,17 @@ testStaleQuoteRejected = do
   bBase <- mkAlloc fx.factoryCid bob settlement bBaseSpec [toInterfaceContractId bBtc] now
   bQuote <- mkAlloc fx.factoryCid bob settlement bQuoteSpec [toInterfaceContractId bUsdc] now
   bRcpt <- mkAlloc fx.factoryCid bob settlement bRcptSpec [] now
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid
+        poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+        requestCid = Some bReq; acceptanceCid = None; recipient = bob
+        lpBaseDepositCid = bBase; lpQuoteDepositCid = bQuote; lpReceiptCid = bRcpt
+        baseAmount = 1.0; quoteAmount = 20000.0; minLpTokens = 0.0
+        knownTotalLpSupply = 0.0   -- STALE: pool is funded now
   submitMustFail (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid
-      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = Some bReq; acceptanceCid = None; recipient = bob
-      lpBaseDepositCid = bBase; lpQuoteDepositCid = bQuote; lpReceiptCid = bRcpt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount = 1.0; quoteAmount = 20000.0; minLpTokens = 0.0
-      knownTotalLpSupply = 0.0   -- STALE: pool is funded now
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation
+      requestedAt = now
   pure ()
 
 -- The settle choices are co-controlled (operator, lpRegistrar): the
@@ -460,22 +633,43 @@ testSettleRequiresCoControl = do
   fx <- setup [alice]
   now <- getTime
   addRes <- dvpAdd fx fx.stateCid fx.policyCid alice 10.0 200000.0 0.0 0.0 0.0 now
+  let preparation = Dvp.RemoveLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid
+        poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+        requestCid = Some (coerceContractId addRes.baseSliceCid); acceptanceCid = None
+        holder = alice; lpTokensToRedeem = PM.sqrtDecimal 2000000.0
+        knownTotalLpSupply = PM.sqrtDecimal 2000000.0
+        minBaseOut = 0.0; minQuoteOut = 0.0
+        baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
+        holderBaseReceiptCid = coerceContractId addRes.baseSliceCid
+        holderQuoteReceiptCid = coerceContractId addRes.baseSliceCid
+        holderBurnSenderCid = coerceContractId addRes.baseSliceCid
   -- Operator alone (no lpRegistrar) cannot settle a remove.
   submitMustFail fx.operator $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid
-      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = Some (coerceContractId addRes.baseSliceCid); acceptanceCid = None
-      holder = alice; lpTokensToRedeem = PM.sqrtDecimal 2000000.0
-      knownTotalLpSupply = PM.sqrtDecimal 2000000.0
-      minBaseOut = 0.0; minQuoteOut = 0.0
-      baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
-      holderBaseReceiptCid = coerceContractId addRes.baseSliceCid
-      holderQuoteReceiptCid = coerceContractId addRes.baseSliceCid
-      holderBurnSenderCid = coerceContractId addRes.baseSliceCid
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
+      expectedPoolId = preparation.expectedPoolId
+      poolCid = preparation.poolCid
+      poolStateCid = preparation.poolStateCid
+      lpPolicyCid = preparation.lpPolicyCid
+      requestCid = preparation.requestCid
+      acceptanceCid = preparation.acceptanceCid
+      holder = preparation.holder
+      lpTokensToRedeem = preparation.lpTokensToRedeem
+      knownTotalLpSupply = preparation.knownTotalLpSupply
+      minBaseOut = preparation.minBaseOut
+      minQuoteOut = preparation.minQuoteOut
+      baseSliceCids = preparation.baseSliceCids
+      quoteSliceCids = preparation.quoteSliceCids
+      holderBaseReceiptCid = preparation.holderBaseReceiptCid
+      holderQuoteReceiptCid = preparation.holderQuoteReceiptCid
+      holderBurnSenderCid = preparation.holderBurnSenderCid
+      baseFactoryCid = fx.factoryCid
+      quoteFactoryCid = fx.factoryCid
+      lpFactoryCid = fx.factoryCid
       baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+      requestedAt = now
+      poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+      registrarBurnReceiverCid = Some (coerceContractId addRes.baseSliceCid)
   pure ()
 
 -- Multi-slice remove: two adds create two slices per side; a full
@@ -523,20 +717,17 @@ testDvpMultiSliceRemove = do
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec (map toInterfaceContractId lpCids) now
 
-  remRes <- submit (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid
-      poolStateCid = add2.poolStateCid; lpPolicyCid = add2.lpPolicyCid
-      requestCid = Some reqCid; acceptanceCid = None
-      holder = alice; lpTokensToRedeem = total; knownTotalLpSupply = total
-      minBaseOut = 0.0; minQuoteOut = 0.0
-      baseSliceCids = [add1.baseSliceCid, add2.baseSliceCid]
-      quoteSliceCids = [add1.quoteSliceCid, add2.quoteSliceCid]
-      holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
-      holderBurnSenderCid = burnSender
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid; lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  let preparation = Dvp.RemoveLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid
+        poolStateCid = add2.poolStateCid; lpPolicyCid = add2.lpPolicyCid
+        requestCid = Some reqCid; acceptanceCid = None
+        holder = alice; lpTokensToRedeem = total; knownTotalLpSupply = total
+        minBaseOut = 0.0; minQuoteOut = 0.0
+        baseSliceCids = [add1.baseSliceCid, add2.baseSliceCid]
+        quoteSliceCids = [add1.quoteSliceCid, add2.quoteSliceCid]
+        holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
+        holderBurnSenderCid = burnSender
+  remRes <- settlePreparedRemove fx preparation now
 
   -- Both slices per side consumed; pool drained; alice got it all back.
   remRes.baseReturned === 15.0
@@ -605,20 +796,20 @@ testExpiredAddRejected = do
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+        lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None
+        recipient = alice
+        lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+        lpReceiptCid = lpReceipt
+        baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+        knownTotalLpSupply = 0.0
   -- Even with a fresh `requestedAt`, the settle must abort on the expired
   -- ledger-anchored deadline.
   submitMustFail (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
-      knownTotalLpSupply = 0.0
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation
+      requestedAt = now
   pure ()
 
 -- Symmetric to the add case, on the remove side: a past deadline on a
@@ -653,20 +844,19 @@ testExpiredRemoveRejected = do
   baseReceipt <- mkAlloc fx.factoryCid alice settlement baseReceiptSpec [] now
   quoteReceipt <- mkAlloc fx.factoryCid alice settlement quoteReceiptSpec [] now
   burnSender <- mkAlloc fx.factoryCid alice settlement burnSpec [toInterfaceContractId lpHoldCid] now
+  let preparation = Dvp.RemoveLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid
+        poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+        requestCid = Some reqCid; acceptanceCid = None
+        holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
+        minBaseOut = 0.0; minQuoteOut = 0.0
+        baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
+        holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
+        holderBurnSenderCid = burnSender
   submitMustFail (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid
-      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = Some reqCid; acceptanceCid = None
-      holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
-      minBaseOut = 0.0; minQuoteOut = 0.0
-      baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
-      holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
-      holderBurnSenderCid = burnSender
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewRemoveAllocations with
+      preparation
+      requestedAt = now
   pure ()
 
 -- A supplied allocation whose spec is not one
@@ -699,18 +889,18 @@ testSettleRejectsForeignAllocation = do
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement forgedSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+        lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None
+        recipient = alice
+        lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+        lpReceiptCid = lpReceipt
+        baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+        knownTotalLpSupply = 0.0
   submitMustFail (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
-      knownTotalLpSupply = 0.0
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation
+      requestedAt = now
   pure ()
 
 -- The request's `settleAt` is the single
@@ -742,18 +932,18 @@ testSettleRejectsExpiredRequest = do
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+        lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None
+        recipient = alice
+        lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+        lpReceiptCid = lpReceipt
+        baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+        knownTotalLpSupply = 0.0
   submitMustFail (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
-      knownTotalLpSupply = 0.0
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation
+      requestedAt = now
   pure ()
 
 -- The minted amount is read from the LP receipt but bounded: a receipt claiming
@@ -785,18 +975,18 @@ testAddRejectsOverMint = do
   lpBaseDeposit <- mkAlloc fx.factoryCid alice settlement baseSpec [toInterfaceContractId baseHold] now
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+        lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None
+        recipient = alice
+        lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+        lpReceiptCid = lpReceipt
+        baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+        knownTotalLpSupply = 0.0
   submitMustFail (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = alice
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
-      knownTotalLpSupply = 0.0
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation
+      requestedAt = now
   pure ()
 
 -- The over-mint bound is symmetric with the dust tolerance.
@@ -870,6 +1060,14 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
   lpQuoteDeposit <- mkAlloc fx.factoryCid alice settlement quoteSpec [toInterfaceContractId quoteHold] now
   lpReceipt <- mkAlloc fx.factoryCid alice settlement receiptSpec [] now
 
+  let preparation requestCid acceptanceCid = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+        lpPolicyCid = fx.policyCid; requestCid; acceptanceCid; recipient = alice
+        lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+        lpReceiptCid = lpReceipt
+        baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+        knownTotalLpSupply = 0.0
+
   -- alice (the request observer) exercises the standard accept → consumes the
   -- request and leaves the acceptance evidence.
   _ <- submit alice $ exerciseCmd (toInterfaceContractId @V2.AllocationRequest reqCid)
@@ -877,53 +1075,23 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
 
   -- Settlement must reject a consumed request without acceptance evidence.
   submitMustFail (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None
-      recipient = alice
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
-      knownTotalLpSupply = 0.0
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation = preparation (Some reqCid) None
+      requestedAt = now
 
   -- Settling with neither request nor evidence fails (no binding to validate
   -- against): proves the evidence is load-bearing, not optional.
   submitMustFail (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = None
-      recipient = alice
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
-      knownTotalLpSupply = 0.0
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation = preparation None None
+      requestedAt = now
 
   -- The operator discovers the acceptance evidence and settles against it.
   accs <- query @LAR.LiquidityAllocationAcceptance fx.operator
   accCid <- case accs of
     ((cid, _) :: _) -> pure cid
     [] -> abort "accept must leave acceptance evidence"
-  res <- submit (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = Some accCid
-      recipient = alice
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
-      knownTotalLpSupply = 0.0
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  res <- settlePreparedAdd fx (preparation None (Some accCid)) now
   res.lpTokensMinted === lpAmount
   -- The evidence is consumed by settle (cleanup); none left behind.
   remaining <- query @LAR.LiquidityAllocationAcceptance fx.operator
@@ -1008,19 +1176,15 @@ testBatchedUtilityAddLiquidity = do
     ((cid, _) :: _) -> pure cid
     [] -> abort "batched accept must leave acceptance evidence"
 
-  res2 <- submit (actAs [fx.operator, fx.registry]) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-      lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = Some accCid
-      recipient = alice
-      lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
-      lpReceiptCid = lpReceipt
-      baseFactoryCid = fx.factoryCid; quoteFactoryCid = fx.factoryCid
-      lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
-      baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
-      knownTotalLpSupply = 0.0
-      requestedAt = now; poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+        lpPolicyCid = fx.policyCid; requestCid = None; acceptanceCid = Some accCid
+        recipient = alice
+        lpBaseDepositCid = lpBaseDeposit; lpQuoteDepositCid = lpQuoteDeposit
+        lpReceiptCid = lpReceipt
+        baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
+        knownTotalLpSupply = 0.0
+  res2 <- settlePreparedAdd fx preparation now
   res2.lpTokensMinted === lpAmount
   remaining <- query @LAR.LiquidityAllocationAcceptance fx.operator
   remaining === []

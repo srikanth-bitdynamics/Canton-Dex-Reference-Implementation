@@ -118,7 +118,18 @@ template Order with
     signatory operator
     observer trader
 
-    ensure remainingQty > 0.0
+    ensure
+      baseInstrumentId /= ""
+        && quoteInstrumentId /= ""
+        && baseInstrumentId /= quoteInstrumentId
+        && limitPrice > 0.0
+        && remainingQty > 0.0
+        && settlementRef.id /= ""
+        && case (status, allocationCid) of
+             (OS_Pending, None) -> True
+             (OS_Funded, Some _) -> True
+             (OS_PartiallyFilled, Some _) -> True
+             _ -> False
 
     -- Bind an already-trader-funded allocation onto the order. This does NOT
     -- call the factory: the trader authors the allocation (so their holdings
@@ -222,6 +233,12 @@ template OrderAllocationRequest with
   where
     signatory operator
     observer trader
+
+    ensure
+      lockInstrumentId /= ""
+        && lockAmount > 0.0
+        && orderRef.id /= ""
+        && requestedAt <= optional requestedAt identity expiry
 
     interface instance V2.AllocationRequest for OrderAllocationRequest where
       view = V2.AllocationRequestView with

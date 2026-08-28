@@ -20,11 +20,10 @@ import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
 import Splice.Api.Token.MetadataV1
 
-import Splice.Testing.Utils (discloseMany', queryDisclosure', Disclosures', emptyExtraArgs)
-import Splice.Testing.TokenStandard.RegistryApiV2 (getAllocationFactory)
+import Splice.Testing.Utils (discloseMany', Disclosures', emptyExtraArgs)
+import Splice.Testing.TokenStandard.RegistryApiV2
+  (getAllocationFactory, getSettlementFactory)
 import Splice.Testing.Registries.TestTokenV2_RegistryV2 qualified as TT2
-import Splice.Testing.Tokens.TestTokenV2 qualified as TestTokenV2
-import Splice.Testing.Tokens.TestTokenV2.Holding qualified as TTHolding
 
 import CantonDex.Dex.Pool
 import CantonDex.Dex.PoolState qualified as PS
@@ -83,15 +82,6 @@ ttAlloc reg party settlement spec inputHoldingCids now = do
     V2.AllocationInstructionResult_Completed cid -> pure cid
     _ -> abort "ttAlloc: allocation must complete"
 
--- Disclose TokenRules + every TestTokenV2 holding the registry administers,
--- so the settle's TT2 SettleBatch can see the locked deposit holdings it
--- consumes (mirrors getSettlementFactory's lockedDs enrichment).
-ttSettleDisclosures : Fixture -> Script Disclosures'
-ttSettleDisclosures fx = do
-  toks <- query @TTHolding.Token fx.ttAdmin
-  ds <- forA toks (\(cid, _) -> queryDisclosure' @TTHolding.Token fx.ttAdmin cid)
-  pure (fx.ttDisclosures <> mconcat ds)
-
 mkSpec : Party -> V2.Account -> [V2.TransferLeg] -> Bool -> V2.AllocationSpecification
 mkSpec admin authorizer legs committed = V2.AllocationSpecification with
   admin; authorizer
@@ -117,10 +107,6 @@ data Fixture = Fixture with
   policyCid : ContractId LP.LPTokenPolicy
   dvpCid : ContractId Dvp.PoolLiquidityRules
   rulesCid : ContractId PRules.PoolRules
-  ttFactoryCid : ContractId V2.AllocationFactory
-  ttSettleCid : ContractId V2.SettlementFactory
-  ttDisclosures : Disclosures'
-  ttContext : ChoiceContext
 
 -- base = "X", quote = "Y" (TestTokenV2 instruments administered by ttAdmin).
 setup : Party -> Script Fixture
@@ -152,27 +138,9 @@ setup lp = do
   policyCid <- submit lpRegistrar $ createCmd LP.LPTokenPolicy with
     lpRegistrar; operator; lpInstrumentId
     totalSupply = 0.0; active = True
-  -- The TestTokenV2 factory cid + its uniform choice context/disclosure
-  -- (basic accounts => one context reused across all TT2 choices).
-  now <- getTime
-  let sampleSpec = mkSpec ttAdmin (Utils.basicAccount lp)
-        [ V2.TransferLeg with
-            transferLegId = "sample"; sender = Utils.basicAccount lp
-            receiver = Utils.basicAccount operator; amount = 10.0
-            instrumentId = "X"; meta = emptyMetadata ] True
-  enriched <- getAllocationFactory ttReg V2.AllocationFactory_Allocate with
-    settlement = PM.poolSettlement poolCid operator
-    allocation = sampleSpec; requestedAt = now
-    inputHoldingCids = []; actors = [lp]; extraArgs = emptyExtraArgs
-  [(tokenRulesCid, _)] <- query @TestTokenV2.TokenRules ttAdmin
-  ttD <- queryDisclosure' @TestTokenV2.TokenRules ttAdmin tokenRulesCid
   pure Fixture with
     operator; lpRegistrar; ttAdmin; ttReg; lpReg = lpRegCid
     poolId; poolCid; stateCid; policyCid; dvpCid; rulesCid
-    ttFactoryCid = enriched.factoryCid
-    ttSettleCid = coerceContractId enriched.factoryCid
-    ttDisclosures = ttD
-    ttContext = enriched.arg.extraArgs.context
 
 -- Author the LP's three add allocations and return them with the request.
 authorAdd
@@ -208,32 +176,155 @@ authorAdd fx lp baseAmount quoteAmount now = do
   let V2.AllocationInstructionResult_Completed receiptCid = rres.output
   pure (reqCid, baseDep, quoteDep, receiptCid)
 
--- Build the DvP-add SettleAddLiquidity command, parameterized on the
--- pool.admin (base/quote) choice context. base/quote settle via the real
--- TestTokenV2 factory; LP mint via our self-registry.
+data StagedAddSettlement = StagedAddSettlement with
+    requestedAt : Time
+    baseFactoryCid : ContractId V2.AllocationFactory
+    quoteFactoryCid : ContractId V2.AllocationFactory
+    lpFactoryCid : ContractId V2.AllocationFactory
+    operatorBaseReceiverCid : ContractId V2.Allocation
+    operatorQuoteReceiverCid : ContractId V2.Allocation
+    registrarMintCid : ContractId V2.Allocation
+    baseQuoteSettleCid : ContractId V2.SettlementFactory
+    poolAdminExtraArgs : ExtraArgs
+    disclosures : Disclosures'
+
+data StagedRemoveSettlement = StagedRemoveSettlement with
+    requestedAt : Time
+    lpFactoryCid : ContractId V2.AllocationFactory
+    registrarBurnReceiverCid : ContractId V2.Allocation
+    baseQuoteSettleCid : ContractId V2.SettlementFactory
+    poolAdminExtraArgs : ExtraArgs
+    disclosures : Disclosures'
+
+completeTtAllocation
+  : Fixture -> Party -> V2.AllocationFactory_Allocate
+  -> Script (ContractId V2.AllocationFactory, ContractId V2.Allocation)
+completeTtAllocation fx actor allocationArg = do
+  enriched <- getAllocationFactory fx.ttReg allocationArg
+  result <- submit (actAs actor <> discloseMany' enriched.disclosures) $
+    exerciseCmd enriched.factoryCid enriched.arg
+  case result.output of
+    V2.AllocationInstructionResult_Completed cid -> pure (enriched.factoryCid, cid)
+    _ -> abort "TestTokenV2 planned allocation must complete"
+
+completeLpAllocation
+  : Fixture -> Party -> V2.AllocationFactory_Allocate
+  -> Script (ContractId V2.AllocationFactory, ContractId V2.Allocation)
+completeLpAllocation fx actor allocationArg = do
+  let factoryCid = toInterfaceContractId fx.lpReg : ContractId V2.AllocationFactory
+  result <- submit (actAs actor <> readAs [fx.lpRegistrar]) $
+    exerciseCmd factoryCid allocationArg
+  case result.output of
+    V2.AllocationInstructionResult_Completed cid -> pure (factoryCid, cid)
+    _ -> abort "LP planned allocation must complete"
+
+stageAddSettlement
+  : Fixture -> Dvp.AddLiquidityPreparationArgs -> Time
+  -> Script StagedAddSettlement
+stageAddSettlement fx preparation requestedAt = do
+  allocationPlan <- submit (actAs [fx.operator, fx.lpRegistrar]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddAllocations with
+      preparation
+      requestedAt
+  (baseFactoryCid, operatorBaseReceiverCid) <-
+    completeTtAllocation fx fx.operator allocationPlan.baseReceiver
+  (quoteFactoryCid, operatorQuoteReceiverCid) <-
+    completeTtAllocation fx fx.operator allocationPlan.quoteReceiver
+  (lpFactoryCid, registrarMintCid) <-
+    completeLpAllocation fx fx.lpRegistrar allocationPlan.lpMintSender
+  settlementPlan <- submit (actAs [fx.operator, fx.lpRegistrar]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewAddSettlement with
+      preparation
+      operatorBaseReceiverCid
+      operatorQuoteReceiverCid
+      registrarMintCid
+  enriched <- getSettlementFactory fx.ttReg settlementPlan.baseQuoteBatch
+  pure StagedAddSettlement with
+    requestedAt
+    baseFactoryCid
+    quoteFactoryCid
+    lpFactoryCid
+    operatorBaseReceiverCid
+    operatorQuoteReceiverCid
+    registrarMintCid
+    baseQuoteSettleCid = enriched.factoryCid
+    poolAdminExtraArgs = enriched.arg.extraArgs
+    disclosures = enriched.disclosures
+
+stageRemoveSettlement
+  : Fixture -> Dvp.RemoveLiquidityPreparationArgs -> Time
+  -> Script StagedRemoveSettlement
+stageRemoveSettlement fx preparation requestedAt = do
+  allocationPlan <- submit (actAs [fx.operator, fx.lpRegistrar]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewRemoveAllocations with
+      preparation
+      requestedAt
+  (lpFactoryCid, registrarBurnReceiverCid) <-
+    completeLpAllocation fx fx.lpRegistrar allocationPlan.lpBurnReceiver
+  settlementPlan <- submit (actAs [fx.operator, fx.lpRegistrar]) $
+    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_PreviewRemoveSettlement with
+      preparation
+      registrarBurnReceiverCid
+  enriched <- getSettlementFactory fx.ttReg settlementPlan.baseQuoteBatch
+  pure StagedRemoveSettlement with
+    requestedAt
+    lpFactoryCid
+    registrarBurnReceiverCid
+    baseQuoteSettleCid = enriched.factoryCid
+    poolAdminExtraArgs = enriched.arg.extraArgs
+    disclosures = enriched.disclosures
+
+-- Build the DvP-add command after every exact factory choice has been
+-- discovered. The context parameter is exposed only for the negative test
+-- that proves TestTokenV2 rejects an omitted operation-specific context.
 mkSettleAdd
-  : Fixture -> ContractId LAR.LiquidityAllocationRequest -> Party
-  -> ContractId V2.Allocation -> ContractId V2.Allocation -> ContractId V2.Allocation
-  -> Time -> ExtraArgs -> Commands Dvp.PoolLiquidityRules_SettleAddResult
-mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx =
+  : Fixture
+  -> Dvp.AddLiquidityPreparationArgs
+  -> StagedAddSettlement
+  -> ExtraArgs
+  -> Commands Dvp.PoolLiquidityRules_SettleAddResult
+mkSettleAdd fx preparation staged poolAdminExtraArgs =
   exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-    expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
-    lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None; recipient = lp
-    lpBaseDepositCid = baseDep; lpQuoteDepositCid = quoteDep; lpReceiptCid = receiptCid
-    baseFactoryCid = fx.ttFactoryCid; quoteFactoryCid = fx.ttFactoryCid
-    lpFactoryCid = toInterfaceContractId fx.lpReg
-    baseQuoteSettleCid = fx.ttSettleCid; lpSettleCid = coerceContractId fx.lpReg
-    baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0; knownTotalLpSupply = 0.0
-    requestedAt = now; poolAdminExtraArgs = poolAdminCtx; lpRegistrarExtraArgs = emptyExtraArgs
+    expectedPoolId = preparation.expectedPoolId
+    poolCid = preparation.poolCid
+    poolStateCid = preparation.poolStateCid
+    lpPolicyCid = preparation.lpPolicyCid
+    requestCid = preparation.requestCid
+    acceptanceCid = preparation.acceptanceCid
+    recipient = preparation.recipient
+    lpBaseDepositCid = preparation.lpBaseDepositCid
+    lpQuoteDepositCid = preparation.lpQuoteDepositCid
+    lpReceiptCid = preparation.lpReceiptCid
+    baseFactoryCid = staged.baseFactoryCid
+    quoteFactoryCid = staged.quoteFactoryCid
+    lpFactoryCid = staged.lpFactoryCid
+    baseQuoteSettleCid = staged.baseQuoteSettleCid
+    lpSettleCid = coerceContractId fx.lpReg
+    baseAmount = preparation.baseAmount
+    quoteAmount = preparation.quoteAmount
+    minLpTokens = preparation.minLpTokens
+    knownTotalLpSupply = preparation.knownTotalLpSupply
+    requestedAt = staged.requestedAt
+    poolAdminExtraArgs
+    lpRegistrarExtraArgs = emptyExtraArgs
+    operatorBaseReceiverCid = Some staged.operatorBaseReceiverCid
+    operatorQuoteReceiverCid = Some staged.operatorQuoteReceiverCid
+    registrarMintCid = Some staged.registrarMintCid
 
 -- Run a full DvP add and return its result for tests that need a funded pool.
 addSettle : Fixture -> Party -> Time -> Script Dvp.PoolLiquidityRules_SettleAddResult
 addSettle fx lp now = do
   (reqCid, baseDep, quoteDep, receiptCid) <- authorAdd fx lp 10.0 200000.0 now
-  settleDisc <- ttSettleDisclosures fx
-  let poolAdminCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
-  submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
-    mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now poolAdminCtx
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+        lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None
+        recipient = lp
+        lpBaseDepositCid = baseDep; lpQuoteDepositCid = quoteDep; lpReceiptCid = receiptCid
+        baseAmount = 10.0; quoteAmount = 200000.0
+        minLpTokens = 0.0; knownTotalLpSupply = 0.0
+  staged <- stageAddSettlement fx preparation now
+  submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' staged.disclosures) $
+    mkSettleAdd fx preparation staged staged.poolAdminExtraArgs
 
 -- A DvP add settles across both registries when the base/quote batch receives
 -- the TestTokenV2 context. The pool becomes active, its reserves are backed by
@@ -264,9 +355,17 @@ testRealRegistryDvpRejectsMissingContext = do
   fx <- setup lp
   now <- getTime
   (reqCid, baseDep, quoteDep, receiptCid) <- authorAdd fx lp 10.0 200000.0 now
-  settleDisc <- ttSettleDisclosures fx
-  result <- trySubmit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
-    mkSettleAdd fx reqCid lp baseDep quoteDep receiptCid now emptyExtraArgs
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = fx.stateCid
+        lpPolicyCid = fx.policyCid; requestCid = Some reqCid; acceptanceCid = None
+        recipient = lp
+        lpBaseDepositCid = baseDep; lpQuoteDepositCid = quoteDep; lpReceiptCid = receiptCid
+        baseAmount = 10.0; quoteAmount = 200000.0
+        minLpTokens = 0.0; knownTotalLpSupply = 0.0
+  staged <- stageAddSettlement fx preparation now
+  result <- trySubmit
+    (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' staged.disclosures) $
+    mkSettleAdd fx preparation staged emptyExtraArgs
   case result of
     Right _ -> abort "expected a missing-context failure"
     Left e ->
@@ -312,20 +411,16 @@ testRealRegistryDvpAddRefundsOffRatioExcess = do
       settlement; allocation = mkSpec fx.lpRegistrar lpAcct [lpMintLeg] False; requestedAt = now
       inputHoldingCids = []; actors = [lp]; extraArgs = emptyExtraArgs
   let V2.AllocationInstructionResult_Completed receiptCid = rres.output
-  settleDisc <- ttSettleDisclosures fx
-  res <- submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
-    exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = addRes.poolStateCid
-      lpPolicyCid = addRes.lpPolicyCid; requestCid = Some reqCid; acceptanceCid = None
-      recipient = lp
-      lpBaseDepositCid = baseDep; lpQuoteDepositCid = quoteDep; lpReceiptCid = receiptCid
-      baseFactoryCid = fx.ttFactoryCid; quoteFactoryCid = fx.ttFactoryCid
-      lpFactoryCid = toInterfaceContractId fx.lpReg
-      baseQuoteSettleCid = fx.ttSettleCid; lpSettleCid = coerceContractId fx.lpReg
-      baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = supply
-      requestedAt = now
-      poolAdminExtraArgs = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
-      lpRegistrarExtraArgs = emptyExtraArgs
+  let preparation = Dvp.AddLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid; poolStateCid = addRes.poolStateCid
+        lpPolicyCid = addRes.lpPolicyCid; requestCid = Some reqCid; acceptanceCid = None
+        recipient = lp
+        lpBaseDepositCid = baseDep; lpQuoteDepositCid = quoteDep; lpReceiptCid = receiptCid
+        baseAmount; quoteAmount; minLpTokens = 0.0; knownTotalLpSupply = supply
+  staged <- stageAddSettlement fx preparation now
+  res <- submit
+    (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' staged.disclosures) $
+    mkSettleAdd fx preparation staged staged.poolAdminExtraArgs
   res.baseAdded === Some 5.0
   res.quoteAdded === Some 100000.0
   Some state <- queryContractId fx.operator res.poolStateCid
@@ -371,22 +466,44 @@ testRealRegistryDvpRemoveSettles = do
       settlement; allocation = mkSpec fx.lpRegistrar aliceAcct [burnLeg] True; requestedAt = now
       inputHoldingCids = [toInterfaceContractId lpHoldCid]; actors = [alice]; extraArgs = emptyExtraArgs
   let V2.AllocationInstructionResult_Completed burnSender = brres.output
-  settleDisc <- ttSettleDisclosures fx
-  let poolAdminCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
-  remRes <- submit (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' settleDisc) $
+  let preparation = Dvp.RemoveLiquidityPreparationArgs with
+        expectedPoolId = fx.poolId; poolCid = fx.poolCid
+        poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
+        requestCid = Some reqCid; acceptanceCid = None
+        holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
+        minBaseOut = 0.0; minQuoteOut = 0.0
+        baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
+        holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
+        holderBurnSenderCid = burnSender
+  staged <- stageRemoveSettlement fx preparation now
+  remRes <- submit
+    (foldMap actAs [fx.operator, fx.lpRegistrar] <> discloseMany' staged.disclosures) $
     exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_SettleRemoveLiquidity with
-      expectedPoolId = fx.poolId; poolCid = fx.poolCid
-      poolStateCid = addRes.poolStateCid; lpPolicyCid = addRes.lpPolicyCid
-      requestCid = Some reqCid; acceptanceCid = None
-      holder = alice; lpTokensToRedeem = lpAmount; knownTotalLpSupply = lpAmount
-      minBaseOut = 0.0; minQuoteOut = 0.0
-      baseSliceCids = [addRes.baseSliceCid]; quoteSliceCids = [addRes.quoteSliceCid]
-      holderBaseReceiptCid = baseReceipt; holderQuoteReceiptCid = quoteReceipt
-      holderBurnSenderCid = burnSender
-      baseFactoryCid = fx.ttFactoryCid; quoteFactoryCid = fx.ttFactoryCid
-      lpFactoryCid = toInterfaceContractId fx.lpReg
-      baseQuoteSettleCid = fx.ttSettleCid; lpSettleCid = coerceContractId fx.lpReg
-      requestedAt = now; poolAdminExtraArgs = poolAdminCtx; lpRegistrarExtraArgs = emptyExtraArgs
+      expectedPoolId = preparation.expectedPoolId
+      poolCid = preparation.poolCid
+      poolStateCid = preparation.poolStateCid
+      lpPolicyCid = preparation.lpPolicyCid
+      requestCid = preparation.requestCid
+      acceptanceCid = preparation.acceptanceCid
+      holder = preparation.holder
+      lpTokensToRedeem = preparation.lpTokensToRedeem
+      knownTotalLpSupply = preparation.knownTotalLpSupply
+      minBaseOut = preparation.minBaseOut
+      minQuoteOut = preparation.minQuoteOut
+      baseSliceCids = preparation.baseSliceCids
+      quoteSliceCids = preparation.quoteSliceCids
+      holderBaseReceiptCid = preparation.holderBaseReceiptCid
+      holderQuoteReceiptCid = preparation.holderQuoteReceiptCid
+      holderBurnSenderCid = preparation.holderBurnSenderCid
+      baseFactoryCid = staged.lpFactoryCid
+      quoteFactoryCid = staged.lpFactoryCid
+      lpFactoryCid = staged.lpFactoryCid
+      baseQuoteSettleCid = staged.baseQuoteSettleCid
+      lpSettleCid = coerceContractId fx.lpReg
+      requestedAt = staged.requestedAt
+      poolAdminExtraArgs = staged.poolAdminExtraArgs
+      lpRegistrarExtraArgs = emptyExtraArgs
+      registrarBurnReceiverCid = Some staged.registrarBurnReceiverCid
   Some state <- queryContractId fx.operator remRes.poolStateCid
   state.reserves.baseAmount === 0.0
   state.reserves.quoteAmount === 0.0
@@ -458,9 +575,19 @@ testRealRegistryDvpSwapSettles = do
           reqRes.allocationSpec.transferLegSides
   underpayInputs <- holdingCidsFor bob "Y"
   underpayCid <- ttAlloc fx.ttReg bob reqRes.settlement underpaySpec underpayInputs now
-  malformedSettleDisc <- ttSettleDisclosures fx
-  let swapCtx = ExtraArgs with context = fx.ttContext; meta = emptyMetadata
-  submitMustFail (actAs fx.operator <> discloseMany' malformedSettleDisc) $
+  malformedBatch <- submit fx.operator $
+    exerciseCmd fx.rulesCid PRules.PoolRules_PreviewSwapSettlement with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid
+      swapperAccount = Utils.basicAccount bob
+      inputInstrumentId = "Y"; inputAmount = swapIn; minOutputAmount = 0.0
+      swapperAllocationCid = underpayCid
+      inputSliceCid = addRes.quoteSliceCid
+      outputSliceCids = [addRes.baseSliceCid]
+      quoteBinding = reqRes.quoteBinding
+  malformedSettlement <- getSettlementFactory fx.ttReg malformedBatch
+  submitMustFail
+    (actAs fx.operator <> discloseMany' malformedSettlement.disclosures) $
     exerciseCmd fx.rulesCid PRules.PoolRules_Swap with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid
@@ -469,8 +596,8 @@ testRealRegistryDvpSwapSettles = do
       swapperAllocationCid = underpayCid
       inputSliceCid = addRes.quoteSliceCid
       outputSliceCids = [addRes.baseSliceCid]
-      factoryCid = fx.ttSettleCid
-      extraArgs = swapCtx
+      factoryCid = malformedSettlement.factoryCid
+      extraArgs = malformedSettlement.arg.extraArgs
       quoteBinding = reqRes.quoteBinding
 
   -- 2. Bob authors that exact spec via the upstream TestTokenV2 registry,
@@ -480,8 +607,18 @@ testRealRegistryDvpSwapSettles = do
 
   -- 3. Operator settles the swap via PoolRules_Swap against the upstream
   --    TestTokenV2 SettlementFactory, with the per-admin context.
-  settleDisc <- ttSettleDisclosures fx
-  swapRes <- submit (actAs fx.operator <> discloseMany' settleDisc) $
+  settlementBatch <- submit fx.operator $
+    exerciseCmd fx.rulesCid PRules.PoolRules_PreviewSwapSettlement with
+      expectedPoolId = fx.poolId; poolCid = fx.poolCid
+      poolStateCid = addRes.poolStateCid
+      swapperAccount = Utils.basicAccount bob
+      inputInstrumentId = "Y"; inputAmount = swapIn; minOutputAmount = 0.0
+      swapperAllocationCid = swapAllocCid
+      inputSliceCid = addRes.quoteSliceCid
+      outputSliceCids = [addRes.baseSliceCid]
+      quoteBinding = reqRes.quoteBinding
+  settlement <- getSettlementFactory fx.ttReg settlementBatch
+  swapRes <- submit (actAs fx.operator <> discloseMany' settlement.disclosures) $
     exerciseCmd fx.rulesCid PRules.PoolRules_Swap with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid
@@ -490,8 +627,8 @@ testRealRegistryDvpSwapSettles = do
       swapperAllocationCid = swapAllocCid
       inputSliceCid = addRes.quoteSliceCid
       outputSliceCids = [addRes.baseSliceCid]
-      factoryCid = fx.ttSettleCid
-      extraArgs = swapCtx
+      factoryCid = settlement.factoryCid
+      extraArgs = settlement.arg.extraArgs
       quoteBinding = reqRes.quoteBinding
 
   Some state <- queryContractId fx.operator swapRes.poolStateCid
@@ -513,7 +650,6 @@ data TwoAdminTrade = TwoAdminTrade with
     lpLeg : V2.TransferLeg
     ttAllocations : [V2.FinalizedAllocation]
     lpAllocations : [V2.FinalizedAllocation]
-    settleDisclosures : Disclosures'
 
 -- alice sends 1 X (TestTokenV2) against bob's 5 LP (our registry), with all
 -- four allocations authored against the trade's own settlement info. The
@@ -545,25 +681,51 @@ setupTwoAdminTrade alice bob = do
   lpSender <- lpAlloc fx bob settlement (mkSpec fx.lpRegistrar bobAcct [lpLeg] False)
     [toInterfaceContractId bobLpHolding] now
   lpReceiver <- lpAlloc fx alice settlement (mkSpec fx.lpRegistrar aliceAcct [lpLeg] False) [] now
-  disc <- ttSettleDisclosures fx
   pure TwoAdminTrade with
     fx; tradeCid; xLeg; lpLeg
     ttAllocations = map Utils.finalAllocation [xSender, xReceiver]
     lpAllocations = map Utils.finalAllocation [lpSender, lpReceiver]
-    settleDisclosures = disc
+
+data DiscoveredTtSettlement = DiscoveredTtSettlement with
+    factoryCid : ContractId V2.SettlementFactory
+    extraArgs : ExtraArgs
+    disclosures : Disclosures'
+
+discoverTtTradeSettlement
+  : TwoAdminTrade -> [V2.TransferLeg] -> [V2.TransferLeg]
+  -> Script DiscoveredTtSettlement
+discoverTtTradeSettlement t ttLegs lpLegs = do
+  batches <- submit t.fx.operator $
+    exerciseCmd t.tradeCid MT.MatchedTrade_PreviewSettlement with
+      plansByAdmin = Map.fromList
+        [ (t.fx.ttAdmin, MT.SettlementBatchPlanV2 with
+            transferLegs = ttLegs; allocations = t.ttAllocations)
+        , (t.fx.lpRegistrar, MT.SettlementBatchPlanV2 with
+            transferLegs = lpLegs; allocations = t.lpAllocations)
+        ]
+  let ttBatch = fromSome (Map.lookup t.fx.ttAdmin batches)
+  enriched <- getSettlementFactory t.fx.ttReg ttBatch
+  pure DiscoveredTtSettlement with
+    factoryCid = enriched.factoryCid
+    extraArgs = enriched.arg.extraArgs
+    disclosures = enriched.disclosures
 
 -- The venue's settle, parameterized on what each batch is told to settle.
 mkTwoAdminSettle
-  : TwoAdminTrade -> Optional [V2.TransferLeg] -> Optional [V2.TransferLeg]
+  : TwoAdminTrade
+  -> ContractId V2.SettlementFactory
+  -> ExtraArgs
+  -> Optional [V2.TransferLeg]
+  -> Optional [V2.TransferLeg]
   -> Commands MT.MatchedTrade_SettleResult
-mkTwoAdminSettle t ttLegs lpLegs =
+mkTwoAdminSettle t ttFactoryCid ttExtraArgs ttLegs lpLegs =
   exerciseCmd t.tradeCid MT.MatchedTrade_Settle with
     batchesByAdmin = Map.fromList
       [ (t.fx.ttAdmin, MT.SettlementBatchV2 with
           transferLegs = ttLegs
           allocations = t.ttAllocations
-          factoryCid = t.fx.ttSettleCid
-          extraArgs = ExtraArgs with context = t.fx.ttContext; meta = emptyMetadata)
+          factoryCid = ttFactoryCid
+          extraArgs = ttExtraArgs)
       , (t.fx.lpRegistrar, MT.SettlementBatchV2 with
           transferLegs = lpLegs
           allocations = t.lpAllocations
@@ -575,9 +737,9 @@ mkTwoAdminSettle t ttLegs lpLegs =
 
 -- readAs the LP registrar: our Holding is `signatory admin, owner`, so the
 -- venue is not a stakeholder of the LP holding the settle archives.
-twoAdminSubmitOptions : TwoAdminTrade -> SubmitOptions
-twoAdminSubmitOptions t =
-  actAs t.fx.operator <> readAs [t.fx.lpRegistrar] <> discloseMany' t.settleDisclosures
+twoAdminSubmitOptions : TwoAdminTrade -> Disclosures' -> SubmitOptions
+twoAdminSubmitOptions t disclosures =
+  actAs t.fx.operator <> readAs [t.fx.lpRegistrar] <> discloseMany' disclosures
 
 -- Handed the whole trade, a batch carries legs its own allocations do not
 -- authorize and the registry rejects it; handed no legs at all, the settle
@@ -592,22 +754,27 @@ testMatchedTradeSettlesPerAdminLegSubsets = do
   bob <- allocateParty "bob"
   t <- setupTwoAdminTrade alice bob
   let allLegs = Some [t.xLeg, t.lpLeg]
-  rejected <- trySubmit (twoAdminSubmitOptions t) $ mkTwoAdminSettle t allLegs allLegs
+  malformed <- discoverTtTradeSettlement t [t.xLeg, t.lpLeg] [t.xLeg, t.lpLeg]
+  rejected <- trySubmit (twoAdminSubmitOptions t malformed.disclosures) $
+    mkTwoAdminSettle t malformed.factoryCid malformed.extraArgs allLegs allLegs
   case rejected of
     Right _ -> abort "a batch given the full leg list must be rejected"
     Left e ->
       assertMsg ("expected missing authorizations, got: " <> show e)
         (T.isInfixOf "authorizations" (show e))
 
-  omitted <- trySubmit (twoAdminSubmitOptions t) $ mkTwoAdminSettle t None None
+  omitted <- trySubmit (twoAdminSubmitOptions t mempty) $
+    mkTwoAdminSettle t (coerceContractId t.fx.lpReg) emptyExtraArgs None None
   case omitted of
     Right _ -> abort "a batch with no transfer legs must be rejected"
     Left e ->
       assertMsg ("expected a required-legs abort, got: " <> show e)
         (T.isInfixOf "per-admin transfer legs are required" (show e))
 
-  res <- submit (twoAdminSubmitOptions t) $
-    mkTwoAdminSettle t (Some [t.xLeg]) (Some [t.lpLeg])
+  discovered <- discoverTtTradeSettlement t [t.xLeg] [t.lpLeg]
+  res <- submit (twoAdminSubmitOptions t discovered.disclosures) $
+    mkTwoAdminSettle t discovered.factoryCid discovered.extraArgs
+      (Some [t.xLeg]) (Some [t.lpLeg])
   Map.size res.resultsByAdmin === 2
   bobX <- holdingCidsFor bob "X"
   assertMsg "bob received the X leg" (not (null bobX))

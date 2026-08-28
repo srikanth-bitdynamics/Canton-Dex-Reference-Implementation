@@ -50,8 +50,8 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     coSignsAdmin: false,
   },
   mock: {
-    dvp: "ready",
-    note: "Dev mock; deterministic cids.",
+    dvp: "dev-only",
+    note: "Dev only — returns deterministic placeholder cids; no ledger submission.",
     coSignsAdmin: true,
   },
   partylayer: {
@@ -63,11 +63,6 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     dvp: "unsupported",
     note: "Settlement-accept only; cannot complete LP DvP.",
     coSignsAdmin: false,
-  },
-  "canton-direct": {
-    dvp: "unsupported",
-    note: "Settlement-accept only; cannot complete LP DvP.",
-    coSignsAdmin: true,
   },
 };
 

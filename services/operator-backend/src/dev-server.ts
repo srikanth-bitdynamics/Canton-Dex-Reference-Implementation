@@ -11,14 +11,15 @@
 //     Order_Fund/Cancel, OrderFundingRequest_Bind, Rfq_Accept,
 //     MatchedTrade_* are stubbed minimally; admin/* re-use built-in create).
 //
-// This is NOT a production server. It is the smallest amount of
-// scaffolding that lets the UI demo end-to-end without a Canton
-// participant. Production swaps in JsonApiLedger + a real registry.
+// This is NOT a production server. It is the smallest amount of scaffolding
+// needed to exercise the UI-to-HTTP loop without a Canton participant. It does
+// not prove Daml execution or value movement. Live mode swaps in JsonApiLedger
+// and a real registry.
 
 import { InMemoryLedger } from "./ledger/in-memory.js";
 import { OperatorBackend } from "./index.js";
 import { startHttpServer } from "./http/index.js";
-import { RegistryClient } from "@canton-dex/registry-client";
+import { FixedRegistryClient } from "@canton-dex/registry-client";
 import type {
   ContractId,
   Decimal,
@@ -26,26 +27,15 @@ import type {
   Pool,
   PoolSlice,
 } from "./types.js";
-import type { ChoiceContextRef } from "@canton-dex/registry-client";
 
 // Stub registry that returns canned factory CIDs for any admin party.
-class StubRegistry extends RegistryClient {
+class StubRegistry extends FixedRegistryClient {
   constructor() {
-    super({ baseUrl: "http://stub-registry" });
-  }
-  override async getFactories(): Promise<{
-    allocationFactoryCid: ContractId<"AllocationFactory">;
-    settlementFactoryCid: ContractId<"SettlementFactory">;
-    disclosure: never[];
-  }> {
-    return {
+    super(() => ({
       allocationFactoryCid: "#alloc-fac:0" as ContractId<"AllocationFactory">,
       settlementFactoryCid: "#settle-fac:0" as ContractId<"SettlementFactory">,
       disclosure: [],
-    };
-  }
-  override async getChoiceContext(): Promise<ChoiceContextRef> {
-    return { context: { values: {} }, disclosure: [] };
+    }));
   }
 }
 
@@ -396,11 +386,9 @@ async function main(): Promise<void> {
       operator,
       lpRegistrar,
       admin,
-      allocationFactoryCid: "#alloc-fac:0",
-      settlementFactoryCid: "#settle-fac:0",
-      allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
-      allocationFactoryDisclosure: [],
-      network: process.env.CANTON_NETWORK ?? "canton:devnet",
+      // A sentinel consumed by the dApp shell so the seeded preview can never
+      // look like a synchronized Canton environment.
+      network: "preview:in-memory",
     },
     // Operator-write auth: the dev server has no token, so default to the
     // explicit dev-open bypass unless an operator token is supplied.
@@ -412,6 +400,9 @@ async function main(): Promise<void> {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    // The in-memory demo owns its seeded trader authority. Real-Canton
+    // testnet-server keeps this trusted relay disabled by default.
+    hostedRfqEnabled: true,
   });
   // eslint-disable-next-line no-console
   console.log(`[operator-backend] dev server listening at ${url}`);

@@ -116,7 +116,7 @@ function composeFundOrder(
         intent.allocationSpec,
         intent.inputHoldingCids,
         ctx.party,
-        ctx.now().toISOString(),
+        intent.requestedAt,
         intent.allocationFactoryExtraArgs,
       ),
     ],
@@ -169,7 +169,7 @@ function composeRequestSwap(
         intent.allocationSpec,
         intent.inputHoldingCids,
         ctx.party,
-        ctx.now().toISOString(),
+        intent.requestedAt,
         intent.allocationFactoryExtraArgs,
       ),
     ],
@@ -234,8 +234,7 @@ function composeAddLiquidity(
   intent: Extract<WalletIntent, { kind: "add-liquidity" }>,
   ctx: ComposeContext,
 ): ComposedCommands {
-  assertFactoryReady(intent.depositFactoryCid, "add-liquidity");
-  assertFactoryReady(intent.lpFactoryCid, "add-liquidity");
+  intent.factoryCids.forEach((cid) => assertFactoryReady(cid, "add-liquidity"));
   if (intent.allocations.length !== 3) {
     throw new Error(`add-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
   }
@@ -270,23 +269,21 @@ function batchingUtilityCommand(
     requestCid: ContractId<"LiquidityAllocationRequest">;
     settlement: V2SettlementInfo;
     allocations: V2AllocationSpecification[];
-    depositFactoryCid: ContractId<"AllocationFactory">;
-    lpFactoryCid: ContractId<"AllocationFactory">;
-    depositFactoryExtraArgs: V2ExtraArgs;
-    lpFactoryExtraArgs: V2ExtraArgs;
+    requestedAt: string;
+    factoryCids: ContractId<"AllocationFactory">[];
+    allocationFactoryExtraArgs: V2ExtraArgs[];
     allocationRequestExtraArgs: V2ExtraArgs;
     disclosure: DisclosedContract[];
   },
   ctx: ComposeContext,
   holdingsBySpec: string[][],
 ): ComposedCommands {
-  const requestedAt = ctx.now().toISOString();
-  const factoryCids = [intent.depositFactoryCid, intent.depositFactoryCid, intent.lpFactoryCid];
-  const allocExtraArgs = [
-    intent.depositFactoryExtraArgs,
-    intent.depositFactoryExtraArgs,
-    intent.lpFactoryExtraArgs,
-  ];
+  const requestedAt = intent.requestedAt;
+  const factoryCids = intent.factoryCids;
+  const allocExtraArgs = intent.allocationFactoryExtraArgs;
+  if (factoryCids.length !== intent.allocations.length || allocExtraArgs.length !== intent.allocations.length) {
+    throw new Error("batching: each allocation requires its own factory and choice context");
+  }
   // HoldingMap: GenMap ScopedAccount -> TextMap instrumentId -> [holding cids].
   // A GenMap encodes as [key, value] pairs on the JSON Ledger API.
   const buckets = new Map<
@@ -363,8 +360,7 @@ function composeRemoveLiquidity(
   intent: Extract<WalletIntent, { kind: "remove-liquidity" }>,
   ctx: ComposeContext,
 ): ComposedCommands {
-  assertFactoryReady(intent.depositFactoryCid, "remove-liquidity");
-  assertFactoryReady(intent.lpFactoryCid, "remove-liquidity");
+  intent.factoryCids.forEach((cid) => assertFactoryReady(cid, "remove-liquidity"));
   if (intent.allocations.length !== 3) {
     throw new Error(`remove-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
   }

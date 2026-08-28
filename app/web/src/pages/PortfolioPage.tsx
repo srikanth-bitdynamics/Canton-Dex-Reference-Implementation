@@ -65,7 +65,7 @@ export function PortfolioPage() {
   if (!party) {
     return (
       <EmptyState title="No wallet connected">
-        Connect a wallet to view holdings, LP positions, and on-ledger activity.
+        Connect a wallet to view backend-reported holdings, LP positions, and activity.
       </EmptyState>
     );
   }

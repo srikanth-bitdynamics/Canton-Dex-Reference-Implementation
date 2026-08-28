@@ -1,256 +1,333 @@
 # Canton Testnet Validator — Live Test Plan
 
-The checklist that signs off a Canton DEX deployment against a live testnet
-validator. Work it top to bottom: an offline pre-flight first, then eleven
-numbered phases — from DAR upload through Docker Compose — each a set of
-checkboxes you tick against a real participant. Where a phase has a headless
-script that proves the same thing without a browser, it is linked inline; run it
-to corroborate the manual check, not to replace the sign-off.
+Use this manual checklist to sign off one deployed DEX environment. It combines
+boundaries that the automated suites intentionally test separately: a real
+participant, authenticated backend, browser dApp, and real wallet. Record
+evidence for each scenario; running a ledger script is useful corroboration,
+not a substitute for the browser path.
 
-## Goals
+## Know what each path proves
 
-1. Confirm each wallet provider enabled for the deployment connects against a
-   real participant; development-only providers are checked separately.
-2. Verify each wallet intent translates correctly into on-ledger Token Standard
-   V2 transactions.
-3. Confirm operator-driven settlement flows use AllocationFactory +
-   SettlementFactory, and separately verify that hosted RFQ relay parties are
-   explicitly authorized.
-4. Validate indexer + history endpoints reflect on-ledger state.
-5. Stress-test idempotency and graceful shutdown.
+| Path | Includes | Does not prove |
+|---|---|---|
+| Offline pre-flight | Daml Script, backend tests, dApp tests, backend HTTP smoke | participant compatibility, real wallet, live state |
+| Live RFQ test | RFQ service, JSON API, Daml engine | HTTP auth, browser/wallet, token settlement |
+| Live AMM round trip | JSON API, Registry.V2, add → quote-bound swap → partial remove DvP with reserve, slice, LP-supply, invariant, and conservation checks | backend HTTP, browser, real wallet |
+| Existing-pool probe | JSON API, existing pool, add and swap | backend HTTP, real wallet, remove |
+| Matched-trade probe | JSON API, allocations, settlement | RFQ/order matching, AMM, HTTP, real wallet |
+| This plan | deployed backend + dApp + wallet + participant | production load, security audit, disaster recovery |
+
+The exact environment and expected output for every automated path is in the
+[Testing reference](../reference/testing.md).
+
+## Safety and evidence
+
+All live writes mutate ledger state. Use dedicated test parties and a dedicated
+pool; do not seed a production pool. A failed script can leave earlier
+transactions committed because there is no cross-transaction rollback. Before
+starting, create an evidence directory outside the repository and record:
+
+- deployment name, Git commit, DAR package id, synchronizer id, and timestamp;
+- operator, admin, LP registrar, trader, LP, swapper, and dealer party ids;
+- backend and dApp URLs, but never bearer tokens or wallet secrets;
+- each command, exit code, run id, relevant contract/update ids, and screenshots;
+- cleanup performed after the run.
+
+Mark each scenario **Pass**, **Fail**, **Blocked**, or **N/A**. A blocked wallet
+or auth path is not a pass merely because a raw JSON API script succeeds.
 
 ## Prerequisites
 
-- Canton testnet validator with JSON Ledger API reachable (e.g.,
-  `https://canton-testnet.example.com:7575`).
-- A bearer JWT issued for `ledger-api-user` with rights to act-as the
-  operator, lpRegistrar, admin, and demo trader parties.
-- The synchronizer id (e.g., `global-domain::1220...`), exported as
-  `CANTON_SYNCHRONIZER`.
-- Docker / Docker Compose installed on the test runner host.
-- `dpm` installed — it resolves the pinned SDK 3.5.2 automatically (see
-  [Local Setup](../getting-started.md#prerequisites)).
-- All env vars in `services/operator-backend/.env.example` populated.
+- An already-running Canton validator/participant with JSON Ledger API access.
+- The current trading DAR and its Token Standard V2 dependencies uploaded.
+- Real party ids for every role used by the scenario.
+- A ledger JWT with only the rights needed by the backend or probe.
+- A synchronizer id and the DEX/Token Standard package ids.
+- Node.js 24, npm, DPM with the SDK pinned by `trading/daml.yaml`, curl, and
+  Docker Compose if Phase 8 is in scope.
+- A submit-capable CIP-0103/PartyLayer/WalletConnect wallet supported by the
+  deployment. The development mock wallet does not prove live submission.
 
-## Pre-flight (offline)
+The backend does **not** load `services/operator-backend/.env` automatically.
+Export variables into the process environment (or use your deployment's secret
+injection) before `npm start`. At minimum, full live mode needs:
 
-Before pointing anything at the validator, prove the build and the API surface
-on your own machine — no Canton required. Both scripts exit non-zero on the
-first failure, so they gate cleanly.
-
-```bash
-bash scripts/run-local-daml-tests.sh   # dpm build + the Daml suites
-bash scripts/e2e-smoke.sh              # boots the dev backend, curls every endpoint
+```text
+CANTON_LEDGER_URL             CANTON_LEDGER_TOKEN
+CANTON_OPERATOR               CANTON_LP_REGISTRAR
+CANTON_ADMIN                  CANTON_DEX_PACKAGE_ID
+CANTON_ALLOC_FACTORY_CID
+CANTON_SETTLE_FACTORY_CID     DEX_OPERATOR_API_TOKEN
+OPERATOR_ADMIN_TOKEN
 ```
 
-- [`run-local-daml-tests.sh`](../../scripts/run-local-daml-tests.sh) — builds
-  `canton-dex-trading` and runs the `trading-tests` suite. Proves the DAR you
-  are about to upload compiles and its conservation and invariant tests hold.
-- [`e2e-smoke.sh`](../../scripts/e2e-smoke.sh) — starts the backend on an
-  in-memory ledger and curls the read endpoints, a swap quote, the order book,
-  the price feed, and the admin auth gate, printing `==> All smoke checks
-  passed`. Proves the HTTP surface answers and that `POST /v1/admin/pairs` is
-  refused without a bearer token — the same shapes Phases 1–8 exercise against
-  the validator.
+When `CANTON_LP_REGISTRAR != CANTON_ADMIN`, full mode also requires
+`CANTON_LP_ALLOC_FACTORY_CID` and `CANTON_LP_SETTLE_FACTORY_CID` for the LP
+registry. `CANTON_SYNCHRONIZER` is strongly recommended and may be required by
+the target participant's routing policy.
 
-## Phase 0 — Build & upload DARs
+`CANTON_USER_ID`, `CANTON_NETWORK`, `DB_PATH`, `INDEXER_INTERVAL_MS`, `HOST`,
+and `PORT` are optional. `DEX_CALLER_JWT_SECRET` and
+`DEX_CALLER_JWT_AUDIENCE` enable per-caller party binding for private reads and
+trader-subject writes; if enabled, the dApp also needs a short-lived caller JWT
+whose `sub` is the connected party.
+`DEX_HOSTED_RFQ_RELAY` remains `0` unless a deliberately custodial RFQ scenario
+is in scope; enabling it makes caller binding mandatory.
+
+Do not put `DEX_OPERATOR_API_TOKEN`, `OPERATOR_ADMIN_TOKEN`, or the participant
+JWT in a `VITE_*` variable. The Admin page can hold short-lived API tokens in
+the current tab's `sessionStorage`; a public deployment should replace that
+manual test handoff with an authenticated BFF/session issuer.
+
+## Phase 0 — Offline pre-flight
+
+Run from the repository root after installing dependencies:
 
 ```bash
-export CANTON_LEDGER_URL=...
-export CANTON_LEDGER_TOKEN=...
-export CANTON_OPERATOR=...
-export CANTON_LP_REGISTRAR=...
-export CANTON_ADMIN=...
-
-./scripts/deploy-testnet.sh
+bash scripts/run-local-daml-tests.sh
+(cd services/registry-client && npm ci && npm run typecheck)
+(cd services/operator-backend && npm ci && npm run typecheck && npm run typecheck:live-scripts && npm test)
+(cd app/web && npm ci && npm test && npm run build)
+bash scripts/backend-http-smoke.sh
 ```
 
 Expected:
-- `dpm build` succeeds; `trading/.daml/dist/canton-dex-trading-0.1.4.dar` exists.
-- DARs upload to participant (HTTP 200 from `/v2/packages`).
-- Parties allocated (or pre-existing).
-- `scripts/bootstrap-registry.ts` reports each instrument and LP
-  config as "created" (or "already configured" on a re-run).
-- The same run reports `Registry.V2 created` (or "already present") for the
-  lpRegistrar. Liquidity cannot be allocated until this step has run.
-- If a `registryV2` block is configured, a second registry under
-  `CANTON_ADMIN` plus one line per instrument. Nothing can be minted
-  until that has run.
 
-## Phase 1 — Backend boot
+- [ ] Every command exits 0.
+- [ ] The Daml runner reports every selected script `ok`.
+- [ ] The HTTP smoke ends with `All backend HTTP smoke checks passed`.
+- [ ] The smoke is recorded only as an in-memory selected-route check; it does
+      not prove successful writes or live Canton.
+
+## Phase 1 — Deployment readiness
+
+Follow [Run on a Testnet](run-on-testnet.md) for build, upload, party, and
+registry bootstrap. Then capture independent evidence:
+
+- [ ] `canton-dex-trading` resolves to the expected package id.
+- [ ] The Token Standard V2 allocation request/instruction packages required by
+      the live probes resolve to the expected ids.
+- [ ] Operator, admin, LP registrar, test traders, LP, swapper, and dealers are
+      allocated and connected to the intended synchronizer.
+- [ ] The asset-admin and (when distinct) LP-registrar `Registry.V2` contracts
+      plus required base/quote/LP instruments exist.
+- [ ] `CANTON_ALLOC_FACTORY_CID` and `CANTON_SETTLE_FACTORY_CID` identify the
+      intended asset-admin registry, not `PENDING_*` placeholders.
+- [ ] With distinct registrars, both `CANTON_LP_*_FACTORY_CID` values identify
+      the LP registry rather than reusing the asset registry.
+- [ ] The test pool is uniquely identified by pair and `POOL_ID` if more than
+      one pool uses that pair.
+
+## Phase 2 — Backend and authentication
+
+With the environment exported, start the live server:
 
 ```bash
 cd services/operator-backend
-npm install
+npm ci
 npm start
 ```
 
-Expected logs (JSON, one per line):
-```
-{"ts":"...","level":"info","msg":"server started","component":"testnet-server","url":"...","ledger":"..."}
+In a second terminal:
+
+```bash
+curl -fsS http://127.0.0.1:8080/v1/status
+curl -fsS http://127.0.0.1:8080/v1/context
+curl -fsS http://127.0.0.1:8080/v1/pools
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -X POST -H 'Content-Type: application/json' -d '{}' \
+  http://127.0.0.1:8080/v1/admin/pairs
 ```
 
-Health checks:
-- [ ] `curl http://localhost:8080/v1/status` returns `{network, slot, synced:true}`
-- [ ] `curl http://localhost:8080/v1/context` returns operator/admin/lpRegistrar + factory CIDs
-- [ ] `curl http://localhost:8080/v1/pools` returns `[]` (no pools yet) or seeded pools
+- [ ] Startup logs identify the expected ledger URL, parties, network, DB, and
+      `mode:"full"`.
+- [ ] Status reports `synced:true`; context contains the expected parties and
+      factory CIDs.
+- [ ] The unauthenticated admin write returns 401.
+- [ ] A request with a wrong admin token returns 401.
+- [ ] A request with a wrong operator token to a non-admin write returns 401.
+- [ ] If caller binding is enabled, a missing/invalid `X-Caller-Token` returns
+      401, while a valid token for a different party returns 403.
+- [ ] The same caller-binding check covers scoped orders, holdings, balances,
+      trades, RFQ history, and RFQ/quote reads; an admin token can inspect them.
+- [ ] Read-only mode, if tested, was explicitly started with `DEX_READ_ONLY=1`
+      and is not signed off for write scenarios.
 
-## Phase 2 — Frontend boot
+Use the payload examples in [HTTP API](../reference/http-api.md) for an
+authenticated write; do not use `{}` as a success-case payload.
+
+## Phase 3 — dApp and wallet connection
+
+Create `app/web/.env.local` with only public deployment configuration. For a
+local Vite validation run:
 
 ```bash
 cd app/web
-cp .env.example .env.local
-# Set:
-#   VITE_API_BASE=http://localhost:8080
-#   VITE_CANTON_LEDGER_URL=$CANTON_LEDGER_URL
-#   VITE_CANTON_AUTH_TOKEN=$CANTON_LEDGER_TOKEN
-#   VITE_CANTON_NETWORK_ID=canton:testnet
-#   VITE_WC_PROJECT_ID=...   (optional, for WalletConnect)
-npm install
+npm ci
 npm run dev
 ```
 
-Open <http://localhost:5173>. Smoke checks:
-- [ ] All 6 pages render without crash (TradePage, Pools, Orders, RFQ,
-      Portfolio, Admin)
-- [ ] Error boundaries do NOT trigger (no red banners)
-- [ ] Connect Wallet menu shows: Token Standard, WalletConnect (if
-      configured), Mock (DEV only — should be absent in prod build)
+Open <http://localhost:5173> and validate all six routes: Trade, Pools, Orders,
+RFQ, Portfolio, and Admin.
 
-## Phase 3 — Wallet provider validation
+- [ ] No route triggers its error boundary.
+- [ ] The intended production-capable wallet is shown and connects.
+- [ ] The connected party is the dedicated test trader.
+- [ ] Reload and disconnect behave as documented by that provider.
+- [ ] A cancelled/rejected wallet approval returns the UI to a usable state.
+- [ ] The mock and dev-only relay/direct providers are not treated as evidence
+      of production wallet compatibility.
 
-### 3.1 Token Standard provider
-- [ ] Click "Connect Wallet" → Token Standard
-- [ ] Connection succeeds; party id displayed
-- [ ] Reload page; session persists, no re-prompt
-- [ ] Click Disconnect; localStorage `canton-dex:token-standard:session` cleared
+For this controlled validation only, enter short-lived operator/admin API
+tokens in **Admin → API session credentials**. If per-caller binding is enabled,
+enter the test trader's scoped caller JWT too.
 
-### 3.2 WalletConnect (if `VITE_WC_PROJECT_ID` set)
-- [ ] Connect → QR modal opens, scannable
-- [ ] After mobile wallet pairing, primary party returned
-- [ ] Cancel during pairing surfaces error message, NOT a stuck state
+- [ ] Browser network requests attach the admin token only to `/v1/admin/*`
+      writes and the operator token only to other writes.
+- [ ] Credentials disappear when the tab session is cleared.
+- [ ] No token appears in screenshots, console output, committed files, or the
+      built JavaScript bundle.
 
-### 3.3 Direct Canton (advanced fallback)
-- [ ] With `VITE_CANTON_LEDGER_URL` + `VITE_CANTON_AUTH_TOKEN` set,
-      Direct Canton appears in the menu
-- [ ] Connect succeeds via `/v2/users/current`
+## Phase 4 — Automated live corroboration
 
-## Phase 4 — Operator admin operations
+Use a throwaway LocalNet for self-contained probes. Use the shared validator
+only with dedicated parties/pools and explicit approval to leave test state.
+Export each script's full environment from the [Testing
+reference](../reference/testing.md#live-canton-probes), then run from
+`services/operator-backend`:
 
-Requires `OPERATOR_ADMIN_TOKEN`.
+```bash
+CANTON_LIVE_RFQ=1 npm run test:live:rfq
+npm run live:roundtrip
+npm run testnet:seed-pool
+npm run live:matched-trade
+```
 
-- [ ] Create new pair (DOGE/USDC) via Admin page → 200, pair listed
-      via `GET /v1/pairs`
-- [ ] Toggle pair active/inactive → state reflected on next GET
-- [ ] Update fee model → new fees take effect
-- [ ] Create pool for DOGE/USDC → 200, pool listed via `GET /v1/pools`
-- [ ] Admin write WITHOUT bearer token → 401 with structured error
-      envelope
+- [ ] RFQ test checks exact RFQ/quote/trade CIDs and the stored policy receipt.
+- [ ] AMM round trip prints its unique run id and passes exact add, swap, and
+      partial-remove reserve/holding/slice/LP assertions plus the documented
+      invariant and conservation checks.
+- [ ] Existing-pool probe passes add/swap reserve, holding, slice, and invariant
+      assertions against the selected dedicated pool.
+- [ ] Matched-trade probe passes the sender/receiver holding assertions.
+- [ ] Results are mapped only to the boundaries in the table at the top; in
+      particular, the direct JSON API round trip is not cited as evidence for
+      the backend HTTP, browser, or real-wallet transport.
 
-## Phase 5 — Trader flows
+## Phase 5 — Browser trader and admin flows
 
-Three scripts drive these flows against a live participant without a browser
-wallet — run them to corroborate the manual checks below, each proving one seam:
+For each scenario, capture the wallet approval, backend request id, resulting
+ledger update/contract ids, and the refreshed UI state. Use small test amounts.
 
-- [`localnet-dvp-e2e.ts`](../../scripts/localnet-dvp-e2e.ts)
-  (`npm run localnet:dvp-e2e --prefix services/operator-backend`) — stands in
-  for the trader's CIP-0103 wallet, authoring the three allocations for each
-  DvP and settling. Proves the operator two-call add → swap → remove round-trip
-  (§5.3–5.5) and asserts the on-ledger reserves and LP supply.
-- [`seed-testnet-pool.ts`](../../scripts/seed-testnet-pool.ts)
-  (`npm run testnet:seed-pool --prefix services/operator-backend`) — mints, adds
-  liquidity, and swaps against an *existing* live pool. Proves a swap moved the
-  reserves by exactly the constant-product amount and that `x·y` did not
-  decrease (§5.3).
-- [`testnet-v2registry-trade.ts`](../../scripts/testnet-v2registry-trade.ts) —
-  posts a `MatchedTrade`, runs the V2 allocation accept on both sides, and
-  settles via `SettleBatch`. Proves matched-trade settlement through the
-  registry acting as allocation + settlement factory (§5.2).
+### Admin
 
-### 5.1 Place order
-- [ ] Submit a buy order for BTC/USDC at limit price < current ask
-- [ ] Wallet intent translates to OrderFundingRequest creation
-- [ ] Operator backend observes and binds via OrderFundingRequest_Bind
-- [ ] Order appears in `GET /v1/orders?trader=...`
+- [ ] Create or select a dedicated test pair and pool with the admin credential.
+- [ ] Update its supported fee/trading configuration and observe it on the next
+      GET.
+- [ ] Repeat one write without the admin credential and observe 401.
 
-### 5.2 Order matching
-- [ ] Place a crossing sell order (price ≤ existing buy)
-- [ ] `POST /v1/orders/match {base,quote}` returns 1 match
-- [ ] After settle, both orders archived (or remaining qty updated for partial)
-- [ ] The settled fill appears in `GET /v1/trades` (a `SettledTrade` row, with
-      `dealer` null and both parties across `trader` / `counterparty`)
+### Order lifecycle
 
-### 5.3 Pool swap
-- [ ] Quote: `POST /v1/swaps/quote` returns positive output for 0.01 BTC
-- [ ] Submit swap intent through wallet → on-ledger PoolRules_Swap exercised
-- [ ] Pool reserves update; swap appears in `GET /v1/swaps`
+- [ ] Place a non-crossing order; the wallet signs the trader-authorized
+      funding transaction and the order appears in `/v1/orders`.
+- [ ] Cancel it and verify the active contract disappears.
+- [ ] Place crossing buy/sell orders using two test traders, run the match route,
+      and verify the resulting fill/history and balances.
 
-### 5.4 Add liquidity (two-call DvP)
-- [ ] `POST /v1/pools/add-liquidity/request` → operator creates a
-      LiquidityAllocationRequest
-- [ ] Wallet authors the base-deposit, quote-deposit, and LP-receipt
-      allocations via AllocationFactory_Allocate
-- [ ] `POST /v1/pools/add-liquidity/settle` → operator + lpRegistrar
-      settle (PoolLiquidityRules_SettleAddLiquidity); funds enter the pool and
-      LP tokens are minted to the LP atomically
-- [ ] LP tokens minted (visible in Portfolio page LP section)
-- [ ] Pool reserves grow proportionally
+### Swap
 
-### 5.5 Remove liquidity (two-call DvP)
-- [ ] `POST /v1/pools/remove-liquidity/request` → operator creates a
-      LiquidityAllocationRequest
-- [ ] Wallet authors the holder's base-receipt + quote-receipt + LP
-      burn-sender allocations
-- [ ] `POST /v1/pools/remove-liquidity/settle` → operator + lpRegistrar
-      settle (PoolLiquidityRules_SettleRemoveLiquidity); base + quote are
-      delivered to the holder and the LP tokens burn to the burn
-      account atomically
+- [ ] Obtain a positive quote for a small input.
+- [ ] Approve and submit the wallet intent, then verify input/output balances and
+      the exact reserve transition.
+- [ ] Verify the swap/history projection after at least one indexer interval.
 
-### 5.6 RFQ
-- [ ] Trader creates RFQ via `POST /v1/rfq`
-- [ ] Dealer posts a quote (separate wallet session)
-- [ ] Trader+operator co-sign accept via `POST /v1/rfq/accept`
-- [ ] PolicyReceipt returned and matches verifyReceipt()
-- [ ] After expiry, `sweepExpired` cancels stale RFQs (verify via
-      logs after manually setting an RFQ's expiry in the past)
+### Add liquidity
 
-## Phase 6 — Resilience
+- [ ] The request route creates one `LiquidityAllocationRequest`.
+- [ ] The wallet authors base-deposit, quote-deposit, and LP-receipt
+      allocations.
+- [ ] The settle route consumes the request/allocations atomically; reserves and
+      LP supply increase by the expected values and the LP holding is visible.
 
-- [ ] Send SIGTERM to backend; logs show graceful shutdown
-      (indexer stop → http close → db close)
-- [ ] Restart backend; indexer resumes from last persisted offset
-- [ ] Crash backend mid-submission; idempotency table prevents
-      duplicate commit on restart
-- [ ] Submit malformed JSON to `/v1/swaps/quote` → 400 with `code: bad_request`
-- [ ] Submit oversized body (>1 MiB) → 413 with `code: payload_too_large`
+### Remove liquidity
 
-## Phase 7 — Observability
+- [ ] The request route creates a remove `LiquidityAllocationRequest`.
+- [ ] The wallet authors base-receipt, quote-receipt, and LP-burn allocations.
+- [ ] Settle reduces reserves and LP supply by the expected values and delivers
+      base/quote holdings to the LP.
 
-- [ ] Every request log line has `requestId`, `method`, `path`,
-      `status`, `durationMs`
-- [ ] Every error log line goes to stderr (verify by redirecting)
-- [ ] `X-Request-Id` header echoed back when supplied; generated otherwise
+The automated AMM round trip corroborates remove-liquidity directly through
+the JSON Ledger API. This manual scenario is still required to establish the
+different boundary under review here: browser state, backend authorization,
+wallet approval/transport, and the deployed party-rights configuration.
 
-## Phase 8 — Frontend validation
+### RFQ
 
-- [ ] Error boundary triggered by throwing in a child component
-      surfaces the retry card without taking down the page shell
-- [ ] Disconnect mid-transaction shows clear error message
-- [ ] Page refresh after disconnect → no auto-reconnect, clean
-      "Connect Wallet" state
+- [ ] Trader creates an RFQ and a whitelisted dealer posts a quote from a
+      separate authorized session.
+- [ ] Trader/operator accept returns a verifying `PolicyReceipt`; the exact
+      receipt is stored on the resulting `MatchedTrade`.
+- [ ] Fund and settle the matched trade, then verify both assets moved. The live
+      RFQ automated test stops before this step and cannot substitute for it.
+- [ ] Create an already-expired fixture through an approved test setup, invoke
+      the deployment's RFQ sweep job, and verify the operator archives it. The
+      reference exposes `sweepExpired` as a service method but does not include
+      a standalone scheduler/CLI, so mark this **Blocked** if the deployment has
+      no job entrypoint.
 
-## Phase 9 — Docker compose deployment
+## Phase 6 — Failure handling and observability
 
-- [ ] `docker-compose up` brings both services up
-- [ ] Frontend at port 80 proxies `/v1/*` to backend
-- [ ] `docker-compose restart backend` does not lose indexer state
-      (volume persistence)
-- [ ] CORS narrowed when `ALLOWED_ORIGINS` set
+- [ ] Malformed JSON returns 400 with `code:"bad_request"` and a request id.
+- [ ] A body over 1 MiB returns 413 with `code:"payload_too_large"`.
+- [ ] A supplied `X-Request-Id` is echoed; otherwise the server creates one.
+- [ ] Request logs contain request id, method, path, status, and duration.
+- [ ] Ledger/authorization failures preserve a useful structured error without
+      leaking JWTs or API tokens.
+- [ ] Send SIGTERM to the backend process, observe graceful HTTP/indexer/DB
+      shutdown, restart with the same `DB_PATH`, and verify status/history.
 
-## Sign-off
+Do not claim crash/idempotency recovery from the restart check alone. A
+mid-submission fault requires a controlled fault-injection harness and evidence
+that only one ledger update committed; mark it **Blocked** if that harness is
+not available.
 
-Mark this plan ✅ once every checkbox above is verified against a
-real Canton testnet validator.
+## Phase 7 — Frontend failure states
+
+- [ ] Disconnect/reject during a transaction shows a clear retryable error.
+- [ ] Refresh after disconnect returns to a clean Connect Wallet state.
+- [ ] Stop the backend temporarily; each page shows a bounded error state and
+      recovers after the backend restarts.
+- [ ] An authorization failure is distinguishable from wallet rejection and
+      from ledger validation failure.
+
+## Phase 8 — Docker Compose, if deployed that way
+
+Run from the repository root with all Compose variables exported:
+
+```bash
+docker compose up --build
+```
+
+- [ ] Backend starts in the intended full/read-only mode; neither API token is
+      blank in full mode.
+- [ ] Frontend on port 80 proxies `/v1/*` to the backend.
+- [ ] `docker compose restart backend` retains indexer state in the named
+      volume.
+- [ ] `ALLOWED_ORIGINS` is restricted to the deployed dApp origin.
+- [ ] Secrets are injected at runtime and absent from the frontend image/bundle.
+
+## Cleanup and sign-off
+
+- [ ] Cancel every still-cancellable RFQ, quote, order, allocation request, and
+      matched trade created by the test.
+- [ ] Record contracts that cannot be cleaned up safely (for example the
+      accepted RFQ test's unmatched trade) and the owner responsible.
+- [ ] Stop/remove the throwaway LocalNet. For shared testnet state, do not delete
+      or mutate contracts outside the recorded run ids and dedicated pool.
+- [ ] Remove tokens from `sessionStorage`, shell history where applicable, and
+      temporary environment files; revoke short-lived credentials.
+- [ ] Attach the Pass/Fail/Blocked/N/A matrix and evidence links to the release
+      record. Any required **Fail** or **Blocked** scenario prevents sign-off.
 
 ---
 

@@ -1,14 +1,15 @@
-version: "3.9"
-
 services:
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    ports:
-      - "8080:8080"
+    # Internal only: browsers enter through nginx on :80. Operators who need a
+    # direct diagnostic port can add a loopback-bound override explicitly.
+    expose:
+      - "8080"
     environment:
       PORT: "8080"
+      HOST: "0.0.0.0"
       CANTON_LEDGER_URL: "${CANTON_LEDGER_URL}"
       CANTON_LEDGER_TOKEN: "${CANTON_LEDGER_TOKEN}"
       CANTON_OPERATOR: "${CANTON_OPERATOR}"
@@ -20,10 +21,19 @@ services:
       CANTON_DEX_PACKAGE_ID: "${CANTON_DEX_PACKAGE_ID}"
       CANTON_ALLOC_FACTORY_CID: "${CANTON_ALLOC_FACTORY_CID}"
       CANTON_SETTLE_FACTORY_CID: "${CANTON_SETTLE_FACTORY_CID}"
+      CANTON_LP_ALLOC_FACTORY_CID: "${CANTON_LP_ALLOC_FACTORY_CID:-}"
+      CANTON_LP_SETTLE_FACTORY_CID: "${CANTON_LP_SETTLE_FACTORY_CID:-}"
       DB_PATH: "/app/data/operator.db"
       INDEXER_INTERVAL_MS: "${INDEXER_INTERVAL_MS:-5000}"
       OPERATOR_ADMIN_TOKEN: "${OPERATOR_ADMIN_TOKEN}"
-      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:80}"
+      DEX_OPERATOR_API_TOKEN: "${DEX_OPERATOR_API_TOKEN}"
+      DEX_READ_ONLY: "${DEX_READ_ONLY:-0}"
+      DEX_CALLER_JWT_SECRET: "${DEX_CALLER_JWT_SECRET:-}"
+      DEX_CALLER_JWT_AUDIENCE: "${DEX_CALLER_JWT_AUDIENCE:-}"
+      DEX_HOSTED_RFQ_RELAY: "${DEX_HOSTED_RFQ_RELAY:-0}"
+      # Browsers serialize the default HTTP port as http://localhost (without
+      # :80), so this must match the actual Origin header exactly.
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost}"
     volumes:
       - backend-data:/app/data
     restart: unless-stopped
@@ -34,9 +44,24 @@ services:
       dockerfile: Dockerfile.frontend
       args:
         VITE_API_BASE: "${VITE_API_BASE:-}"
+        VITE_DOCS_URL: "${VITE_DOCS_URL:-https://srikanth-bitdynamics.github.io/Canton-Dex-Reference-Implementation/}"
+        VITE_APP_VERSION: "${VITE_APP_VERSION:-v0.6.0}"
         VITE_WC_PROJECT_ID: "${VITE_WC_PROJECT_ID:-}"
         VITE_CANTON_NETWORK_ID: "${VITE_CANTON_NETWORK_ID:-canton:devnet}"
-        VITE_CANTON_LEDGER_URL: "${VITE_CANTON_LEDGER_URL:-}"
+        VITE_CANTON_SYNCHRONIZER: "${VITE_CANTON_SYNCHRONIZER:-}"
+        VITE_CANTON_DEX_PACKAGE_ID: "${VITE_CANTON_DEX_PACKAGE_ID:-#canton-dex-trading}"
+        VITE_ENABLE_SDK: "${VITE_ENABLE_SDK:-0}"
+        VITE_WALLET_GATEWAY_URL: "${VITE_WALLET_GATEWAY_URL:-}"
+        VITE_WALLET_GATEWAY_NAME: "${VITE_WALLET_GATEWAY_NAME:-}"
+        VITE_WALLET_SHOW_FULL_CATALOG: "${VITE_WALLET_SHOW_FULL_CATALOG:-0}"
+        VITE_ENABLE_PARTYLAYER: "${VITE_ENABLE_PARTYLAYER:-0}"
+        VITE_ENABLE_HOSTED_RFQ: "${VITE_ENABLE_HOSTED_RFQ:-0}"
+        VITE_PARTYLAYER_APP_NAME: "${VITE_PARTYLAYER_APP_NAME:-Canton DEX}"
+        VITE_PARTYLAYER_NETWORK: "${VITE_PARTYLAYER_NETWORK:-canton:devnet}"
+        VITE_PARTYLAYER_WALLET_IDS: "${VITE_PARTYLAYER_WALLET_IDS:-console,nightly,send}"
+        VITE_PARTYLAYER_CONNECT_TIMEOUT_MS: "${VITE_PARTYLAYER_CONNECT_TIMEOUT_MS:-180000}"
+        VITE_PARTYLAYER_REGISTRY_URL: "${VITE_PARTYLAYER_REGISTRY_URL:-}"
+        VITE_PARTYLAYER_REGISTRY_CHANNEL: "${VITE_PARTYLAYER_REGISTRY_CHANNEL:-stable}"
     ports:
       - "80:80"
     depends_on:

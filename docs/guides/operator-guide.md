@@ -47,9 +47,16 @@ bash scripts/fetch-splice-dars.sh
 bash scripts/build-trading-surface.sh
 ```
 
-Outputs `.daml/dist/canton-dex-*.dar`.
+The current DEX DAR is written under `trading/.daml/dist/`; the deployment
+script derives its exact filename from `trading/daml.yaml` so a stale DAR is
+never selected by a broad glob.
 
-### 2. Upload DARs, allocate parties, bootstrap the registry
+### 2. Upload DARs and bootstrap the registries
+
+Allocate the operator, LP registrar, and asset-admin parties through your
+participant first. This repository cannot make that participant-specific
+governance decision for you. Then provide the exact allocated party ids and a
+vetted DEX package hash (or a supported `#package-name` reference):
 
 ```bash
 export CANTON_LEDGER_URL=https://your-participant:7575
@@ -57,18 +64,32 @@ export CANTON_LEDGER_TOKEN=$(...)         # JWT for ledger-api-user
 export CANTON_OPERATOR=op::1220::...
 export CANTON_LP_REGISTRAR=lp::1220::...
 export CANTON_ADMIN=admin::1220::...
+export CANTON_DEX_PACKAGE_ID=<vetted-package-hash>
 
-./scripts/deploy-testnet.sh
+bash scripts/deploy-testnet.sh
 ```
 
-The script is idempotent. It uploads DARs, allocates the parties if they don't
-exist, runs `bootstrap-registry.ts` to create reference-registry
-`InstrumentConfig` contracts for BTC / USDC / ETH and the LP
-instruments, and (if `OPERATOR_ADMIN_TOKEN` is set) seeds an initial BTC/USDC
-pair.
+The default run builds and uploads the exact DAR (including its embedded
+dependency closure), then idempotently creates `Registry.V2` plus configured
+`InstrumentConfig` contracts. It does **not** allocate parties, start the
+backend, mint holdings, fund a pool, or create market metadata by default.
+Record the final `assetRegistryCid` and `lpRegistryCid` values. A single
+`Registry.V2` contract implements both factory interfaces for its admin, so
+each allocation/settlement pair below uses the same registry cid:
 
-Skip flags for re-runs: `DEPLOY_SKIP_BUILD=1`, `DEPLOY_SKIP_UPLOAD=1`,
-`DEPLOY_SKIP_PARTIES=1`, `DEPLOY_SKIP_SEED=1`.
+```bash
+export CANTON_ALLOC_FACTORY_CID=<assetRegistryCid>
+export CANTON_SETTLE_FACTORY_CID=<assetRegistryCid>
+# Required only when CANTON_LP_REGISTRAR differs from CANTON_ADMIN:
+export CANTON_LP_ALLOC_FACTORY_CID=<lpRegistryCid>
+export CANTON_LP_SETTLE_FACTORY_CID=<lpRegistryCid>
+```
+
+Current re-run flags are `DEPLOY_SKIP_BUILD=1`, `DEPLOY_SKIP_UPLOAD=1`, and
+`DEPLOY_SKIP_BOOTSTRAP=1`. After the backend is running, the separate opt-in
+`DEPLOY_SEED_MARKETS=1` phase can create a pair plus an **unfunded** pool; it
+still does not mint or deposit value. See [Run on a testnet](run-on-testnet.md)
+for the complete order and checkpoints.
 
 ### 3. Start the operator backend
 
@@ -76,8 +97,8 @@ Skip flags for re-runs: `DEPLOY_SKIP_BUILD=1`, `DEPLOY_SKIP_UPLOAD=1`,
 cd services/operator-backend
 cp .env.example .env
 # Fill in: CANTON_LEDGER_URL, CANTON_LEDGER_TOKEN, party ids,
-#          OPERATOR_ADMIN_TOKEN, DEX_OPERATOR_API_TOKEN,
-#          ALLOWED_ORIGINS, DB_PATH
+#          CANTON_DEX_PACKAGE_ID, asset/LP factory CIDs,
+#          OPERATOR_ADMIN_TOKEN, DEX_OPERATOR_API_TOKEN, ALLOWED_ORIGINS, DB_PATH
 npm install
 npm start
 ```
@@ -163,12 +184,16 @@ admin routes. Each maps to one choice on `DexPair`:
 
 | Action | Route | Choice |
 |---|---|---|
-| Pause / resume trading | `POST /v1/admin/pairs/:cid/active` | `DexPair_SetActive { newActive }` |
+| Change listing active metadata | `POST /v1/admin/pairs/:cid/active` | `DexPair_SetActive { newActive }` |
 | Change fees | `POST /v1/admin/pairs/:cid/fee-model` | `DexPair_UpdateFeeModel { newFeeModel }` |
 | Change order-book / pool mode | `POST /v1/admin/pairs/:cid/trading-mode` | `DexPair_UpdateTradingMode { newTradingMode }` |
 
-Pausing toggles the `active` flag without archiving the pair record, so a
-paused pair keeps its history and fee policy and can be resumed in place.
+`DexPair.active`, `tradingMode`, and `feeModel` are listing/discovery metadata
+in this revision. Updating them preserves the pair's history, but the pool and
+order terminal choices do not fetch `DexPair`; therefore this flag alone is
+**not** an on-ledger trading halt. Use `PoolRules_Pause` for pools, stop
+off-ledger order routing, and add an explicit terminal-choice gate if your
+production policy requires pair-wide enforcement.
 
 ### Create a pool
 

@@ -1,18 +1,12 @@
-// Direct Canton ledger wallet provider.
+// Disabled Direct Canton experiment.
 //
-// Lightweight fallback for testnet/dev. Submits intents to the Canton
-// JSON Ledger API directly using a bearer token, without WalletConnect
-// pairing flow. The operator backend translates the intent into the
-// concrete Daml command tree; this provider just signs and submits.
-//
-// Use cases:
-//   - Dev sessions where the user already has a JWT and a participant URL
-//   - Manual validation against a controlled testnet
-//   - Smoke testing the dApp without a wallet round-trip
-//
-// NOT suitable for end users: relies on the user trusting a long-lived
-// JWT stored in localStorage. The Token Standard provider should be the
-// default for real wallets.
+// A participant JSON Ledger API can accept concrete Daml commands, but it does
+// not expose the DEX-specific `/v1/wallet/execute` intent endpoint that an older
+// version of this class called. Keeping a participant bearer token in browser
+// localStorage would also be an unsafe public-deployment pattern. The provider
+// registry therefore does not register this class, and both connect and submit
+// fail closed. Use the dapp SDK, PartyLayer, or WalletConnect for a real wallet;
+// use the development operator relay when explicitly testing backend signing.
 
 import type {
   WalletAccount,
@@ -21,49 +15,25 @@ import type {
   WalletProvider,
   WalletResult,
 } from "./types";
-import { LiquidityAllocationUnsupportedError } from "./types";
 
-const LS_KEY = "canton-dex:direct:session";
-
-interface PersistedSession {
-  ledgerUrl: string;
-  token: string;
-  party: string;
-}
+export const CANTON_DIRECT_DISABLED_MESSAGE =
+  "Direct Canton is intentionally unavailable: the participant API accepts concrete Daml commands, not DEX wallet intents. Use a supported external wallet or the DEV-only operator relay.";
 
 export class CantonDirectProvider implements WalletProvider {
   readonly id = "canton-direct";
-  readonly label = "Direct Canton (advanced)";
+  readonly label = "Direct Canton (disabled)";
 
   private status: WalletConnectionStatus = { kind: "disconnected" };
   private readonly listeners = new Set<(s: WalletConnectionStatus) => void>();
-  private session: PersistedSession | null = null;
 
   constructor(
-    private readonly defaultLedgerUrl: string,
-    private readonly defaultToken: string,
-  ) {
-    // Auto-restore prior session on construction so a page reload keeps
-    // the user signed in. Dev-only: in prod we never rehydrate a persisted
-    // bearer-token session.
-    const stored =
-      import.meta.env.DEV && typeof window !== "undefined"
-        ? window.localStorage.getItem(LS_KEY)
-        : null;
-    if (stored) {
-      try {
-        this.session = JSON.parse(stored) as PersistedSession;
-        this.status = {
-          kind: "connected",
-          account: { party: this.session.party, label: this.label },
-          providerId: this.id,
-        };
-      } catch {
-        // Stored session was tampered — drop it.
-        window.localStorage.removeItem(LS_KEY);
-      }
-    }
-  }
+    // Preserve the old constructor shape for downstream imports while making
+    // it impossible to retain either credential.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _defaultLedgerUrl = "",
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _defaultToken = "",
+  ) {}
 
   getStatus(): WalletConnectionStatus {
     return this.status;
@@ -80,74 +50,15 @@ export class CantonDirectProvider implements WalletProvider {
   }
 
   async connect(): Promise<WalletAccount> {
-    if (this.status.kind === "connected") return this.status.account;
-    // Never read/persist a long-lived bearer token outside dev.
-    if (!import.meta.env.DEV) {
-      const msg =
-        "canton-direct is a dev-only provider and is disabled in production builds";
-      // eslint-disable-next-line no-console
-      console.error(`[wallet] ${msg}`);
-      this.setStatus({ kind: "error", message: msg });
-      throw new Error(msg);
-    }
-    if (!this.defaultLedgerUrl || !this.defaultToken) {
-      const msg = "VITE_CANTON_LEDGER_URL and VITE_CANTON_AUTH_TOKEN must be set";
-      this.setStatus({ kind: "error", message: msg });
-      throw new Error(msg);
-    }
-    this.setStatus({ kind: "connecting" });
-    try {
-      const res = await fetch(new URL("/v2/users/current", this.defaultLedgerUrl).toString(), {
-        headers: { Authorization: `Bearer ${this.defaultToken}` },
-      });
-      if (!res.ok) throw new Error(`ledger /v2/users/current returned ${res.status}`);
-      const body = (await res.json()) as { primaryParty?: string; party?: string };
-      const party = body.primaryParty ?? body.party;
-      if (!party) throw new Error("ledger did not return a primary party");
-      this.session = { ledgerUrl: this.defaultLedgerUrl, token: this.defaultToken, party };
-      window.localStorage.setItem(LS_KEY, JSON.stringify(this.session));
-      const account: WalletAccount = { party, label: this.label };
-      this.setStatus({ kind: "connected", account, providerId: this.id });
-      return account;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.setStatus({ kind: "error", message: msg });
-      throw e;
-    }
+    this.setStatus({ kind: "error", message: CANTON_DIRECT_DISABLED_MESSAGE });
+    throw new Error(CANTON_DIRECT_DISABLED_MESSAGE);
   }
 
   async disconnect(): Promise<void> {
-    this.session = null;
-    window.localStorage.removeItem(LS_KEY);
     this.setStatus({ kind: "disconnected" });
   }
 
-  async submit(intent: WalletIntent): Promise<WalletResult> {
-    if (this.status.kind !== "connected" || !this.session) {
-      throw new Error("canton-direct: not connected");
-    }
-    if (intent.kind === "add-liquidity" || intent.kind === "remove-liquidity") {
-      // This provider cannot surface the created allocation cids required by
-      // the LP settle endpoint.
-      throw new LiquidityAllocationUnsupportedError(this.id);
-    }
-    // The Direct provider forwards the intent verbatim to the operator
-    // backend's intent-execution endpoint. The backend resolves it into
-    // a Daml command tree and signs as the trader (using the same
-    // direct bearer token under the hood). This is the simplest path
-    // for testnet smoke flows.
-    const res = await fetch(new URL("/v1/wallet/execute", this.session.ledgerUrl).toString(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.session.token}`,
-      },
-      body: JSON.stringify({ party: this.session.party, intent }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`wallet execute failed: ${res.status} ${text}`);
-    }
-    return (await res.json()) as WalletResult;
+  async submit(_intent: WalletIntent): Promise<WalletResult> {
+    throw new Error(CANTON_DIRECT_DISABLED_MESSAGE);
   }
 }

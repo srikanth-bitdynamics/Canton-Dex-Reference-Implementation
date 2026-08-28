@@ -1,47 +1,69 @@
 #!/usr/bin/env bash
 
-# End-to-end smoke test. Starts the dev backend, hits every key endpoint,
-# verifies responses, then shuts down. Exits non-zero on any failure.
+# Backend HTTP smoke test. Starts the in-memory dev backend, checks a selected
+# set of read/quote endpoints plus the admin auth gate, then shuts down.
+# Exits non-zero on any failure.
 #
-# Usage: ./scripts/e2e-smoke.sh
+# Usage: bash scripts/backend-http-smoke.sh
 #
-# Requires: node, curl. Does not require a Canton participant (uses
-# InMemoryLedger).
+# Requires: bash, node, npm, curl, grep, and `npm ci` already run in
+# services/operator-backend. Does not require a Canton participant or dApp.
+# This is not a wallet, settlement, or full-stack browser test.
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${PORT:-18080}"
 BASE="http://localhost:${PORT}"
+SMOKE_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/canton-dex-http-smoke.XXXXXX")"
+BACKEND_LOG="$SMOKE_TMP_DIR/backend.log"
 
 cleanup() {
+  local status=$?
   if [[ -n "${BACKEND_PID:-}" ]]; then
     kill "$BACKEND_PID" 2>/dev/null || true
     wait "$BACKEND_PID" 2>/dev/null || true
   fi
+  if [[ "$status" -eq 0 ]]; then
+    rm -rf "$SMOKE_TMP_DIR"
+  else
+    echo "backend log retained at: $BACKEND_LOG" >&2
+  fi
+  return "$status"
 }
 trap cleanup EXIT
+
+if curl -fsS "${BASE}/v1/status" >/dev/null 2>&1; then
+  echo "refusing to run: ${BASE} is already serving /v1/status; choose another PORT" >&2
+  exit 1
+fi
 
 echo "==> Starting dev backend on :$PORT"
 (
   cd "$ROOT_DIR/services/operator-backend"
-  PORT="$PORT" npm run dev >/tmp/e2e-smoke-backend.log 2>&1 &
-  echo $! > /tmp/e2e-smoke-backend.pid
-)
-BACKEND_PID="$(cat /tmp/e2e-smoke-backend.pid)"
+  PORT="$PORT" exec npm run dev
+) >"$BACKEND_LOG" 2>&1 &
+BACKEND_PID="$!"
 
 # Wait for the server to come up.
+READY=0
 for i in {1..30}; do
   if curl -fsS "${BASE}/v1/status" >/dev/null 2>&1; then
+    READY=1
     break
   fi
   if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
     echo "backend died during startup; log:"
-    cat /tmp/e2e-smoke-backend.log
+    cat "$BACKEND_LOG"
     exit 1
   fi
   sleep 0.5
 done
+if [[ "$READY" != "1" ]]; then
+  echo "backend did not become ready within 15 seconds; log:"
+  cat "$BACKEND_LOG"
+  exit 1
+fi
 
 check_get_contains() {
   local name="$1"
@@ -83,8 +105,9 @@ check_status() {
   fi
 }
 
-echo "==> Read endpoints"
-check_get_contains status "${BASE}/v1/status" '"synced":true'
+echo "==> Selected read endpoints"
+check_get_contains status-preview "${BASE}/v1/status" '"network":"preview:in-memory"'
+check_get_contains status-sync "${BASE}/v1/status" '"synced":true'
 check_get_contains context "${BASE}/v1/context" '"operator"'
 check_get_contains pools "${BASE}/v1/pools" 'BTC'
 check_get_contains pairs "${BASE}/v1/pairs" 'BTC'
@@ -116,4 +139,4 @@ echo "==> Admin auth gate"
 check_status admin-401 401 -X POST -H 'Content-Type: application/json' -d '{}' \
   "${BASE}/v1/admin/pairs"
 
-echo "==> All smoke checks passed"
+echo "==> All backend HTTP smoke checks passed"

@@ -93,8 +93,9 @@ testFullRedemptionShareIsExact = do
   PM.floorMul 993.0486593843 share === 993.0486593843
   pure ()
 
--- The end-to-end proof: a real swap run through the full settlement machinery
--- must leave base*quote (the pool's invariant `k`) no lower than it started.
+-- The settlement-backed rounding proof: a real-holding swap run through the
+-- Daml settlement machinery must leave base*quote (the pool's invariant `k`)
+-- no lower than it started.
 --
 -- A zero-fee pool has no fee slack to absorb a rounding error. 7 USDC into a
 -- 1000/1000 pool prices at 7000/1007, whose rounded quotient sits above the

@@ -14,6 +14,9 @@ import { ConnectWalletButton } from '@/components/ConnectWalletButton';
 import { ledger } from '@/services/ledger';
 
 const APP_VERSION = (import.meta.env.VITE_APP_VERSION as string | undefined) ?? 'v0.6.0';
+const DOCS_URL =
+  (import.meta.env.VITE_DOCS_URL as string | undefined) ||
+  'https://srikanth-bitdynamics.github.io/Canton-Dex-Reference-Implementation/';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Trade' },
@@ -30,9 +33,14 @@ export function Layout() {
     queryFn: ledger.getStatus,
     refetchInterval: 5000,
   });
-  const networkLabel = status?.network ?? 'connecting…';
+  const isInMemoryPreview = status?.network === 'preview:in-memory';
+  const networkLabel = isInMemoryPreview
+    ? 'in-memory preview'
+    : (status?.network ?? 'connecting…');
   const slotLabel = status
-    ? status.synced
+    ? isInMemoryPreview
+      ? 'Preview · no Canton'
+      : status.synced
       ? `Synced · slot ${status.slot.toLocaleString()}`
       : `Catching up · slot ${status.slot.toLocaleString()}`
     : 'Connecting…';
@@ -87,7 +95,7 @@ export function Layout() {
               </NavLink>
             ))}
             <a
-              href="/docs/"
+              href={DOCS_URL}
               target="_blank"
               rel="noreferrer"
               data-screen-label="Docs"
@@ -109,6 +117,23 @@ export function Layout() {
         </div>
       </header>
       <main className="max-w-7xl mx-auto px-6 py-6">
+        {isInMemoryPreview && (
+          <div
+            role="status"
+            className="mb-5 rounded-sm border px-4 py-3 text-sm"
+            style={{
+              background: 'var(--warning-subtle, rgba(245, 158, 11, 0.08))',
+              borderColor: 'var(--warning, #d97706)',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <strong style={{ color: 'var(--text-primary)' }}>
+              In-memory preview — no Canton participant.
+            </strong>{' '}
+            Data is seeded and wallet actions demonstrate intent composition;
+            they do not settle token value.
+          </div>
+        )}
         <Outlet />
       </main>
     </div>

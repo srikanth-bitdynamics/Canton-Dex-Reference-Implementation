@@ -2,8 +2,8 @@
 
 How traders, LPs, and RFQ counterparties use the Canton DEX. Every action
 below is task-oriented: connect once, then swap, provide liquidity, place an
-order, or trade an RFQ block. The one rule that shapes the whole surface — the
-dApp never signs as you — is explained in
+order, or trade an RFQ block. The external-wallet authority boundary — the dApp
+does not hold your key or submit with your ledger authority — is explained in
 [How a trade is authorised](#how-a-trade-is-authorised).
 
 Audience: someone who already has a Canton party id (or is willing to use the
@@ -13,40 +13,73 @@ mock wallet locally) and wants to trade.
 
 ## Connecting a wallet
 
-The Connect Wallet button in the top bar opens the wallet picker. It
-auto-detects the wallets available in this deployment — a dapp-sdk gateway,
-injected/announced browser wallets, PartyLayer's catalog — and lists the
-remaining providers below them, then routes your choice to its owning provider.
-There is no built-in default in production or testnet builds.
+The **Connect Wallet** button opens one combined picker. It asks each enabled
+integration what it can reach — a dapp-sdk gateway, injected or announced
+browser wallets, and PartyLayer's catalog — then adds any enabled
+single-provider rows. Picking a row routes the connection back to the adapter
+that discovered it. The dApp never connects a wallet automatically.
 
-| Provider | When to use | Required env |
+### External-wallet integrations
+
+These adapters keep user authority in an external wallet. “Production-facing”
+means that the architecture has the correct authority boundary; it does not
+replace live validation of the particular wallet, participant, packages, and
+network you deploy.
+
+| Picker integration | Current scope | Enable with |
 |---|---|---|
-| **Token Standard V2** | Local dev / testnet only (routes writes through the operator signing relay; dev builds only) | `VITE_API_BASE`, `VITE_CANTON_DEFAULT_PARTY` |
-| **WalletConnect** | External CIP-0103 wallets (mobile / hardware) | `VITE_WC_PROJECT_ID` |
-| **Direct Canton** | Advanced testnet sessions with a bearer token | `VITE_CANTON_LEDGER_URL`, `VITE_CANTON_AUTH_TOKEN` |
-| **Mock Wallet** | Local dev only — DEV builds only | none |
+| **Canton wallet (dapp SDK / CIP-0103)** | Composes the Daml commands and delegates authorization and submission to a CIP-0103 wallet. The current capability table marks its update-id discovery path DvP-ready. | `VITE_ENABLE_SDK=1`; optionally set `VITE_WALLET_GATEWAY_URL` and `VITE_WALLET_GATEWAY_NAME` |
+| **PartyLayer** | Opens PartyLayer's configured wallet catalog. Its update-id discovery path is implemented, but deliberately marked **unproven** until the selected wallet and deployment pass the live validator plan. | `VITE_ENABLE_PARTYLAYER=1` plus the PartyLayer variables in `.env.example` |
+| **WalletConnect** | Connects an external wallet through Reown. The current adapter is marked **no DvP** and explicitly rejects LP add/remove, so enable it only for wallet/intent combinations you have validated. | `VITE_WC_PROJECT_ID` and `VITE_CANTON_NETWORK_ID` |
 
-Once connected, your party id appears in the top bar. The provider persists
-across reloads (the session is stored in `localStorage`), and clicking the
-connected pill disconnects.
+When more than one is enabled, the picker adds a single **recommended** badge
+using the capability order: dapp SDK (DvP-ready), PartyLayer (unproven pending
+live validation), then WalletConnect (currently no-DvP). That badge is only a
+UI hint; the user still chooses and approves the connection. If none is
+configured in a production build, no development relay is silently substituted.
 
-On the public testnet at `testnet-dex.bitdynamics.cc`, testers are onboarded as
-hosted parties on the operator's (BitDynamics) validator, and the traded assets
-are issued locally by the deployment's own Token Standard V2 registry. This is an
-interim arrangement until the general-purpose validator and wallet tooling (DA
-Utilities) supports Token Standard V2, at which point users bring their own party
-and V2 assets. See [Non-goals](../concepts/non-goals.md#the-hosted-testnet-is-a-demo-surface-not-a-wallet).
+### Development-only adapters
+
+| Picker integration | What it actually proves | Required env |
+|---|---|---|
+| **Operator Relay (dev only)** | Uses the `token-standard` provider id, but is not a Token Standard wallet. The browser composes commands and `/v1/wallet/submit` submits them with the backend's configured ledger authority. This tests orchestration, not self-custody. | Frontend: `VITE_API_BASE`, `VITE_CANTON_DEFAULT_PARTY`. Backend: `DEX_DEV_WALLET_RELAY=1` and an exact `DEX_DEV_RELAY_PARTIES` allowlist. |
+| **Mock Wallet (dev)** | Returns deterministic placeholder contract ids so the UI can be explored. It submits no ledger transaction. | none |
+
+`CantonDirectProvider` is intentionally **not registered**. Its former path sent
+a DEX intent to `/v1/wallet/execute`, but a Canton participant exposes a command
+API rather than that DEX-specific endpoint. Shipping a participant bearer token
+in browser storage would also be unsafe. Use the dapp SDK, PartyLayer, or
+WalletConnect for external authorization; use the operator relay only for an
+explicit local development exercise.
+
+Once connected, the active party appears in the top bar and clicking the
+connected pill disconnects. Reconnection and persistence belong to the chosen
+external wallet/SDK; do not assume every provider stores or restores the same
+session. The development relay stores only its configured demo party and ledger
+user id. It never stores a participant JWT.
+
+For a testnet or public deployment, use a submit-capable external wallet. Do not
+compile participant, operator, or admin bearer credentials into the browser
+bundle.
+
+This repository does not provision a public DEX hostname, party faucet, or
+browser custody service. An operator deploying it must supply the Canton
+participant, parties, assets, API origin, and wallet/onboarding design. The
+development-only signing relay is explained under
+[Non-goals](../concepts/non-goals.md#the-development-relay-is-not-a-wallet).
 
 ---
 
 ## How a trade is authorised
 
-Read this once and the pool/order screens follow. **The dApp holds no keys.** A
-DvP action is a three-step handshake: the dApp asks the operator for a
-Daml-built spec, your wallet signs that spec (locking the named funds), and the
-operator settles against it. The wallet carries *your* authority; the operator
-carries *its own*. The hosted RFQ screen is a separate relay flow described
-below.
+Read this once and the pool/order screens follow. With an external-wallet
+adapter, **the dApp holds no keys**. A DvP action is a three-step handshake: the
+dApp asks the operator for a Daml-built spec, your wallet authorizes that spec
+(locking the named funds), and the operator settles against it. The wallet
+carries *your* authority; the operator carries *its own*. The development
+operator relay does not satisfy this self-custody boundary: its backend submits
+using configured ledger rights. The included operator-mediated RFQ screen uses
+a separate authority flow described below.
 
 ```mermaid
 sequenceDiagram
@@ -175,20 +208,28 @@ Bilateral block trades. You publish a request, whitelisted dealers quote, and
 you accept one. Acceptance creates a `MatchedTrade` and policy receipt; token
 funding and settlement are separate steps.
 
+This screen's writes use the explicitly custodial hosted-RFQ mode, not the
+connected wallet. Production builds disable its New / Accept / Cancel controls
+unless `VITE_ENABLE_HOSTED_RFQ=1`; the backend independently requires
+`DEX_HOSTED_RFQ_RELAY=1` and `DEX_CALLER_JWT_SECRET`. Enable both only for a
+deployment that deliberately provisions trader `actAs` rights and issues a
+short-lived caller JWT bound to the connected party. Reads remain usable while
+writes are disabled.
+
 1. Open **RFQ** → click **+ New RFQ**.
 2. Pick pair, side, size, and validity window. Select dealers from the whitelist
    on the right.
-3. Send. The hosted trader screen creates the RFQ. A dealer integration must
-   observe that contract and create `RfqQuote` contracts; this reference does
-   not include a dealer quote-entry screen. Visible quotes stream into the
-   expanded row.
+3. Send. The included operator-mediated screen creates the RFQ. A dealer
+   integration must observe that contract and create `RfqQuote` contracts;
+   this reference does not include a dealer quote-entry screen. Visible quotes
+   stream into the expanded row.
 4. Keep the default **Operator policy** ranking, or re-sort with the Best price /
    Earliest / Trusted only buttons. Under policy `v2.0` the ranking chain is
    **trusted tier first → later expiry first → earlier posting time first →
    dealer id** as the tiebreaker — price is *not* part of the policy chain; you
    choose from the policy-ranked candidates. The policy modal shows the exact
    ranking that was applied.
-5. Click **Accept** on the dealer you want. On the hosted demo, the backend
+5. Click **Accept** on the dealer you want. In this reference flow, the backend
    submits `Rfq_Accept` with its configured trader and operator authorities; a
    `PolicyReceipt` records the ranking applied. This is not a self-custodial
    wallet approval flow.
@@ -200,7 +241,7 @@ Accepted RFQs move to the **Accepted** tab; those that expire with no acceptance
 (or no quotes) move to **Expired**. The page does not claim that acceptance
 itself moved balances. The later `MatchedTrade` allocation and settle choices
 are demonstrated by the Daml tests and operator API, but are not driven by this
-hosted RFQ screen.
+RFQ screen.
 
 ---
 
@@ -233,9 +274,10 @@ dApp passes only the intent verb.
 | Remove liquidity | `remove-liquidity` | Base-receipt + quote-receipt + LP burn-sender `Allocation`s, settled by [`PoolLiquidityRules_SettleRemoveLiquidity`](../../trading/CantonDex/Dex/PoolLiquidityRules.daml) |
 | Place order | `place-order` + `fund-order` | [`OrderFundingRequest`](../../trading/CantonDex/Dex/OrderFundingRequest.daml) → funded [`Order`](../../trading/CantonDex/Dex/Order.daml) |
 
-RFQ create, cancel, and accept are not wallet intents in this app. The hosted
-RFQ page calls the operator API, whose ledger user must be authorized for the
-hosted parties involved.
+RFQ create, cancel, and accept are not wallet intents in this app. The
+operator-mediated RFQ page calls the operator API, whose ledger user must be
+authorized for the configured parties involved. This is an implementation
+example, not a public relay service supplied by the repository.
 
 The split that makes the "operator can't rewrite your price" guarantee is one
 pair of choices: the request choice builds a spec and creates nothing, and the

@@ -35,15 +35,15 @@ function mkOrder(
     contractId,
     operator: OPERATOR,
     trader,
-    admin: "admin::1220ab",
-    baseInstrumentId: "dBTC",
-    quoteInstrumentId: "dUSD",
+    baseInstrumentId: { admin: "admin::1220ab", id: "dBTC" },
+    quoteInstrumentId: { admin: "admin::1220ab", id: "dUSD" },
     side,
     limitPrice,
     remainingQty: "0.5",
     expiry: null,
     status: "Funded",
-    allocationCid,
+    // Single-admin pair: one allocation keyed by the shared admin.
+    allocationCidsByAdmin: [["admin::1220ab", allocationCid]],
     settlementRef: { id: "DexOrder", cid: null },
     ledgerCreatedAt: createdAt,
   } as unknown as Order;
@@ -69,8 +69,8 @@ describe("indexer: a settled order-book fill", () => {
     ]);
     const svc = new OrderService(ledger, new StubRegistry(), OPERATOR as never);
     const results = await svc.runMatching({
-      baseInstrumentId: "dBTC",
-      quoteInstrumentId: "dUSD",
+      baseInstrumentId: { admin: "admin::1220ab" as never, id: "dBTC" },
+      quoteInstrumentId: { admin: "admin::1220ab" as never, id: "dUSD" },
       admin: "admin::1220ab" as never,
     });
     assert.equal(results[0]!.error, undefined);
@@ -118,8 +118,8 @@ describe("indexer: a settled order-book fill", () => {
       payload: string;
     };
     const legs = (JSON.parse(payload) as {
-      transferLegs: Array<{ instrumentId: string; amount: string }>;
-    }).transferLegs;
+      tradeLegs: Array<{ leg: { instrumentId: string; amount: string } }>;
+    }).tradeLegs.map((tl) => tl.leg);
     assert.deepEqual(
       legs.map((l) => [l.instrumentId, l.amount]),
       [

@@ -11,7 +11,9 @@
 -- Design guide: `docs/concepts/design-tour.md#pair-and-governance-state`.
 module CantonDex.Dex.DexPair where
 
-import DA.TextMap qualified as TextMap
+import DA.Map qualified as Map
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 
 -- | Which trading surfaces a pair exposes.
 data TradingMode
@@ -38,13 +40,10 @@ validFeeModel fees =
 
 template DexPair with
     operator : Party
-    admin : Party
-      -- ^ Registry admin for the base + quote instruments.
-    baseInstrumentId : Text
-      -- ^ `id` component of the base instrument, under `admin`; full asset
-      --   identity is `{ admin, id }`.
-    quoteInstrumentId : Text
-      -- ^ `id` component of the quote instrument, under `admin`.
+    baseInstrumentId : HoldingV2.InstrumentId
+      -- ^ Full identity `{ admin, id }` of the base instrument.
+    quoteInstrumentId : HoldingV2.InstrumentId
+      -- ^ Full identity `{ admin, id }` of the quote instrument.
     tradingMode : TradingMode
       -- ^ Which surfaces off-ledger discovery and routing should expose. Active
       --   Daml settlement choices do not fetch this listing record.
@@ -56,17 +55,17 @@ template DexPair with
     publicReaders : Optional [Party]
       -- ^ Parties allowed to observe the listing; None/[] = operator-private
       --   except for admin.
-    accumulatedMakerFees : Optional (TextMap.TextMap Decimal)
+    accumulatedMakerFees : Optional (Map.Map HoldingV2.InstrumentId Decimal)
       -- ^ Per-instrument maker-side fee accrual, bumped by RecordMatchedTrade.
-    accumulatedTakerFees : Optional (TextMap.TextMap Decimal)
+    accumulatedTakerFees : Optional (Map.Map HoldingV2.InstrumentId Decimal)
       -- ^ Per-instrument taker-side fee accrual, bumped by RecordMatchedTrade.
   where
     signatory operator
-    observer admin :: optional [] identity publicReaders
+    observer optional [] identity publicReaders
 
     ensure
-      baseInstrumentId /= ""
-        && quoteInstrumentId /= ""
+      baseInstrumentId.id /= ""
+        && quoteInstrumentId.id /= ""
         && baseInstrumentId /= quoteInstrumentId
         && validFeeModel feeModel
 
@@ -98,28 +97,28 @@ template DexPair with
     -- bumps both accrual counters at their respective bps.
     choice DexPair_RecordMatchedTrade : ContractId DexPair
       with
-        legNotionals : TextMap.TextMap Decimal
-          -- ^ Notional touched per instrument id by the matched trade.
+        legNotionals : Map.Map HoldingV2.InstrumentId Decimal
+          -- ^ Notional touched per instrument by the matched trade.
       controller operator
       do
         assertMsg "Trade notionals must be non-negative"
-          (all (\(_, notional) -> notional >= 0.0) (TextMap.toList legNotionals))
-        let curMaker = optional TextMap.empty identity accumulatedMakerFees
-            curTaker = optional TextMap.empty identity accumulatedTakerFees
+          (all (\(_, notional) -> notional >= 0.0) (Map.toList legNotionals))
+        let curMaker = optional Map.empty identity accumulatedMakerFees
+            curTaker = optional Map.empty identity accumulatedTakerFees
             bumpedMaker = foldl
               (\acc (iid, notional) ->
-                let cur = optional 0.0 identity (TextMap.lookup iid acc)
+                let cur = optional 0.0 identity (Map.lookup iid acc)
                     fee = notional * intToDecimal feeModel.makerFeeBps / 10000.0
-                in TextMap.insert iid (cur + fee) acc)
+                in Map.insert iid (cur + fee) acc)
               curMaker
-              (TextMap.toList legNotionals)
+              (Map.toList legNotionals)
             bumpedTaker = foldl
               (\acc (iid, notional) ->
-                let cur = optional 0.0 identity (TextMap.lookup iid acc)
+                let cur = optional 0.0 identity (Map.lookup iid acc)
                     fee = notional * intToDecimal feeModel.takerFeeBps / 10000.0
-                in TextMap.insert iid (cur + fee) acc)
+                in Map.insert iid (cur + fee) acc)
               curTaker
-              (TextMap.toList legNotionals)
+              (Map.toList legNotionals)
         create this with
           accumulatedMakerFees = Some bumpedMaker
           accumulatedTakerFees = Some bumpedTaker

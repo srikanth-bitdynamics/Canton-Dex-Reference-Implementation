@@ -18,6 +18,7 @@
 //   the METHODS constant below.
 
 import type {
+  Party,
   WalletAccount,
   WalletConnectionStatus,
   WalletIntent,
@@ -25,6 +26,8 @@ import type {
   WalletResult,
 } from "./types";
 import { LiquidityAllocationUnsupportedError } from "./types";
+import { discoverHoldingsAcrossRegistries } from "./holdings";
+import type { Holding } from "@/types/contracts";
 
 // CIP-0103 method names exposed by Canton wallets over WalletConnect.
 // Listed for session permissions; the wallet must support these to
@@ -124,6 +127,7 @@ export class WalletConnectProvider implements WalletProvider {
   constructor(
     private readonly projectId: string,
     private readonly networkId: string,
+    private readonly packagePrefix = "#canton-dex-trading-v2",
   ) {}
 
   getStatus(): WalletConnectionStatus {
@@ -224,6 +228,42 @@ export class WalletConnectProvider implements WalletProvider {
     }
     this.connector = null;
     this.setStatus({ kind: "disconnected" });
+  }
+
+  // Discover the connected party's fundable holdings across every registry via
+  // the wallet's CIP-0103 `canton_ledgerApi` read (idempotent, so safe to
+  // retry). A foreign-registry Amulet / USDCx holding is found through the
+  // token-standard Holding interface, not only the DEX's own template. Callers
+  // fall back to the operator backend when this is absent or fails.
+  async listHoldings(owner: Party): Promise<Holding[]> {
+    if (this.status.kind !== "connected" || !this.connector) {
+      throw new Error("wallet not connected");
+    }
+    if (this.status.account.party !== owner) {
+      throw new Error("walletconnect: can only read holdings for the connected party");
+    }
+    const conn = this.connector;
+    return discoverHoldingsAcrossRegistries(owner, this.packagePrefix, (req) =>
+      withRetry(
+        () =>
+          withTimeout(
+            conn.request<unknown>({
+              method: "canton_ledgerApi",
+              params: [
+                {
+                  requestMethod: req.method,
+                  resource: req.resource,
+                  ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
+                },
+              ],
+            }),
+            SUBMIT_TIMEOUT_MS,
+            "canton_ledgerApi",
+          ),
+        READ_RETRIES,
+        "canton_ledgerApi",
+      ),
+    );
   }
 
   async submit(intent: WalletIntent): Promise<WalletResult> {

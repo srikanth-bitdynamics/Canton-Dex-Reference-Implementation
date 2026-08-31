@@ -249,31 +249,24 @@ relist market objects when the registry says their instrument version is no
 longer tradable. Any automatic upgrade-on-use or issuer-driven migration is a
 custom registry feature outside this reference.
 
-## Known limitation: one registry admin per pair
+## Per-instrument registry admins
 
-Both instruments of a pair share a single registry `admin`. `DexPair`,
-`Order`, `Pool` and `MatchedTrade` each declare one `admin : Party`, and
-`baseInstrumentId` / `quoteInstrumentId` are bare `Text` interpreted under it.
+Each instrument of a pair carries its full `InstrumentId {admin, id}`. `DexPair`,
+`Order`, `Pool`, and `MatchedTrade` name base and quote by `InstrumentId`, so the
+two assets may be administered by different registries — Canton Coin quoted
+against a third-party stablecoin, for instance.
 
-This follows the standard: `TransferLeg.instrumentId` is `Text`, so a leg
-carries no admin of its own and one cannot be recovered from a settled trade.
-`MatchedTrade_RequestAllocations` emits one `AllocationSpecification` per
-authorizer under that one admin.
+The standard's `TransferLeg.instrumentId` is bare `Text`, so a leg carries no
+admin of its own; each leg's admin travels alongside it in the app-layer records
+(`MatchedTrade` holds `[TradeLeg]`, each `TradeLeg = { admin, leg }`). Settlement
+partitions the trade's legs by admin and issues one
+`SettlementFactory_SettleBatch` per admin, all inside one Daml choice so the
+trade commits atomically or not at all. `MatchedTrade_RequestAllocations` emits
+one `AllocationSpecification` per `(authorizer, admin)`. A single-admin pair is
+the degenerate case: one admin, one batch. [Cross-admin
+settlement](../concepts/cross-admin.md) is authoritative.
 
-`MatchedTrade_Settle` does take `batchesByAdmin : Map Party SettlementBatchV2`
-and is shaped for multiple admins, inherited from the upstream batching
-utility. Each `SettlementBatchV2` carries its own `transferLegs`: the standard
-requires a batch's allocations to cover exactly the legs the batch is handed,
-so the caller partitions the trade's legs by the instrument admin of each leg
-(`groupLegsByAdmin` in the operator backend). `splitLegsByAuthorizer`
-splits by authorizer, not by admin, so the request path still emits one
-specification per authorizer under the trade's single admin.
-
-Pairing instruments from two different registries needs a second admin field
-on those four templates and one specification per `(authorizer, admin)`. That
-is a schema change, not a configuration option.
-
-The per-admin batching this describes is load-bearing and tested:
+The per-admin batching is load-bearing and tested:
 `testMatchedTradeSettlesPerAdminLegSubsets` in
 [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml)
 settles a trade's legs across two real registries in one transaction when they

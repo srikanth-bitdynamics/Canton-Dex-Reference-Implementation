@@ -64,13 +64,13 @@ shortened excerpt of
 ```daml
 template DexPair with
     operator : Party
-    admin : Party
-    baseInstrumentId : Text
-    quoteInstrumentId : Text
+    baseInstrumentId : V2.InstrumentId  -- full identity { admin, id }
+    quoteInstrumentId : V2.InstrumentId -- admin may differ from the base's
+    publicReaders : Optional [Party]
     active : Bool
   where
-    signatory operator       -- authorizes creation; always sees the contract
-    observer admin           -- sees the contract; need not authorize creation
+    signatory operator                          -- authorizes creation; always sees the contract
+    observer optional [] identity publicReaders -- listed readers; need not authorize creation
 
     choice DexPair_SetActive : ContractId DexPair
       with newActive : Bool
@@ -82,7 +82,7 @@ Read it from top to bottom:
 
 1. `DexPair` is the schema for one market listing.
 2. A created instance gets a contract ID, often called a `cid` in this repo.
-3. The `operator` is the signatory; `admin` is an observer.
+3. The `operator` is the signatory; the listed `publicReaders` are observers.
 4. `DexPair_SetActive` is a consuming choice by default. Exercising it archives
    the old pair contract and creates a successor with the new flag.
 
@@ -94,7 +94,7 @@ updates. Do not look for a database-style in-place mutation.
 | Role | Question it answers | In the excerpt |
 |---|---|---|
 | Signatory | Who authorizes contract creation and is a stakeholder? | `operator` |
-| Observer | Which additional stakeholder sees the contract? | `admin` |
+| Observer | Which additional stakeholder sees the contract? | `publicReaders` |
 | Controller | Who authorizes this choice exercise? | `operator` |
 
 Visibility is deliberate. A contract that is visible to the operator is not
@@ -162,7 +162,7 @@ This repository separates three representations:
 trading/**/*.daml
     │ dpm build
     ▼
-trading/.daml/dist/canton-dex-trading-0.1.4.dar
+trading/.daml/dist/canton-dex-trading-v2-1.0.0.dar
     │ upload / vet for the target network
     ▼
 Canton participant

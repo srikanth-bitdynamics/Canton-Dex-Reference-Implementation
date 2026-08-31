@@ -89,7 +89,7 @@ operator backend submits listing, matching, and settlement commands. The
 operator-mediated RFQ example also submits trader-authority commands, so its
 ledger user must have act-as rights for the configured trader; that exception is
 not a self-custodial wallet model or a public relay service. Both paths submit
-into `canton-dex-trading`, whose trading
+into `canton-dex-trading-v2`, whose trading
 surfaces settle through a Token Standard V2 registry.
 
 ```mermaid
@@ -98,7 +98,7 @@ flowchart TB
   Wallet["Wallet<br/>CIP-0103 (external)"]
   Operator["Operator backend<br/>services/operator-backend<br/>HTTP API · matcher · indexer"]
 
-  subgraph Ledger["Canton ledger — canton-dex-trading package"]
+  subgraph Ledger["Canton ledger — canton-dex-trading-v2 package"]
     direction TB
     Surfaces["Four trading surfaces<br/>AMM pools · Order book · RFQ · OTC"]
     Registry["Token Standard V2 registry<br/>Holding · Allocation · SettlementFactory"]
@@ -116,7 +116,7 @@ flowchart TB
 - **Operator backend** (`services/operator-backend/`) — HTTP API, JSON Ledger
   API driver, the reference matcher, indexer, idempotency, and recovery. Ships an
   in-memory dev ledger so the stack runs without Canton.
-- **`canton-dex-trading` package** (`trading/`) — the DEX templates, the LP-token
+- **`canton-dex-trading-v2` package** (`trading/`) — the DEX templates, the LP-token
   component, and a reference V2 registry.
 - **Registry** — external by contract. The reference ships one, but V2 does not
   require this exact registry; the DEX integrates against `InstrumentId` and

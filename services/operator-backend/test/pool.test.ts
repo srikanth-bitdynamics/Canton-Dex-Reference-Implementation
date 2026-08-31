@@ -60,11 +60,16 @@ class PerAdminRegistry extends FixedRegistryClient {
 
 const LP_ID = { admin: "lp", id: "BTC-USDC-LP" };
 
+// mkPool administers both sides under "ad"; the swap input is a full {admin,id}.
+const BTC = { admin: "ad", id: "BTC" };
+const USDC = { admin: "ad", id: "USDC" };
+
 // Capturing ledger: answers the split-pool queries listActive() makes
 // (config + state + slices + rules) + fetchLpPolicy, and records the
 // last submitted command so a test can inspect the choice argument.
 class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
+  readonly submissions: SubmitRequest[] = [];
   servePolicy = true;
   acceptances: LiquidityAllocationAcceptanceContract[] = [];
   treeEvents: Array<{ contractId: string; templateId: string }> = [];
@@ -77,6 +82,7 @@ class CapturingLedger implements LedgerSubmitter {
   }
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.lastSubmit = req;
+    this.submissions.push(req);
     const choice = (req.command as { choice?: string }).choice;
     if (choice === "PoolLiquidityRules_PreviewAddAllocations") {
       return {
@@ -92,7 +98,14 @@ class CapturingLedger implements LedgerSubmitter {
       choice === "PoolLiquidityRules_PreviewAddSettlement" ||
       choice === "PoolLiquidityRules_PreviewRemoveSettlement"
     ) {
-      return { baseQuoteBatch: {}, lpBatch: {} } as R;
+      // Daml `Map Party SettleBatch`, JSON-encoded as an array of [admin, args]
+      // pairs: the asset admins (deduped) plus the LP registrar. A single-admin
+      // pool collapses base and quote to one key.
+      return this.settlementPreview(true) as R;
+    }
+    if (choice === "PoolRules_PreviewSwapSettlement") {
+      // Swap settles under the input/output instrument admins only (no LP).
+      return this.settlementPreview(false) as R;
     }
     if (choice === "AllocationFactory_Allocate") {
       const allocationCid = `#created-allocation:${this.allocationCounter++}`;
@@ -108,6 +121,18 @@ class CapturingLedger implements LedgerSubmitter {
   async treeCreatedEvents() {
     return this.treeEvents;
   }
+  private assetAdmins(): Party[] {
+    const b = this.pool.baseInstrumentId.admin;
+    const q = this.pool.quoteInstrumentId.admin;
+    return b === q ? [b] : [b, q];
+  }
+  // The per-admin settlement preview: one [admin, SettleBatch] pair per admin.
+  private settlementPreview(includeLp: boolean): Array<[Party, Record<string, unknown>]> {
+    const admins = includeLp
+      ? [...this.assetAdmins(), this.pool.lpRegistrar]
+      : this.assetAdmins();
+    return admins.map((admin) => [admin, {}]);
+  }
   async *subscribe<T>(_f: SubscriptionFilter): AsyncIterable<LedgerEvent<T>> {
     // no streaming in this stub
   }
@@ -117,7 +142,7 @@ class CapturingLedger implements LedgerSubmitter {
       case "CantonDex.Dex.Pool:Pool":
         return [{
           contractId: p.contractId, poolId: p.poolId, operator: p.operator,
-          lpRegistrar: p.lpRegistrar, admin: p.admin,
+          lpRegistrar: p.lpRegistrar,
           baseInstrumentId: p.baseInstrumentId, quoteInstrumentId: p.quoteInstrumentId,
           lpInstrumentId: p.lpInstrumentId, feeBps: p.feeBps,
         } as unknown as T];
@@ -188,9 +213,8 @@ function mkPool(
     poolLiquidityRulesCid: "#liquidity-rules:0" as never,
     operator: "op" as never,
     lpRegistrar: "lp" as never,
-    admin: "ad" as never,
-    baseInstrumentId: "BTC",
-    quoteInstrumentId: "USDC",
+    baseInstrumentId: { admin: "ad", id: "BTC" },
+    quoteInstrumentId: { admin: "ad", id: "USDC" },
     lpInstrumentId: LP_ID,
     feeBps,
     status: "Active",
@@ -227,7 +251,7 @@ describe("PoolService.computeQuote", () => {
     // 10 BTC / 200_000 USDC pool, 0 fee, 0.01 BTC in.
     // out = 200_000 * 0.01 / (10 + 0.01) = 199.80...
     const pool = mkPool(10, 200_000, 0);
-    const out = svc.computeQuote(pool, "BTC", "0.01");
+    const out = svc.computeQuote(pool, BTC, "0.01");
     const n = parseFloat(out);
     assert.ok(n > 199.7 && n < 199.85, `expected ~199.8, got ${n}`);
   });
@@ -238,9 +262,9 @@ describe("PoolService.computeQuote", () => {
         new InMemoryLedger(),
         new StubRegistry(),
         "op" as never,
-      ).computeQuote(mkPool(10, 200_000, 0), "BTC", "1"),
+      ).computeQuote(mkPool(10, 200_000, 0), BTC, "1"),
     );
-    const withFee = parseFloat(svc.computeQuote(mkPool(10, 200_000, 30), "BTC", "1"));
+    const withFee = parseFloat(svc.computeQuote(mkPool(10, 200_000, 30), BTC, "1"));
     const ratio = withFee / noFee;
     assert.ok(ratio > 0.995 && ratio < 0.998, `expected ~0.997, got ${ratio}`);
   });
@@ -248,7 +272,7 @@ describe("PoolService.computeQuote", () => {
   it("quotes the inverse direction", () => {
     const pool = mkPool(10, 200_000, 30);
     // 1000 USDC in. out = 10 * 1000*0.997 / (200_000 + 1000*0.997) ≈ 0.0496 BTC
-    const out = parseFloat(svc.computeQuote(pool, "USDC", "1000"));
+    const out = parseFloat(svc.computeQuote(pool, USDC, "1000"));
     assert.ok(out > 0.049 && out < 0.0499, `expected ~0.0496, got ${out}`);
   });
 
@@ -256,13 +280,13 @@ describe("PoolService.computeQuote", () => {
     // 7 USDC into a zero-fee 1000/1000 pool prices at 7000/1007; half-even
     // rounding lands on ...57, one ulp above the exact quotient, which would
     // quote an output the ledger refuses to pay.
-    assert.equal(svc.computeQuote(mkPool(1000, 1000, 0), "USDC", "7"), "6.9513406156");
+    assert.equal(svc.computeQuote(mkPool(1000, 1000, 0), USDC, "7"), "6.9513406156");
   });
 
   it("price impact grows with size", () => {
     const pool = mkPool(10, 200_000, 30);
-    const tinyOut = parseFloat(svc.computeQuote(pool, "BTC", "0.01"));
-    const bigOut = parseFloat(svc.computeQuote(pool, "BTC", "5"));
+    const tinyOut = parseFloat(svc.computeQuote(pool, BTC, "0.01"));
+    const bigOut = parseFloat(svc.computeQuote(pool, BTC, "5"));
     const tinyMid = tinyOut / 0.01;
     const bigMid = bigOut / 5;
     assert.ok(
@@ -519,20 +543,21 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.acceptanceCid, null, "no acceptance evidence on the direct path");
     assert.equal(cmd.argument.lpBaseDepositCid, "#b:0");
     assert.equal(cmd.argument.lpReceiptCid, "#r:0");
+    // Allocation factories, per admin: base+quote receivers under the pool's
+    // asset admin, the mint under the LP registrar.
     assert.equal(cmd.argument.baseFactoryCid, "#alloc:ad");
+    assert.equal(cmd.argument.quoteFactoryCid, "#alloc:ad");
     assert.equal(cmd.argument.lpFactoryCid, "#alloc:lp");
-    assert.equal(cmd.argument.baseQuoteSettleCid, "#settle:ad");
-    assert.equal(cmd.argument.lpSettleCid, "#settle:lp");
-    // The fixed self-registry requires no operation-specific context. The two
-    // admin slots still remain separate and must never collapse to one field.
-    assert.deepEqual(cmd.argument.poolAdminExtraArgs, {
-      context: { values: {} },
-      meta: { values: {} },
-    });
-    assert.deepEqual(cmd.argument.lpRegistrarExtraArgs, {
-      context: { values: {} },
-      meta: { values: {} },
-    });
+    // Settlement is one batch per admin (GenMap: array of [admin, batch] pairs).
+    // A single-admin pool collapses base and quote into the pool admin's batch.
+    assert.deepEqual(cmd.argument.batchesByAdmin, [
+      ["ad", { factoryCid: "#settle:ad", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+      ["lp", { factoryCid: "#settle:lp", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+    ]);
+    // No collapsed single-admin settlement fields survive.
+    assert.equal(cmd.argument.baseQuoteSettleCid, undefined);
+    assert.equal(cmd.argument.lpSettleCid, undefined);
+    assert.equal(cmd.argument.poolAdminExtraArgs, undefined);
     assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");
     const disclosureIds = ledger.lastSubmit!.disclosure!.map((d) => d.contractId);
     assert.deepEqual(new Set(disclosureIds), new Set([
@@ -650,7 +675,7 @@ describe("PoolService DvP liquidity", () => {
     await svc.swap({
       poolCid: pool.contractId,
       swapperAccount: { owner: "swapper", provider: null, id: "" } as never,
-      inputInstrumentId: "BTC",
+      inputInstrumentId: BTC,
       inputAmount: "0.01",
       minOutputAmount: "0",
       quoteBinding: {
@@ -664,7 +689,14 @@ describe("PoolService DvP liquidity", () => {
     });
 
     const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
-    assert.equal(cmd.argument.swapperAllocationCid, "#swapAlloc", "recovered signed swap cid");
+    // Single-admin swap: the recovered allocation keyed under the pool admin.
+    assert.deepEqual(cmd.argument.swapperAllocationCidsByAdmin, [["ad", "#swapAlloc"]]);
+    assert.equal(cmd.argument.swapperAllocationCid, undefined, "no collapsed single cid");
+    // batchesByAdmin discovered per admin (one for a single-admin swap).
+    assert.deepEqual(cmd.argument.batchesByAdmin, [
+      ["ad", { factoryCid: "#settle:0", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+    ]);
+    assert.deepEqual(cmd.argument.swapAllocationRequestCids, []);
     assert.deepEqual(cmd.argument.quoteBinding, {
       expectedPoolId: pool.poolId,
       poolStateCid: pool.poolStateCid,
@@ -779,15 +811,16 @@ describe("PoolService DvP liquidity", () => {
     assert.deepEqual(ledger.lastSubmit!.actAs, ["op", "lp"]);
     assert.equal(cmd.argument.requestCid, "#req:1");
     assert.equal(cmd.argument.holderBurnSenderCid, "#burn:0");
-    // Fixed self-registry contexts are empty but remain separate per admin.
-    assert.deepEqual(cmd.argument.poolAdminExtraArgs, {
-      context: { values: {} },
-      meta: { values: {} },
-    });
-    assert.deepEqual(cmd.argument.lpRegistrarExtraArgs, {
-      context: { values: {} },
-      meta: { values: {} },
-    });
+    // Settlement is one batch per admin (GenMap of [admin, batch] pairs);
+    // base+quote collapse to the pool admin, LP under the registrar.
+    assert.deepEqual(cmd.argument.batchesByAdmin, [
+      ["ad", { factoryCid: "#settle:ad", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+      ["lp", { factoryCid: "#settle:lp", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+    ]);
+    // The LP allocation factory is retained; base/quote settle fields are gone.
+    assert.equal(cmd.argument.lpFactoryCid, "#alloc:lp");
+    assert.equal(cmd.argument.baseQuoteSettleCid, undefined);
+    assert.equal(cmd.argument.poolAdminExtraArgs, undefined);
     assert.equal(cmd.argument.extraArgs, undefined, "no collapsed single extraArgs");
     const disclosureIds = ledger.lastSubmit!.disclosure!.map((d) => d.contractId);
     assert.deepEqual(new Set(disclosureIds), new Set([
@@ -851,6 +884,170 @@ describe("PoolService DvP liquidity", () => {
   });
 });
 
+// A pool whose base and quote instruments are administered by two different
+// registries; LP is a third. Every flow must settle one batch per admin and
+// hold no readAs on an external registrar.
+describe("PoolService cross-admin settlement", () => {
+  const requestedAt = "1970-01-01T00:00:00Z" as never;
+
+  function mkCrossAdminPool(): Pool {
+    return {
+      ...mkPool(0, 0),
+      baseInstrumentId: { admin: "baseAdmin", id: "BTC" },
+      quoteInstrumentId: { admin: "quoteAdmin", id: "USDC" },
+    } as unknown as Pool;
+  }
+
+  it("settleAddLiquidity discovers a factory per admin, merges disclosures, and holds no external readAs", async () => {
+    const pool = mkCrossAdminPool();
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new PerAdminRegistry(), "op" as never);
+
+    await svc.settleAddLiquidity({
+      poolCid: pool.contractId,
+      requestCid: "#req:0" as never,
+      recipient: "lp" as never,
+      lpBaseDepositCid: "#b:0" as never,
+      lpQuoteDepositCid: "#q:0" as never,
+      lpReceiptCid: "#r:0" as never,
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      minLpTokens: "0.0",
+      knownTotalLpSupply: "0.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as {
+      choice: string; argument: Record<string, unknown>;
+    };
+    assert.equal(cmd.choice, "PoolLiquidityRules_SettleAddLiquidity");
+    // The base and quote receivers are authored under their own instrument
+    // admins, not both under the base admin.
+    assert.equal(cmd.argument.baseFactoryCid, "#alloc:baseAdmin");
+    assert.equal(cmd.argument.quoteFactoryCid, "#alloc:quoteAdmin");
+    assert.equal(cmd.argument.lpFactoryCid, "#alloc:lp");
+    // One settlement batch per admin: three distinct keys.
+    assert.deepEqual(cmd.argument.batchesByAdmin, [
+      ["baseAdmin", { factoryCid: "#settle:baseAdmin", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+      ["quoteAdmin", { factoryCid: "#settle:quoteAdmin", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+      ["lp", { factoryCid: "#settle:lp", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+    ]);
+    // Co-signed by the operator and its own LP registrar; no readAs on any
+    // external asset admin.
+    assert.deepEqual(ledger.lastSubmit!.actAs, ["op", "lp"]);
+    assert.equal(ledger.lastSubmit!.readAs, undefined);
+    const disclosureIds = ledger.lastSubmit!.disclosure!.map((d) => d.contractId);
+    assert.deepEqual(new Set(disclosureIds), new Set([
+      "#shared-rules",
+      "#factory:baseAdmin",
+      "#factory:quoteAdmin",
+      "#factory:lp",
+    ]));
+    assert.equal(disclosureIds.length, new Set(disclosureIds).size, "disclosures merged, no repeats");
+  });
+
+  it("swap discovers input- and output-admin factories and never reads as an admin", async () => {
+    const pool = {
+      ...mkPool(15, 300_000),
+      baseInstrumentId: { admin: "baseAdmin", id: "BTC" },
+      quoteInstrumentId: { admin: "quoteAdmin", id: "USDC" },
+      baseSlices: [
+        { contractId: "#bs:0", allocationCid: "#ba:0", amount: "15.0000000000", side: "BaseSide" },
+      ],
+      quoteSlices: [
+        { contractId: "#qs:0", allocationCid: "#qa:0", amount: "300000.0000000000", side: "QuoteSide" },
+      ],
+    } as unknown as Pool;
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new PerAdminRegistry(), "op" as never);
+
+    await svc.swap({
+      poolCid: pool.contractId,
+      swapperAccount: { owner: "swapper", provider: null, id: "" } as never,
+      inputInstrumentId: { admin: "baseAdmin", id: "BTC" } as never,
+      inputAmount: "0.01",
+      minOutputAmount: "0",
+      quoteBinding: {
+        expectedPoolId: pool.poolId,
+        poolStateCid: pool.poolStateCid,
+        inputSliceCid: "#bs:0" as never,
+        outputSliceCids: ["#qs:0" as never],
+        minOutputAmount: "0",
+      },
+      // Canonical order: input instrument's admin first, output's second.
+      swapperAllocationCids: ["#swapIn" as never, "#swapOut" as never],
+    });
+
+    const cmd = ledger.lastSubmit!.command as { choice: string; argument: Record<string, unknown> };
+    assert.equal(cmd.choice, "PoolRules_Swap");
+    assert.deepEqual(cmd.argument.swapperAllocationCidsByAdmin, [
+      ["baseAdmin", "#swapIn"],
+      ["quoteAdmin", "#swapOut"],
+    ]);
+    assert.deepEqual(cmd.argument.batchesByAdmin, [
+      ["baseAdmin", { factoryCid: "#settle:baseAdmin", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+      ["quoteAdmin", { factoryCid: "#settle:quoteAdmin", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+    ]);
+    // No readAs at all: not on the swapper (a self-custody trader will not grant
+    // it) and not on either instrument admin. The operator is the settlement
+    // executor named on the allocations, and the merged registry disclosures
+    // cover each admin's settlement factory.
+    assert.equal(ledger.lastSubmit!.readAs, undefined);
+    const disclosureIds = ledger.lastSubmit!.disclosure!.map((d) => d.contractId);
+    assert.deepEqual(new Set(disclosureIds), new Set([
+      "#shared-rules",
+      "#factory:baseAdmin",
+      "#factory:quoteAdmin",
+    ]));
+  });
+
+  it("swap holds no readAs on the trader in either the preview or the settle", async () => {
+    // Single-admin sliced pool: one swapper allocation covers both sides.
+    const pool = {
+      ...mkPool(15, 300_000),
+      baseSlices: [
+        { contractId: "#bs:0", allocationCid: "#ba:0", amount: "15.0000000000", side: "BaseSide" },
+      ],
+      quoteSlices: [
+        { contractId: "#qs:0", allocationCid: "#qa:0", amount: "300000.0000000000", side: "QuoteSide" },
+      ],
+    } as unknown as Pool;
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    await svc.swap({
+      poolCid: pool.contractId,
+      swapperAccount: { owner: "swapper", provider: null, id: "" } as never,
+      inputInstrumentId: BTC,
+      inputAmount: "0.01",
+      minOutputAmount: "0",
+      quoteBinding: {
+        expectedPoolId: pool.poolId,
+        poolStateCid: pool.poolStateCid,
+        inputSliceCid: pool.baseSlices[0]!.contractId,
+        outputSliceCids: [pool.quoteSlices[0]!.contractId],
+        minOutputAmount: "0",
+      },
+      swapperAllocationCids: ["#swapAlloc" as never],
+    });
+
+    // A self-custody trader does not grant the operator readAs. Neither the
+    // PoolRules_PreviewSwapSettlement preview nor the PoolRules_Swap settle may
+    // carry the swapper (or any admin) in readAs.
+    const swapSubmits = ledger.submissions.filter((s) =>
+      String((s.command as { choice?: string }).choice).startsWith("PoolRules_"),
+    );
+    assert.equal(swapSubmits.length, 2, "a preview and a settle submission");
+    for (const s of swapSubmits) {
+      assert.ok(
+        !(s.readAs ?? []).includes("swapper" as never),
+        "no readAs on the swapper",
+      );
+      assert.ok((s.readAs ?? []).length === 0, "no readAs on any party");
+    }
+  });
+});
+
 // The output plus the fields a trading client would otherwise recompute from
 // reserves + feeBps.
 describe("PoolService.computeQuoteDetailed", () => {
@@ -861,7 +1058,7 @@ describe("PoolService.computeQuoteDetailed", () => {
   );
 
   it("returns exact fee, spot/execution price, and impact", () => {
-    const q = svc.computeQuoteDetailed(mkPool(10, 200_000, 30), "BTC", "0.5");
+    const q = svc.computeQuoteDetailed(mkPool(10, 200_000, 30), BTC, "0.5");
     assert.equal(q.outputAmount, "9496.5947516311");
     assert.equal(q.inputInstrumentId, "BTC");
     assert.equal(q.outputInstrumentId, "USDC");

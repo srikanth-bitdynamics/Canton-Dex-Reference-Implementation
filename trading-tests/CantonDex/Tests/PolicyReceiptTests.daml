@@ -169,8 +169,7 @@ testMatchedTradeWithNoReceipt = do
   admin <- allocateParty "admin"
   cid <- submit venue $ createCmd MT.MatchedTrade with
     venue
-    admin
-    transferLegs = [mkLeg venue admin]
+    tradeLegs = [MT.TradeLeg with admin = admin; leg | leg <- [mkLeg venue admin]]
     settlementDeadline = None
     policyReceipt = None
   Some _ <- queryContractId venue cid
@@ -187,8 +186,7 @@ testMatchedTradeWithGoodReceipt = do
       r = mkValidReceipt venue ranked dealerA 1 now
   cid <- submit venue $ createCmd MT.MatchedTrade with
     venue
-    admin
-    transferLegs = [mkLeg venue admin]
+    tradeLegs = [MT.TradeLeg with admin = admin; leg | leg <- [mkLeg venue admin]]
     settlementDeadline = None
     policyReceipt = Some r
   Some _ <- queryContractId venue cid
@@ -207,8 +205,7 @@ testMatchedTradeRejectsWrongSigner = do
       r = (mkValidReceipt venue ranked dealerA 1 now) with signedBy = imposter
   submitMustFail venue $ createCmd MT.MatchedTrade with
     venue
-    admin
-    transferLegs = [mkLeg venue admin]
+    tradeLegs = [MT.TradeLeg with admin = admin; leg | leg <- [mkLeg venue admin]]
     settlementDeadline = None
     policyReceipt = Some r
   pure ()
@@ -225,8 +222,7 @@ testMatchedTradeRejectsMalformed = do
       r = (mkValidReceipt venue ranked dealerA 1 now) with consideredCount = 99
   submitMustFail venue $ createCmd MT.MatchedTrade with
     venue
-    admin
-    transferLegs = [mkLeg venue admin]
+    tradeLegs = [MT.TradeLeg with admin = admin; leg | leg <- [mkLeg venue admin]]
     settlementDeadline = None
     policyReceipt = Some r
   pure ()
@@ -247,8 +243,7 @@ testSettlementInfoCarriesReceipt = do
       r = mkValidReceipt venue ranked dealerA 1 now
   cid <- submit venue $ createCmd MT.MatchedTrade with
     venue
-    admin
-    transferLegs = [mkLeg venue admin]
+    tradeLegs = [MT.TradeLeg with admin = admin; leg | leg <- [mkLeg venue admin]]
     settlementDeadline = None
     policyReceipt = Some r
   Some trade <- queryContractId venue cid
@@ -268,8 +263,7 @@ testSettlementInfoEmptyWithoutReceipt = do
   admin <- allocateParty "admin"
   cid <- submit venue $ createCmd MT.MatchedTrade with
     venue
-    admin
-    transferLegs = [mkLeg venue admin]
+    tradeLegs = [MT.TradeLeg with admin = admin; leg | leg <- [mkLeg venue admin]]
     settlementDeadline = None
     policyReceipt = None
   Some trade <- queryContractId venue cid

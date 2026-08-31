@@ -32,7 +32,7 @@ const h = (
   contractId: string,
   amount: string,
   admin = 'dex-admin',
-  instrumentId = 'BTC',
+  instrumentId = 'Amulet',
   locked = false,
 ): Holding => ({
   contractId,
@@ -103,7 +103,7 @@ describe('normalizeSwapFunding merge-then-split chain', () => {
     const cids = await normalizeSwapFunding({
       admin: 'dex-admin',
       party: 'alice',
-      instrumentId: 'BTC',
+      instrumentId: 'Amulet',
       amount: '0.1000000000',
     });
 
@@ -129,7 +129,7 @@ describe('normalizeSwapFunding admin co-sign gating', () => {
     const cids = await normalizeSwapFunding({
       admin: 'dex-admin',
       party: 'alice',
-      instrumentId: 'BTC',
+      instrumentId: 'Amulet',
       amount: '0.1000000000',
     });
 
@@ -149,7 +149,7 @@ describe('normalizeSwapFunding admin co-sign gating', () => {
     const cids = await normalizeSwapFunding({
       admin: 'dex-admin',
       party: 'alice',
-      instrumentId: 'BTC',
+      instrumentId: 'Amulet',
       amount: '0.1000000000',
     });
 
@@ -169,7 +169,7 @@ describe('normalizeSwapFunding admin co-sign gating', () => {
     const cids = await normalizeSwapFunding({
       admin: 'dex-admin',
       party: 'alice',
-      instrumentId: 'BTC',
+      instrumentId: 'Amulet',
       amount: '0.1000000000',
     });
 
@@ -184,7 +184,7 @@ describe('normalizeSwapFunding admin co-sign gating', () => {
     const cids = await normalizeSwapFunding({
       admin: 'dex-admin',
       party: 'alice',
-      instrumentId: 'BTC',
+      instrumentId: 'Amulet',
       amount: '0.1000000000',
     });
 
@@ -206,7 +206,7 @@ describe('normalizeSwapFunding admin co-sign gating', () => {
     const cids = await normalizeSwapFunding({
       admin: 'dex-admin',
       party: 'alice',
-      instrumentId: 'BTC',
+      instrumentId: 'Amulet',
       amount: '0.1000000000',
     });
 

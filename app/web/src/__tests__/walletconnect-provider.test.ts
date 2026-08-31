@@ -8,13 +8,15 @@ import type { PlaceOrderIntent } from '@/wallet/types';
 
 const placeOrderIntent: PlaceOrderIntent = {
   kind: 'place-order',
-  pair: { base: 'BTC', quote: 'USDC' },
+  pair: {
+    base: { admin: 'admin::1220a', id: 'Amulet' },
+    quote: { admin: 'admin::1220a', id: 'USDCx' },
+  },
   side: 'Bid',
   limitPrice: '20000.0000000000',
   quantity: '0.1000000000',
   expiry: null,
   operator: 'operator::1220a',
-  admin: 'admin::1220a',
 };
 
 // Inject a fake connector + connected status without driving the AppKit import.
@@ -90,5 +92,113 @@ describe('WalletConnectProvider submit retry safety', () => {
 
     await expect(p.submit(placeOrderIntent)).rejects.toThrow('user rejected');
     expect(request).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('WalletConnectProvider holding discovery', () => {
+  it('discovers a foreign-registry holding via canton_ledgerApi across both filters', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const request = vi.fn(async (args: any) => {
+      expect(args.method).toBe('canton_ledgerApi');
+      const params = args.params[0] as { requestMethod: string; resource: string; body?: string };
+      if (params.resource === '/v2/state/ledger-end') {
+        expect(params.requestMethod).toBe('GET');
+        return { offset: 7 };
+      }
+      expect(params.resource).toBe('/v2/state/active-contracts');
+      expect(params.requestMethod).toBe('POST');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = JSON.parse(params.body ?? '{}') as any;
+      const identifierFilter =
+        body.filter.filtersByParty['alice'].cumulative[0].identifierFilter;
+      if (identifierFilter.InterfaceFilter) {
+        return {
+          activeContracts: [
+            {
+              contractId: 'holding-amulet',
+              interfaceViews: [
+                {
+                  interfaceId:
+                    '#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding',
+                  viewValue: {
+                    account: { owner: 'alice', provider: null, id: '' },
+                    instrumentId: { admin: 'cc-admin', id: 'Amulet' },
+                    amount: '2.0000000000',
+                    lock: null,
+                  },
+                },
+              ],
+            },
+          ],
+        };
+      }
+      return {
+        activeContracts: [
+          {
+            contractId: 'holding-usdcx',
+            createArgument: {
+              owner: 'alice',
+              admin: 'dex-admin',
+              instrumentId: 'USDCx',
+              amount: '9.0000000000',
+              locked: false,
+            },
+          },
+        ],
+      };
+    });
+    const { p } = connectedProvider(request);
+
+    const holdings = await p.listHoldings('alice');
+
+    // ledger-end fetched, then one active-contracts read per filter.
+    expect(request).toHaveBeenCalledTimes(3);
+    const acsBodies = (request.mock.calls as unknown[][])
+      .map((c) => (c[0] as { params: [{ resource: string; body?: string }] }).params[0])
+      .filter((p) => p.resource === '/v2/state/active-contracts')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((p) => JSON.parse(p.body ?? '{}') as any);
+    expect(acsBodies).toHaveLength(2);
+    for (const b of acsBodies) {
+      expect(b.activeAtOffset).toBe(7);
+      expect(Object.keys(b.filter.filtersByParty)).toEqual(['alice']);
+    }
+    const identifierFilters = acsBodies.map(
+      (b) => b.filter.filtersByParty['alice'].cumulative[0].identifierFilter,
+    );
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.InterfaceFilter?.value?.interfaceId ===
+          '#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding',
+      ),
+    ).toBe(true);
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.TemplateFilter?.value?.templateId ===
+          '#canton-dex-trading-v2:CantonDex.Registry.V2:Holding',
+      ),
+    ).toBe(true);
+    expect(holdings).toEqual([
+      {
+        contractId: 'holding-amulet',
+        owner: 'alice',
+        admin: 'cc-admin',
+        instrumentId: 'Amulet',
+        amount: 2,
+        amountRaw: '2.0000000000',
+        locked: false,
+      },
+      {
+        contractId: 'holding-usdcx',
+        owner: 'alice',
+        admin: 'dex-admin',
+        instrumentId: 'USDCx',
+        amount: 9,
+        amountRaw: '9.0000000000',
+        locked: false,
+      },
+    ]);
   });
 });

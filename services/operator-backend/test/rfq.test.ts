@@ -54,7 +54,6 @@ function setupLedger(): InMemoryLedger {
     const arg = ctx.arg as {
       acceptedQuoteCid: ContractId<"RfqQuote">;
       consideredQuoteCids: ContractId<"RfqQuote">[];
-      admin: Party;
       currentTime: string;
       signature: string;
     };
@@ -126,8 +125,7 @@ function setupLedger(): InMemoryLedger {
       {
         contractId: "" as ContractId<"MatchedTrade">,
         venue: rfq.operator,
-        admin: arg.admin,
-        transferLegs: [],
+        tradeLegs: [],
         settlementDeadline: rfq.expiresAt,
         policyReceipt: receipt,
       },
@@ -180,7 +178,8 @@ test("RFQ accept across the operator service boundary", async () => {
         trader,
         operator,
         rfqId: "rfq-001",
-        pair: "BTC/USDC",
+        baseInstrumentId: { admin: "btc-admin::test", id: "BTC" },
+        quoteInstrumentId: { admin: "usdc-admin::test", id: "USDC" },
         side: "RFQ_Buy",
         size: "5.0",
         expiresAt: expiresIn1h,
@@ -239,7 +238,6 @@ test("RFQ accept across the operator service boundary", async () => {
     rfqCid,
     acceptedQuoteCid: quoteJump,
     consideredQuoteCids: [quoteOrca, quoteJump, quoteGalaxy],
-    admin: "btc-admin::test",
     now,
   });
 
@@ -297,7 +295,8 @@ test("RFQ list / create / cancel through operator backend", async () => {
   const created = await backend.rfq.create({
     trader,
     rfqId: "rfq-list-001",
-    pair: "BTC/USDC",
+    baseInstrumentId: { admin: "btc-admin::test", id: "BTC" },
+    quoteInstrumentId: { admin: "usdc-admin::test", id: "USDC" },
     side: "RFQ_Buy",
     size: "1.0",
     expiresAt: expiresIn1h,
@@ -361,7 +360,8 @@ test("sweepExpired archives expired RFQs under operator authority only", async (
   const expired = await backend.rfq.create({
     trader,
     rfqId: "rfq-sweep-expired",
-    pair: "BTC/USDC",
+    baseInstrumentId: { admin: "btc-admin::test", id: "BTC" },
+    quoteInstrumentId: { admin: "usdc-admin::test", id: "USDC" },
     side: "RFQ_Buy",
     size: "1.0",
     expiresAt: "2026-05-06T11:00:00Z",
@@ -371,7 +371,8 @@ test("sweepExpired archives expired RFQs under operator authority only", async (
   const live = await backend.rfq.create({
     trader,
     rfqId: "rfq-sweep-live",
-    pair: "BTC/USDC",
+    baseInstrumentId: { admin: "btc-admin::test", id: "BTC" },
+    quoteInstrumentId: { admin: "usdc-admin::test", id: "USDC" },
     side: "RFQ_Buy",
     size: "1.0",
     expiresAt: "2026-05-06T18:00:00Z",
@@ -410,7 +411,8 @@ test("cancel rejects a caller bound to a different party", async () => {
   const created = await backend.rfq.create({
     trader,
     rfqId: "rfq-bind-cancel",
-    pair: "BTC/USDC",
+    baseInstrumentId: { admin: "btc-admin::test", id: "BTC" },
+    quoteInstrumentId: { admin: "usdc-admin::test", id: "USDC" },
     side: "RFQ_Buy",
     size: "1.0",
     expiresAt: "2026-05-06T13:00:00Z",
@@ -457,7 +459,8 @@ test("accept rejects a caller bound to a different party", async () => {
         trader,
         operator,
         rfqId: "rfq-bind-accept",
-        pair: "BTC/USDC",
+        baseInstrumentId: { admin: "btc-admin::test", id: "BTC" },
+        quoteInstrumentId: { admin: "usdc-admin::test", id: "USDC" },
         side: "RFQ_Buy",
         size: "1.0",
         expiresAt: "2026-05-06T13:00:00Z",
@@ -494,7 +497,6 @@ test("accept rejects a caller bound to a different party", async () => {
         rfqCid,
         acceptedQuoteCid: quote,
         consideredQuoteCids: [quote],
-        admin: "btc-admin::test",
         now,
         requireTrader: mallory,
       }),
@@ -506,7 +508,6 @@ test("accept rejects a caller bound to a different party", async () => {
     rfqCid,
     acceptedQuoteCid: quote,
     consideredQuoteCids: [quote],
-    admin: "btc-admin::test",
     now,
     requireTrader: trader,
   });

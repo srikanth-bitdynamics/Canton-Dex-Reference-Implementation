@@ -15,6 +15,7 @@
 module CantonDex.Dex.PoolSlice where
 
 import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 
 import CantonDex.Dex.Pool (PoolId, Side)
 
@@ -23,6 +24,9 @@ template PoolSlice with
     operator : Party
     side : Side
       -- ^ Which pool leg (base or quote) this slice funds.
+    instrumentId : HoldingV2.InstrumentId
+      -- ^ Full identity `{ admin, id }` of the instrument this slice holds;
+      --   settlement validates the allocation view against it.
     allocationCid : ContractId V2.Allocation
       -- ^ The committed allocation holding this slice's funds.
     amount : Decimal
@@ -31,4 +35,4 @@ template PoolSlice with
   where
     signatory operator
 
-    ensure poolId /= "" && amount > 0.0
+    ensure poolId /= "" && instrumentId.id /= "" && amount > 0.0

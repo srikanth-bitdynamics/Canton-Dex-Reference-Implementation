@@ -95,7 +95,7 @@ export CANTON_ADMIN="${DEX_LOCALNET_ADMIN:-$primary_party}"
 export CANTON_LP_REGISTRAR="$CANTON_ADMIN"
 export CANTON_TRADER="${DEX_LOCALNET_TRADER:-$(allocate_party "dex-lp-${RANDOM}")}"
 export CANTON_SWAPPER="${DEX_LOCALNET_SWAPPER:-$(allocate_party "dex-swapper-${RANDOM}")}"
-export CANTON_DEX_PACKAGE_ID="${CANTON_DEX_PACKAGE_ID:-#canton-dex-trading}"
+export CANTON_DEX_PACKAGE_ID="${CANTON_DEX_PACKAGE_ID:-#canton-dex-trading-v2}"
 export CANTON_ALLOC_INSTR_PACKAGE_ID="${CANTON_ALLOC_INSTR_PACKAGE_ID:-#splice-api-token-allocation-instruction-v2}"
 
 printf '  JSON Ledger API: %s\n' "$CANTON_LEDGER_URL"

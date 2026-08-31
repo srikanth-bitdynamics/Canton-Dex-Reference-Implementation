@@ -1,0 +1,59 @@
+-- | Wallet-facing request for the allocations a swapper authorizes.
+--
+-- One specification per `(swapper, admin)`: the swap-in leg under the input
+-- instrument's admin, the swap-out receipt under the output instrument's. A
+-- single-admin swap collapses to one combined specification, preserving the
+-- single-allocation wallet flow. The wallet accepts and authors all
+-- specifications in one command via `BatchingUtilityV2`.
+--
+-- Design guide: `docs/concepts/cross-admin.md#amm-swaps-and-liquidity`.
+module CantonDex.Dex.SwapAllocationRequest where
+
+import DA.Map qualified as Map
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationRequestV2 qualified as V2
+import Splice.Api.Token.MetadataV1
+import Splice.TokenStandard.Utils qualified as TSUtils
+
+template SwapAllocationRequest with
+    operator : Party
+    swapper : Party
+    settlement : V2.SettlementInfo
+    allocations : [V2.AllocationSpecification]
+    requestedAt : Time
+    settleAt : Optional Time
+  where
+    signatory operator
+    observer swapper
+
+    ensure allocations /= []
+
+    interface instance V2.AllocationRequest for SwapAllocationRequest where
+      view = V2.AllocationRequestView with
+        originalRequestCid = None
+        settlement
+        allocations
+        requestedAt
+        settleAt
+        availableActions = Map.fromList
+          [ (V2.ARA_Accept, [[swapper]])
+          , (V2.ARA_Reject, [[swapper]])
+          ]
+        meta = emptyMetadata
+
+      allocationRequest_acceptExtraObservers = \_ -> []
+      allocationRequest_rejectExtraObservers = \_ -> []
+      allocationRequest_withdrawExtraObservers = \_ -> []
+
+      -- Accept consumes the request; the wallet composes it with the matching
+      -- AllocationFactory_Allocate choices in the same transaction.
+      allocationRequest_acceptImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors [[swapper]]
+        pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
+      allocationRequest_rejectImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors [[swapper]]
+        pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
+      allocationRequest_withdrawImpl = \self arg -> do
+        TSUtils.archiveAndCheckActors self arg.actors [settlement.executors]
+        pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata

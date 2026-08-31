@@ -7,7 +7,7 @@
 
 import { Link } from 'react-router-dom';
 
-import { ASSETS } from '@/primitives/assets';
+import { ASSETS, instrumentLabel } from '@/primitives/assets';
 import { Glyph, PairGlyph } from '@/primitives/Glyph';
 import { StatusBadge } from '@/primitives/StatusBadge';
 import { fmt, fmtUsd } from '@/primitives/format';
@@ -73,8 +73,8 @@ export function Portfolio({
   // the backend has no source for — callers render "—" instead of $0.
   const heldSymbols = Object.values(grouped).map((row) => row.instrumentId);
   const poolSymbols = pools.flatMap((p) => [
-    p.baseInstrumentId,
-    p.quoteInstrumentId,
+    p.baseInstrumentId.id,
+    p.quoteInstrumentId.id,
   ]);
   const { prices: priceUsd } = useAssetPricesUsd([
     ...heldSymbols,
@@ -100,8 +100,8 @@ export function Portfolio({
     const baseShare = pct * pool.reserves.baseAmount;
     const quoteShare = pct * pool.reserves.quoteAmount;
     const value =
-      baseShare * priceOr0(pool.baseInstrumentId) +
-      quoteShare * priceOr0(pool.quoteInstrumentId);
+      baseShare * priceOr0(pool.baseInstrumentId.id) +
+      quoteShare * priceOr0(pool.quoteInstrumentId.id);
     return {
       pool,
       amount,
@@ -117,8 +117,8 @@ export function Portfolio({
     heldSymbols.some((s) => priceFor(s) == null) ||
     lpRows.some(
       ({ pool }) =>
-        priceFor(pool.baseInstrumentId) == null ||
-        priceFor(pool.quoteInstrumentId) == null,
+        priceFor(pool.baseInstrumentId.id) == null ||
+        priceFor(pool.quoteInstrumentId.id) == null,
     );
 
   // Active orders expose the allocation that funds their remaining quantity.
@@ -126,8 +126,8 @@ export function Portfolio({
     .filter((o) => o.allocationCid)
     .map((o) => {
       const isBid = o.side === 'Bid';
-      const baseSym = o.baseInstrumentId;
-      const quoteSym = o.quoteInstrumentId;
+      const baseSym = o.baseInstrumentId.id;
+      const quoteSym = o.quoteInstrumentId.id;
       const lockedSym = isBid ? quoteSym : baseSym;
       const lockedAmt = isBid
         ? o.limitPrice * o.remainingQty
@@ -136,8 +136,8 @@ export function Portfolio({
         label: `Order: ${isBid ? 'BUY' : 'SELL'} ${fmt(
           o.remainingQty,
           4,
-        )} ${baseSym} @ ${fmt(o.limitPrice, 2)}`,
-        amt: `${fmt(lockedAmt, lockedSym === baseSym ? 4 : 2)} ${lockedSym}`,
+        )} ${instrumentLabel(baseSym)} @ ${fmt(o.limitPrice, 2)}`,
+        amt: `${fmt(lockedAmt, lockedSym === baseSym ? 4 : 2)} ${instrumentLabel(lockedSym)}`,
         tag: shortRef(o.allocationCid!, 'Allocation'),
       };
     });
@@ -246,7 +246,7 @@ export function Portfolio({
                       <div className="row">
                         <Glyph sym={sym} />
                         <div style={{ marginLeft: 6 }}>
-                          <div style={{ fontWeight: 600 }}>{sym}</div>
+                          <div style={{ fontWeight: 600 }}>{instrumentLabel(sym)}</div>
                           <div
                             style={{ fontSize: 11, color: 'var(--text-2)' }}
                           >
@@ -286,12 +286,13 @@ export function Portfolio({
                   <td className="py-2 px-3">
                     <div className="row">
                       <PairGlyph
-                        base={r.pool.baseInstrumentId}
-                        quote={r.pool.quoteInstrumentId}
+                        base={r.pool.baseInstrumentId.id}
+                        quote={r.pool.quoteInstrumentId.id}
                       />
                       <div style={{ marginLeft: 6 }}>
                         <div style={{ fontWeight: 600 }}>
-                          {r.pool.baseInstrumentId}/{r.pool.quoteInstrumentId}{' '}
+                          {instrumentLabel(r.pool.baseInstrumentId.id)}/
+                          {instrumentLabel(r.pool.quoteInstrumentId.id)}{' '}
                           <span
                             style={{
                               color: 'var(--text-2)',
@@ -305,13 +306,13 @@ export function Portfolio({
                         <div style={{ fontSize: 11, color: 'var(--text-2)' }}>
                           {(r.pct * 100).toFixed(3)}% of pool ·{' '}
                           <span className="mono">
-                            {fmt(r.baseShare, ASSETS[r.pool.baseInstrumentId]?.decimals ?? 4)}{' '}
-                            {r.pool.baseInstrumentId}
+                            {fmt(r.baseShare, ASSETS[r.pool.baseInstrumentId.id]?.decimals ?? 4)}{' '}
+                            {instrumentLabel(r.pool.baseInstrumentId.id)}
                           </span>{' '}
                           +{' '}
                           <span className="mono">
-                            {fmt(r.quoteShare, ASSETS[r.pool.quoteInstrumentId]?.decimals ?? 2)}{' '}
-                            {r.pool.quoteInstrumentId}
+                            {fmt(r.quoteShare, ASSETS[r.pool.quoteInstrumentId.id]?.decimals ?? 2)}{' '}
+                            {instrumentLabel(r.pool.quoteInstrumentId.id)}
                           </span>
                         </div>
                       </div>
@@ -330,8 +331,8 @@ export function Portfolio({
                     {fmt(r.amount, 4)}
                   </td>
                   <td className="text-right py-2 px-3 mono">
-                    {priceUsd[r.pool.baseInstrumentId] != null &&
-                    priceUsd[r.pool.quoteInstrumentId] != null
+                    {priceUsd[r.pool.baseInstrumentId.id] != null &&
+                    priceUsd[r.pool.quoteInstrumentId.id] != null
                       ? fmtUsd(r.value)
                       : '—'}
                     <div style={{ marginTop: 4 }}>
@@ -339,7 +340,7 @@ export function Portfolio({
                         to="/pools"
                         className="btn tiny ghost"
                         style={{ fontSize: 10, padding: '2px 8px' }}
-                        title={`Manage LP position in ${r.pool.baseInstrumentId}/${r.pool.quoteInstrumentId}`}
+                        title={`Manage LP position in ${instrumentLabel(r.pool.baseInstrumentId.id)}/${instrumentLabel(r.pool.quoteInstrumentId.id)}`}
                       >
                         Manage →
                       </Link>

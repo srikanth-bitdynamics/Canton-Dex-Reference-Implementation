@@ -66,13 +66,23 @@ if (liveEnabled) {
   const dealerJump = required("CANTON_DEALER_JUMP") as Party;
   const dealerOrca = required("CANTON_DEALER_ORCA") as Party;
   const btcAdmin = required("CANTON_BTC_ADMIN") as Party;
+  const usdcAdmin = (process.env.CANTON_USDC_ADMIN ?? btcAdmin) as Party;
   const runId = `${Date.now()}-${process.pid}`;
   console.info(`[canton-rfq-live] run id: ${runId}`);
+
+  interface TradeLegContract {
+    admin: Party;
+    leg: {
+      transferLegId: string;
+      instrumentId: string;
+      amount: string;
+    };
+  }
 
   interface MatchedTradeContract {
     contractId: ContractId<"MatchedTrade">;
     venue: Party;
-    admin: Party;
+    tradeLegs: TradeLegContract[];
     policyReceipt: PolicyReceipt | null;
   }
 
@@ -119,7 +129,8 @@ if (liveEnabled) {
           trader,
           operator,
           rfqId,
-          pair: "BTC/USDC",
+          baseInstrumentId: { admin: btcAdmin, id: "BTC" },
+          quoteInstrumentId: { admin: usdcAdmin, id: "USDC" },
           side: "RFQ_Buy",
           size: "5.0",
           expiresAt: expiresIn1h,
@@ -172,7 +183,6 @@ if (liveEnabled) {
       rfqCid,
       acceptedQuoteCid: quoteJump,
       consideredQuoteCids: [quoteJump, quoteOrca],
-      admin: btcAdmin,
       now,
     });
 
@@ -195,7 +205,10 @@ if (liveEnabled) {
     const trade = trades.find((candidate) => candidate.contractId === result.tradeCid);
     assert.ok(trade, "Rfq_Accept result CID must identify a visible MatchedTrade");
     assert.equal(trade.venue, operator);
-    assert.equal(trade.admin, btcAdmin);
+    assert.equal(trade.tradeLegs.length, 2);
+    const legAdmins = trade.tradeLegs.map((l) => l.admin);
+    assert.ok(legAdmins.includes(btcAdmin), "base leg administered by BTC registry");
+    assert.ok(legAdmins.includes(usdcAdmin), "quote leg administered by USDC registry");
     assert.deepEqual(
       trade.policyReceipt,
       result.receipt,
@@ -210,7 +223,8 @@ if (liveEnabled) {
     const { rfqCid } = await backend.rfq.create({
       trader,
       rfqId,
-      pair: "BTC/USDC",
+      baseInstrumentId: { admin: btcAdmin, id: "BTC" },
+      quoteInstrumentId: { admin: usdcAdmin, id: "USDC" },
       side: "RFQ_Buy",
       size: "2.0",
       expiresAt,
@@ -281,7 +295,8 @@ if (liveEnabled) {
           trader,
           operator,
           rfqId,
-          pair: "BTC/USDC",
+          baseInstrumentId: { admin: btcAdmin, id: "BTC" },
+          quoteInstrumentId: { admin: usdcAdmin, id: "USDC" },
           side: "RFQ_Buy",
           size: "1.0",
           expiresAt: expiresIn1h,

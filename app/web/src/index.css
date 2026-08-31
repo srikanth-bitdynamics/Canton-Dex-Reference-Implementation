@@ -406,9 +406,8 @@
   .glyph {
     @apply inline-flex items-center justify-center rounded-full text-white font-semibold;
   }
-  .glyph.btc  { background: #B26F17; color: #fff; }
   .glyph.eth  { background: #4B62B8; color: #fff; }
-  .glyph.usdc { background: #22609F; color: #fff; }
+  .glyph.usd  { background: #22609F; color: #fff; }
   .glyph.cc   { background: var(--blue-700); color: #fff; }
 
   /* Asset chip */

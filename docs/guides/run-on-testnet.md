@@ -114,7 +114,7 @@ npm run testnet
 | `OPERATOR_ADMIN_TOKEN` | yes in full mode | Separate bearer token for `/v1/admin/*` writes. |
 | `DEX_READ_ONLY` | optional | Set `1` to start without API tokens and reject every state-changing route. |
 | `CANTON_SYNCHRONIZER` | recommended | Synchronizer id, e.g. `global-domain::1220...`. `submit-and-wait` requires it on a shared synchronizer. |
-| `CANTON_DEX_PACKAGE_ID` | yes | Template-id prefix. Use the vetted concrete package hash, or `#canton-dex-trading` only where package-name resolution is acceptable. |
+| `CANTON_DEX_PACKAGE_ID` | yes | Template-id prefix. Use the vetted concrete package hash, or `#canton-dex-trading-v2` only where package-name resolution is acceptable. |
 | `CANTON_NETWORK` | optional | Display label surfaced by `/v1/status` (default `canton:devnet`). |
 | `CANTON_ALLOC_FACTORY_CID`, `CANTON_SETTLE_FACTORY_CID` | yes in full mode | Asset-admin Registry cid, repeated because it implements both interfaces. |
 | `CANTON_LP_ALLOC_FACTORY_CID`, `CANTON_LP_SETTLE_FACTORY_CID` | yes in full mode when LP registrar differs | LP registrar's Registry cid, again repeated for both interfaces. |

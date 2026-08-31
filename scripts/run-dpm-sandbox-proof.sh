@@ -163,7 +163,7 @@ export CANTON_ADMIN="$primary_party"
 export CANTON_LP_REGISTRAR="$primary_party"
 export CANTON_TRADER="$trader_party"
 export CANTON_SWAPPER="$swapper_party"
-export CANTON_DEX_PACKAGE_ID="#canton-dex-trading"
+export CANTON_DEX_PACKAGE_ID="#canton-dex-trading-v2"
 export CANTON_ALLOC_INSTR_PACKAGE_ID="#splice-api-token-allocation-instruction-v2"
 unset CANTON_SYNCHRONIZER
 

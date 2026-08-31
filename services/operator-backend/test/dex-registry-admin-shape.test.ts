@@ -1,11 +1,13 @@
-// A trading pair carries ONE registry admin, shared by base and quote.
+// A trading pair carries full per-instrument identity: base and quote each name
+// their own registry admin via `InstrumentId { admin, id }`, so a pair can span
+// two registries. The standalone per-venue `admin` field is gone.
 //
-// TransferLeg.instrumentId is bare Text, so a leg cannot name its own admin
-// and two cannot be recovered from a settled trade. Pinned here so the docs
-// cannot drift back into promising multi-registry pairs.
+// A settled TransferLeg still names its instrument by bare Text, so the admins
+// are recovered from on-ledger pool/order state, not the leg. Pinned here so the
+// schema and the docs cannot silently drift apart.
 //
-// Flip MULTI_ADMIN_PAIRS_SUPPORTED when the schema changes; both directions of
-// drift then fail here rather than silently disagreeing.
+// Flip MULTI_ADMIN_PAIRS_SUPPORTED back only if the schema regresses to a single
+// shared admin; both directions of drift then fail here.
 
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
@@ -21,8 +23,8 @@ import {
   partyFields,
 } from "./docs-harness.ts";
 
-/** One admin per pair today. See the file header before changing this. */
-export const MULTI_ADMIN_PAIRS_SUPPORTED = false;
+/** Base and quote carry independent admins. See the file header. */
+export const MULTI_ADMIN_PAIRS_SUPPORTED = true;
 
 const DEX = "trading/CantonDex/Dex";
 
@@ -35,46 +37,47 @@ before(() => {
 });
 
 describe("registry admin shape", () => {
-  it("each venue template carries exactly one admin party", () => {
+  it("no venue template carries a standalone admin party", () => {
+    // The per-venue `admin` field is gone; each instrument's admin now lives on
+    // its own InstrumentId. Only the workflow parties remain typed `Party`.
     for (const [file, template, expected] of [
-      [`${DEX}/DexPair.daml`, "DexPair", ["operator", "admin"]],
-      [`${DEX}/Order.daml`, "Order", ["operator", "trader", "admin"]],
+      [`${DEX}/DexPair.daml`, "DexPair", ["operator"]],
+      [`${DEX}/Order.daml`, "Order", ["operator", "trader"]],
     ] as const) {
       assert.deepEqual(
         partyFields(file, template),
         expected,
-        `${template}'s party fields changed. If a second admin was added, ` +
-          `set MULTI_ADMIN_PAIRS_SUPPORTED = true and update the docs, which ` +
-          `currently describe a single shared admin.`,
+        `${template}'s party fields changed. If a standalone admin returned, ` +
+          `set MULTI_ADMIN_PAIRS_SUPPORTED = false and update the docs.`,
       );
     }
   });
 
-  it("base and quote ids are bare Text under that one admin", () => {
+  it("base and quote are structured InstrumentIds, each naming its own admin", () => {
     for (const field of ["baseInstrumentId", "quoteInstrumentId"]) {
-      assert.equal(
+      assert.match(
         fieldType(`${DEX}/DexPair.daml`, "DexPair", field),
-        "Text",
-        `${field} is no longer bare Text. A structured id can carry its own ` +
-          `admin, which would make multi-registry pairs expressible.`,
+        /InstrumentId/,
+        `${field} is no longer a structured id; a pair could no longer span ` +
+          `two registries.`,
       );
     }
   });
 
-  it("the codebase can carry a structured id and does so for the LP token", () => {
-    // The contrast matters: this is a deliberate convention, not an oversight.
-    // Pool.lpInstrumentId is structured precisely because the LP token's admin
-    // (the lpRegistrar) differs from the traded instruments' admin.
+  it("the LP token id is structured too, so its admin can differ from base/quote", () => {
+    // Every instrument on a pool is a structured id now; the LP token's admin is
+    // the lpRegistrar, distinct from the traded instruments' admins.
     assert.match(
       fieldType(`${DEX}/Pool.daml`, "Pool", "lpInstrumentId"),
       /InstrumentId/,
-      "Pool.lpInstrumentId is the reference case for a structured id.",
+      "Pool.lpInstrumentId must stay a structured id.",
     );
   });
 
   it("upstream transfer legs cannot carry their own admin", () => {
-    // The root constraint. If this ever becomes structured upstream, the
-    // single-admin convention can be revisited.
+    // The root constraint: because the leg names its instrument by bare Text,
+    // each leg's admin travels on the MatchedTrade.TradeLeg wrapper instead. If
+    // this ever becomes structured upstream, that wrapper can be revisited.
     assert.equal(
       fieldType(
         "vendor/splice/token-standard/splice-api-token-allocation-v2/daml/Splice/Api/Token/AllocationV2.daml",
@@ -87,10 +90,12 @@ describe("registry admin shape", () => {
     );
   });
 
-  it("settlement plumbing stays per-admin even though nothing builds two", () => {
-    // MatchedTrade_Settle is genuinely multi-admin shaped, inherited from the
-    // upstream batching utility. Pinned so a future cleanup does not remove
-    // the half that already works on the grounds that it is unreachable.
+  it("settlement plumbing is per-admin and cross-admin trades exercise it", () => {
+    // MatchedTrade_Settle derives one batch per instrument admin. RFQ accept
+    // tags each leg with its own instrument's admin, so a pair whose base and
+    // quote are administered by different registries builds two batches — the
+    // multi-admin path is reached, not merely inherited plumbing. Pinned so a
+    // future cleanup does not collapse the seam.
     const src = readFileSync(join(ROOT, `${DEX}/MatchedTrade.daml`), "utf8");
     assert.match(
       src,

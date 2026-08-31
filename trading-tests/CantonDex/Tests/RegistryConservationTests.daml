@@ -37,6 +37,7 @@ import CantonDex.Dex.OrderFundingRequest qualified as OFR
 import CantonDex.Dex.OrderMatchExecution qualified as OME
 import CantonDex.Registry.V2 qualified as RegV2
 import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.AdminBatch qualified as AB
 
 data Fixture = Fixture with
     admin : Party
@@ -676,19 +677,20 @@ restOrder
 restOrder operator admin trader factoryCid side limitPrice quantity ref = do
   now <- getTime
   reqCid <- submit trader $ createCmd OFR.OrderFundingRequest with
-    operator; trader; admin
-    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
+    operator; trader
+    baseInstrumentId = V2.InstrumentId with admin; id = "BTC"
+    quoteInstrumentId = V2.InstrumentId with admin; id = "USDC"
     side; limitPrice; quantity; expiry = None
   bound <- submit operator $ exerciseCmd reqCid OFR.OrderFundingRequest_Bind with
     settlementRef = ref
   Some allocReq <- queryContractId operator bound.allocationRequestCid
   hold <- submit (actAs [admin, trader]) $ createCmd RegV2.Holding with
     admin; owner = trader
-    instrumentId = allocReq.lockInstrumentId
+    instrumentId = allocReq.lockInstrumentId.id
     amount = allocReq.lockAmount
     locked = False
   let spec = Order.orderFundingSpecification
-        admin trader allocReq.lockInstrumentId allocReq.lockAmount allocReq.expiry
+        allocReq.lockInstrumentId trader allocReq.lockAmount allocReq.expiry
       settlement = fromSome allocReq.allocationSettlement
   res <- submit trader $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with
     settlement; allocation = spec; requestedAt = now
@@ -698,7 +700,7 @@ restOrder operator admin trader factoryCid side limitPrice quantity ref = do
     V2.AllocationInstructionResult_Completed cid -> pure cid
     _ -> abort "allocation must complete"
   funded <- submit operator $ exerciseCmd bound.orderCid Order.Order_Fund with
-    allocationCid = allocCid
+    allocationCids = [allocCid]
     allocationRequestCid = Some bound.allocationRequestCid
   pure (funded.orderCid, allocCid)
 
@@ -731,14 +733,13 @@ testGtcOrderFundingPreservesTraderExit = do
 
 -- The settle archives holdings the operator cannot see; production supplies
 -- them as disclosures from the registry's choice context, a script as readAs.
-execMatchDeclaring
-  : Utils.Funding -> Utils.Funding
-  -> Party -> Party -> ContractId V2.SettlementFactory -> Text -> Party -> Party
+-- Each side's budget is read from its own allocation, never declared here.
+execMatch
+  : Party -> Party -> ContractId V2.SettlementFactory -> Text -> Party -> Party
   -> ContractId Order.Order -> ContractId Order.Order
   -> ContractId V2.Allocation -> ContractId V2.Allocation
   -> Decimal -> Decimal -> Script OME.OrderMatch_ExecuteResult
-execMatchDeclaring buyerCommittedFunding sellerCommittedFunding
-          operator admin settleCid matchId buyer seller
+execMatch operator admin settleCid matchId buyer seller
           buyOrderCid sellOrderCid buyerAllocationCid sellerAllocationCid
           fillQty fillPrice = do
   execCid <- submit operator $ createCmd OME.OrderMatchExecution with
@@ -749,18 +750,11 @@ execMatchDeclaring buyerCommittedFunding sellerCommittedFunding
       baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"
       fillQty; fillPrice
     buyOrderCid; sellOrderCid
-    buyerAllocationCid; sellerAllocationCid
-    buyerCommittedFunding; sellerCommittedFunding
+    buyerAllocationCidsByAdmin = Map.fromList [(admin, buyerAllocationCid)]
+    sellerAllocationCidsByAdmin = Map.fromList [(admin, sellerAllocationCid)]
   submit (actAs [operator] <> readAs [admin]) $
     exerciseCmd execCid OME.OrderMatchExecution_Execute with
-      factoryCid = settleCid; extraArgs = emptyExtraArgs
-
-execMatch
-  : Party -> Party -> ContractId V2.SettlementFactory -> Text -> Party -> Party
-  -> ContractId Order.Order -> ContractId Order.Order
-  -> ContractId V2.Allocation -> ContractId V2.Allocation
-  -> Decimal -> Decimal -> Script OME.OrderMatch_ExecuteResult
-execMatch = execMatchDeclaring TextMap.empty TextMap.empty
+      batchesByAdmin = Map.fromList [(admin, AB.RegistryBatchInput settleCid emptyExtraArgs)]
 
 -- | Proves partial fills derive remaining budget from the rolled allocation.
 testPartialFillUsesRolledFundingBudget : Script ()
@@ -788,7 +782,7 @@ testPartialFillUsesRolledFundingBudget = do
   res1 <- execMatch operator admin settleCid "m1" buyer seller
     bidCid ask1Cid bidAllocCid ask1AllocCid firstFill limitPrice
   let bid2Cid = fromSome res1.buyRemainderCid
-      bid2AllocCid = fromSome res1.buyerNextAllocationCid
+      bid2AllocCid = fromSome (Map.lookup admin res1.buyerNextAllocationCidsByAdmin)
   Some bid2 <- queryContractId operator bid2Cid
   bid2.remainingQty === 6.3989002800
 
@@ -806,43 +800,3 @@ testPartialFillUsesRolledFundingBudget = do
   bid3.remainingQty === 5.3989002800
   stillLocked <- lockedOf buyer "USDC"
   stillLocked === [45.8234126980]
-
--- 8. The operator cannot declare the match budget --------------------------
---
--- Compatibility fields on OrderMatchExecution are operator-authored and must
--- not control a trader's funding budget. The budget comes from each side's
--- allocation; arbitrary declared values therefore do not affect settlement.
--- | Proves compatibility funding fields cannot change the settled budget.
-testCompatibilityFundingFieldsDoNotControlSettlement : Script ()
-testCompatibilityFundingFieldsDoNotControlSettlement = do
-  operator <- allocateParty "declared-operator"
-  admin <- allocateParty "declared-admin"
-  buyer <- allocateParty "declared-buyer"
-  seller <- allocateParty "declared-seller"
-  reg <- submit admin $ createCmd RegV2.Registry with
-    admin; users = [operator, buyer, seller]
-  let factoryCid : ContractId V2.AllocationFactory = toInterfaceContractId reg
-      settleCid : ContractId V2.SettlementFactory = toInterfaceContractId reg
-      limitPrice = 8.4875456707
-      bidQty = 10.5993913768
-      fillQty = 4.2004910968
-
-  (bidCid, bidAllocCid) <- restOrder operator admin buyer factoryCid
-    Order.Bid limitPrice bidQty "bid-1"
-  (askCid, askAllocCid) <- restOrder operator admin seller factoryCid
-    Order.Ask limitPrice fillQty "ask-1"
-
-  res <- execMatchDeclaring
-    (TextMap.fromList [("USDC", 1000000.0)])
-    (TextMap.fromList [("BTC", 1000000.0)])
-    operator admin settleCid "m1" buyer seller
-    bidCid askCid bidAllocCid askAllocCid fillQty limitPrice
-
-  -- Identical to the honest run above: the residual is the allocation's own
-  -- budget minus this fill's spend, not the declared million.
-  Some bid2 <- queryContractId operator (fromSome res.buyRemainderCid)
-  bid2.remainingQty === 6.3989002800
-  lockedQuote <- lockedOf buyer "USDC"
-  lockedQuote === [54.3109583687]
-  unlockedQuote <- unlockedOf buyer "USDC"
-  unlockedQuote === []

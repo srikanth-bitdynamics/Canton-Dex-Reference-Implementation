@@ -125,7 +125,7 @@ jobs:
             -e CANTON_OPERATOR=Operator::ci \
             -e CANTON_LP_REGISTRAR=LpRegistrar::ci \
             -e CANTON_ADMIN=Admin::ci \
-            -e 'CANTON_DEX_PACKAGE_ID=#canton-dex-trading' \
+            -e 'CANTON_DEX_PACKAGE_ID=#canton-dex-trading-v2' \
             canton-dex-backend:ci)"
           trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
           for _ in $(seq 1 30); do

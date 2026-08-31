@@ -101,7 +101,12 @@ export class RegistryClient implements RegistryDiscovery {
       typeof this.config.baseUrl === "function"
         ? this.config.baseUrl(admin)
         : this.config.baseUrl;
-    const url = new URL(path, baseUrl);
+    // Concatenate rather than `new URL(path, baseUrl)`: an absolute `path`
+    // would discard a base-URL path prefix, but registries mount these
+    // endpoints under one — e.g. DA Utilities serves them at
+    // `/api/token-standard/v0/registrars/<admin>`, and Splice Scan under
+    // `/api/scan`. Preserving the prefix is required or every call 404s.
+    const url = new URL(`${baseUrl.replace(/\/+$/, "")}${path}`);
     const headers: Record<string, string> = {
       Accept: "application/json",
       "Content-Type": "application/json",

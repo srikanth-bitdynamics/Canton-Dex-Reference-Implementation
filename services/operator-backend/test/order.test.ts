@@ -49,13 +49,22 @@ class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
   treeEvents: Array<{ contractId: string; templateId: string }> = [];
   queryRows: unknown[] = [];
+  // When set, the AllocationRequest_Withdraw submission throws, standing in for
+  // an already-archived request.
+  failWithdraw = false;
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.lastSubmit = req;
+    if (
+      this.failWithdraw &&
+      (req.command as { choice?: string }).choice === "AllocationRequest_Withdraw"
+    ) {
+      throw new Error("CONTRACT_NOT_FOUND: request already archived");
+    }
     return {
       orderCid: "#order:0",
       allocationRequestCid: "#areq:0",
       settlement: BIND_SETTLEMENT,
-      allocationSpec: BIND_SPEC,
+      allocationSpecs: [BIND_SPEC],
     } as R;
   }
   async treeCreatedEvents() {
@@ -90,7 +99,7 @@ describe("OrderService.bind", () => {
     assert.equal(cmd.choice, "OrderFundingRequest_Bind");
     assert.equal(cmd.contractId, "00abc");
     assert.deepEqual(result.settlement, BIND_SETTLEMENT);
-    assert.deepEqual(result.allocationSpec, BIND_SPEC);
+    assert.deepEqual(result.allocationSpecs, [BIND_SPEC]);
   });
 
   it("recovers the OrderFundingRequest cid from an updateId (operator-discovery)", async () => {
@@ -179,5 +188,53 @@ describe("OrderService caller binding", () => {
       OrderAuthError,
     );
     assert.equal(ledger.lastSubmit, null);
+  });
+});
+
+describe("OrderService.cancel", () => {
+  it("withdraws the OrderAllocationRequest during funding recovery", async () => {
+    const ledger = new CapturingLedger();
+    ledger.queryRows = [{
+      contractId: "00order",
+      trader: "alice",
+      status: "Pending",
+      allocationCidsByAdmin: [],
+    }];
+    const svc = new OrderService(ledger, new StubRegistry(), "op" as never);
+
+    await svc.cancel(
+      "00order" as ContractId<"Order">,
+      undefined,
+      "00areq" as ContractId<"OrderAllocationRequest">,
+    );
+
+    const cmd = commandOf(ledger);
+    assert.equal(cmd.kind, "exerciseInterface");
+    assert.equal(cmd.choice, "AllocationRequest_Withdraw");
+    assert.equal(cmd.contractId, "00areq");
+  });
+
+  it("tolerates an already-archived request during funding recovery", async () => {
+    // A wallet that accepted the request via standard acceptance already
+    // archived it, so the withdraw fails; the cancel must still resolve.
+    const ledger = new CapturingLedger();
+    ledger.failWithdraw = true;
+    ledger.queryRows = [{
+      contractId: "00order",
+      trader: "alice",
+      status: "Pending",
+      allocationCidsByAdmin: [],
+    }];
+    const svc = new OrderService(ledger, new StubRegistry(), "op" as never);
+
+    await assert.doesNotReject(
+      svc.cancel(
+        "00order" as ContractId<"Order">,
+        undefined,
+        "00areq" as ContractId<"OrderAllocationRequest">,
+      ),
+    );
+    // The withdraw was attempted (its failure is swallowed).
+    assert.equal(commandOf(ledger).choice, "AllocationRequest_Withdraw");
   });
 });

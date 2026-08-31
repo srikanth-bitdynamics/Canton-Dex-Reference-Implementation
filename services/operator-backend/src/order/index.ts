@@ -4,22 +4,30 @@
 import type { ContractId } from "@canton-dex/registry-client";
 import type { RegistryDiscovery } from "@canton-dex/registry-client";
 
-import { asChoiceContext } from "../ledger/choice-context.js";
+import { asChoiceContext, emptyExtraArgs } from "../ledger/choice-context.js";
 import { mergeDisclosures } from "../ledger/disclosure.js";
 import { LedgerSubmitter, type SubmitRequest } from "../ledger/index.js";
 import {
   recoverCreatedAllocations,
   recoverCreatedFundingRequest,
 } from "../ledger/recover.js";
+import { discoverBatchesByAdmin } from "../settlement/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import type {
+  InstrumentId,
   Order,
   Party,
   V2Account,
   V2AllocationSpecification,
   V2SettlementInfo,
 } from "../types.js";
-import { aggregateBook, matchOrdersForPair, type Match, type BookLevel } from "./matching.js";
+import {
+  aggregateBook,
+  eqInstrument,
+  matchOrdersForPair,
+  type Match,
+  type BookLevel,
+} from "./matching.js";
 import { rootLogger } from "../lib/logger.js";
 
 const log = rootLogger.child({ component: "order" });
@@ -43,18 +51,37 @@ export interface OrderBindResult {
   orderCid: ContractId<"Order">;
   allocationRequestCid: ContractId<"OrderAllocationRequest">;
   settlement: V2SettlementInfo;
-  allocationSpec: V2AllocationSpecification;
+  // One specification per distinct admin: the funding spec under the lock
+  // admin, plus a receipt spec under the counter admin for a cross-admin pair.
+  // A single-admin pair exposes one.
+  allocationSpecs: V2AllocationSpecification[];
+}
+
+export interface OrderFundResult {
+  orderCid: ContractId<"Order">;
+  // The bound allocations keyed by admin (GenMap: array of [admin, cid] pairs).
+  allocationCidsByAdmin: Array<[Party, ContractId<"Allocation">]>;
 }
 
 export interface OrderFundInput {
   orderCid: ContractId<"Order">;
-  // Explicit created cid (dApp-return path); omitted when `updateId` is given.
+  // The trader-authored funding allocations: one for a single-admin pair, two
+  // (lock admin + counter admin) for a cross-admin pair. `Order_Fund` binds
+  // each by matching its allocation view to the request's expected spec, so the
+  // list order is immaterial. Omitted when `updateId` is given.
+  allocationCids?: ContractId<"Allocation">[];
+  // Legacy single-admin alias for `allocationCids`.
   allocationCid?: ContractId<"Allocation">;
   // Operator-discovery path (updateId-only wallet, e.g. PartyLayer): the order's
-  // single funding allocation is recovered from the transaction tree.
+  // funding allocations are recovered from the transaction tree. The count is
+  // derived from the order's pair admins (or `expectedAllocations`).
   updateId?: string | null;
-  // The OrderAllocationRequest created at bind. Order_Fund consumes it together
-  // with the pending order after validating the allocation specification.
+  // Overrides the recovered-allocation count on the updateId path.
+  expectedAllocations?: number;
+  // The OrderAllocationRequest created at bind, when known and still live.
+  // Optional: Order_Fund derives the expected specs from the order and archives
+  // this request best-effort only if still live, so funding succeeds even when
+  // the wallet already consumed it via standard acceptance.
   allocationRequestCid?: ContractId<"OrderAllocationRequest"> | null;
   /** Verified caller party when per-caller binding is enabled. */
   requireTrader?: Party;
@@ -88,9 +115,10 @@ export interface MatchRunResult {
 
 /** Result of `OrderMatchExecution_Execute`. */
 interface OrderMatchExecuteResult {
-  /** Remainder allocation the settle rolled forward; null on a full fill. */
-  buyerNextAllocationCid: ContractId<"Allocation"> | null;
-  sellerNextAllocationCid: ContractId<"Allocation"> | null;
+  // The allocations each side's settle rolled forward, keyed by admin; empty
+  // when the fill closed that side out. GenMap: array of [admin, cid] pairs.
+  buyerNextAllocationCidsByAdmin: Array<[Party, ContractId<"Allocation">]>;
+  sellerNextAllocationCidsByAdmin: Array<[Party, ContractId<"Allocation">]>;
   /** Order the side's remainder rolled forward to; null when it closed out. */
   buyRemainderCid: ContractId<"Order"> | null;
   sellRemainderCid: ContractId<"Order"> | null;
@@ -99,11 +127,19 @@ interface OrderMatchExecuteResult {
 /** Where an order stands part-way through a matching run. */
 interface LiveOrder {
   cid: ContractId<"Order">;
-  allocationCid: ContractId<"Allocation"> | null;
+  allocationCidsByAdmin: Array<[Party, ContractId<"Allocation">]>;
 }
 
 function basicAccount(owner: Party): V2Account {
   return { owner, provider: null, id: "" };
+}
+
+// The distinct instrument admins an order's pair settles under: one when base
+// and quote share a registry, two otherwise.
+function pairAdmins(order: Order): Party[] {
+  return order.baseInstrumentId.admin === order.quoteInstrumentId.admin
+    ? [order.baseInstrumentId.admin]
+    : [order.baseInstrumentId.admin, order.quoteInstrumentId.admin];
 }
 
 export class OrderService {
@@ -154,36 +190,48 @@ export class OrderService {
         },
       }),
     );
-    if (!result.settlement || !result.allocationSpec) {
+    if (!result.settlement || !result.allocationSpecs) {
       throw new Error("order bind: on-ledger result omitted funding terms");
     }
     return result;
   }
 
-  async fund(
-    input: OrderFundInput,
-  ): Promise<{ orderCid: ContractId<"Order"> }> {
-    // Operator-discovery: recover the single funding allocation from the tree
-    // when the wallet returned only an updateId (e.g. PartyLayer).
-    let allocationCid = input.allocationCid;
-    if (input.updateId) {
-      const { allocationCids } = await recoverCreatedAllocations(
-        this.ledger, this.operatorParty, input.updateId, 1,
-      );
-      allocationCid = allocationCids[0] as ContractId<"Allocation">;
-    }
-    if (!allocationCid) {
-      throw new Error("order fund: supply allocationCid or an updateId to recover it");
-    }
-    if (input.requireTrader !== undefined) {
-      const order = (await this.listOpen()).find((row) => row.contractId === input.orderCid);
+  async fund(input: OrderFundInput): Promise<OrderFundResult> {
+    let allocationCids =
+      input.allocationCids ??
+      (input.allocationCid ? [input.allocationCid] : undefined);
+    // The order is needed to authorize the caller and, on the updateId path, to
+    // count the allocations the pair funds (one per distinct instrument admin).
+    let order: Order | undefined;
+    if (input.requireTrader !== undefined || (input.updateId && !allocationCids)) {
+      order = (await this.listOpen()).find((row) => row.contractId === input.orderCid);
       if (!order) throw new Error(`Order ${input.orderCid} not found`);
-      if (order.trader !== input.requireTrader) {
-        throw new OrderAuthError("caller may only fund its own order");
-      }
     }
+    if (input.requireTrader !== undefined && order!.trader !== input.requireTrader) {
+      throw new OrderAuthError("caller may only fund its own order");
+    }
+    // Operator-discovery: recover the funding allocations from the tree when the
+    // wallet returned only an updateId (e.g. PartyLayer).
+    if (input.updateId) {
+      const expected = input.expectedAllocations ?? (order ? pairAdmins(order).length : 1);
+      const { allocationCids: recovered } = await recoverCreatedAllocations(
+        this.ledger, this.operatorParty, input.updateId, expected,
+      );
+      allocationCids = recovered as ContractId<"Allocation">[];
+    }
+    if (!allocationCids || allocationCids.length === 0) {
+      throw new Error("order fund: supply allocationCids or an updateId to recover them");
+    }
+    // Order_Fund derives the expected specs from the order itself and treats the
+    // request cid as optional (archived best-effort only if still live), so
+    // funding does not depend on a live request. On the operator-discovery path
+    // the wallet accepted the request via standard acceptance, which already
+    // archived it, so pass no cid; otherwise pass the caller's when known.
+    const allocationRequestCid = input.updateId
+      ? null
+      : (input.allocationRequestCid ?? null);
     return retryOnContention(() =>
-      this.ledger.submit<{ orderCid: ContractId<"Order"> }>({
+      this.ledger.submit<OrderFundResult>({
         actAs: [this.operatorParty],
         commandId: `order-fund:${input.orderCid}`,
         command: {
@@ -191,10 +239,11 @@ export class OrderService {
           templateId: "CantonDex.Dex.Order:Order",
           contractId: input.orderCid,
           choice: "Order_Fund",
-          // Optional Daml field: the cid as Some, or null for None.
+          // Order_Fund binds each allocation by matching its view to the
+          // order's per-admin spec, so the list is unkeyed.
           argument: {
-            allocationCid,
-            allocationRequestCid: input.allocationRequestCid ?? null,
+            allocationCids,
+            allocationRequestCid,
           },
         },
       }),
@@ -204,33 +253,44 @@ export class OrderService {
   async cancel(
     orderCid: ContractId<"Order">,
     requireTrader?: Party,
+    allocationRequestCid?: ContractId<"OrderAllocationRequest"> | null,
   ): Promise<OrderCancelResult> {
     const order = (await this.listOpen()).find((o) => o.contractId === orderCid);
     if (!order) throw new Error(`Order ${orderCid} not found`);
     if (requireTrader !== undefined && order.trader !== requireTrader) {
       throw new OrderAuthError("caller may only cancel its own order");
     }
-    const discovered = order.allocationCid
-      ? await this.registry.getAllocationCancelContext(order.admin, order.allocationCid)
-      : { context: { values: {} }, disclosure: [] };
-    const ctx = asChoiceContext(discovered);
+    // One cancel choice-context per allocation admin. Discovery is all-or-
+    // nothing: a rejected context rejects the whole promise, so no allocation
+    // is left half-released. A Pending order has no allocations and cancels
+    // with an empty context map.
+    const perAdmin = await Promise.all(
+      order.allocationCidsByAdmin.map(async ([admin, allocationCid]) => {
+        const discovered = await this.registry.getAllocationCancelContext(
+          admin,
+          allocationCid,
+        );
+        return { admin, ...asChoiceContext(discovered) };
+      }),
+    );
     const req: SubmitRequest = {
       actAs: [this.operatorParty],
       // Cancellation may release holdings visible only to the owner and
-      // registry admin, so include the registry's choice context and disclosure.
+      // registry admin, so include each admin's choice context and disclosure.
       commandId: `order-cancel:${orderCid}`,
-      disclosure: mergeDisclosures(ctx.disclosure),
+      disclosure: mergeDisclosures(...perAdmin.map((e) => e.disclosure)),
       command: {
         kind: "exercise",
         templateId: "CantonDex.Dex.Order:Order",
         contractId: orderCid,
         choice: "Order_Cancel",
-        argument: { extraArgs: ctx.extraArgs },
+        // GenMap: array of [admin, ExtraArgs] pairs.
+        argument: { extraArgsByAdmin: perAdmin.map((e) => [e.admin, e.extraArgs]) },
       },
     };
     // The choice result carries holdings, not an update id, so it comes from
     // the driver where one is available.
-    return retryOnContention(async () => {
+    const result = await retryOnContention(async () => {
       const submitWithUpdateId = this.ledger.submitWithUpdateId;
       if (!submitWithUpdateId) {
         await this.ledger.submit<unknown>(req);
@@ -239,6 +299,42 @@ export class OrderService {
       const { updateId } = await submitWithUpdateId.call(this.ledger, req);
       return { updateId };
     });
+    // A Pending order cancelled during funding recovery leaves its
+    // OrderAllocationRequest live (the wallet authored allocations without
+    // accepting it). Withdraw it so the trader is not left with an
+    // unfulfillable funding request. Best-effort: a wallet that accepted the
+    // request via standard acceptance already archived it, so a
+    // contract-not-found here is expected, not a failure of the cancel.
+    if (allocationRequestCid) {
+      try {
+        await this.withdrawAllocationRequest(allocationRequestCid);
+      } catch (e) {
+        log.warn("funding-recovery withdraw skipped", {
+          allocationRequestCid,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    return result;
+  }
+
+  private async withdrawAllocationRequest(
+    requestCid: ContractId<"OrderAllocationRequest">,
+  ): Promise<void> {
+    await retryOnContention(() =>
+      this.ledger.submit({
+        actAs: [this.operatorParty],
+        commandId: `order-alloc-req-withdraw:${requestCid}`,
+        command: {
+          kind: "exerciseInterface",
+          interfaceId:
+            "#splice-api-token-allocation-request-v2:Splice.Api.Token.AllocationRequestV2:AllocationRequest",
+          contractId: requestCid,
+          choice: "AllocationRequest_Withdraw",
+          argument: { actors: [this.operatorParty], extraArgs: emptyExtraArgs },
+        },
+      }),
+    );
   }
 
   async listOpen(): Promise<Order[]> {
@@ -258,8 +354,8 @@ export class OrderService {
    * operator submits selected results through OrderMatchExecution_Execute.
    */
   async findMatches(input: {
-    baseInstrumentId: string;
-    quoteInstrumentId: string;
+    baseInstrumentId: InstrumentId;
+    quoteInstrumentId: InstrumentId;
   }): Promise<Match[]> {
     const orders = await this.listOpen();
     return matchOrdersForPair(orders, {
@@ -272,14 +368,14 @@ export class OrderService {
    * Aggregated order-book depth ladders for the given pair.
    */
   async book(input: {
-    baseInstrumentId: string;
-    quoteInstrumentId: string;
+    baseInstrumentId: InstrumentId;
+    quoteInstrumentId: InstrumentId;
   }): Promise<{ bids: BookLevel[]; asks: BookLevel[] }> {
     const orders = await this.listOpen();
     const forPair = orders.filter(
       (o) =>
-        o.baseInstrumentId === input.baseInstrumentId &&
-        o.quoteInstrumentId === input.quoteInstrumentId,
+        eqInstrument(o.baseInstrumentId, input.baseInstrumentId) &&
+        eqInstrument(o.quoteInstrumentId, input.quoteInstrumentId),
     );
     return aggregateBook(forPair);
   }
@@ -299,8 +395,8 @@ export class OrderService {
    * rest of the run.
    */
   async runMatching(input: {
-    baseInstrumentId: string;
-    quoteInstrumentId: string;
+    baseInstrumentId: InstrumentId;
+    quoteInstrumentId: InstrumentId;
     admin: Party;
   }): Promise<MatchRunResult[]> {
     const matches = await this.findMatches(input);
@@ -319,7 +415,7 @@ export class OrderService {
     const stateOf = (o: Order): LiveOrder =>
       live.get(o.contractId) ?? {
         cid: o.contractId,
-        allocationCid: o.allocationCid,
+        allocationCidsByAdmin: o.allocationCidsByAdmin,
       };
     const advance = (o: Order, next: LiveOrder | null): void => {
       if (next) {
@@ -339,7 +435,7 @@ export class OrderService {
       try {
         const buy = stateOf(m.buy);
         const sell = stateOf(m.sell);
-        if (!buy.allocationCid || !sell.allocationCid) {
+        if (buy.allocationCidsByAdmin.length === 0 || sell.allocationCidsByAdmin.length === 0) {
           throw new Error(`match ${matchId}: a matched order has no funding allocation`);
         }
         const executionArgument = {
@@ -348,22 +444,23 @@ export class OrderService {
           match: {
             buyerAccount: basicAccount(m.buy.trader),
             sellerAccount: basicAccount(m.sell.trader),
-            baseInstrumentId: m.buy.baseInstrumentId,
-            quoteInstrumentId: m.buy.quoteInstrumentId,
+            // MatchedOrderPair names each instrument by its bare text id; the
+            // choice re-checks it against both orders' full InstrumentId.
+            baseInstrumentId: m.buy.baseInstrumentId.id,
+            quoteInstrumentId: m.buy.quoteInstrumentId.id,
             fillQty: m.quantity,
             fillPrice: m.price,
           },
           buyOrderCid: buy.cid,
           sellOrderCid: sell.cid,
-          buyerAllocationCid: buy.allocationCid,
-          sellerAllocationCid: sell.allocationCid,
-          buyerCommittedFunding: {},
-          sellerCommittedFunding: {},
+          // GenMaps: array of [admin, cid] pairs. The choice verifies each
+          // equals the order's own bound allocations.
+          buyerAllocationCidsByAdmin: buy.allocationCidsByAdmin,
+          sellerAllocationCidsByAdmin: sell.allocationCidsByAdmin,
         };
-        const settlementArguments = await retryOnContention(() =>
-          this.ledger.submit<Record<string, unknown>>({
+        const preview = await retryOnContention(() =>
+          this.ledger.submit<Array<[Party, Record<string, unknown>]>>({
             actAs: [this.operatorParty],
-            readAs: [input.admin],
             commandId: `order-match-preview:${matchId}`,
             command: {
               kind: "createAndExercise",
@@ -375,48 +472,47 @@ export class OrderService {
             },
           }),
         );
-        const factory = await this.registry.getSettlementFactory(
-          input.admin,
-          settlementArguments,
+        // Discover one settlement factory per instrument admin; the base and
+        // quote legs of a cross-admin pair settle under two registries.
+        const { batchesByAdmin, disclosure } = await discoverBatchesByAdmin(
+          this.registry,
+          preview,
         );
-        const ctx = asChoiceContext(factory);
         const executed = await retryOnContention(() =>
           this.ledger.submit<OrderMatchExecuteResult>({
             actAs: [this.operatorParty],
-            readAs: [input.admin],
+            // No readAs on any instrument admin: every order allocation names
+            // the operator as its settlement executor, so the operator already
+            // sees them, and the merged registry disclosures cover each admin's
+            // settlement factory.
             commandId: `order-match:${matchId}`,
-            disclosure: ctx.disclosure,
+            disclosure,
             command: {
               kind: "createAndExercise",
               templateId:
                 "CantonDex.Dex.OrderMatchExecution:OrderMatchExecution",
               argument: executionArgument,
               choice: "OrderMatchExecution_Execute",
-              choiceArgument: {
-                factoryCid: factory.factoryCid,
-                extraArgs: ctx.extraArgs,
-              },
+              choiceArgument: { batchesByAdmin },
             },
           }),
         );
         // The choice rolled both orders forward onto the allocations its own
         // settle minted, so the run only has to follow what it returned.
-        const buyNext = executed.buyerNextAllocationCid ?? null;
         const buyRemainderCid = executed.buyRemainderCid ?? null;
         advance(
           m.buy,
           buyRemainderCid && {
             cid: buyRemainderCid,
-            allocationCid: buyNext,
+            allocationCidsByAdmin: executed.buyerNextAllocationCidsByAdmin ?? [],
           },
         );
-        const sellNext = executed.sellerNextAllocationCid ?? null;
         const sellRemainderCid = executed.sellRemainderCid ?? null;
         advance(
           m.sell,
           sellRemainderCid && {
             cid: sellRemainderCid,
-            allocationCid: sellNext,
+            allocationCidsByAdmin: executed.sellerNextAllocationCidsByAdmin ?? [],
           },
         );
         out.push({

@@ -1,7 +1,7 @@
 # Changelog
 
 Notable changes to this reference implementation are recorded here. The
-repository release and the `canton-dex-trading` Daml package have independent
+repository release and the `canton-dex-trading-v2` Daml package have independent
 versions. Package upgrades are checked against the deployed baseline in
 `trading/upgrade-baseline/`.
 
@@ -17,7 +17,11 @@ versions. Package upgrades are checked against the deployed baseline in
 
 ### Changed
 
-- `canton-dex-trading` 0.1.4 scopes each settlement batch to the transfer legs
+- The trading package is renamed `canton-dex-trading` -> `canton-dex-trading-v2`
+  and reset to 1.0.0, starting a fresh smart-contract-upgrade lineage: dropping
+  the per-venue `admin`, `Rfq.pair`, and `SettlementBatchV2.transferLegs` fields
+  is not a valid in-place upgrade.
+- `canton-dex-trading-v2` 1.0.0 scopes each settlement batch to the transfer legs
   governed by that batch's registry admin.
 - The reference registry validates exact allocation-to-leg coverage, positive
   leg amounts, unique leg ids, matching registry admins, and per-instrument

@@ -83,7 +83,7 @@ describe("test taxonomy boundaries", () => {
       assert.ok(lines <= 600, `${module} has ${lines} lines; split it again`);
       declarations += [...source.matchAll(/^test[A-Z]\w*\s*:\s*Script\b/gm)].length;
     }
-    assert.equal(declarations, 19);
+    assert.equal(declarations, 21);
 
     const fixtures = readFileSync(join(testsDir, "WorkflowTestFixtures.daml"), "utf8");
     assert.ok(fixtures.split("\n").length <= 300, "workflow fixtures became a new monolith");

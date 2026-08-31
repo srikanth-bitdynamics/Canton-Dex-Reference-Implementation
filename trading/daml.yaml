@@ -1,6 +1,6 @@
 sdk-version: 3.5.2
-name: canton-dex-trading
-version: 0.1.4
+name: canton-dex-trading-v2
+version: 1.0.0
 source: .
 dependencies:
   - daml-prim

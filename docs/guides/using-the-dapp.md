@@ -289,7 +289,7 @@ nonconsuming choice PoolRules_RequestSwap : PoolRules_RequestSwapResult
   with
     poolCid : ContractId Pool
     swapper : Party
-    inputInstrumentId : Text
+    inputInstrumentId : V2.InstrumentId
     inputAmount : Decimal
     quoteBinding : Optional SwapQuoteBinding
   ...

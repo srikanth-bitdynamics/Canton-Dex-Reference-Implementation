@@ -1,12 +1,14 @@
 -- | Matched-trade settlement on the V2 token standard (adapted from the
--- upstream TradingAppV2, V2-only).
+-- upstream TradingAppV2, V2-only). Genuinely cross-admin: every leg carries its
+-- instrument admin, and settlement derives the required per-admin batches from
+-- the trade itself rather than trusting the caller.
 --
 -- Design guide: `docs/concepts/design-tour.md#rfq-and-otc-settlement`.
 module CantonDex.Dex.MatchedTrade where
 
 import DA.Foldable (forA_)
 import DA.Map qualified as Map
-import DA.TextMap qualified as TextMap
+import DA.Optional (catOptionals)
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
@@ -17,6 +19,33 @@ import Splice.TokenStandard.Utils qualified as TSUtils
 import CantonDex.Dex.DexPair qualified as DexPair
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Trading.Utils qualified as Utils
+
+-- | Leg of a trade: an admin-tagged transfer leg. `V2.TransferLeg.instrumentId`
+-- is only the instrument's text id, so the instrument admin travels alongside
+-- it here. This is the upstream `TradeLeg` shape; a flat list preserves
+-- economic leg ordering and avoids a nested `GenMap` as the canonical payload.
+data TradeLeg = TradeLeg with
+    admin : Party
+      -- ^ Admin party of the instrument being transferred.
+    leg : V2.TransferLeg
+  deriving (Eq, Show)
+
+-- | Flat transfer legs of a trade, in economic order.
+tradeTransferLegs : [TradeLeg] -> [V2.TransferLeg]
+tradeTransferLegs tradeLegs = [tl.leg | tl <- tradeLegs]
+
+-- | Group any legs by a derived key, preserving order (upstream shape).
+splitLegsBy : Ord k => (a -> k) -> [a] -> Map.Map k [a]
+splitLegsBy f legs = Map.fromListWithR (<>) [(f leg, [leg]) | leg <- legs]
+
+-- | Group the authorized sides by the account that must authorize them, keeping
+-- each side tagged with its instrument admin.
+splitTradeLegsByAuthorizer
+  : [TradeLeg] -> Map.Map V2.Account [(Party, V2.TransferLegSide)]
+splitTradeLegsByAuthorizer legs = Map.fromListWithR (++) $ do
+  tradeLeg <- legs
+  (authorizer, side) <- TSUtils.transferLegSidesWithAuthorizer tradeLeg.leg
+  pure (authorizer, [(tradeLeg.admin, side)])
 
 -- A settlement plan must identify each positive transfer leg exactly once.
 -- Registry settlement performs its own coverage checks; keeping the same basic
@@ -38,49 +67,36 @@ validTransferLegs legs =
       length xs
         == length (foldl (\seen x -> if x `elem` seen then seen else x :: seen) [] xs)
 
-data TradeAllocationRequestView = TradeAllocationRequestView with
-    authorizer : V2.Account
-    settlement : V2.SettlementInfo
-    transferLegs : [V2.TransferLeg]
-  deriving (Eq, Show)
+-- | Every account party appearing across a request's specifications.
+affectedAccountParties : TradeAllocationRequest -> [Party]
+affectedAccountParties req =
+  concatMap (Utils.accountParties . (.authorizer)) req.allocations
 
 template TradeAllocationRequest with
-    authorizer : V2.Account
-    admin : Party
     settlement : V2.SettlementInfo
-    settlementDeadline : Optional Time
-    transferLegs : [V2.TransferLeg]
+    settleAt : Optional Time
     requestedAt : Time
+    allocations : [V2.AllocationSpecification]
+      -- ^ One specification per (authorizer, admin). The wallet composes the
+      --   matching `AllocationFactory_Allocate` for each in the same
+      --   transaction, so an authorizer whose legs span two registries funds
+      --   both in one accept.
   where
     signatory settlement.executors
-    observer Utils.accountParties authorizer
+    observer affectedAccountParties this
 
-    ensure
-      validTransferLegs transferLegs
-        && all
-          (\leg -> leg.sender == authorizer || leg.receiver == authorizer)
-          transferLegs
-        && optional True (\deadline -> requestedAt <= deadline) settlementDeadline
+    ensure allocations /= []
 
     interface instance V2.AllocationRequest for TradeAllocationRequest where
       view = V2.AllocationRequestView with
         originalRequestCid = None
         settlement
-        allocations =
-          [ V2.AllocationSpecification with
-              admin
-              authorizer
-              transferLegSides = Utils.legsToSides authorizer transferLegs
-              settlementDeadline
-              nextIterationFunding = None
-              committed = False
-              meta = emptyMetadata
-          ]
+        allocations
         requestedAt
-        settleAt = settlementDeadline
+        settleAt
         availableActions = Map.fromList
-          [ (V2.ARA_Accept, [[p] | p <- Utils.accountParties authorizer])
-          , (V2.ARA_Reject, [[p] | p <- Utils.accountParties authorizer])
+          [ (action, [[p] | p <- affectedAccountParties this])
+          | action <- [V2.ARA_Accept, V2.ARA_Reject]
           ]
         meta = emptyMetadata
 
@@ -89,38 +105,26 @@ template TradeAllocationRequest with
       allocationRequest_withdrawExtraObservers = \_ -> []
 
       -- Accept consumes the request; the wallet composes it with the matching
-      -- AllocationFactory_Allocate in the same transaction.
+      -- AllocationFactory_Allocate choices in the same transaction.
       allocationRequest_acceptImpl = \self arg -> do
         TSUtils.archiveAndCheckActors self arg.actors
-          [[TSUtils.accountPrincipal admin authorizer]]
+          [[p] | p <- affectedAccountParties this]
         pure V2.AllocationRequest_AcceptResult with meta = emptyMetadata
       allocationRequest_rejectImpl = \self arg -> do
         TSUtils.archiveAndCheckActors self arg.actors
-          [[TSUtils.accountPrincipal admin authorizer]]
+          [[p] | p <- affectedAccountParties this]
         pure V2.AllocationRequest_RejectResult with meta = emptyMetadata
       allocationRequest_withdrawImpl = \self arg -> do
         TSUtils.archiveAndCheckActors self arg.actors [settlement.executors]
         pure V2.AllocationRequest_WithdrawResult with meta = emptyMetadata
 
+-- | A batch of allocations for one admin, plus the factory and context needed
+-- to settle them. The trade is the source of truth for which legs each admin
+-- owns, so a batch never carries its own legs.
 data SettlementBatchV2 = SettlementBatchV2 with
     allocations : [V2.FinalizedAllocation]
     factoryCid : ContractId V2.SettlementFactory
     extraArgs : ExtraArgs
-    transferLegs : Optional [V2.TransferLeg]
-      -- ^ The legs administered by this batch's admin. A batch's allocations
-      --   must cover exactly its own legs, so each admin gets its own subset
-      --   of the trade's legs, never the whole list. Optional only to keep the
-      --   record upgradeable; `None` is rejected rather than defaulted, since
-      --   any default would settle a batch against legs it does not own.
-      --   Upgrades require new fields last, so this stays at the end.
-  deriving (Eq, Show)
-
--- Registry-discovery input without a factory or choice context. The preview
--- turns each plan into the exact SettleBatch argument the consuming choice
--- will exercise.
-data SettlementBatchPlanV2 = SettlementBatchPlanV2 with
-    allocations : [V2.FinalizedAllocation]
-    transferLegs : [V2.TransferLeg]
   deriving (Eq, Show)
 
 data MatchedTrade_SettleResult = MatchedTrade_SettleResult with
@@ -164,19 +168,18 @@ legParties legs = dedupParties $ do
 
 template MatchedTrade with
     venue : Party
-    admin : Party
-    transferLegs : [V2.TransferLeg]
+    tradeLegs : [TradeLeg]
     settlementDeadline : Optional Time
     policyReceipt : Optional PR.PolicyReceipt
       -- ^ Optional operator-signed RFQ-policy attestation, folded into
       --   SettlementInfo.meta so it travels on-ledger with the trade.
   where
     signatory venue
-    observer legParties transferLegs
+    observer legParties (tradeTransferLegs tradeLegs)
 
     -- The receipt's claimed signer must equal the trade's signatory.
     ensure
-      validTransferLegs transferLegs
+      validTransferLegs (tradeTransferLegs tradeLegs)
         && case policyReceipt of
              None -> True
              Some r -> r.signedBy == venue && PR.isWellFormed r
@@ -187,27 +190,54 @@ template MatchedTrade with
       do
         let settlement = mkTradeSettlementInfo self this
         now <- getTime
-        forA (Map.toList $ Utils.splitLegsByAuthorizer transferLegs) $ \(authorizer, legs) -> do
-          create TradeAllocationRequest with
-            authorizer
-            admin
-            settlement
-            settlementDeadline = this.settlementDeadline
-            transferLegs = legs
-            requestedAt = now
+        results <- forA (Map.toList $ splitTradeLegsByAuthorizer tradeLegs) $
+          \(authorizer, authorizerSides) ->
+            if authorizer == Utils.basicAccount venue
+              then pure None
+              else fmap Some $ create TradeAllocationRequest with
+                settlement
+                settleAt = settlementDeadline
+                requestedAt = now
+                allocations = do
+                  -- One specification per admin this authorizer touches.
+                  (admin, sides) <- Map.toList $ splitLegsBy (._1) authorizerSides
+                  pure V2.AllocationSpecification with
+                    admin
+                    authorizer
+                    transferLegSides = map (._2) sides
+                    settlementDeadline
+                    nextIterationFunding = None
+                    committed = False
+                    meta = emptyMetadata
+        pure $ catOptionals results
 
+    -- Read-only discovery of each registry's settlement endpoint. The transfer
+    -- legs are DERIVED from the trade (the same admin grouping `MatchedTrade_Settle`
+    -- uses), never taken from the caller, so each registry returns context for the
+    -- exact arguments final settlement will exercise. The caller supplies only the
+    -- finalized allocations, which reference wallet-created cids the trade cannot know.
     nonconsuming choice MatchedTrade_PreviewSettlement
       : Map.Map Party V2.SettlementFactory_SettleBatch
       with
-        plansByAdmin : Map.Map Party SettlementBatchPlanV2
+        allocationsByAdmin : Map.Map Party [V2.FinalizedAllocation]
       controller venue
       do
         let settlement = mkTradeSettlementInfo self this
-        pure $ Map.fromList
-          [ (batchAdmin, mkTradeSettlementArguments
-              venue settlement plan.transferLegs plan.allocations Utils.emptyExtraArgs)
-          | (batchAdmin, plan) <- Map.toList plansByAdmin
-          ]
+            transferLegsByAdmin = splitLegsBy (.admin) tradeLegs
+            expectedAdmins = Map.keys transferLegsByAdmin
+        forA_ (Map.keys allocationsByAdmin) $ \a ->
+          assertMsg
+            ("MatchedTrade_PreviewSettlement: unexpected admin " <> show a)
+            (a `elem` expectedAdmins)
+        batches <- forA (Map.toList transferLegsByAdmin) $ \(admin, adminLegs) -> do
+          allocations <- case Map.lookup admin allocationsByAdmin of
+            Some a -> pure a
+            None -> abort
+              ("MatchedTrade_PreviewSettlement: missing allocations for admin " <> show admin)
+          let batchLegs = map (.leg) adminLegs
+          pure (admin, mkTradeSettlementArguments
+            venue settlement batchLegs allocations Utils.emptyExtraArgs)
+        pure (Map.fromList batches)
 
     choice MatchedTrade_Settle : MatchedTrade_SettleResult
       with
@@ -218,28 +248,49 @@ template MatchedTrade with
       controller venue
       do
         let settlement = mkTradeSettlementInfo self this
+            -- The trade is the source of truth for which admins and legs must
+            -- settle, so both are derived here, never taken from the caller.
+            transferLegsByAdmin = splitLegsBy (.admin) tradeLegs
+            expectedAdmins = Map.keys transferLegsByAdmin
+
+        -- Reject a batch for an admin the trade does not include. Every
+        -- expected admin is settled below, so an extra batch is malformed.
+        forA_ (Map.keys batchesByAdmin) $ \a ->
+          assertMsg
+            ("MatchedTrade_Settle: unexpected settlement batch for admin " <> show a)
+            (a `elem` expectedAdmins)
 
         forA_ allocationRequests $ \reqCid -> do
+          fetch reqCid
           archive reqCid
 
-        results <- forA (Map.toList batchesByAdmin) $ \(batchAdmin, batch) -> do
-          batchLegs <- case batch.transferLegs of
-            Some legs -> pure legs
+        -- Iterate the trade's own admins. Each must have exactly one batch, and
+        -- each registry settles the legs derived from the trade, so a caller
+        -- cannot settle only one side by omitting a registry.
+        results <- forA (Map.toList transferLegsByAdmin) $ \(admin, adminLegs) -> do
+          batch <- case Map.lookup admin batchesByAdmin of
+            Some b -> pure b
             None -> abort
-              "MatchedTrade_Settle: per-admin transfer legs are required on every settlement batch"
-          let settlementArguments = mkTradeSettlementArguments
+              ("MatchedTrade_Settle: missing settlement batch for admin " <> show admin)
+          let batchLegs = map (.leg) adminLegs
+              settlementArguments = mkTradeSettlementArguments
                 venue settlement batchLegs batch.allocations batch.extraArgs
           result <- exercise batch.factoryCid settlementArguments
-          pure (batchAdmin, result)
+          pure (admin, result)
 
         forA_ dexPairCid $ \pairCid -> do
-          let legNotionals : TextMap.TextMap Decimal =
+          -- Fees accrue per instrument across every admin the trade touches.
+          -- `legNotionals` is keyed by full `InstrumentId`, so a cross-admin
+          -- trade records each admin's leg notionals under its own instrument.
+          let legNotionals : Map.Map V2.InstrumentId Decimal =
                 foldl
-                  (\m leg ->
-                    let cur = optional 0.0 identity (TextMap.lookup leg.instrumentId m)
-                    in TextMap.insert leg.instrumentId (cur + leg.amount) m)
-                  TextMap.empty
-                  transferLegs
+                  (\m tradeLeg ->
+                    let iid = V2.InstrumentId with
+                          admin = tradeLeg.admin; id = tradeLeg.leg.instrumentId
+                        cur = optional 0.0 identity (Map.lookup iid m)
+                    in Map.insert iid (cur + tradeLeg.leg.amount) m)
+                  Map.empty
+                  tradeLegs
           _ <- exercise pairCid DexPair.DexPair_RecordMatchedTrade with legNotionals
           pure ()
 
@@ -272,10 +323,9 @@ template MatchedTrade with
 -- inside a single choice; this contract stays in the ACS for the indexer.
 template SettledTrade with
     operator : Party
-    admin : Party
+    tradeLegs : [TradeLeg]
     matchId : Text
-    transferLegs : [V2.TransferLeg]
     settledAt : Time
   where
     signatory operator
-    observer legParties transferLegs
+    observer legParties (tradeTransferLegs tradeLegs)

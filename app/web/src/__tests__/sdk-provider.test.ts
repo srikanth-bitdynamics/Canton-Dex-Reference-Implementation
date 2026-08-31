@@ -18,6 +18,8 @@ const sdk = vi.hoisted(() => ({
   prepareExecuteAndWait: vi.fn(async (_params: Record<string, unknown>) => ({
     tx: { status: "executed", commandId: "c1", payload: { updateId: "update-xyz", completionOffset: 1 } },
   })),
+  // Returns the parsed ledger ACS response as an object (not a JSON string).
+  ledgerApi: vi.fn(async (_params: { body?: { interfaceId?: string; templateId?: string } }) => ({}) as Record<string, unknown>),
   removeOnStatusChanged: vi.fn(async () => {}),
   removeOnAccountsChanged: vi.fn(async () => {}),
   statusListeners: [] as Array<(e: unknown) => void>,
@@ -43,6 +45,7 @@ vi.mock("@canton-network/dapp-sdk", () => ({
     disconnect = sdk.disconnect;
     listAccounts = sdk.listAccounts;
     prepareExecuteAndWait = sdk.prepareExecuteAndWait;
+    ledgerApi = sdk.ledgerApi;
     open = vi.fn(async () => {});
     onStatusChanged = (cb: (e: unknown) => void) => { sdk.statusListeners.push(cb); };
     onAccountsChanged = (cb: (e: unknown) => void) => { sdk.accountsListeners.push(cb); };
@@ -59,25 +62,63 @@ vi.mock("@canton-network/dapp-sdk", () => ({
 
 import { SdkProvider } from "@/wallet/sdk-provider";
 
+const emptyArgs = { context: { values: {} }, meta: { values: {} } };
+const swapSettlement = {
+  executors: ["op::1"], id: "DexPool", cid: "pool1234567890", meta: { values: {} },
+};
+const opAccount = { owner: "op::1", provider: null, id: "" };
+const alice = { owner: "alice::1220a", provider: null, id: "" };
+const swapInLeg: RequestSwapIntent["allocations"][number]["transferLegSides"][number] = {
+  transferLegId: "swap-in", side: "SenderSide", otherside: opAccount, amount: "0.1",
+  instrumentId: "Amulet", meta: { values: {} },
+};
+const swapOutLeg: RequestSwapIntent["allocations"][number]["transferLegSides"][number] = {
+  transferLegId: "swap-out-0", side: "ReceiverSide", otherside: opAccount, amount: "1974.31",
+  instrumentId: "USDCx", meta: { values: {} },
+};
+
+// Single-admin: one combined spec with both swap-in and swap-out.
 const swapIntent: RequestSwapIntent = {
   kind: "request-swap",
   poolId: "pool1234567890",
-  allocationSpec: {
-    admin: "ad::1",
-    authorizer: { owner: "alice::1220a", provider: null, id: "" },
-    transferLegSides: [],
-    settlementDeadline: null,
-    nextIterationFunding: { USDC: "1000.0" },
-    committed: false,
-    meta: { values: {} },
-  } as unknown as RequestSwapIntent["allocationSpec"],
-  settlement: {
-    executor: "op::1",
-    settlementRef: { id: "DexPool", cid: "pool1234567890" },
-  } as unknown as RequestSwapIntent["settlement"],
+  requestCid: "swapReqSINGLE",
+  settlement: swapSettlement,
+  allocations: [
+    {
+      admin: "ad::1", authorizer: alice, transferLegSides: [swapInLeg, swapOutLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: false, meta: { values: {} },
+    },
+  ],
   requestedAt: "2026-05-19T12:00:00.000Z",
-  factoryCid: "factory1",
-  allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
+  factoryCids: ["factory1"],
+  allocationFactoryExtraArgs: [emptyArgs],
+  allocationRequestExtraArgs: emptyArgs,
+  disclosure: [
+    { contractId: "#ctx:0", templateId: "Registry:Context", createdEventBlob: "blob" },
+  ],
+  inputHoldingCids: ["h1"],
+};
+
+// Cross-admin: swap-in under the input admin, swap-out receipt under the output.
+const crossAdminSwapIntent: RequestSwapIntent = {
+  kind: "request-swap",
+  poolId: "pool1234567890",
+  requestCid: "swapReqXADMIN",
+  settlement: swapSettlement,
+  allocations: [
+    {
+      admin: "cc-admin", authorizer: alice, transferLegSides: [swapInLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: false, meta: { values: {} },
+    },
+    {
+      admin: "usdc-admin", authorizer: alice, transferLegSides: [swapOutLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: false, meta: { values: {} },
+    },
+  ],
+  requestedAt: "2026-05-19T12:00:00.000Z",
+  factoryCids: ["ccFactory", "usdcFactory"],
+  allocationFactoryExtraArgs: [emptyArgs, emptyArgs],
+  allocationRequestExtraArgs: emptyArgs,
   disclosure: [
     { contractId: "#ctx:0", templateId: "Registry:Context", createdEventBlob: "blob" },
   ],
@@ -99,11 +140,12 @@ describe("SdkProvider", () => {
     });
     sdk.removeOnStatusChanged.mockClear();
     sdk.removeOnAccountsChanged.mockClear();
+    sdk.ledgerApi.mockClear().mockResolvedValue({});
     sdk.pickerEntries = undefined;
   });
 
   it("submit() returns an updateId-only result (no client-side cid extraction)", async () => {
-    const provider = new SdkProvider("#canton-dex-trading");
+    const provider = new SdkProvider("#canton-dex-trading-v2");
     await provider.connect();
     const res = await provider.submit(swapIntent);
     expect(res).toEqual({
@@ -116,8 +158,30 @@ describe("SdkProvider", () => {
     expect(res.createdAllocationCids).toBeUndefined();
   });
 
+  it("submits a cross-admin (2-allocation) batch as one updateId-only command", async () => {
+    const provider = new SdkProvider("#canton-dex-trading-v2");
+    await provider.connect();
+    const res = await provider.submit(crossAdminSwapIntent);
+    // updateId-only: the operator recovers BOTH created allocation cids from it.
+    expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
+    expect(res.createdAllocationCids).toBeUndefined();
+    const params = sdk.prepareExecuteAndWait.mock.calls[0]![0] as { commands: unknown[] };
+    // A cross-admin swap is still ONE top-level BatchingUtilityV2 command.
+    expect(params.commands).toHaveLength(1);
+    const cmd = (params.commands[0] as {
+      CreateAndExerciseCommand: { choice: string; choiceArgument: { actions: { tag: string }[] } };
+    }).CreateAndExerciseCommand;
+    expect(cmd.choice).toBe("BatchingUtility_ExecuteBatch");
+    // Accept the request, then one allocate per admin (two here).
+    expect(cmd.choiceArgument.actions.map((a) => a.tag)).toEqual([
+      "TSA_AllocationRequest_AcceptV2",
+      "TSA_AllocationFactory_AllocateV2",
+      "TSA_AllocationFactory_AllocateV2",
+    ]);
+  });
+
   it("submit() forwards disclosedContracts to prepareExecuteAndWait", async () => {
-    const provider = new SdkProvider("#canton-dex-trading");
+    const provider = new SdkProvider("#canton-dex-trading-v2");
     await provider.connect();
     await provider.submit(swapIntent);
     const params = sdk.prepareExecuteAndWait.mock.calls[0]![0] as {
@@ -130,13 +194,13 @@ describe("SdkProvider", () => {
     sdk.prepareExecuteAndWait.mockResolvedValue({
       tx: { status: "executed", commandId: "c1", payload: { updateId: "", completionOffset: 1 } },
     });
-    const provider = new SdkProvider("#canton-dex-trading");
+    const provider = new SdkProvider("#canton-dex-trading-v2");
     await provider.connect();
     await expect(provider.submit(swapIntent)).rejects.toThrow(/no updateId/);
   });
 
   it("detects a wallet-side disconnect via connection.isConnected", async () => {
-    const provider = new SdkProvider("#canton-dex-trading");
+    const provider = new SdkProvider("#canton-dex-trading-v2");
     await provider.connect();
     expect(provider.getStatus().kind).toBe("connected");
     // The SDK exposes connection state under StatusEvent.connection.
@@ -145,7 +209,7 @@ describe("SdkProvider", () => {
   });
 
   it("listWallets() surfaces the configured gateway as a Gateway row", async () => {
-    const provider = new SdkProvider("#canton-dex-trading", {
+    const provider = new SdkProvider("#canton-dex-trading-v2", {
       gatewayUrl: "http://gw.example/api/v0/dapp",
       gatewayName: "Example gateway",
     });
@@ -163,7 +227,7 @@ describe("SdkProvider", () => {
   });
 
   it("fails the connect (not silently routes to the gateway) when the picked wallet is gone", async () => {
-    const provider = new SdkProvider("#canton-dex-trading", {
+    const provider = new SdkProvider("#canton-dex-trading-v2", {
       gatewayUrl: "http://gw.example/api/v0/dapp",
     });
     // SDK offers only the gateway, but the user picked an injected wallet that
@@ -176,7 +240,7 @@ describe("SdkProvider", () => {
   });
 
   it("translates the SDK's opaque picker error into a gateway-unreachable message", async () => {
-    const provider = new SdkProvider("#canton-dex-trading", {
+    const provider = new SdkProvider("#canton-dex-trading-v2", {
       gatewayUrl: "http://gw.example/api/v0/dapp",
     });
     // The SDK masks a gateway-side failure as "Wallet picker is not open".
@@ -195,8 +259,115 @@ describe("SdkProvider", () => {
     }
   });
 
+  it("discovers a foreign-registry holding across the interface + template reads", async () => {
+    // The token-standard Holding interface surfaces the Amulet holding (issued
+    // by cc-admin) via its interface view; the DEX Registry.V2 template read
+    // surfaces the USDCx one via createArgument. Both come from
+    // /v2/state/active-contracts at the ledger-end offset, not the /acs shorthand.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    sdk.ledgerApi.mockImplementation(async (params: any) => {
+      if (params.resource === "/v2/state/ledger-end") return { offset: 42 };
+      const cumulative =
+        params.body?.filter?.filtersByParty?.["alice::1220a"]?.cumulative?.[0];
+      const identifierFilter = cumulative?.identifierFilter ?? {};
+      if (identifierFilter.InterfaceFilter) {
+        return {
+          activeContracts: [
+            {
+              contractId: "holding-amulet",
+              interfaceViews: [
+                {
+                  interfaceId:
+                    "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding",
+                  viewValue: {
+                    account: { owner: "alice::1220a", provider: null, id: "" },
+                    instrumentId: { admin: "cc-admin", id: "Amulet" },
+                    amount: "1.0000000000",
+                    lock: null,
+                  },
+                },
+              ],
+            },
+          ],
+        };
+      }
+      return {
+        activeContracts: [
+          {
+            contractId: "holding-usdcx",
+            createArgument: {
+              owner: "alice::1220a",
+              admin: "dex-admin",
+              instrumentId: "USDCx",
+              amount: "12.5000000000",
+              locked: false,
+            },
+          },
+        ],
+      };
+    });
+
+    const provider = new SdkProvider("#canton-dex-trading-v2");
+    await provider.connect();
+    const holdings = await provider.listHoldings("alice::1220a");
+
+    // ledger-end fetched, then one active-contracts read per filter.
+    expect(sdk.ledgerApi).toHaveBeenCalledTimes(3);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const calls = sdk.ledgerApi.mock.calls.map((c) => c[0] as any);
+    expect(calls[0]).toMatchObject({
+      requestMethod: "get",
+      resource: "/v2/state/ledger-end",
+    });
+    const acsCalls = calls.filter((c) => c.resource === "/v2/state/active-contracts");
+    expect(acsCalls).toHaveLength(2);
+    for (const c of acsCalls) {
+      expect(c.requestMethod).toBe("post");
+      expect(c.body.activeAtOffset).toBe(42);
+      expect(Object.keys(c.body.filter.filtersByParty)).toEqual(["alice::1220a"]);
+    }
+    const identifierFilters = acsCalls.map(
+      (c) => c.body.filter.filtersByParty["alice::1220a"].cumulative[0].identifierFilter,
+    );
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.InterfaceFilter?.value?.interfaceId ===
+            "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding" &&
+          f.InterfaceFilter?.value?.includeInterfaceView === true,
+      ),
+    ).toBe(true);
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.TemplateFilter?.value?.templateId ===
+          "#canton-dex-trading-v2:CantonDex.Registry.V2:Holding",
+      ),
+    ).toBe(true);
+    expect(holdings).toEqual([
+      {
+        contractId: "holding-amulet",
+        owner: "alice::1220a",
+        admin: "cc-admin",
+        instrumentId: "Amulet",
+        amount: 1,
+        amountRaw: "1.0000000000",
+        locked: false,
+      },
+      {
+        contractId: "holding-usdcx",
+        owner: "alice::1220a",
+        admin: "dex-admin",
+        instrumentId: "USDCx",
+        amount: 12.5,
+        amountRaw: "12.5000000000",
+        locked: false,
+      },
+    ]);
+  });
+
   it("re-wires event listeners after a reconnect", async () => {
-    const provider = new SdkProvider("#canton-dex-trading");
+    const provider = new SdkProvider("#canton-dex-trading-v2");
     await provider.connect();
     await provider.disconnect();
     await provider.connect();

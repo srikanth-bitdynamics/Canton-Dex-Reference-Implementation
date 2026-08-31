@@ -17,6 +17,7 @@ module CantonDex.Tests.PoolLiquidityRulesTests where
 
 import DA.Assert
 import DA.List (head)
+import DA.Map qualified as Map
 import DA.TextMap qualified as TextMap
 import DA.Time (addRelTime, hours)
 import Daml.Script
@@ -39,6 +40,7 @@ import CantonDex.Lp.Policy qualified as LP
 import CantonDex.Lp.Instrument qualified as Lp
 import CantonDex.Registry.V2 qualified as RegV2
 import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.AdminBatch qualified as AB
 
 -- The pool's LP-token identifier: what a provider receives in return for the
 -- base+quote it deposits.
@@ -80,8 +82,10 @@ setupWithFee feeBps lps = do
       lpInstrumentId = V2.InstrumentId with admin = registry; id = lpId
   -- Seed the pool definition: the BTC/USDC pair, its registrar/admin, and fee.
   poolCid <- submit operator $ createCmd Pool with
-    poolId; operator; lpRegistrar = registry; admin = registry
-    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId
+    poolId; operator; lpRegistrar = registry
+    baseInstrumentId = V2.InstrumentId with admin = registry; id = "BTC"
+    quoteInstrumentId = V2.InstrumentId with admin = registry; id = "USDC"
+    lpInstrumentId
     feeBps
   -- Seed the pool's live state empty: no reserves, no LP supply, not yet funded.
   stateCid <- submit operator $ createCmd PS.PoolState with
@@ -98,6 +102,12 @@ setupWithFee feeBps lps = do
     createCmd Dvp.PoolLiquidityRules with operator; lpRegistrar = registry
   pure Fixture with
     operator; registry; factoryCid; settleCid; poolId; poolCid; stateCid; policyCid; dvpCid
+
+-- One registry administers base, quote, and LP here, so the per-admin
+-- settlement map collapses to a single entry.
+singleAdminBatches : Fixture -> ExtraArgs -> Map.Map Party AB.RegistryBatchInput
+singleAdminBatches fx extraArgs =
+  Map.fromList [(fx.registry, AB.RegistryBatchInput with factoryCid = fx.settleCid; extraArgs)]
 
 -- Mint a Registry.V2 holding directly (Holding is signatory admin+owner).
 mintHolding : Party -> Party -> Text -> Decimal -> Script (ContractId RegV2.Holding)
@@ -209,22 +219,20 @@ settlePreparedAdd fx preparation requestedAt = do
       baseFactoryCid = fx.factoryCid
       quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid
-      lpSettleCid = fx.settleCid
       baseAmount = preparation.baseAmount
       quoteAmount = preparation.quoteAmount
       minLpTokens = preparation.minLpTokens
       knownTotalLpSupply = preparation.knownTotalLpSupply
       requestedAt
-      poolAdminExtraArgs = emptyExtraArgs
-      lpRegistrarExtraArgs = emptyExtraArgs
+      batchesByAdmin = singleAdminBatches fx emptyExtraArgs
       operatorBaseReceiverCid = Some operatorBaseReceiverCid
       operatorQuoteReceiverCid = Some operatorQuoteReceiverCid
       registrarMintCid = Some registrarMintCid
+      allocationContextByAdmin = Map.empty
 
--- Exercise the deployed settle shape without the optional staged-allocation
--- cids. The choice must create those allocations through the original factory
--- fields, preserving callers compiled against the previous package version.
+-- Exercise the settle without the optional staged-allocation cids: the choice
+-- authors those allocations through the factory fields, each with its admin's
+-- context from `batchesByAdmin`.
 settlePreparedAddLegacy
   : Fixture -> Dvp.AddLiquidityPreparationArgs -> Time
   -> Script Dvp.PoolLiquidityRules_SettleAddResult
@@ -244,18 +252,18 @@ settlePreparedAddLegacy fx preparation requestedAt =
       baseFactoryCid = fx.factoryCid
       quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid
-      lpSettleCid = fx.settleCid
       baseAmount = preparation.baseAmount
       quoteAmount = preparation.quoteAmount
       minLpTokens = preparation.minLpTokens
       knownTotalLpSupply = preparation.knownTotalLpSupply
       requestedAt
-      poolAdminExtraArgs = emptyExtraArgs
-      lpRegistrarExtraArgs = emptyExtraArgs
+      batchesByAdmin = singleAdminBatches fx emptyExtraArgs
       operatorBaseReceiverCid = None
       operatorQuoteReceiverCid = None
       registrarMintCid = None
+      -- The in-choice authoring path uses a per-admin allocation-factory context,
+      -- distinct from the settlement context in `batchesByAdmin`.
+      allocationContextByAdmin = Map.fromList [(fx.registry, emptyExtraArgs)]
 
 settlePreparedRemove
   : Fixture -> Dvp.RemoveLiquidityPreparationArgs -> Time
@@ -289,15 +297,11 @@ settlePreparedRemove fx preparation requestedAt = do
       holderBaseReceiptCid = preparation.holderBaseReceiptCid
       holderQuoteReceiptCid = preparation.holderQuoteReceiptCid
       holderBurnSenderCid = preparation.holderBurnSenderCid
-      baseFactoryCid = fx.factoryCid
-      quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid
-      lpSettleCid = fx.settleCid
       requestedAt
-      poolAdminExtraArgs = emptyExtraArgs
-      lpRegistrarExtraArgs = emptyExtraArgs
+      batchesByAdmin = singleAdminBatches fx emptyExtraArgs
       registrarBurnReceiverCid = Some registrarBurnReceiverCid
+      allocationContextByAdmin = Map.empty
 
 settlePreparedRemoveLegacy
   : Fixture -> Dvp.RemoveLiquidityPreparationArgs -> Time
@@ -321,15 +325,13 @@ settlePreparedRemoveLegacy fx preparation requestedAt =
       holderBaseReceiptCid = preparation.holderBaseReceiptCid
       holderQuoteReceiptCid = preparation.holderQuoteReceiptCid
       holderBurnSenderCid = preparation.holderBurnSenderCid
-      baseFactoryCid = fx.factoryCid
-      quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid
-      lpSettleCid = fx.settleCid
       requestedAt
-      poolAdminExtraArgs = emptyExtraArgs
-      lpRegistrarExtraArgs = emptyExtraArgs
+      batchesByAdmin = singleAdminBatches fx emptyExtraArgs
       registrarBurnReceiverCid = None
+      -- Fallback authoring uses a per-admin allocation-factory context, distinct
+      -- from the settlement context in `batchesByAdmin`.
+      allocationContextByAdmin = Map.fromList [(fx.registry, emptyExtraArgs)]
 
 -- Drive a DvP add of `baseAmount` BTC + `quoteAmount` USDC by `lp`,
 -- returning the settle result. Builds the LP's deposit + receipt
@@ -450,6 +452,7 @@ testDvpAddLiquidity = do
     poolId = fx.poolId
     operator = fx.operator
     side = BaseSide
+    instrumentId = baseSlice.instrumentId
     allocationCid = baseSlice.allocationCid
     amount = 0.0
   pure ()
@@ -663,13 +666,11 @@ testSettleRequiresCoControl = do
       holderBaseReceiptCid = preparation.holderBaseReceiptCid
       holderQuoteReceiptCid = preparation.holderQuoteReceiptCid
       holderBurnSenderCid = preparation.holderBurnSenderCid
-      baseFactoryCid = fx.factoryCid
-      quoteFactoryCid = fx.factoryCid
       lpFactoryCid = fx.factoryCid
-      baseQuoteSettleCid = fx.settleCid; lpSettleCid = fx.settleCid
       requestedAt = now
-      poolAdminExtraArgs = emptyExtraArgs; lpRegistrarExtraArgs = emptyExtraArgs
+      batchesByAdmin = singleAdminBatches fx emptyExtraArgs
       registrarBurnReceiverCid = Some (coerceContractId addRes.baseSliceCid)
+      allocationContextByAdmin = Map.empty
   pure ()
 
 -- Multi-slice remove: two adds create two slices per side; a full

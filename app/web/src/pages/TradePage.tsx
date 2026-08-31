@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { SwapCard } from '@/components/SwapCard';
 import { PairGlyph } from '@/primitives/Glyph';
+import { instrumentLabel, instrumentKey } from '@/primitives/assets';
 import { Spark } from '@/primitives/Spark';
 import { fmt, fmtUsd, fmtUsdK } from '@/primitives/format';
 import { ledger } from '@/services/ledger';
@@ -68,12 +69,14 @@ export function TradePage() {
     [tradeablePools, selectedPoolId],
   );
 
+  // Keyed by full {admin, id} identity so two registries' assets sharing a
+  // symbol do not sum into one balance. SwapCard looks up the same key.
   const balances: Record<string, number> = useMemo(() => {
     const out: Record<string, number> = {};
     holdings?.forEach((h) => {
       if (!h.locked) {
-        out[h.instrumentId] =
-          (out[h.instrumentId] ?? 0) + parseFloat(h.amount as unknown as string);
+        const key = instrumentKey({ admin: h.admin, id: h.instrumentId });
+        out[key] = (out[key] ?? 0) + parseFloat(h.amount as unknown as string);
       }
     });
     return out;
@@ -83,10 +86,10 @@ export function TradePage() {
   // BEFORE any early return. activePool may be undefined while pools load;
   // pass empty inputs in that case so the hook count stays stable.
   const pairKey = activePool
-    ? `${activePool.baseInstrumentId}/${activePool.quoteInstrumentId}`
+    ? `${activePool.baseInstrumentId.id}/${activePool.quoteInstrumentId.id}`
     : '';
   const { prices: priceUsd } = useAssetPricesUsd(
-    activePool ? [activePool.baseInstrumentId, activePool.quoteInstrumentId] : [],
+    activePool ? [activePool.baseInstrumentId.id, activePool.quoteInstrumentId.id] : [],
   );
   const { data: priceHistory } = usePriceHistory(pairKey, 24);
 
@@ -108,11 +111,15 @@ export function TradePage() {
   }
 
   const pool = activePool;
+  const baseId = pool.baseInstrumentId.id;
+  const quoteId = pool.quoteInstrumentId.id;
+  const baseLabel = instrumentLabel(baseId);
+  const quoteLabel = instrumentLabel(quoteId);
   const mid = pool.reserves.baseAmount > 0
     ? pool.reserves.quoteAmount / pool.reserves.baseAmount
     : 0;
-  const basePrice = priceUsd[pool.baseInstrumentId];
-  const quotePrice = priceUsd[pool.quoteInstrumentId];
+  const basePrice = priceUsd[baseId];
+  const quotePrice = priceUsd[quoteId];
   const tvl =
     basePrice != null && quotePrice != null
       ? pool.reserves.baseAmount * basePrice +
@@ -120,7 +127,7 @@ export function TradePage() {
       : null;
 
   const recentSwapsForPair = (swaps ?? []).filter(
-    (s) => s.pair === `${pool.baseInstrumentId}/${pool.quoteInstrumentId}`,
+    (s) => s.pair === `${baseId}/${quoteId}`,
   );
 
   return (
@@ -151,7 +158,8 @@ export function TradePage() {
             >
               {tradeablePools.map((p) => (
                 <option key={p.contractId} value={p.contractId}>
-                  {p.baseInstrumentId}/{p.quoteInstrumentId} · {p.status} · #
+                  {instrumentLabel(p.baseInstrumentId.id)}/
+                  {instrumentLabel(p.quoteInstrumentId.id)} · {p.status} · #
                   {p.contractId.slice(0, 6)}
                 </option>
               ))}
@@ -180,13 +188,13 @@ export function TradePage() {
           <div className="row" style={{ gap: 12 }}>
             <div className="row" style={{ gap: 10 }}>
               <PairGlyph
-                base={pool.baseInstrumentId}
-                quote={pool.quoteInstrumentId}
+                base={baseId}
+                quote={quoteId}
                 size={28}
               />
               <div>
                 <div style={{ fontSize: 16, fontWeight: 600 }}>
-                  {pool.baseInstrumentId} / {pool.quoteInstrumentId}
+                  {baseLabel} / {quoteLabel}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
                   Pool · Fee {(pool.feeBps / 100).toFixed(2)}%
@@ -229,8 +237,8 @@ export function TradePage() {
               <div className="stat-l">Pool TVL</div>
               <div className="stat-v">{tvl != null ? fmtUsdK(tvl) : '—'}</div>
               <div className="stat-d">
-                {fmt(pool.reserves.baseAmount, 4)} {pool.baseInstrumentId} ·{' '}
-                {fmt(pool.reserves.quoteAmount, 0)} {pool.quoteInstrumentId}
+                {fmt(pool.reserves.baseAmount, 4)} {baseLabel} ·{' '}
+                {fmt(pool.reserves.quoteAmount, 0)} {quoteLabel}
               </div>
             </div>
             <div className="stat">
@@ -248,7 +256,7 @@ export function TradePage() {
           <div className="card">
             <div className="card-head">
               <h3 className="card-title">
-                Recent swaps · {pool.baseInstrumentId}/{pool.quoteInstrumentId}
+                Recent swaps · {baseLabel}/{quoteLabel}
               </h3>
               <span className="card-sub">From the indexer</span>
             </div>
@@ -279,10 +287,10 @@ export function TradePage() {
                 </EmptyState>
               )}
               {recentSwapsForPair.map((s, i) => {
-                const inIsBase = s.inputInstrumentId === pool.baseInstrumentId;
+                const inIsBase = s.inputInstrumentId === baseId;
                 const dir = inIsBase
-                  ? `${pool.baseInstrumentId}→${pool.quoteInstrumentId}`
-                  : `${pool.quoteInstrumentId}→${pool.baseInstrumentId}`;
+                  ? `${baseLabel}→${quoteLabel}`
+                  : `${quoteLabel}→${baseLabel}`;
                 const paid = Number(s.inputAmount);
                 const received = Number(s.outputAmount);
                 const rate =
@@ -320,7 +328,7 @@ export function TradePage() {
                       className="mono num"
                       style={{ textAlign: 'right' }}
                     >
-                      {fmt(paid, 4)} {s.inputInstrumentId}
+                      {fmt(paid, 4)} {instrumentLabel(s.inputInstrumentId)}
                     </span>
                     <span
                       className="mono num"

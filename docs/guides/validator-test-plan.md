@@ -104,7 +104,7 @@ Expected:
 Follow [Run on a Testnet](run-on-testnet.md) for build, upload, party, and
 registry bootstrap. Then capture independent evidence:
 
-- [ ] `canton-dex-trading` resolves to the expected package id.
+- [ ] `canton-dex-trading-v2` resolves to the expected package id.
 - [ ] The Token Standard V2 allocation request/instruction packages required by
       the live probes resolve to the expected ids.
 - [ ] Operator, admin, LP registrar, test traders, LP, swapper, and dealers are

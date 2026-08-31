@@ -10,27 +10,45 @@
 
 import type { Db } from "./db.js";
 import type { LedgerSubmitter } from "../ledger/index.js";
-import type { Party } from "../types.js";
+import type { InstrumentId, Party } from "../types.js";
 import * as dec from "../pool/decimal.js";
+
+// Display label (text ids) vs identity key (admins folded in). Text symbols are
+// display only; two instruments can share an id under different admins.
+function pairLabel(base: InstrumentId, quote: InstrumentId): string {
+  return `${base.id}/${quote.id}`;
+}
+function pairIdentityKey(base: InstrumentId, quote: InstrumentId): string {
+  return `${base.admin}:${base.id}/${quote.admin}:${quote.id}`;
+}
 
 type LedgerQuery = Pick<LedgerSubmitter, "query">;
 
 const MATCHED_TRADE = "CantonDex.Dex.MatchedTrade:MatchedTrade";
 const SETTLED_TRADE = "CantonDex.Dex.MatchedTrade:SettledTrade";
 
+// A V2 transfer leg, as the ACS serves it. `sender`/`receiver` owners are
+// `Optional Party`, so either a party string or null.
 interface TransferLegRow {
   transferLegId: string;
-  sender: { owner: Party };
-  receiver: { owner: Party };
+  sender: { owner: Party | null };
+  receiver: { owner: Party | null };
   amount: string;
   instrumentId: string;
+}
+
+// Both trade templates now carry admin-tagged legs (`TradeLeg`): the instrument
+// admin travels alongside each `V2.TransferLeg`, whose own `instrumentId` is
+// only the text id.
+interface TradeLegRow {
+  admin: Party;
+  leg: TransferLegRow;
 }
 
 interface MatchedTradeContract {
   contractId: string;
   venue: Party;
-  admin: Party;
-  transferLegs?: TransferLegRow[];
+  tradeLegs?: TradeLegRow[];
   settlementDeadline?: string | null;
   policyReceipt?: {
     policyVersion: string;
@@ -50,10 +68,9 @@ interface MatchedTradeContract {
 interface SettledTradeContract {
   contractId: string;
   operator: Party;
-  admin: Party;
   matchId: string;
   settledAt: string;
-  transferLegs?: TransferLegRow[];
+  tradeLegs?: TradeLegRow[];
 }
 
 type TradeRow = MatchedTradeContract & { templateId: string };
@@ -62,8 +79,7 @@ function settledAsTrade(s: SettledTradeContract): TradeRow {
   return {
     contractId: s.contractId,
     venue: s.operator,
-    admin: s.admin,
-    transferLegs: s.transferLegs,
+    tradeLegs: s.tradeLegs,
     settlementDeadline: null,
     policyReceipt: null,
     templateId: SETTLED_TRADE,
@@ -75,8 +91,8 @@ function settledAsTrade(s: SettledTradeContract): TradeRow {
 interface PoolConfigRow {
   contractId: string;
   poolId: string;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
 }
 interface PoolStateRow {
   contractId: string;
@@ -87,8 +103,8 @@ interface PoolStateRow {
 }
 interface PoolContract {
   contractId: string;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   status: string;
   reserves: { baseAmount: string; quoteAmount: string };
   totalLpSupply: string;
@@ -98,7 +114,8 @@ interface RfqContract {
   contractId: string;
   trader: Party;
   rfqId: string;
-  pair: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   expiresAt: string;
   createdAt: string;
 }
@@ -169,10 +186,10 @@ export class Indexer {
     );
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO trades
-       (tradeCid, ts, pair, trader, dealer, counterparty, policyVersion,
-        acceptedRank, consideredCount, payload)
-       VALUES (@tradeCid, @ts, @pair, @trader, @dealer, @counterparty,
-        @policyVersion, @acceptedRank, @consideredCount, @payload)`,
+       (tradeCid, ts, pair, baseAdmin, quoteAdmin, trader, dealer, counterparty,
+        policyVersion, acceptedRank, consideredCount, payload)
+       VALUES (@tradeCid, @ts, @pair, @baseAdmin, @quoteAdmin, @trader, @dealer,
+        @counterparty, @policyVersion, @acceptedRank, @consideredCount, @payload)`,
     );
     const event = this.db.prepare(
       `INSERT INTO events (ts, kind, templateId, contractId, party, payload)
@@ -181,7 +198,11 @@ export class Indexer {
     const tx = this.db.transaction((rows: TradeRow[]) => {
       for (const t of rows) {
         if (known.has(t.contractId)) continue;
-        const legs = t.transferLegs ?? [];
+        // Unwrap the admin-tagged legs to the underlying transfer legs, kept in
+        // economic order (base first). The admin lives on the wrapper; the pair
+        // label and parties come from each leg.
+        const tradeLegs = t.tradeLegs ?? [];
+        const legs = tradeLegs.map((tl) => tl.leg);
         // The trader does not follow leg direction: legs[0]'s sender flips
         // with the side, so reading both parties off it inverted every buy.
         // The venue-signed receipt names the dealer; the trader is the other
@@ -204,10 +225,16 @@ export class Indexer {
         const baseSym = legs[0]?.instrumentId ?? "";
         const quoteSym = legs[1]?.instrumentId ?? "";
         const pair = `${baseSym}/${quoteSym}`;
+        // Full identity of each side: the admin travels on the leg wrapper, so a
+        // trade under a same-symbol pair on another registry stays distinct.
+        const baseAdmin = tradeLegs[0]?.admin ?? null;
+        const quoteAdmin = tradeLegs[1]?.admin ?? null;
         insert.run({
           tradeCid: t.contractId,
           ts,
           pair,
+          baseAdmin,
+          quoteAdmin,
           trader,
           dealer,
           counterparty,
@@ -273,8 +300,9 @@ export class Indexer {
     const insertPool = this.db.prepare(
       `INSERT OR IGNORE INTO pool_states
        (poolCid, ts, pairKey, baseInstrumentId, quoteInstrumentId,
-        status, baseReserve, quoteReserve, totalLpSupply, predecessor)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        baseAdmin, quoteAdmin, status, baseReserve, quoteReserve,
+        totalLpSupply, predecessor)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const markArchived = this.db.prepare(
       "UPDATE pool_states SET archived = 1 WHERE poolCid = ?",
@@ -314,7 +342,8 @@ export class Indexer {
 
       for (const p of live) {
         if (known.has(p.contractId)) continue;
-        const pairKey = `${p.baseInstrumentId}/${p.quoteInstrumentId}`;
+        const pairKey = pairIdentityKey(p.baseInstrumentId, p.quoteInstrumentId);
+        const label = pairLabel(p.baseInstrumentId, p.quoteInstrumentId);
         const predecessors = archivedThisTick.filter(
           (a) => a.pairKey === pairKey,
         );
@@ -323,8 +352,10 @@ export class Indexer {
           p.contractId,
           ts,
           pairKey,
-          p.baseInstrumentId,
-          p.quoteInstrumentId,
+          p.baseInstrumentId.id,
+          p.quoteInstrumentId.id,
+          p.baseInstrumentId.admin,
+          p.quoteInstrumentId.admin,
           p.status,
           p.reserves.baseAmount,
           p.reserves.quoteAmount,
@@ -396,7 +427,7 @@ export class Indexer {
             ts,
             predecessor.cid,
             p.contractId,
-            pairKey,
+            label,
             baseDelta,
             quoteDelta,
             price,
@@ -408,7 +439,7 @@ export class Indexer {
             "CantonDex.Dex.PoolState:PoolState",
             p.contractId,
             this.cfg.observingParty,
-            JSON.stringify({ pair: pairKey, baseDelta, quoteDelta, price }),
+            JSON.stringify({ pair: label, baseDelta, quoteDelta, price }),
           );
         }
       }
@@ -440,10 +471,11 @@ export class Indexer {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const tx = this.db.transaction(() => {
-      // Newly seen open RFQs.
+      // Newly seen open RFQs; the stored pair is a display label.
       for (const r of live) {
         if (!seen.find((s) => s.rfqId === r.rfqId)) {
-          insert.run(r.rfqId, ts, "open", r.trader, r.pair, null, null, null);
+          const pair = pairLabel(r.baseInstrumentId, r.quoteInstrumentId);
+          insert.run(r.rfqId, ts, "open", r.trader, pair, null, null, null);
         }
       }
       // RFQs that were open but have vanished — accepted or expired.

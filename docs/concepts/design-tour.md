@@ -69,9 +69,9 @@ for the exact assumptions.
 
 ## Pair and governance state
 
-`DexPair` is the operator-signed listing record. It names one registry admin,
-the base and quote instrument ids, enabled trading modes, and fees. The operator
-creates it directly and controls its update choices. There is no separate
+`DexPair` is the operator-signed listing record. It names the base and quote
+instruments by full `InstrumentId {admin, id}`, enabled trading modes, and fees.
+The operator creates it directly and controls its update choices. There is no separate
 `DexRules` governance contract in this reference.
 
 That is a deliberate single-operator boundary, not decentralized pair admission.
@@ -228,9 +228,8 @@ comments use one of these markers:
 
 The `CantonDex.Instrument.*` module family is a `[COMPAT]` standalone lifecycle sample.
 It is not Token Standard V2 and is not used by active DEX workflows. Active value
-flows use `CantonDex.Registry.V2` or another V2 registry. `Order_Adjust` and
-`Order_RecordPartialFill` are `[RETIRED]`; use
-`OrderMatchExecution_Execute`.
+flows use `CantonDex.Registry.V2` or another V2 registry. Matching and
+partial-fill roll-forward belong to `OrderMatchExecution_Execute`.
 
 ## Choose the next detailed page
 

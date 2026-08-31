@@ -227,17 +227,17 @@ bash scripts/run-local-daml-tests.sh
 ```
 
 The script first builds
-`trading/.daml/dist/canton-dex-trading-0.1.4.dar`, then runs the
+`trading/.daml/dist/canton-dex-trading-v2-1.0.0.dar`, then runs the
 `trading-tests` package. A successful run includes:
 
 ```text
-==> Building canton-dex-trading (deps: vendor/splice/dars/*.dar)
-canton-dex-trading built successfully.
+==> Building canton-dex-trading-v2 (deps: vendor/splice/dars/*.dar)
+canton-dex-trading-v2 built successfully.
 …
 testRealRegistryDvpSwapSettles: ok
 ```
 
-At this revision, the package declares 111 Daml Script tests. Every displayed
+At this revision, the package declares 118 Daml Script tests. Every displayed
 test must end in `ok`, and the command must exit with status 0.
 Workflow-specific mock-registry modules prove choreography without holdings;
 real-holding suites prove value movement inside the Daml engine. The

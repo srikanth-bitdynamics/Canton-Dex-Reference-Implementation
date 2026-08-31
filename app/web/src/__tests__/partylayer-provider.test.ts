@@ -30,32 +30,31 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
     },
     async ledgerApi(params) {
       ledgerApiCalls.push(params);
-      const filter = JSON.parse(params.body ?? "{}") as {
-        interfaceId?: string;
-        templateId?: string;
-      };
-      if (filter.interfaceId) {
+      if (params.resource === "/v2/state/ledger-end") {
+        return { response: JSON.stringify({ offset: 3 }) };
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = JSON.parse(params.body ?? "{}") as any;
+      const identifierFilter =
+        body.filter.filtersByParty["alice::1220a"].cumulative[0].identifierFilter;
+      if (identifierFilter.InterfaceFilter) {
         return {
           response: JSON.stringify({
             activeContracts: [
               {
-                contractId: "holding-cbtc",
-                view: {
-                  account: { owner: "alice::1220a", provider: null, id: "" },
-                  instrumentId: { admin: "cbtc-admin", id: "CBTC" },
-                  amount: "1.0000000000",
-                  lock: null,
-                },
-              },
-              {
-                contractId: "holding-1",
-                createArgument: {
-                  owner: "alice::1220a",
-                  admin: "dex-admin",
-                  instrumentId: "BTC",
-                  amount: "0.3350000000",
-                  locked: false,
-                },
+                contractId: "holding-amulet",
+                interfaceViews: [
+                  {
+                    interfaceId:
+                      "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding",
+                    viewValue: {
+                      account: { owner: "alice::1220a", provider: null, id: "" },
+                      instrumentId: { admin: "cc-admin", id: "Amulet" },
+                      amount: "1.0000000000",
+                      lock: null,
+                    },
+                  },
+                ],
               },
             ],
           }),
@@ -69,7 +68,7 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
               createArgument: {
                 owner: "alice::1220a",
                 admin: "dex-admin",
-                instrumentId: "BTC",
+                instrumentId: "USDCx",
                 amount: "0.3350000000",
                 locked: false,
               },
@@ -101,28 +100,64 @@ function failingClient(error: Error) {
   return { client, disconnectCalls };
 }
 
+const emptyArgs = { context: { values: {} }, meta: { values: {} } };
+const alice = { owner: "alice::1220a", provider: null, id: "" };
+const opAccount = { owner: "op", provider: null, id: "" };
+const swapInLeg: RequestSwapIntent["allocations"][number]["transferLegSides"][number] = {
+  transferLegId: "swap-in", side: "SenderSide", otherside: opAccount, amount: "0.1",
+  instrumentId: "Amulet", meta: { values: {} },
+};
+const swapOutLeg: RequestSwapIntent["allocations"][number]["transferLegSides"][number] = {
+  transferLegId: "swap-out-0", side: "ReceiverSide", otherside: opAccount, amount: "1974.31",
+  instrumentId: "USDCx", meta: { values: {} },
+};
+
+// Single-admin: one combined spec.
 const swapIntent: RequestSwapIntent = {
   kind: "request-swap",
   poolId: "pool-abc",
+  requestCid: "swapReqSINGLE",
   settlement: { executors: ["op"], id: "s", cid: null, meta: { values: {} } },
-  allocationSpec: {
-    admin: "admin",
-    authorizer: { owner: "alice::1220a", provider: null, id: "" },
-    transferLegSides: [],
-    settlementDeadline: null,
-    nextIterationFunding: null,
-    committed: true,
-    meta: { values: {} },
-  },
+  allocations: [
+    {
+      admin: "admin", authorizer: alice, transferLegSides: [swapInLeg, swapOutLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: false, meta: { values: {} },
+    },
+  ],
   requestedAt: "2026-05-19T12:00:00.000Z",
-  factoryCid: "fac",
-  allocationFactoryExtraArgs: { context: { values: {} }, meta: { values: {} } },
+  factoryCids: ["fac"],
+  allocationFactoryExtraArgs: [emptyArgs],
+  allocationRequestExtraArgs: emptyArgs,
+  inputHoldingCids: ["h1"],
+  disclosure: [],
+};
+
+// Cross-admin: swap-in under the input admin, swap-out receipt under the output.
+const crossAdminSwapIntent: RequestSwapIntent = {
+  kind: "request-swap",
+  poolId: "pool-abc",
+  requestCid: "swapReqXADMIN",
+  settlement: { executors: ["op"], id: "s", cid: null, meta: { values: {} } },
+  allocations: [
+    {
+      admin: "cc-admin", authorizer: alice, transferLegSides: [swapInLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: false, meta: { values: {} },
+    },
+    {
+      admin: "usdc-admin", authorizer: alice, transferLegSides: [swapOutLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: false, meta: { values: {} },
+    },
+  ],
+  requestedAt: "2026-05-19T12:00:00.000Z",
+  factoryCids: ["ccFactory", "usdcFactory"],
+  allocationFactoryExtraArgs: [emptyArgs, emptyArgs],
+  allocationRequestExtraArgs: emptyArgs,
   inputHoldingCids: ["h1"],
   disclosure: [],
 };
 
 describe("PartyLayerProvider", () => {
-  const ctx = () => new PartyLayerProvider("#canton-dex-trading", async () => fake.client);
+  const ctx = () => new PartyLayerProvider("#canton-dex-trading-v2", async () => fake.client);
   let fake: ReturnType<typeof fakeClient>;
 
   it("connects and exposes the wallet party", async () => {
@@ -140,14 +175,14 @@ describe("PartyLayerProvider", () => {
 
   it("allows the connect timeout to be overridden", async () => {
     fake = fakeClient({ updateId: "u-1" });
-    const p = new PartyLayerProvider("#canton-dex-trading", async () => fake.client, 240_000);
+    const p = new PartyLayerProvider("#canton-dex-trading-v2", async () => fake.client, 240_000);
     await p.connect();
     expect(fake.connectCalls[0]).toMatchObject({ timeoutMs: 240_000 });
   });
 
   it("disconnects the SDK client after a failed connect attempt", async () => {
     const f = failingClient(new Error("connect timed out"));
-    const p = new PartyLayerProvider("#canton-dex-trading", async () => f.client);
+    const p = new PartyLayerProvider("#canton-dex-trading-v2", async () => f.client);
     await expect(p.connect()).rejects.toThrow(/connect timed out/);
     expect(f.disconnectCalls).toHaveLength(1);
     expect(p.getStatus()).toMatchObject({
@@ -166,15 +201,38 @@ describe("PartyLayerProvider", () => {
     // updateId-only by design — the operator recovers the created cids from the
     // updateId for all DvP flows (LP add/remove, swap, order funding).
     expect(res.createdAllocationCids).toBeUndefined();
-    // The composed command tree was handed to the wallet to sign.
+    // The composed command tree was handed to the wallet to sign: one
+    // BatchingUtilityV2 command that accepts the request and authors the spec.
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0].signedTx.actAs).toEqual(["alice::1220a"]);
-    expect(fake.calls[0].signedTx.commandId).toMatch(/^swap-pool-abc-/);
+    expect(fake.calls[0].signedTx.commandId).toMatch(/^swap-batch-/);
     expect(fake.calls[0].signedTx.commands).toHaveLength(1);
     expect(fake.calls[0].signedTx.commands[0]).toHaveProperty(
-      "ExerciseCommand.choiceArgument.requestedAt",
-      swapIntent.requestedAt,
+      "CreateAndExerciseCommand.choice",
+      "BatchingUtility_ExecuteBatch",
     );
+  });
+
+  it("submits a cross-admin (2-allocation) swap batch as one updateId-only command", async () => {
+    fake = fakeClient({ updateId: "update-xyz" });
+    const p = ctx();
+    await p.connect();
+    const res = await p.submit(crossAdminSwapIntent);
+    expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
+    // No single-allocation assumption: the provider forwards the batch and the
+    // operator recovers BOTH created cids from the updateId.
+    expect(res.createdAllocationCids).toBeUndefined();
+    expect(fake.calls).toHaveLength(1);
+    const cmd = (fake.calls[0].signedTx.commands[0] as {
+      CreateAndExerciseCommand: { choice: string; choiceArgument: { actions: { tag: string }[] } };
+    }).CreateAndExerciseCommand;
+    expect(cmd.choice).toBe("BatchingUtility_ExecuteBatch");
+    // Accept the request, then one allocate per admin (two here).
+    expect(cmd.choiceArgument.actions.map((a) => a.tag)).toEqual([
+      "TSA_AllocationRequest_AcceptV2",
+      "TSA_AllocationFactory_AllocateV2",
+      "TSA_AllocationFactory_AllocateV2",
+    ]);
   });
 
   it("rejects submit when the wallet receipt has no updateId", async () => {
@@ -197,23 +255,46 @@ describe("PartyLayerProvider", () => {
 
     const holdings = await p.listHoldings("alice::1220a");
 
-    expect(fake.ledgerApiCalls).toHaveLength(2);
+    // ledger-end fetched at GET, then one active-contracts read per filter.
+    expect(fake.ledgerApiCalls).toHaveLength(3);
     expect(fake.ledgerApiCalls[0]).toMatchObject({
-      requestMethod: "POST",
-      resource: "/v2/state/acs",
+      requestMethod: "GET",
+      resource: "/v2/state/ledger-end",
     });
-    expect(JSON.parse(fake.ledgerApiCalls[0].body ?? "{}")).toEqual({
-      interfaceId: "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding",
-    });
-    expect(JSON.parse(fake.ledgerApiCalls[1].body ?? "{}")).toEqual({
-      templateId: "#canton-dex-trading:CantonDex.Registry.V2:Holding",
-    });
+    const acsCalls = fake.ledgerApiCalls.filter(
+      (c) => c.resource === "/v2/state/active-contracts",
+    );
+    expect(acsCalls).toHaveLength(2);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const acsBodies = acsCalls.map((c) => JSON.parse(c.body ?? "{}") as any);
+    for (let i = 0; i < acsCalls.length; i++) {
+      expect(acsCalls[i]!.requestMethod).toBe("POST");
+      expect(acsBodies[i].activeAtOffset).toBe(3);
+      expect(Object.keys(acsBodies[i].filter.filtersByParty)).toEqual(["alice::1220a"]);
+    }
+    const identifierFilters = acsBodies.map(
+      (b) => b.filter.filtersByParty["alice::1220a"].cumulative[0].identifierFilter,
+    );
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.InterfaceFilter?.value?.interfaceId ===
+          "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding",
+      ),
+    ).toBe(true);
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.TemplateFilter?.value?.templateId ===
+          "#canton-dex-trading-v2:CantonDex.Registry.V2:Holding",
+      ),
+    ).toBe(true);
     expect(holdings).toEqual([
       {
-        contractId: "holding-cbtc",
+        contractId: "holding-amulet",
         owner: "alice::1220a",
-        admin: "cbtc-admin",
-        instrumentId: "CBTC",
+        admin: "cc-admin",
+        instrumentId: "Amulet",
         amount: 1,
         amountRaw: "1.0000000000",
         locked: false,
@@ -222,7 +303,7 @@ describe("PartyLayerProvider", () => {
         contractId: "holding-1",
         owner: "alice::1220a",
         admin: "dex-admin",
-        instrumentId: "BTC",
+        instrumentId: "USDCx",
         amount: 0.335,
         amountRaw: "0.3350000000",
         locked: false,
@@ -241,7 +322,7 @@ describe("PartyLayerProvider", () => {
                   contractId: "holding-view-1",
                   view: {
                     account: { owner: "alice::1220a", provider: null, id: "" },
-                    instrumentId: { admin: "dex-admin", id: "USDC" },
+                    instrumentId: { admin: "dex-admin", id: "USDCx" },
                     amount: "125.2500000000",
                     lock: null,
                   },
@@ -254,7 +335,7 @@ describe("PartyLayerProvider", () => {
             createArgument: {
               owner: "bob::1220b",
               admin: "dex-admin",
-              instrumentId: "BTC",
+              instrumentId: "USDCx",
               amount: "1.0000000000",
               locked: false,
             },
@@ -269,7 +350,7 @@ describe("PartyLayerProvider", () => {
         contractId: "holding-view-1",
         owner: "alice::1220a",
         admin: "dex-admin",
-        instrumentId: "USDC",
+        instrumentId: "USDCx",
         amount: 125.25,
         amountRaw: "125.2500000000",
         locked: false,
@@ -282,12 +363,12 @@ describe("PartyLayerProvider", () => {
       JSON.stringify({
         active_contracts: [
           {
-            contract_id: "holding-snake-cbtc",
+            contract_id: "holding-snake-amulet",
             interface_views: {
               "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding": {
                 view_value: {
                   account: { owner: "alice::1220a", provider: null, id: "" },
-                  instrument_id: { instrument_admin: "cbtc-admin", id: "CBTC" },
+                  instrument_id: { instrument_admin: "cc-admin", id: "Amulet" },
                   amount: "1.0000000000",
                   lock: null,
                 },
@@ -301,10 +382,10 @@ describe("PartyLayerProvider", () => {
 
     expect(holdings).toEqual([
       {
-        contractId: "holding-snake-cbtc",
+        contractId: "holding-snake-amulet",
         owner: "alice::1220a",
-        admin: "cbtc-admin",
-        instrumentId: "CBTC",
+        admin: "cc-admin",
+        instrumentId: "Amulet",
         amount: 1,
         amountRaw: "1.0000000000",
         locked: false,
@@ -353,7 +434,7 @@ describe("PartyLayerProvider", () => {
         ];
       },
     };
-    const p = new PartyLayerProvider("#canton-dex-trading", async () => client);
+    const p = new PartyLayerProvider("#canton-dex-trading-v2", async () => client);
     const wallets = await p.listWallets();
     expect(wallets).toEqual([
       {

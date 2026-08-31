@@ -1,8 +1,8 @@
 -- | Liquidity add/remove at the pool boundary.
 --
 -- The pool stays operator-custodied between operations. Add/remove settle
--- as DvP: base and quote under `pool.admin`, LP mint/burn under
--- `pool.lpRegistrar`.
+-- as DvP: base and quote each under their instrument's admin, LP mint/burn
+-- under `pool.lpRegistrar`.
 --
 -- Design guide: `docs/concepts/design-tour.md#liquidity-and-pool-custody`.
 module CantonDex.Dex.PoolLiquidityRules where
@@ -10,6 +10,7 @@ module CantonDex.Dex.PoolLiquidityRules where
 import DA.Assert (assertWithinDeadline)
 import DA.Foldable (forA_)
 import DA.List (dedup)
+import DA.Map qualified as Map
 import DA.TextMap qualified as TextMap
 
 import Splice.Api.Token.AllocationV2 qualified as V2
@@ -26,6 +27,7 @@ import CantonDex.Lp.Policy qualified as LP
 import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
 import CantonDex.Lp.Instrument qualified as Lp
 import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.AdminBatch qualified as AB
 
 data PoolLiquidityRules_SettleAddResult = PoolLiquidityRules_SettleAddResult with
     poolStateCid : ContractId PS.PoolState
@@ -187,11 +189,11 @@ addLiquiditySpecs
 addLiquiditySpecs pool operator recipient baseAmount quoteAmount lpAmount =
   let lpAcct = Utils.basicAccount recipient
       opAcct = Utils.basicAccount operator
-      baseLeg = dvpLeg "lp-base-deposit" lpAcct opAcct baseAmount pool.baseInstrumentId
-      quoteLeg = dvpLeg "lp-quote-deposit" lpAcct opAcct quoteAmount pool.quoteInstrumentId
+      baseLeg = dvpLeg "lp-base-deposit" lpAcct opAcct baseAmount pool.baseInstrumentId.id
+      quoteLeg = dvpLeg "lp-quote-deposit" lpAcct opAcct quoteAmount pool.quoteInstrumentId.id
       mintLeg = Lp.lpMintLeg lpAcct pool.lpInstrumentId.id lpAmount
-  in [ depositSpec pool.admin lpAcct baseLeg
-     , depositSpec pool.admin lpAcct quoteLeg
+  in [ depositSpec pool.baseInstrumentId.admin lpAcct baseLeg
+     , depositSpec pool.quoteInstrumentId.admin lpAcct quoteLeg
      , Lp.mintReceiptSpec pool.lpRegistrar lpAcct mintLeg ]
 
 -- The three remove specs the holder authors.
@@ -203,11 +205,11 @@ removeLiquiditySpecs pool operator holder baseOuts quoteOuts lpBurnAmount =
       outLegs prefix instrumentId amounts =
         [ dvpLeg (prefix <> show (i : Int)) opAcct holderAcct amt instrumentId
         | (i, amt) <- zip [0 .. length amounts - 1] amounts ]
-      baseLegs = outLegs "lp-base-out-" pool.baseInstrumentId baseOuts
-      quoteLegs = outLegs "lp-quote-out-" pool.quoteInstrumentId quoteOuts
+      baseLegs = outLegs "lp-base-out-" pool.baseInstrumentId.id baseOuts
+      quoteLegs = outLegs "lp-quote-out-" pool.quoteInstrumentId.id quoteOuts
       burnLeg = Lp.lpBurnLeg holderAcct pool.lpInstrumentId.id lpBurnAmount
-  in [ dvpSpec pool.admin holderAcct baseLegs False
-     , dvpSpec pool.admin holderAcct quoteLegs False
+  in [ dvpSpec pool.baseInstrumentId.admin holderAcct baseLegs False
+     , dvpSpec pool.quoteInstrumentId.admin holderAcct quoteLegs False
      , dvpSpec pool.lpRegistrar holderAcct [burnLeg] True ]
 
 data AddLiquidityAllocationPlan = AddLiquidityAllocationPlan with
@@ -216,18 +218,8 @@ data AddLiquidityAllocationPlan = AddLiquidityAllocationPlan with
     lpMintSender : V2.AllocationFactory_Allocate
   deriving (Eq, Show)
 
-data AddLiquiditySettlementPlan = AddLiquiditySettlementPlan with
-    baseQuoteBatch : V2.SettlementFactory_SettleBatch
-    lpBatch : V2.SettlementFactory_SettleBatch
-  deriving (Eq, Show)
-
 data RemoveLiquidityAllocationPlan = RemoveLiquidityAllocationPlan with
     lpBurnReceiver : V2.AllocationFactory_Allocate
-  deriving (Eq, Show)
-
-data RemoveLiquiditySettlementPlan = RemoveLiquiditySettlementPlan with
-    baseQuoteBatch : V2.SettlementFactory_SettleBatch
-    lpBatch : V2.SettlementFactory_SettleBatch
   deriving (Eq, Show)
 
 data PreparedAddLiquidity = PreparedAddLiquidity with
@@ -310,15 +302,15 @@ prepareAddLiquidity
     (baseUsed > 0.0 && quoteUsed > 0.0)
 
   let baseDepositLeg = dvpLeg
-        "lp-base-deposit" recipientAcct operatorAcct baseAmount pool.baseInstrumentId
+        "lp-base-deposit" recipientAcct operatorAcct baseAmount pool.baseInstrumentId.id
       quoteDepositLeg = dvpLeg
-        "lp-quote-deposit" recipientAcct operatorAcct quoteAmount pool.quoteInstrumentId
+        "lp-quote-deposit" recipientAcct operatorAcct quoteAmount pool.quoteInstrumentId.id
       refundLeg legId instrumentId amount =
         dvpLeg legId operatorAcct recipientAcct amount instrumentId
       baseRefundLegs =
-        [refundLeg "lp-base-refund" pool.baseInstrumentId baseRefund | baseRefund > 0.0]
+        [refundLeg "lp-base-refund" pool.baseInstrumentId.id baseRefund | baseRefund > 0.0]
       quoteRefundLegs =
-        [refundLeg "lp-quote-refund" pool.quoteInstrumentId quoteRefund | quoteRefund > 0.0]
+        [refundLeg "lp-quote-refund" pool.quoteInstrumentId.id quoteRefund | quoteRefund > 0.0]
       lpMintLeg = Lp.lpMintLeg recipientAcct pool.lpInstrumentId.id lpAmount
 
   pure PreparedAddLiquidity with
@@ -341,10 +333,10 @@ mkAddAllocationPlan
 mkAddAllocationPlan operator lpRegistrar requestedAt prepared =
   AddLiquidityAllocationPlan with
     baseReceiver = mkOperatorReceiver
-      operator prepared.addPool.admin prepared.addSettlement
+      operator prepared.addPool.baseInstrumentId.admin prepared.addSettlement
       prepared.addBaseDepositLeg requestedAt Utils.emptyExtraArgs
     quoteReceiver = mkOperatorReceiver
-      operator prepared.addPool.admin prepared.addSettlement
+      operator prepared.addPool.quoteInstrumentId.admin prepared.addSettlement
       prepared.addQuoteDepositLeg requestedAt Utils.emptyExtraArgs
     lpMintSender = V2.AllocationFactory_Allocate with
       settlement = prepared.addSettlement
@@ -354,51 +346,78 @@ mkAddAllocationPlan operator lpRegistrar requestedAt prepared =
       actors = [lpRegistrar]
       extraArgs = Utils.emptyExtraArgs
 
-mkAddSettlementPlan
-  : Party
-  -> PreparedAddLiquidity
+-- Group the add legs and allocations by admin: base deposit/refund under the
+-- base instrument's admin, quote under the quote instrument's admin, LP mint
+-- under the LP registrar. A single-admin pool collapses the base and quote
+-- fragments into one asset batch.
+addSettlementFragments
+  : PreparedAddLiquidity
   -> ContractId V2.Allocation
   -> ContractId V2.Allocation
   -> ContractId V2.Allocation
   -> ContractId V2.Allocation
   -> ContractId V2.Allocation
   -> ContractId V2.Allocation
-  -> ExtraArgs
-  -> ExtraArgs
-  -> AddLiquiditySettlementPlan
-mkAddSettlementPlan
-    operator prepared lpBaseDepositCid lpQuoteDepositCid lpReceiptCid
-    operatorBaseReceiverCid operatorQuoteReceiverCid registrarMintCid
-    poolAdminExtraArgs lpRegistrarExtraArgs =
-  let baseQuoteBatch = V2.SettlementFactory_SettleBatch with
-        settlement = prepared.addSettlement
-        transferLegs =
-          [prepared.addBaseDepositLeg, prepared.addQuoteDepositLeg]
-            ++ prepared.addBaseRefundLegs ++ prepared.addQuoteRefundLegs
+  -> Map.Map Party AB.AdminFragment
+addSettlementFragments
+    prepared lpBaseDepositCid lpQuoteDepositCid lpReceiptCid
+    operatorBaseReceiverCid operatorQuoteReceiverCid registrarMintCid =
+  let pool = prepared.addPool
+      baseFrag = AB.AdminFragment with
+        transferLegs = prepared.addBaseDepositLeg :: prepared.addBaseRefundLegs
         allocations =
           [ Utils.mkFinalizedAllocation lpBaseDepositCid
               (Utils.legsToSides prepared.addRecipientAccount prepared.addBaseRefundLegs) None
-          , Utils.mkFinalizedAllocation lpQuoteDepositCid
-              (Utils.legsToSides prepared.addRecipientAccount prepared.addQuoteRefundLegs) None
           , Utils.mkFinalizedAllocation operatorBaseReceiverCid
               (Utils.legsToSides prepared.addOperatorAccount prepared.addBaseRefundLegs)
-              (Some (TextMap.fromList
-                [(prepared.addPool.baseInstrumentId, prepared.addBaseUsed)]))
+              (Some (TextMap.fromList [(pool.baseInstrumentId.id, prepared.addBaseUsed)]))
+          ]
+      quoteFrag = AB.AdminFragment with
+        transferLegs = prepared.addQuoteDepositLeg :: prepared.addQuoteRefundLegs
+        allocations =
+          [ Utils.mkFinalizedAllocation lpQuoteDepositCid
+              (Utils.legsToSides prepared.addRecipientAccount prepared.addQuoteRefundLegs) None
           , Utils.mkFinalizedAllocation operatorQuoteReceiverCid
               (Utils.legsToSides prepared.addOperatorAccount prepared.addQuoteRefundLegs)
-              (Some (TextMap.fromList
-                [(prepared.addPool.quoteInstrumentId, prepared.addQuoteUsed)]))
+              (Some (TextMap.fromList [(pool.quoteInstrumentId.id, prepared.addQuoteUsed)]))
           ]
-        actors = [operator]
-        extraArgs = poolAdminExtraArgs
-      lpBatch = V2.SettlementFactory_SettleBatch with
-        settlement = prepared.addSettlement
+      lpFrag = AB.AdminFragment with
         transferLegs = [prepared.addLpMintLeg]
         allocations =
           [Utils.finalAllocation registrarMintCid, Utils.finalAllocation lpReceiptCid]
-        actors = [operator]
-        extraArgs = lpRegistrarExtraArgs
-  in AddLiquiditySettlementPlan with baseQuoteBatch; lpBatch
+  in AB.groupByAdmin
+       [ (pool.baseInstrumentId.admin, baseFrag)
+       , (pool.quoteInstrumentId.admin, quoteFrag)
+       , (pool.lpRegistrar, lpFrag)
+       ]
+
+-- The caller's allocation-factory context for one admin, used only on the
+-- in-choice authoring path. It is operation-specific and distinct from the
+-- per-admin settlement context in `batchesByAdmin`; the fallback path aborts
+-- rather than borrow settlement context to create an allocation.
+lookupAllocationContext
+  : Map.Map Party ExtraArgs -> Party -> Update ExtraArgs
+lookupAllocationContext allocationContextByAdmin admin =
+  case Map.lookup admin allocationContextByAdmin of
+    Some ctx -> pure ctx
+    None -> abort
+      ("no allocation-factory context for admin " <> show admin
+        <> "; supply staged allocation cids or a per-admin allocation context")
+
+-- The boundary slice's roll-forward allocation for one side, located by the
+-- boundary slice's own allocation cid under the side's admin. None when the
+-- boundary was fully consumed (leftover 0) or absent, matching the delivery's
+-- decision to roll the boundary forward only when its leftover is positive.
+resolveBoundaryRoll
+  : Map.Map Party AB.AdminFragment
+  -> Map.Map Party V2.SettlementFactory_SettleBatchResult
+  -> Party
+  -> PM.SliceDraw
+  -> Update (Optional (ContractId V2.Allocation))
+resolveBoundaryRoll grouped resultsByAdmin admin draw = case draw.boundary of
+  Some (_, slice, _, leftover) | leftover > 0.0 ->
+    Some <$> AB.requiredNextIteration grouped resultsByAdmin admin slice.allocationCid
+  _ -> pure None
 
 data PreparedRemoveLiquidity = PreparedRemoveLiquidity with
     removePool : Pool
@@ -490,9 +509,9 @@ prepareRemoveLiquidity
       baseDraw = PM.drawFromSlices baseOut baseItems
       quoteDraw = PM.drawFromSlices quoteOut quoteItems
       baseDel = PE.buildSideDelivery
-        "lp-base-out-" operatorAcct holderAcct pool.baseInstrumentId baseDraw
+        "lp-base-out-" operatorAcct holderAcct pool.baseInstrumentId.id baseDraw
       quoteDel = PE.buildSideDelivery
-        "lp-quote-out-" operatorAcct holderAcct pool.quoteInstrumentId quoteDraw
+        "lp-quote-out-" operatorAcct holderAcct pool.quoteInstrumentId.id quoteDraw
 
   pure PreparedRemoveLiquidity with
     removePool = pool
@@ -520,40 +539,42 @@ mkRemoveAllocationPlan lpRegistrar requestedAt prepared =
       actors = [lpRegistrar]
       extraArgs = Utils.emptyExtraArgs
 
-mkRemoveSettlementPlan
-  : Party
-  -> PreparedRemoveLiquidity
+-- Group the remove legs and allocations by admin: base delivery under the base
+-- instrument's admin, quote delivery under the quote instrument's admin, LP
+-- burn under the LP registrar. A single-admin pool collapses base and quote
+-- into one asset batch.
+removeSettlementFragments
+  : PreparedRemoveLiquidity
   -> ContractId V2.Allocation
   -> ContractId V2.Allocation
   -> ContractId V2.Allocation
   -> ContractId V2.Allocation
-  -> ExtraArgs
-  -> ExtraArgs
-  -> RemoveLiquiditySettlementPlan
-mkRemoveSettlementPlan
-    operator prepared holderBaseReceiptCid holderQuoteReceiptCid
-    holderBurnSenderCid registrarBurnReceiverCid
-    poolAdminExtraArgs lpRegistrarExtraArgs =
-  let baseQuoteBatch = V2.SettlementFactory_SettleBatch with
-        settlement = prepared.removeSettlement
-        transferLegs = prepared.removeBaseDelivery.legs ++ prepared.removeQuoteDelivery.legs
+  -> Map.Map Party AB.AdminFragment
+removeSettlementFragments
+    prepared holderBaseReceiptCid holderQuoteReceiptCid
+    holderBurnSenderCid registrarBurnReceiverCid =
+  let pool = prepared.removePool
+      baseFrag = AB.AdminFragment with
+        transferLegs = prepared.removeBaseDelivery.legs
         allocations =
           prepared.removeBaseDelivery.sliceFinalizeds
             ++ [Utils.finalAllocation holderBaseReceiptCid]
-            ++ prepared.removeQuoteDelivery.sliceFinalizeds
+      quoteFrag = AB.AdminFragment with
+        transferLegs = prepared.removeQuoteDelivery.legs
+        allocations =
+          prepared.removeQuoteDelivery.sliceFinalizeds
             ++ [Utils.finalAllocation holderQuoteReceiptCid]
-        actors = [operator]
-        extraArgs = poolAdminExtraArgs
-      lpBatch = V2.SettlementFactory_SettleBatch with
-        settlement = prepared.removeSettlement
+      lpFrag = AB.AdminFragment with
         transferLegs = [prepared.removeBurnLeg]
         allocations =
           [ Utils.finalAllocation holderBurnSenderCid
           , Utils.finalAllocation registrarBurnReceiverCid
           ]
-        actors = [operator]
-        extraArgs = lpRegistrarExtraArgs
-  in RemoveLiquiditySettlementPlan with baseQuoteBatch; lpBatch
+  in AB.groupByAdmin
+       [ (pool.baseInstrumentId.admin, baseFrag)
+       , (pool.quoteInstrumentId.admin, quoteFrag)
+       , (pool.lpRegistrar, lpFrag)
+       ]
 
 data AddLiquidityPreparationArgs = AddLiquidityPreparationArgs with
     expectedPoolId : PoolId
@@ -666,9 +687,10 @@ template PoolLiquidityRules with
         prepared <- prepareAddFrom operator lpRegistrar preparation
         pure $ mkAddAllocationPlan operator lpRegistrar requestedAt prepared
 
-    -- Once those allocations exist, preview the two exact per-admin batches.
+    -- Once those allocations exist, preview the exact per-admin batches so each
+    -- registry can return its own settlement context.
     nonconsuming choice PoolLiquidityRules_PreviewAddSettlement
-      : AddLiquiditySettlementPlan
+      : Map.Map Party V2.SettlementFactory_SettleBatch
       with
         preparation : AddLiquidityPreparationArgs
         operatorBaseReceiverCid : ContractId V2.Allocation
@@ -677,15 +699,17 @@ template PoolLiquidityRules with
       controller operator, lpRegistrar
       do
         prepared <- prepareAddFrom operator lpRegistrar preparation
-        pure $ mkAddSettlementPlan
-          operator prepared preparation.lpBaseDepositCid
-          preparation.lpQuoteDepositCid preparation.lpReceiptCid
-          operatorBaseReceiverCid operatorQuoteReceiverCid registrarMintCid
-          Utils.emptyExtraArgs Utils.emptyExtraArgs
+        let grouped = addSettlementFragments
+              prepared preparation.lpBaseDepositCid
+              preparation.lpQuoteDepositCid preparation.lpReceiptCid
+              operatorBaseReceiverCid operatorQuoteReceiverCid registrarMintCid
+        pure $ AB.previewByAdmin prepared.addSettlement [operator] grouped
 
     -- DvP add: allocation creation is staged only so registries can return
-    -- operation-specific context. Both settlement batches, pool slices,
-    -- reserve accounting, and LP supply update remain one atomic transaction.
+    -- operation-specific context. The per-admin settlement batches, pool
+    -- slices, reserve accounting, and LP supply update remain one atomic
+    -- transaction. A single-admin pool collapses the base and quote batches
+    -- into one; a cross-admin pool settles one batch per instrument admin.
     nonconsuming choice PoolLiquidityRules_SettleAddLiquidity
       : PoolLiquidityRules_SettleAddResult
       with
@@ -702,21 +726,26 @@ template PoolLiquidityRules with
         baseFactoryCid : ContractId V2.AllocationFactory
         quoteFactoryCid : ContractId V2.AllocationFactory
         lpFactoryCid : ContractId V2.AllocationFactory
-        baseQuoteSettleCid : ContractId V2.SettlementFactory
-        lpSettleCid : ContractId V2.SettlementFactory
         baseAmount : Decimal
         quoteAmount : Decimal
         minLpTokens : Decimal
         knownTotalLpSupply : Decimal
         requestedAt : Time
-        poolAdminExtraArgs : ExtraArgs
-        lpRegistrarExtraArgs : ExtraArgs
-        -- Optional tail fields preserve the deployed choice shape. New callers
-        -- stage these allocations after operation-specific registry discovery;
-        -- older callers omit them and use the original factory fields above.
+        batchesByAdmin : Map.Map Party AB.RegistryBatchInput
+          -- ^ Per-admin settlement factory + context, keyed by instrument admin
+          --   (and the LP registrar). The choice derives the expected admins
+          --   from the pool and settles one batch per key.
+        -- Optional staging cids. When present the pre-created operator receiver
+        -- and registrar mint allocations are settled directly; when all absent
+        -- the choice authors them through the factory fields above, using each
+        -- admin's allocation-factory context from `allocationContextByAdmin`.
         operatorBaseReceiverCid : Optional (ContractId V2.Allocation)
         operatorQuoteReceiverCid : Optional (ContractId V2.Allocation)
         registrarMintCid : Optional (ContractId V2.Allocation)
+        allocationContextByAdmin : Map.Map Party ExtraArgs
+          -- ^ Per-admin allocation-factory context for the in-choice authoring
+          --   path, distinct from the settlement context in `batchesByAdmin`.
+          --   Unused (may be empty) when staged allocation cids are supplied.
       controller operator, lpRegistrar
       do
         let preparation = AddLiquidityPreparationArgs with
@@ -726,45 +755,52 @@ template PoolLiquidityRules with
               baseAmount; quoteAmount; minLpTokens; knownTotalLpSupply
         prepared <- prepareAddFrom operator lpRegistrar preparation
         let allocationPlan = mkAddAllocationPlan operator lpRegistrar requestedAt prepared
+            pool = prepared.addPool
+            baseAdmin = pool.baseInstrumentId.admin
+            quoteAdmin = pool.quoteInstrumentId.admin
         (baseReceiverCid, quoteReceiverCid, mintCid) <-
           case (operatorBaseReceiverCid, operatorQuoteReceiverCid, registrarMintCid) of
             (Some b, Some q, Some m) -> pure (b, q, m)
             (None, None, None) -> do
+              baseCtx <- lookupAllocationContext allocationContextByAdmin baseAdmin
+              quoteCtx <- lookupAllocationContext allocationContextByAdmin quoteAdmin
+              lpCtx <- lookupAllocationContext allocationContextByAdmin pool.lpRegistrar
               b <- exercise baseFactoryCid
-                (allocationPlan.baseReceiver with extraArgs = poolAdminExtraArgs)
+                (allocationPlan.baseReceiver with extraArgs = baseCtx)
                 >>= PM.extractCompleted
               q <- exercise quoteFactoryCid
-                (allocationPlan.quoteReceiver with extraArgs = poolAdminExtraArgs)
+                (allocationPlan.quoteReceiver with extraArgs = quoteCtx)
                 >>= PM.extractCompleted
               m <- exercise lpFactoryCid
-                (allocationPlan.lpMintSender with extraArgs = lpRegistrarExtraArgs)
+                (allocationPlan.lpMintSender with extraArgs = lpCtx)
                 >>= PM.extractCompleted
               pure (b, q, m)
             _ -> abort "SettleAddLiquidity: staged allocation cids must be all present or all absent"
-        let pool = prepared.addPool
-            state = prepared.addState
+        let state = prepared.addState
             lpAmount = prepared.addLpAmount
             baseUsed = prepared.addBaseUsed
             quoteUsed = prepared.addQuoteUsed
-            settlementPlan = mkAddSettlementPlan
-              operator prepared preparation.lpBaseDepositCid
+            grouped = addSettlementFragments
+              prepared preparation.lpBaseDepositCid
               preparation.lpQuoteDepositCid preparation.lpReceiptCid
               baseReceiverCid quoteReceiverCid mintCid
-              poolAdminExtraArgs lpRegistrarExtraArgs
 
-        bqResult <- exercise baseQuoteSettleCid settlementPlan.baseQuoteBatch
-        (nextBaseAllocCid, nextQuoteAllocCid) <-
-          case Utils.nextIterationAllocationCids bqResult of
-            [_, _, Some b, Some q] -> pure (b, q)
-            _ -> abort "SettleAddLiquidity: operator receivers must roll forward"
+        resultsByAdmin <-
+          AB.settleByAdmin prepared.addSettlement [operator] grouped batchesByAdmin
+        nextBaseAllocCid <-
+          AB.requiredNextIteration grouped resultsByAdmin baseAdmin baseReceiverCid
+        nextQuoteAllocCid <-
+          AB.requiredNextIteration grouped resultsByAdmin quoteAdmin quoteReceiverCid
 
-        _ <- exercise lpSettleCid settlementPlan.lpBatch
-
+        PM.validateSliceAllocation nextBaseAllocCid pool.baseInstrumentId
+        PM.validateSliceAllocation nextQuoteAllocCid pool.quoteInstrumentId
         baseSliceCid <- create PSlice.PoolSlice with
           poolId = pool.poolId; operator; side = BaseSide
+          instrumentId = pool.baseInstrumentId
           allocationCid = nextBaseAllocCid; amount = baseUsed
         quoteSliceCid <- create PSlice.PoolSlice with
           poolId = pool.poolId; operator; side = QuoteSide
+          instrumentId = pool.quoteInstrumentId
           allocationCid = nextQuoteAllocCid; amount = quoteUsed
 
         newPolicyCid <- exercise preparation.lpPolicyCid
@@ -807,20 +843,23 @@ template PoolLiquidityRules with
         pure $ mkRemoveAllocationPlan lpRegistrar requestedAt prepared
 
     nonconsuming choice PoolLiquidityRules_PreviewRemoveSettlement
-      : RemoveLiquiditySettlementPlan
+      : Map.Map Party V2.SettlementFactory_SettleBatch
       with
         preparation : RemoveLiquidityPreparationArgs
         registrarBurnReceiverCid : ContractId V2.Allocation
       controller operator, lpRegistrar
       do
         prepared <- prepareRemoveFrom operator lpRegistrar preparation
-        pure $ mkRemoveSettlementPlan
-          operator prepared preparation.holderBaseReceiptCid
-          preparation.holderQuoteReceiptCid preparation.holderBurnSenderCid
-          registrarBurnReceiverCid Utils.emptyExtraArgs Utils.emptyExtraArgs
+        let grouped = removeSettlementFragments
+              prepared preparation.holderBaseReceiptCid
+              preparation.holderQuoteReceiptCid preparation.holderBurnSenderCid
+              registrarBurnReceiverCid
+        pure $ AB.previewByAdmin prepared.removeSettlement [operator] grouped
 
-    -- DvP remove: the pre-created registrar burn receiver is combined with
-    -- both per-admin settlement batches in one atomic pool-state transition.
+    -- DvP remove: the pre-created registrar burn receiver is combined with the
+    -- per-admin settlement batches in one atomic pool-state transition. A
+    -- single-admin pool collapses base and quote into one asset batch; a
+    -- cross-admin pool settles one batch per instrument admin.
     nonconsuming choice PoolLiquidityRules_SettleRemoveLiquidity
       : PoolLiquidityRules_SettleRemoveResult
       with
@@ -840,15 +879,16 @@ template PoolLiquidityRules with
         holderBaseReceiptCid : ContractId V2.Allocation
         holderQuoteReceiptCid : ContractId V2.Allocation
         holderBurnSenderCid : ContractId V2.Allocation
-        baseFactoryCid : ContractId V2.AllocationFactory
-        quoteFactoryCid : ContractId V2.AllocationFactory
         lpFactoryCid : ContractId V2.AllocationFactory
-        baseQuoteSettleCid : ContractId V2.SettlementFactory
-        lpSettleCid : ContractId V2.SettlementFactory
         requestedAt : Time
-        poolAdminExtraArgs : ExtraArgs
-        lpRegistrarExtraArgs : ExtraArgs
+        batchesByAdmin : Map.Map Party AB.RegistryBatchInput
+          -- ^ Per-admin settlement factory + context, keyed by instrument admin
+          --   (and the LP registrar).
         registrarBurnReceiverCid : Optional (ContractId V2.Allocation)
+        allocationContextByAdmin : Map.Map Party ExtraArgs
+          -- ^ Per-admin allocation-factory context for the in-choice authoring
+          --   path (the registrar burn receiver), distinct from the settlement
+          --   context in `batchesByAdmin`. Unused when a staged cid is supplied.
       controller operator, lpRegistrar
       do
         let preparation = RemoveLiquidityPreparationArgs with
@@ -858,56 +898,57 @@ template PoolLiquidityRules with
               baseSliceCids; quoteSliceCids
               holderBaseReceiptCid; holderQuoteReceiptCid; holderBurnSenderCid
         prepared <- prepareRemoveFrom operator lpRegistrar preparation
+        let pool = prepared.removePool
+            baseAdmin = pool.baseInstrumentId.admin
+            quoteAdmin = pool.quoteInstrumentId.admin
         burnReceiverCid <- case registrarBurnReceiverCid of
           Some cid -> pure cid
           None -> do
+            lpCtx <- lookupAllocationContext allocationContextByAdmin pool.lpRegistrar
             let allocationPlan = mkRemoveAllocationPlan lpRegistrar requestedAt prepared
             exercise lpFactoryCid
-              (allocationPlan.lpBurnReceiver with extraArgs = lpRegistrarExtraArgs)
+              (allocationPlan.lpBurnReceiver with extraArgs = lpCtx)
               >>= PM.extractCompleted
-        let pool = prepared.removePool
-            state = prepared.removeState
+        let state = prepared.removeState
             baseOut = prepared.removeBaseOut
             quoteOut = prepared.removeQuoteOut
             baseDraw = prepared.removeBaseDraw
             quoteDraw = prepared.removeQuoteDraw
             baseDel = prepared.removeBaseDelivery
             quoteDel = prepared.removeQuoteDelivery
-            settlementPlan = mkRemoveSettlementPlan
-              operator prepared preparation.holderBaseReceiptCid
+            grouped = removeSettlementFragments
+              prepared preparation.holderBaseReceiptCid
               preparation.holderQuoteReceiptCid preparation.holderBurnSenderCid
-              burnReceiverCid poolAdminExtraArgs lpRegistrarExtraArgs
+              burnReceiverCid
 
-        bqResult <- exercise baseQuoteSettleCid settlementPlan.baseQuoteBatch
-        -- Roll-forward (Some) entries are the boundary slices, in order:
-        -- base boundary then quote boundary.
-        let someNexts = [ c | Some c <- Utils.nextIterationAllocationCids bqResult ]
-            baseRolls = case baseDel.boundary of Some (_, lo) -> lo > 0.0; None -> False
-            quoteRolls = case quoteDel.boundary of Some (_, lo) -> lo > 0.0; None -> False
-        (baseRollCid, quoteRollCid) <- case (baseRolls, quoteRolls, someNexts) of
-          (True, True, [b, q]) -> pure (Some b, Some q)
-          (True, False, [b]) -> pure (Some b, None)
-          (False, True, [q]) -> pure (None, Some q)
-          (False, False, []) -> pure (None, None)
-          _ -> abort "remove: unexpected boundary roll-forward count"
-
-        _ <- exercise lpSettleCid settlementPlan.lpBatch
+        resultsByAdmin <-
+          AB.settleByAdmin prepared.removeSettlement [operator] grouped batchesByAdmin
+        -- The boundary slice on each side rolls forward when its leftover is
+        -- positive; find that roll-forward under the side's own admin.
+        baseRollCid <- resolveBoundaryRoll grouped resultsByAdmin baseAdmin baseDraw
+        quoteRollCid <- resolveBoundaryRoll grouped resultsByAdmin quoteAdmin quoteDraw
 
         forA_ (baseDel.drainedSliceCids ++ quoteDel.drainedSliceCids) archive
         -- Re-wrap each boundary slice: archive the old; create a fresh one for
         -- the leftover when >0 (else it drains too).
-        let rewrapBoundary side rollCid mb = case mb of
+        let rewrapBoundary side instrumentId rollCid mb = case mb of
               None -> pure None
               Some (oldCid, leftover) -> do
                 archive oldCid
                 if leftover > 0.0
                   then case rollCid of
-                    Some cid -> Some <$> create PSlice.PoolSlice with
-                      poolId = pool.poolId; operator; side; allocationCid = cid; amount = leftover
+                    Some cid -> do
+                      PM.validateSliceAllocation cid instrumentId
+                      Some <$> create PSlice.PoolSlice with
+                        poolId = pool.poolId; operator; side
+                        instrumentId
+                        allocationCid = cid; amount = leftover
                     None -> abort "remove: boundary must roll forward"
                   else pure None
-        boundaryBaseSliceCid <- rewrapBoundary BaseSide baseRollCid baseDel.boundary
-        boundaryQuoteSliceCid <- rewrapBoundary QuoteSide quoteRollCid quoteDel.boundary
+        boundaryBaseSliceCid <-
+          rewrapBoundary BaseSide pool.baseInstrumentId baseRollCid baseDel.boundary
+        boundaryQuoteSliceCid <-
+          rewrapBoundary QuoteSide pool.quoteInstrumentId quoteRollCid quoteDel.boundary
 
         newPolicyCid <- exercise preparation.lpPolicyCid
           LP.LPTokenPolicy_RecordBurn with amount = preparation.lpTokensToRedeem

@@ -336,7 +336,7 @@ upload. Either:
 
 - Revert the offending change — add removed choices back as deprecated stubs,
   make new fields `Optional`, move new fields to the end of the record.
-- Rename the package (e.g. `canton-dex-trading` → `canton-dex`). All existing
+- Rename the package (e.g. `canton-dex-trading-v2` → `canton-dex`). All existing
   contracts from the old name remain queryable but cannot be upgraded.
 
 See [Upgrade discipline](builder-guide.md#upgrade-discipline) for the lineage

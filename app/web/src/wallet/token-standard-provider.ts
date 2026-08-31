@@ -51,7 +51,7 @@ const SYNCHRONIZER_ID =
     (import.meta.env.VITE_CANTON_SYNCHRONIZER as string | undefined)) ?? "";
 const PACKAGE_PREFIX =
   (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID as string | undefined) ??
-  "#canton-dex-trading";
+  "#canton-dex-trading-v2";
 
 interface PersistedSession {
   party: string;
@@ -210,6 +210,7 @@ export class TokenStandardProvider implements WalletProvider {
       case "merge-holdings":
       case "add-liquidity":
       case "remove-liquidity":
+      case "fund-matched-trade":
         // DvP swap + LP add/remove: compose the allocation command(s), ask the
         // operator backend to submit them, and recover their created cids.
         // The backend's /v1/wallet/submit now follows the transaction
@@ -317,14 +318,13 @@ export class TokenStandardProvider implements WalletProvider {
     const party = this.session!.party;
     const result = await this.submitAndWait(
       [party],
-      `order-${intent.pair.base}-${intent.pair.quote}-${Date.now()}`,
+      `order-${intent.pair.base.id}-${intent.pair.quote.id}-${Date.now()}`,
       {
         CreateCommand: {
           templateId: template("CantonDex.Dex.OrderFundingRequest:OrderFundingRequest"),
           createArguments: {
             trader: party,
             operator: intent.operator,
-            admin: intent.admin,
             baseInstrumentId: intent.pair.base,
             quoteInstrumentId: intent.pair.quote,
             side: intent.side,

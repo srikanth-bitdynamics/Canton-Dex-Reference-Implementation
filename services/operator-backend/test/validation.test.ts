@@ -149,9 +149,10 @@ describe("write-body validation", () => {
 
   it("POST /v1/rfq rejects a non-decimal size → 400", async () => {
     const r = await postJson("/v1/rfq", {
-      trader: "alice",
+      trader: "alice::1220abcdef",
       rfqId: "r1",
-      pair: "BTC/USDC",
+      baseInstrumentId: { admin: "cc::1220abcdef", id: "BTC" },
+      quoteInstrumentId: { admin: "usd::1220abcdef", id: "USDC" },
       side: "RFQ_Buy",
       size: "lots",
       expiresAt: "2099-01-01T00:00:00Z",
@@ -159,6 +160,35 @@ describe("write-body validation", () => {
       createdAt: "2026-01-01T00:00:00Z",
     });
     assert.equal(r.status, 400);
+  });
+
+  it("POST /v1/rfq accepts the base/quote InstrumentId shape (no legacy pair)", async () => {
+    // Valid shape reaches the service and fails at submit (no ledger RFQ),
+    // proving validation accepts base/quote InstrumentId without a `pair`.
+    const r = await postJson("/v1/rfq", {
+      trader: "alice::1220abcdef",
+      rfqId: "r1",
+      baseInstrumentId: { admin: "cc::1220abcdef", id: "BTC" },
+      quoteInstrumentId: { admin: "usd::1220abcdef", id: "USDC" },
+      side: "RFQ_Buy",
+      size: "1.0",
+      expiresAt: "2099-01-01T00:00:00Z",
+      whitelist: [],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    assert.notEqual(r.status, 400);
+  });
+
+  it("POST /v1/rfq/accept accepts the admin-free shape", async () => {
+    // No `admin` field: the trade's admins are derived from the RFQ on-ledger.
+    // Valid shape passes validation and fails downstream, not with a 400.
+    const r = await postJson("/v1/rfq/accept", {
+      rfqCid: "#rfq:0",
+      acceptedQuoteCid: "#quote:0",
+      consideredQuoteCids: ["#quote:0"],
+      now: "2026-01-01T00:00:00Z",
+    });
+    assert.notEqual(r.status, 400);
   });
 
   it("POST /v1/orders/fund rejects an empty cid → 400", async () => {

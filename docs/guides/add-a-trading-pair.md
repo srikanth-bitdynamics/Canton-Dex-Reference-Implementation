@@ -38,9 +38,8 @@ flowchart TB
 
 | Input | Where it comes from |
 |---|---|
-| `baseInstrumentId : Text` | the `id` component of the base asset's V2 `InstrumentId`; full identity is `{ admin, id }` |
-| `quoteInstrumentId : Text` | same, for the quote asset |
-| `admin : Party` | the registry admin for the base + quote instruments |
+| `baseInstrumentId : { admin, id }` | the base asset's full V2 `InstrumentId` |
+| `quoteInstrumentId : { admin, id }` | the quote asset's full `InstrumentId`; its admin may differ from the base's |
 | `tradingMode : "TM_OrderBook" \| "TM_Pool" \| "TM_Both"` | which surfaces are enabled |
 | `feeModel : { makerFeeBps, takerFeeBps, poolFeeBps }` | fee schedule, in basis points |
 | `publicReaders : [Party]` (Optional) | parties that should observe the listing |
@@ -54,9 +53,8 @@ curl -X POST http://localhost:8080/v1/admin/pairs \
   -H "Authorization: Bearer $OPERATOR_ADMIN_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
-    "baseInstrumentId": "ETH",
-    "quoteInstrumentId": "USDT",
-    "admin": "<admin-party>",
+    "baseInstrumentId": { "admin": "<base-admin-party>", "id": "ETH" },
+    "quoteInstrumentId": { "admin": "<quote-admin-party>", "id": "USDT" },
     "tradingMode": "TM_Both",
     "feeModel": {"makerFeeBps": 10, "takerFeeBps": 30, "poolFeeBps": 30},
     "active": true
@@ -70,11 +68,13 @@ which submits one `create` for `CantonDex.Dex.DexPair:DexPair` as the operator:
 ```ts
 this.ledger.submit<ContractId<"DexPair">>({
   actAs: [this.operatorParty],
-  commandId: `pair-create:${input.baseInstrumentId}:${input.quoteInstrumentId}`,
+  commandId: `pair-create:${instrumentTag(input.baseInstrumentId)}:${instrumentTag(input.quoteInstrumentId)}`,
   command: {
     kind: "create",
     templateId: "CantonDex.Dex.DexPair:DexPair",
-    argument: { operator: this.operatorParty, admin: input.admin, /* … */
+    argument: { operator: this.operatorParty,
+      baseInstrumentId: input.baseInstrumentId,
+      quoteInstrumentId: input.quoteInstrumentId, /* … */
       active: input.active ?? true, publicReaders: null, /* … */ },
   },
 });

@@ -9,6 +9,7 @@ module CantonDex.Tests.ChoiceContextWorkflowTests where
 
 import DA.Assert
 import DA.List (head, tail)
+import DA.Map qualified as Map
 import DA.TextMap qualified as TextMap
 
 import Daml.Script
@@ -26,12 +27,15 @@ import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
 import CantonDex.Dex.LiquidityAllocationRequest qualified as LAR
 import CantonDex.Testing.MockRegistry qualified as Mock
+import CantonDex.Trading.AdminBatch qualified as AB
 import CantonDex.Tests.WorkflowTestFixtures
 
 -- Choice-context fixture ------------------------------------------------
 -- The mock factories can require a marker in their choice context. This makes
 -- context forwarding observable without depending on an external registry.
 data ContextPoolFixture = ContextPoolFixture with
+    fixtureAdmin : Party
+    fixtureLpRegistrar : Party
     fixturePoolId : Pool.PoolId
     fixturePoolCid : ContractId Pool.Pool
     fixtureStateCid : ContractId PState.PoolState
@@ -49,8 +53,10 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
   let lpId = V2.InstrumentId with admin = lpRegistrar; id = "BTC-USDC-LP"
       poolId = "BTC-USDC"
   poolCid <- submit operator $ createCmd Pool.Pool with
-    poolId; operator; lpRegistrar; admin
-    baseInstrumentId = "BTC"; quoteInstrumentId = "USDC"; lpInstrumentId = lpId
+    poolId; operator; lpRegistrar
+    baseInstrumentId = V2.InstrumentId with admin; id = "BTC"
+    quoteInstrumentId = V2.InstrumentId with admin; id = "USDC"
+    lpInstrumentId = lpId
     feeBps = 30
   stateCid <- submit operator $ createCmd PState.PoolState with
     poolId; operator; lpRegistrar
@@ -63,6 +69,8 @@ mkPoolFixture operator lpRegistrar admin requireContext = do
     lpRegistrar; operator; lpInstrumentId = lpId
     totalSupply = 0.0; active = True
   pure ContextPoolFixture with
+    fixtureAdmin = admin
+    fixtureLpRegistrar = lpRegistrar
     fixturePoolId = poolId
     fixturePoolCid = poolCid
     fixtureStateCid = stateCid
@@ -128,7 +136,8 @@ testDvpAddRejectsEmptyContext = do
 -- Each registry admin receives its own choice context -------------------
 --
 -- The DvP settle runs two per-admin batches in one transaction:
--- base/quote under pool.admin, LP mint/burn under pool.lpRegistrar. Each
+-- base/quote under their instrument admin, LP mint/burn under
+-- pool.lpRegistrar. Each
 -- batch must carry its own registry choice context. Driven through the
 -- context-requiring MockRegistry, these prove poolAdminExtraArgs and
 -- lpRegistrarExtraArgs are wired to distinct batches: blanking either one
@@ -223,7 +232,13 @@ settleAddCommand
 settleAddCommand fixture preparation requestedAt
     operatorBaseReceiverCid operatorQuoteReceiverCid registrarMintCid
     poolAdminExtraArgs lpRegistrarExtraArgs =
-  exerciseCmd fixture.fixtureLiquidityRulesCid
+  let settleCid = fixture.fixtureSettlementFactoryCid
+      -- base/quote settle under the pool admin; LP mint under the registrar.
+      batchesByAdmin = Map.fromList
+        [ (fixture.fixtureAdmin, AB.RegistryBatchInput settleCid poolAdminExtraArgs)
+        , (fixture.fixtureLpRegistrar, AB.RegistryBatchInput settleCid lpRegistrarExtraArgs)
+        ]
+  in exerciseCmd fixture.fixtureLiquidityRulesCid
     Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = preparation.expectedPoolId
       poolCid = preparation.poolCid
@@ -238,18 +253,16 @@ settleAddCommand fixture preparation requestedAt
       baseFactoryCid = fixture.fixtureAllocationFactoryCid
       quoteFactoryCid = fixture.fixtureAllocationFactoryCid
       lpFactoryCid = fixture.fixtureAllocationFactoryCid
-      baseQuoteSettleCid = fixture.fixtureSettlementFactoryCid
-      lpSettleCid = fixture.fixtureSettlementFactoryCid
       baseAmount = preparation.baseAmount
       quoteAmount = preparation.quoteAmount
       minLpTokens = preparation.minLpTokens
       knownTotalLpSupply = preparation.knownTotalLpSupply
       requestedAt
-      poolAdminExtraArgs
-      lpRegistrarExtraArgs
+      batchesByAdmin
       operatorBaseReceiverCid = Some operatorBaseReceiverCid
       operatorQuoteReceiverCid = Some operatorQuoteReceiverCid
       registrarMintCid = Some registrarMintCid
+      allocationContextByAdmin = Map.empty
 
 -- Both per-admin contexts supplied: the context-requiring base/quote and LP
 -- batches both settle, pool goes Active.
@@ -286,7 +299,7 @@ testDvpSettleThreadsBothAdminContexts = do
   state.status === Pool.PS_Active
 
 -- Blanking poolAdminExtraArgs aborts the base/quote batch (its factory
--- requires context), proving that field feeds the pool.admin batch.
+-- requires context), proving that field feeds the base/quote batch.
 -- | Proves omitting only pool-admin context aborts the pool-admin batch.
 testDvpSettleRequiresPoolAdminContext : Script ()
 testDvpSettleRequiresPoolAdminContext = do

@@ -1,10 +1,12 @@
 // Operator-controlled administrative actions.
 
+import { createHash } from "node:crypto";
+
 import type { ContractId } from "@canton-dex/registry-client";
 
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
-import type { Decimal, Party } from "../types.js";
+import type { Decimal, InstrumentId, Party } from "../types.js";
 
 export type TradingMode = "TM_OrderBook" | "TM_Pool" | "TM_Both";
 
@@ -15,9 +17,8 @@ export interface FeeModel {
 }
 
 export interface CreatePairInput {
-  admin: Party;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   tradingMode: TradingMode;
   feeModel: FeeModel;
   active?: boolean;
@@ -25,11 +26,27 @@ export interface CreatePairInput {
 
 export interface CreatePoolInput {
   lpRegistrar: Party;
-  admin: Party;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   lpInstrumentId: string;
   feeBps: number;
+}
+
+// A stable command suffix for one instrument, admin included.
+function instrumentTag(i: InstrumentId): string {
+  return `${i.id}@${i.admin}`;
+}
+
+// Pool id unique per full (base, quote) identity. Two instruments can share a
+// text id under different admins, so the admins are hashed in: a bare
+// `${base.id}-${quote.id}` would let same-symbol pools from different registries
+// collide on one poolId. The readable ids stay as a prefix for diagnosis.
+function derivePoolId(base: InstrumentId, quote: InstrumentId): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify([base, quote]))
+    .digest("hex")
+    .slice(0, 12);
+  return `${base.id}-${quote.id}-${digest}`;
 }
 
 export class AdminService {
@@ -42,13 +59,12 @@ export class AdminService {
     return retryOnContention(() =>
       this.ledger.submit<ContractId<"DexPair">>({
         actAs: [this.operatorParty],
-        commandId: `pair-create:${input.baseInstrumentId}:${input.quoteInstrumentId}`,
+        commandId: `pair-create:${instrumentTag(input.baseInstrumentId)}:${instrumentTag(input.quoteInstrumentId)}`,
         command: {
           kind: "create",
           templateId: "CantonDex.Dex.DexPair:DexPair",
           argument: {
             operator: this.operatorParty,
-            admin: input.admin,
             baseInstrumentId: input.baseInstrumentId,
             quoteInstrumentId: input.quoteInstrumentId,
             tradingMode: input.tradingMode,
@@ -134,13 +150,13 @@ export class AdminService {
     const zero: Decimal = "0.0";
     // LP instrument identity.
     const lpInstrumentId = { admin: input.lpRegistrar, id: input.lpInstrumentId };
-    const poolId = `${input.baseInstrumentId}-${input.quoteInstrumentId}`;
+    const poolId = derivePoolId(input.baseInstrumentId, input.quoteInstrumentId);
 
     // Create the pool config, initial state, and rules contracts.
     const poolCid = await retryOnContention(() =>
       this.ledger.submit<ContractId<"Pool">>({
         actAs: [this.operatorParty],
-        commandId: `pool-create:${input.baseInstrumentId}:${input.quoteInstrumentId}`,
+        commandId: `pool-create:${poolId}`,
         command: {
           kind: "create",
           templateId: "CantonDex.Dex.Pool:Pool",
@@ -148,7 +164,6 @@ export class AdminService {
             poolId,
             operator: this.operatorParty,
             lpRegistrar: input.lpRegistrar,
-            admin: input.admin,
             baseInstrumentId: input.baseInstrumentId,
             quoteInstrumentId: input.quoteInstrumentId,
             lpInstrumentId,

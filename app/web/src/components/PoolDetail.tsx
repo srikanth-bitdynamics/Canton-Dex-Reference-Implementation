@@ -8,7 +8,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { ASSETS } from '@/primitives/assets';
+import { ASSETS, instrumentLabel } from '@/primitives/assets';
 import { PairGlyph } from '@/primitives/Glyph';
 import { StatusBadge } from '@/primitives/StatusBadge';
 import { Spark } from '@/primitives/Spark';
@@ -32,6 +32,10 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   const party = useCurrentParty();
   const toast = useToast();
   const queryClient = useQueryClient();
+  const baseId = pool.baseInstrumentId.id;
+  const quoteId = pool.quoteInstrumentId.id;
+  const baseLabel = instrumentLabel(baseId);
+  const quoteLabel = instrumentLabel(quoteId);
   const { data: context } = useQuery({
     queryKey: ['context'],
     queryFn: ledger.getContext,
@@ -40,10 +44,10 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   // history from the indexer. All nullable — when no data is available
   // the UI renders "—" rather than a hallucinated delta.
   const { prices: priceUsd } = useAssetPricesUsd([
-    pool.baseInstrumentId,
-    pool.quoteInstrumentId,
+    baseId,
+    quoteId,
   ]);
-  const pairKey = `${pool.baseInstrumentId}/${pool.quoteInstrumentId}`;
+  const pairKey = `${baseId}/${quoteId}`;
   const { data: stats24h } = useStats24h(pairKey);
   const { data: priceHistory } = usePriceHistory(pairKey, 24);
   const refreshOnComplete = () => {
@@ -104,7 +108,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     setBaseAmt(cleaned);
     const num = parseFloat(cleaned);
     if (num > 0) {
-      const decimals = ASSETS[pool.quoteInstrumentId]?.decimals ?? 2;
+      const decimals = ASSETS[quoteId]?.decimals ?? 2;
       setQuoteAmt((num * ratio).toFixed(decimals));
     } else setQuoteAmt('');
   };
@@ -113,7 +117,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     setQuoteAmt(cleaned);
     const num = parseFloat(cleaned);
     if (num > 0) {
-      const decimals = ASSETS[pool.baseInstrumentId]?.decimals ?? 4;
+      const decimals = ASSETS[baseId]?.decimals ?? 4;
       setBaseAmt((num / ratio).toFixed(decimals));
     } else setBaseAmt('');
   };
@@ -133,8 +137,8 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     !!party &&
     !!context &&
     parseFloat(baseAmt) > 0 &&
-    parseFloat(baseAmt) <= balanceOf(pool.baseInstrumentId) &&
-    parseFloat(quoteAmt) <= balanceOf(pool.quoteInstrumentId);
+    parseFloat(baseAmt) <= balanceOf(baseId) &&
+    parseFloat(quoteAmt) <= balanceOf(quoteId);
   const canRemove = !!party && lpHeld > 0;
 
   // Slippage-adjusted minimums applied to the on-chain choice. The pool's
@@ -148,7 +152,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     if (!context) throw new Error('dApp context not loaded yet');
     setLiquidityError(null);
     const toastId = toast.push(
-      `Add liquidity: ${fmt(parseFloat(baseAmt), 4)} ${pool.baseInstrumentId} + ${fmt(parseFloat(quoteAmt), 2)} ${pool.quoteInstrumentId}`,
+      `Add liquidity: ${fmt(parseFloat(baseAmt), 4)} ${baseLabel} + ${fmt(parseFloat(quoteAmt), 2)} ${quoteLabel}`,
       'addLp',
       refreshOnComplete,
     );
@@ -158,8 +162,8 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
         baseAmount: parseFloat(baseAmt),
         quoteAmount: parseFloat(quoteAmt),
         minLpTokens: minLpTokensWithSlippage,
-        baseHoldingCids: coveringHoldingCids(pool.baseInstrumentId, parseFloat(baseAmt)),
-        quoteHoldingCids: coveringHoldingCids(pool.quoteInstrumentId, parseFloat(quoteAmt)),
+        baseHoldingCids: coveringHoldingCids(baseId, parseFloat(baseAmt)),
+        quoteHoldingCids: coveringHoldingCids(quoteId, parseFloat(quoteAmt)),
       });
       // Settle returned — only now mark the lifecycle complete (the card sat on
       // its first step through the wallet approval rather than racing to done).
@@ -178,7 +182,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     if (!context) throw new Error('dApp context not loaded yet');
     setLiquidityError(null);
     const toastId = toast.push(
-      `Remove ${removePct}% LP from ${pool.baseInstrumentId}/${pool.quoteInstrumentId}`,
+      `Remove ${removePct}% LP from ${baseLabel}/${quoteLabel}`,
       'removeLp',
       refreshOnComplete,
     );
@@ -212,13 +216,13 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       <div className="page-header">
         <div className="row">
           <PairGlyph
-            base={pool.baseInstrumentId}
-            quote={pool.quoteInstrumentId}
+            base={baseId}
+            quote={quoteId}
             size={32}
           />
           <div>
             <h1 className="page-title">
-              {pool.baseInstrumentId} / {pool.quoteInstrumentId}
+              {baseLabel} / {quoteLabel}
             </h1>
             <p className="page-sub">
               Constant-product pool · Fee {(pool.feeBps / 100).toFixed(2)}% ·{' '}
@@ -234,14 +238,14 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
           <div className="stat-v">
             {fmtUsdK(
               pool.reserves.baseAmount *
-                (priceUsd[pool.baseInstrumentId] ?? 0) +
+                (priceUsd[baseId] ?? 0) +
                 pool.reserves.quoteAmount *
-                  (priceUsd[pool.quoteInstrumentId] ?? 0),
+                  (priceUsd[quoteId] ?? 0),
             )}
           </div>
           <div className="stat-d">
-            {fmt(pool.reserves.baseAmount, 4)} {pool.baseInstrumentId} ·{' '}
-            {fmt(pool.reserves.quoteAmount, 0)} {pool.quoteInstrumentId}
+            {fmt(pool.reserves.baseAmount, 4)} {baseLabel} ·{' '}
+            {fmt(pool.reserves.quoteAmount, 0)} {quoteLabel}
           </div>
         </div>
         <div className="stat">
@@ -295,13 +299,13 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
             <div className="card-body">
               <div className="field">
                 <div className="field-label">
-                  <span>{pool.baseInstrumentId}</span>
+                  <span>{baseLabel}</span>
                   <span style={{ color: 'var(--text-2)' }}>
                     Balance:{' '}
                     <span className="num">
                       {fmt(
-                        balanceOf(pool.baseInstrumentId),
-                        ASSETS[pool.baseInstrumentId]?.decimals ?? 4,
+                        balanceOf(baseId),
+                        ASSETS[baseId]?.decimals ?? 4,
                       )}
                     </span>
                   </span>
@@ -317,13 +321,13 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
               <div className="sp-8" />
               <div className="field">
                 <div className="field-label">
-                  <span>{pool.quoteInstrumentId}</span>
+                  <span>{quoteLabel}</span>
                   <span style={{ color: 'var(--text-2)' }}>
                     Balance:{' '}
                     <span className="num">
                       {fmt(
-                        balanceOf(pool.quoteInstrumentId),
-                        ASSETS[pool.quoteInstrumentId]?.decimals ?? 2,
+                        balanceOf(quoteId),
+                        ASSETS[quoteId]?.decimals ?? 2,
                       )}
                     </span>
                   </span>
@@ -351,9 +355,9 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                     <div className="kv">
                       <span className="k">Pool ratio</span>
                       <span className="v">
-                        1 {pool.baseInstrumentId} ={' '}
+                        1 {baseLabel} ={' '}
                         <span className="num">{fmt(ratio, 2)}</span>{' '}
-                        {pool.quoteInstrumentId}
+                        {quoteLabel}
                       </span>
                     </div>
                     <div className="kv">
@@ -370,7 +374,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                       <span className="k">LP tokens to mint</span>
                       <span className="v">
                         <span className="num">{fmt(newLpTokens, 4)}</span>{' '}
-                        {pool.baseInstrumentId}/{pool.quoteInstrumentId} LP
+                        {baseLabel}/{quoteLabel} LP
                       </span>
                     </div>
                     <div className="kv">
@@ -477,23 +481,23 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                 </div>
                 <div className="sp-12" />
                 <div className="kv">
-                  <span className="k">Underlying {pool.baseInstrumentId}</span>
+                  <span className="k">Underlying {baseLabel}</span>
                   <span className="v">
                     <span className="num">
                       {fmt(
                         userBaseValue,
-                        ASSETS[pool.baseInstrumentId]?.decimals ?? 4,
+                        ASSETS[baseId]?.decimals ?? 4,
                       )}
                     </span>
                   </span>
                 </div>
                 <div className="kv">
-                  <span className="k">Underlying {pool.quoteInstrumentId}</span>
+                  <span className="k">Underlying {quoteLabel}</span>
                   <span className="v">
                     <span className="num">
                       {fmt(
                         userQuoteValue,
-                        ASSETS[pool.quoteInstrumentId]?.decimals ?? 2,
+                        ASSETS[quoteId]?.decimals ?? 2,
                       )}
                     </span>
                   </span>
@@ -501,13 +505,13 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                 <div className="kv">
                   <span className="k">Position value</span>
                   <span className="v">
-                    {priceUsd[pool.baseInstrumentId] != null &&
-                    priceUsd[pool.quoteInstrumentId] != null
+                    {priceUsd[baseId] != null &&
+                    priceUsd[quoteId] != null
                       ? fmtUsd(
                           userBaseValue *
-                            (priceUsd[pool.baseInstrumentId] as number) +
+                            (priceUsd[baseId] as number) +
                             userQuoteValue *
-                              (priceUsd[pool.quoteInstrumentId] as number),
+                              (priceUsd[quoteId] as number),
                         )
                       : '—'}
                   </span>
@@ -546,23 +550,23 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                   }}
                 >
                   <div className="kv">
-                    <span className="k">Receive {pool.baseInstrumentId}</span>
+                    <span className="k">Receive {baseLabel}</span>
                     <span className="v">
                       <span className="num">
                         {fmt(
                           removeBase,
-                          ASSETS[pool.baseInstrumentId]?.decimals ?? 4,
+                          ASSETS[baseId]?.decimals ?? 4,
                         )}
                       </span>
                     </span>
                   </div>
                   <div className="kv">
-                    <span className="k">Receive {pool.quoteInstrumentId}</span>
+                    <span className="k">Receive {quoteLabel}</span>
                     <span className="v">
                       <span className="num">
                         {fmt(
                           removeQuote,
-                          ASSETS[pool.quoteInstrumentId]?.decimals ?? 2,
+                          ASSETS[quoteId]?.decimals ?? 2,
                         )}
                       </span>
                     </span>
@@ -570,8 +574,8 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                   <div className="kv" style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 6, marginTop: 6 }}>
                     <span className="k">Min received ({lpSlippagePct}%)</span>
                     <span className="v" style={{ fontSize: 11, color: 'var(--text-2)' }}>
-                      <span className="num">{fmt(minBaseOutWithSlippage, ASSETS[pool.baseInstrumentId]?.decimals ?? 4)}</span> {pool.baseInstrumentId}{' '}/{' '}
-                      <span className="num">{fmt(minQuoteOutWithSlippage, ASSETS[pool.quoteInstrumentId]?.decimals ?? 2)}</span> {pool.quoteInstrumentId}
+                      <span className="num">{fmt(minBaseOutWithSlippage, ASSETS[baseId]?.decimals ?? 4)}</span> {baseLabel}{' '}/{' '}
+                      <span className="num">{fmt(minQuoteOutWithSlippage, ASSETS[quoteId]?.decimals ?? 2)}</span> {quoteLabel}
                     </span>
                   </div>
                 </div>
@@ -673,13 +677,13 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
             </div>
             <div className="card-body">
               <div className="kv">
-                <span className="k">Reserves ({pool.baseInstrumentId})</span>
+                <span className="k">Reserves ({baseLabel})</span>
                 <span className="v">
                   <span className="num">{fmt(pool.reserves.baseAmount, 4)}</span>
                 </span>
               </div>
               <div className="kv">
-                <span className="k">Reserves ({pool.quoteInstrumentId})</span>
+                <span className="k">Reserves ({quoteLabel})</span>
                 <span className="v">
                   <span className="num">{fmt(pool.reserves.quoteAmount, 2)}</span>
                 </span>
@@ -703,7 +707,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                 </span>
               </div>
               <div className="kv">
-                <span className="k">{pool.baseInstrumentId} slices</span>
+                <span className="k">{baseLabel} slices</span>
                 <span className="v">
                   <span className="alloc-pill">
                     {pool.baseSlices.length} committed
@@ -714,7 +718,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                 </span>
               </div>
               <div className="kv">
-                <span className="k">{pool.quoteInstrumentId} slices</span>
+                <span className="k">{quoteLabel} slices</span>
                 <span className="v">
                   <span className="alloc-pill">
                     {pool.quoteSlices.length} committed

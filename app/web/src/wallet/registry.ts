@@ -79,7 +79,7 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   const enablePartyLayer =
     (import.meta.env.VITE_ENABLE_PARTYLAYER ?? "") === "1";
   const packagePrefix = (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID ??
-    "#canton-dex-trading") as string;
+    "#canton-dex-trading-v2") as string;
 
   const map = new Map<WalletProviderId, WalletProvider>();
 
@@ -111,7 +111,7 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   if (import.meta.env.DEV) {
     map.set("token-standard", new TokenStandardProvider(apiBase));
   }
-  if (projectId) map.set("walletconnect", new WalletConnectProvider(projectId, networkId));
+  if (projectId) map.set("walletconnect", new WalletConnectProvider(projectId, networkId, packagePrefix));
   // Direct Canton is intentionally not registered. A participant accepts
   // concrete Ledger API commands, not DEX wallet intents, and a browser should
   // never retain its bearer credential. See canton-direct-provider.ts.

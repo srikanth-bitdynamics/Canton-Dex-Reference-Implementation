@@ -6,13 +6,19 @@ import type { ContractId } from "@canton-dex/registry-client";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import { buildReceipt, rankQuotes, POLICY_VERSION } from "../policy/index.js";
-import type { Party, PolicyReceipt, Rfq, RfqQuote, Time } from "../types.js";
+import type {
+  InstrumentId,
+  Party,
+  PolicyReceipt,
+  Rfq,
+  RfqQuote,
+  Time,
+} from "../types.js";
 
 export interface RfqAcceptInput {
   rfqCid: ContractId<"Rfq">;
   acceptedQuoteCid: ContractId<"RfqQuote">;
   consideredQuoteCids: ContractId<"RfqQuote">[];
-  admin: Party;
   now: Time;
   /**
    * Per-caller party binding: when set, the fetched RFQ's `trader` must
@@ -38,7 +44,8 @@ export interface RfqAcceptResult {
 export interface RfqCreateInput {
   trader: Party;
   rfqId: string;
-  pair: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   side: Rfq["side"];
   size: string;
   expiresAt: Time;
@@ -142,7 +149,8 @@ export class RfqService {
             trader: input.trader,
             operator: this.operatorParty,
             rfqId: input.rfqId,
-            pair: input.pair,
+            baseInstrumentId: input.baseInstrumentId,
+            quoteInstrumentId: input.quoteInstrumentId,
             side: input.side,
             size: input.size,
             expiresAt: input.expiresAt,
@@ -232,7 +240,6 @@ export class RfqService {
             // for ranking. The accepted quote was checked against this set
             // above, and Rfq_Accept validates the set again on-ledger.
             consideredQuoteCids: ranked.map((q) => q.contractId),
-            admin: input.admin,
             currentTime: input.now,
             signature: receipt.signature,
           },

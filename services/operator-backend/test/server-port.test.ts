@@ -64,7 +64,16 @@ describe("server entrypoints", () => {
     assert.match(source, /class ConfiguredRegistry extends FixedRegistryClient/);
     assert.match(source, /super\(\(admin\)\s*=>/);
     assert.match(source, /factoriesByAdmin\.get\(admin\)/);
-    assert.match(source, /registry:\s*new ConfiguredRegistry\(factoriesByAdmin\)/);
+    assert.match(
+      source,
+      /const configuredRegistry = new ConfiguredRegistry\(factoriesByAdmin\)/,
+    );
+    // External-registry discovery is opt-in: the fixed per-admin adapter stays
+    // the default whenever DEX_EXTERNAL_REGISTRIES is unset.
+    assert.match(
+      source,
+      /externalRegistryMap\.size === 0\s*\?\s*configuredRegistry/,
+    );
     assert.match(source, /required\("CANTON_LP_ALLOC_FACTORY_CID"\)/);
     assert.match(source, /required\("CANTON_LP_SETTLE_FACTORY_CID"\)/);
   });

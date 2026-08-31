@@ -21,7 +21,7 @@ builder evaluating Canton + Token Standard V2.
   oracle integrations) that obscure the reference. Those belong in
   forks, not here.
 - Replacing well-tested patterns with personal preferences.
-- Breaking deployed `canton-dex-trading` package compatibility without a
+- Breaking deployed `canton-dex-trading-v2` package compatibility without a
   clear migration plan.
 
 ## Development workflow

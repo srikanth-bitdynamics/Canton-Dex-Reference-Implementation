@@ -21,9 +21,8 @@ export interface FeeModel {
 export interface DexPair {
   contractId: string;
   operator: string;
-  admin: string;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   tradingMode: TradingMode;
   feeModel: FeeModel;
   active: boolean;
@@ -39,9 +38,8 @@ export interface Order {
   contractId: string;
   operator: string;
   trader: string;
-  admin: string;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   side: Side;
   limitPrice: number;
   remainingQty: number;
@@ -72,9 +70,8 @@ export interface Pool {
   contractId: string;
   operator: string;
   lpRegistrar: string;
-  admin: string;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   lpInstrumentId: InstrumentId;
   feeBps: number;
   status: PoolStatus;

@@ -25,10 +25,23 @@ export interface PriceSource {
   quote(pair: string): Promise<PriceQuote | undefined>;
 }
 
-function parsePair(pair: string): { base: string; quote: string } | undefined {
+// A pair segment is a display symbol, optionally admin-qualified as `id@admin`
+// so the same symbol under two registries selects the intended pool. The admin
+// is optional; a bare symbol keeps the display-only, first-match behaviour.
+interface PairSide {
+  id: string;
+  admin?: string;
+}
+
+function parseSide(s: string): PairSide {
+  const at = s.indexOf("@");
+  return at >= 0 ? { id: s.slice(0, at), admin: s.slice(at + 1) } : { id: s };
+}
+
+function parsePair(pair: string): { base: PairSide; quote: PairSide } | undefined {
   const parts = pair.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
-  return { base: parts[0], quote: parts[1] };
+  return { base: parseSide(parts[0]), quote: parseSide(parts[1]) };
 }
 
 export class PoolPriceSource implements PriceSource {
@@ -38,10 +51,18 @@ export class PoolPriceSource implements PriceSource {
     const parsed = parsePair(pair);
     if (!parsed) return undefined;
     const pools = await this.poolsFn();
+    // Select by full instrument identity when an admin is supplied, so two
+    // registries' same-symbol pairs do not collide; a bare symbol keeps the
+    // first-match display behaviour.
+    const sideMatches = (
+      side: Pool["baseInstrumentId"],
+      want: PairSide,
+    ): boolean =>
+      side.id === want.id && (want.admin === undefined || side.admin === want.admin);
     const p = pools.find(
       (x) =>
-        x.baseInstrumentId === parsed.base &&
-        x.quoteInstrumentId === parsed.quote,
+        sideMatches(x.baseInstrumentId, parsed.base) &&
+        sideMatches(x.quoteInstrumentId, parsed.quote),
     );
     if (!p) return undefined;
     const base = Number(p.reserves.baseAmount);

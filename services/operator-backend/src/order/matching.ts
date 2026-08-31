@@ -1,7 +1,7 @@
 // Price-time matching over active Order rows. This module proposes crossing
 // pairs; OrderMatchExecution_Execute revalidates and settles them on-ledger.
 
-import type { Order } from "../types.js";
+import type { InstrumentId, Order } from "../types.js";
 import * as dec from "../pool/decimal.js";
 
 export interface Match {
@@ -13,13 +13,18 @@ export interface Match {
   quantity: string;
 }
 
-interface PairKey {
-  base: string;
-  quote: string;
+// Keyed by full identity: two instruments can share a text id under different admins.
+export interface PairKey {
+  base: InstrumentId;
+  quote: InstrumentId;
+}
+
+export function eqInstrument(a: InstrumentId, b: InstrumentId): boolean {
+  return a.admin === b.admin && a.id === b.id;
 }
 
 function eqPair(a: PairKey, b: PairKey): boolean {
-  return a.base === b.base && a.quote === b.quote;
+  return eqInstrument(a.base, b.base) && eqInstrument(a.quote, b.quote);
 }
 
 function num(s: string): number {

@@ -181,6 +181,20 @@ const MIGRATIONS: string[] = [
                     ORDER BY o.ts ASC LIMIT 1)
    WHERE h.trader IS NULL;
   `,
+
+  // v9: per-side registry admin on the pool projection.
+  `
+  ALTER TABLE pool_states ADD COLUMN baseAdmin TEXT;
+  ALTER TABLE pool_states ADD COLUMN quoteAdmin TEXT;
+  `,
+
+  // v10: per-side registry admin on the trade projection. `pair` is a display
+  // label, so two registries' same-symbol pairs collide on it; the admins carry
+  // the full instrument identity of each trade.
+  `
+  ALTER TABLE trades ADD COLUMN baseAdmin TEXT;
+  ALTER TABLE trades ADD COLUMN quoteAdmin TEXT;
+  `,
 ];
 
 export function openDb(path: string): Db {

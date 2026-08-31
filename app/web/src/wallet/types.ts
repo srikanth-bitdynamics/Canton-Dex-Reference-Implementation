@@ -11,7 +11,7 @@
 // The dApp imports `handToWallet` from `./handoff` which dispatches to
 // the active provider selected in the wallet store.
 
-import type { Holding } from "@/types/contracts";
+import type { Holding, InstrumentId } from "@/types/contracts";
 
 export type Party = string;
 export type ContractId<_T> = string;
@@ -79,19 +79,27 @@ export interface DisclosedContract {
 // intent into a Daml command tree and submits via its signing path.
 
 /**
- * Lock the funds required by a pending order. The wallet authors one committed
- * V2 allocation; Order_Fund later binds it to the order and consumes the
- * OrderAllocationRequest used for correlation.
+ * Lock the funds a pending order requires. The wallet accepts the
+ * OrderAllocationRequest and authors its specifications via BatchingUtilityV2:
+ * the funding allocation under the lock admin, plus a zero-funding receipt under
+ * the counter admin for a cross-admin pair (one spec for a single-admin pair).
+ * Order_Fund binds each by matching its allocation view to the request's
+ * per-admin spec; the created cids (or an updateId) drive that call.
+ * `allocations`, `factoryCids`, and `allocationFactoryExtraArgs` are parallel:
+ * the lock-admin funding spec first.
  */
 export interface FundOrderIntent {
   kind: "fund-order";
-  factoryCid: ContractId<"AllocationFactory">;
-  allocationFactoryExtraArgs: V2ExtraArgs;
-  disclosure: DisclosedContract[];
+  requestCid: ContractId<"OrderAllocationRequest">;
   settlement: V2SettlementInfo;
-  allocationSpec: V2AllocationSpecification;
+  allocations: V2AllocationSpecification[];
   requestedAt: string;
-  /** Holdings the wallet should propose to lock. */
+  factoryCids: ContractId<"AllocationFactory">[];
+  allocationFactoryExtraArgs: V2ExtraArgs[];
+  /** Context for the AllocationRequest_Accept call (empty for the self-registry). */
+  allocationRequestExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
+  /** Holdings the wallet should propose to lock for the funding spec. */
   inputHoldingCids: ContractId<"Holding">[];
   /**
    * Hint for the wallet's holding-selection UI: the locked instrument
@@ -106,31 +114,36 @@ export interface FundOrderIntent {
  */
 export interface PlaceOrderIntent {
   kind: "place-order";
-  pair: { base: string; quote: string };
+  pair: { base: InstrumentId; quote: InstrumentId };
   side: "Bid" | "Ask";
   limitPrice: string;
   quantity: string;
   expiry: string | null;
   operator: Party;
-  admin: Party;
 }
 
 /**
- * Trader requests a swap (DvP). The operator has built (via Daml
- * PoolRules_RequestSwap) the exact input and output leg sides for one pool
- * snapshot. The wallet authors that terminal allocation via
- * AllocationFactory_Allocate (locking `inputHoldingCids`), and its created cid is returned as
- * `WalletResult.createdAllocationCids[0]` for the operator settle
- * (PoolRules_Swap). No intermediate request contract is created.
+ * Trader requests a swap (DvP). PoolRules_RequestSwap built one specification
+ * per (swapper, admin) — the swap-in leg under the input admin, the swap-out
+ * receipt under the output admin — and a SwapAllocationRequest carrying them; a
+ * single-admin swap collapses to one combined specification. The wallet accepts
+ * that request and authors every specification via BatchingUtilityV2 in one
+ * command (locking `inputHoldingCids` on the swap-in spec). The created
+ * Allocation cids (input admin first) settle through PoolRules_Swap; an
+ * updateId-only wallet returns the updateId and the operator recovers them.
+ * `allocations`, `factoryCids`, and `allocationFactoryExtraArgs` are parallel.
  */
 export interface RequestSwapIntent {
   kind: "request-swap";
   poolId: string;
-  allocationSpec: V2AllocationSpecification;
+  requestCid: ContractId<"SwapAllocationRequest">;
   settlement: V2SettlementInfo;
+  allocations: V2AllocationSpecification[];
   requestedAt: string;
-  factoryCid: ContractId<"AllocationFactory">;
-  allocationFactoryExtraArgs: V2ExtraArgs;
+  factoryCids: ContractId<"AllocationFactory">[];
+  allocationFactoryExtraArgs: V2ExtraArgs[];
+  /** Context for the AllocationRequest_Accept call (empty for the self-registry). */
+  allocationRequestExtraArgs: V2ExtraArgs;
   disclosure: DisclosedContract[];
   inputHoldingCids: ContractId<"Holding">[];
 }
@@ -208,6 +221,29 @@ export interface RemoveLiquidityIntent {
   lpHoldingCids: ContractId<"Holding">[];
 }
 
+/**
+ * Trader funds their side of an accepted RFQ's MatchedTrade. The operator's
+ * MatchedTrade_RequestAllocations created a TradeAllocationRequest carrying one
+ * specification per admin this authorizer touches; the wallet accepts it and
+ * authors every AllocationFactory_Allocate via BatchingUtilityV2 in one command
+ * — the same standard path swap and order funding use. The created Allocation
+ * cids (or an updateId) drive the operator's MatchedTrade_Settle.
+ */
+export interface FundMatchedTradeIntent {
+  kind: "fund-matched-trade";
+  requestCid: ContractId<"TradeAllocationRequest">;
+  settlement: V2SettlementInfo;
+  allocations: V2AllocationSpecification[];
+  requestedAt: string;
+  factoryCids: ContractId<"AllocationFactory">[];
+  allocationFactoryExtraArgs: V2ExtraArgs[];
+  /** Context for the AllocationRequest_Accept call (empty for the self-registry). */
+  allocationRequestExtraArgs: V2ExtraArgs;
+  disclosure: DisclosedContract[];
+  /** Holdings the wallet locks for the funding (sender-leg) spec. */
+  inputHoldingCids: ContractId<"Holding">[];
+}
+
 export type WalletIntent =
   | FundOrderIntent
   | PlaceOrderIntent
@@ -215,7 +251,8 @@ export type WalletIntent =
   | SplitHoldingIntent
   | MergeHoldingsIntent
   | AddLiquidityIntent
-  | RemoveLiquidityIntent;
+  | RemoveLiquidityIntent
+  | FundMatchedTradeIntent;
 
 // === provider result + status ============================================
 
@@ -227,10 +264,11 @@ export interface WalletResult {
   /** Optional: any auxiliary cids the wallet wants to surface. */
   auxiliaryCids?: Record<string, string>;
   /**
-   * For multi-allocation intents (add/remove-liquidity), the created
-   * V2.Allocation cids in the SAME order as the intent's `allocations` —
-   * i.e. the order the AllocationFactory_Allocate commands were emitted. The
-   * dApp forwards these to the operator-backend `/settle` call. An updateId-only
+   * For allocation-authoring intents (add/remove-liquidity, request-swap,
+   * fund-order), the created V2.Allocation cids in the SAME order as the intent's
+   * `allocations` — i.e. the order the AllocationFactory_Allocate commands were
+   * emitted (input/lock admin first). The dApp forwards these to the
+   * operator-backend `/settle`, `/swap`, or `/fund` call. An updateId-only
    * provider omits this array and instead returns `auxiliaryCids.updateId`, which
    * lets the operator recover the allocations from the transaction tree.
    */

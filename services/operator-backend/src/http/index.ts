@@ -39,7 +39,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { OperatorBackend } from "../index.js";
-import type { Party, Pool, V2TransferLeg } from "../types.js";
+import type { ContractId, InstrumentId, Party, Pool } from "../types.js";
 import type { DisclosedContract } from "@canton-dex/registry-client";
 import type { Db } from "../indexer/db.js";
 import { OperatorConfig } from "../indexer/config.js";
@@ -111,6 +111,40 @@ function expectField<T = unknown>(o: unknown, field: string): T {
   return v as T;
 }
 
+// Resolve the swap input to a full instrument identity {admin,id}. Accepts an
+// object {admin,id} directly, or a bare text id resolved against the pool's
+// base/quote — rejected as ambiguous when both sides share that id, so USD@A and
+// USD@B cannot silently route to the wrong reserve.
+function resolveInputInstrument(raw: unknown, pool: Pool): InstrumentId {
+  const v =
+    typeof raw === "object" && raw !== null
+      ? (raw as Record<string, unknown>).inputInstrumentId
+      : undefined;
+  if (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as Record<string, unknown>).admin === "string" &&
+    typeof (v as Record<string, unknown>).id === "string"
+  ) {
+    const o = v as { admin: string; id: string };
+    return { admin: o.admin as Party, id: o.id };
+  }
+  if (typeof v === "string" && v.length > 0) {
+    const sides = [pool.baseInstrumentId, pool.quoteInstrumentId].filter(
+      (i) => i.id === v,
+    );
+    if (sides.length === 1) return sides[0]!;
+    badRequest("inputInstrumentId is ambiguous or not in the pool; pass {admin,id}", {
+      field: "inputInstrumentId",
+      value: v,
+    });
+  }
+  badRequest("missing or invalid field: inputInstrumentId", {
+    field: "inputInstrumentId",
+    expected: "{admin,id} or a text instrument id",
+  });
+}
+
 /**
  * Static venue context. Factory CIDs and choice contexts are discovered per
  * operation from the relevant V2 registry after exact choice arguments exist.
@@ -180,19 +214,32 @@ function isZero(d: string): boolean {
 }
 
 /**
- * `?pair=BASE/QUOTE`, as every other pair-scoped read on this API takes.
- * `?base=&quote=` still works.
+ * Resolve a pair to full instrument identity. Text ids come from
+ * `?pair=BASE/QUOTE` or `?base=&quote=`; each admin from `?baseAdmin=&quoteAdmin=`,
+ * defaulting to the venue admin. The text stays a display label.
  */
-function pairParams(url: URL): { base: string; quote: string } | undefined {
+function pairParams(
+  url: URL,
+  defaultAdmin: Party,
+): { base: InstrumentId; quote: InstrumentId } | undefined {
+  let baseId: string | undefined;
+  let quoteId: string | undefined;
   const pair = url.searchParams.get("pair");
   if (pair) {
     const parts = pair.split("/");
     if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
-    return { base: parts[0], quote: parts[1] };
+    [baseId, quoteId] = parts;
+  } else {
+    baseId = url.searchParams.get("base") ?? undefined;
+    quoteId = url.searchParams.get("quote") ?? undefined;
   }
-  const base = url.searchParams.get("base");
-  const quote = url.searchParams.get("quote");
-  return base && quote ? { base, quote } : undefined;
+  if (!baseId || !quoteId) return undefined;
+  const baseAdmin = (url.searchParams.get("baseAdmin") ?? defaultAdmin) as Party;
+  const quoteAdmin = (url.searchParams.get("quoteAdmin") ?? defaultAdmin) as Party;
+  return {
+    base: { admin: baseAdmin, id: baseId },
+    quote: { admin: quoteAdmin, id: quoteId },
+  };
 }
 
 function boundedPositiveInt(
@@ -558,8 +605,8 @@ async function routeRequest(
       e.cusip = c.cusip ?? null;
     }
     for (const p of await backend.pool.listActive()) {
-      put(p.baseInstrumentId);
-      put(p.quoteInstrumentId);
+      put(p.baseInstrumentId.id);
+      put(p.quoteInstrumentId.id);
     }
     let out = [...byId.values()].sort((a, b) =>
       a.instrumentId.localeCompare(b.instrumentId),
@@ -570,7 +617,7 @@ async function routeRequest(
   }
 
   if (method === "GET" && path === "/v1/orders/book") {
-    const p = pairParams(url);
+    const p = pairParams(url, context.admin);
     if (!p) {
       throw new HttpError(
         400,
@@ -589,7 +636,7 @@ async function routeRequest(
   // Read-only match preview: discover crossing orders without settling.
   // The execute path is POST /v1/orders/match (runMatching), below.
   if (method === "GET" && path === "/v1/orders/matches") {
-    const p = pairParams(url);
+    const p = pairParams(url, context.admin);
     if (!p) {
       throw new HttpError(
         400,
@@ -677,15 +724,28 @@ async function routeRequest(
   // Operator-auth gated (state-changing). The read-only preview is
   // GET /v1/orders/matches, above.
   if (method === "POST" && path === "/v1/orders/match") {
-    const body = await readJson<{ base: string; quote: string }>(req);
+    const body = await readJson<{
+      base: string;
+      quote: string;
+      baseAdmin?: string;
+      quoteAdmin?: string;
+    }>(req);
     if (!body.base || !body.quote) {
       respondJson(res, 400, { error: "expected { base, quote }" });
       return;
     }
+    const baseInstrumentId: InstrumentId = {
+      admin: (body.baseAdmin ?? context.admin) as Party,
+      id: body.base,
+    };
+    const quoteInstrumentId: InstrumentId = {
+      admin: (body.quoteAdmin ?? context.admin) as Party,
+      id: body.quote,
+    };
     const results = await backend.order.runMatching({
-      baseInstrumentId: body.base,
-      quoteInstrumentId: body.quote,
-      admin: context.admin as Party,
+      baseInstrumentId,
+      quoteInstrumentId,
+      admin: baseInstrumentId.admin,
     });
     // runMatching catches per-match so one bad pair cannot stop the rest, but
     // a 200 for a run where nothing settled reads as success. Report 207 when
@@ -1024,8 +1084,8 @@ async function routeRequest(
       args.push(pair);
     }
     const sql =
-      "SELECT tradeCid, ts, pair, trader, dealer, counterparty, policyVersion, " +
-      "acceptedRank, consideredCount FROM trades " +
+      "SELECT tradeCid, ts, pair, baseAdmin, quoteAdmin, trader, dealer, " +
+      "counterparty, policyVersion, acceptedRank, consideredCount FROM trades " +
       (where.length ? `WHERE ${where.join(" AND ")} ` : "") +
       `ORDER BY ts DESC LIMIT ${limit}`;
     respondJson(res, 200, db.prepare(sql).all(...args));
@@ -1172,7 +1232,6 @@ async function routeRequest(
       typeof body.poolCid === "string" && body.poolCid
         ? body.poolCid
         : expectString(raw, "poolId");
-    const inputInstrumentId = expectString(raw, "inputInstrumentId");
     const inputAmount = expectString(raw, "inputAmount");
     if (Number.isNaN(parseFloat(inputAmount)) || parseFloat(inputAmount) <= 0) {
       badRequest("inputAmount must be a positive decimal string", { field: "inputAmount" });
@@ -1184,6 +1243,9 @@ async function routeRequest(
     if (!pool) {
       throw new HttpError(404, "not_found", "pool not found", { pool: poolRef });
     }
+    // Full-identity input {admin,id}; a bare text id is resolved against the
+    // pool so the side is decided by admin and id, not the text id alone.
+    const inputInstrumentId = resolveInputInstrument(raw, pool);
     respondJson(
       res,
       200,
@@ -1305,7 +1367,12 @@ async function routeRequest(
       callerAuth,
       "cancelling an order",
     );
-    await backend.order.cancel(orderCid as never, requireTrader);
+    const cancelBody = await readJson<{ allocationRequestCid?: string }>(req);
+    await backend.order.cancel(
+      orderCid as never,
+      requireTrader,
+      cancelBody.allocationRequestCid as never,
+    );
     respondJson(res, 204, {});
     return;
   }
@@ -1313,51 +1380,84 @@ async function routeRequest(
   // === matched-trade settlement (TradingAppV2) =========================
   // The on-chain choices are MatchedTrade_RequestAllocations →
   // MatchedTrade_Settle → (or MatchedTrade_Cancel). Operator-auth gated.
-  // The settle/cancel bodies carry a `batchesByAdmin` / `allocationsByAdmin`
-  // JSON object keyed by admin party; we convert to the Map the service wants.
+  // The settle/cancel bodies carry allocation cids keyed by admin party (never
+  // transfer legs); we convert to the Map the service wants. MatchedTrade_Settle
+  // derives each admin's legs from the trade itself.
 
   if (method === "POST" && path === "/v1/matched-trades/request-allocations") {
     const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/request-allocations", callerAuth);
     const tradeCid = expectString(body, "tradeCid");
-    const result = await backend.matchedTrade.requestAllocations({
+    const allocationRequests = await backend.matchedTrade.requestAllocations({
       tradeCid: tradeCid as never,
     });
-    respondJson(res, 200, { allocationRequestCids: result });
+    respondJson(res, 200, {
+      // One entry per non-venue authorizer, each carrying its request's
+      // on-ledger view so the wallet can accept it and author every allocation.
+      allocationRequests,
+      // Retained for callers that only need the cids.
+      allocationRequestCids: allocationRequests.map((r) => r.requestCid),
+    });
     return;
   }
 
   if (method === "POST" && path === "/v1/matched-trades/settle") {
     const body = await readValidatedJson<unknown>(req, "POST /v1/matched-trades/settle", callerAuth);
     const tradeCid = expectString(body, "tradeCid");
-    const batchesByAdminRaw = expectField<
-      Record<string, { allocationCids: string[]; transferLegs: V2TransferLeg[] }>
-    >(body, "batchesByAdmin");
-    const allocationRequestCids = expectField<string[]>(body, "allocationRequestCids");
-    // Each batch carries its own admin's legs; the registry rejects a batch
-    // whose allocations do not cover exactly the legs it is given, and the
-    // choice rejects a batch carrying none. Fail here so the caller gets a 400
-    // instead of a ledger abort.
-    const batchesByAdmin = new Map(
-      Object.entries(batchesByAdminRaw).map(([admin, batch]) => {
-        if (!Array.isArray(batch?.transferLegs) || batch.transferLegs.length === 0) {
-          throw new ValidationError(
-            `batchesByAdmin.${admin}.transferLegs must be a non-empty array of this admin's legs`,
-            { field: `batchesByAdmin.${admin}.transferLegs` },
-          );
-        }
-        return [
-          admin as Party,
-          {
-            allocationCids: (batch.allocationCids ?? []) as never[],
-            transferLegs: batch.transferLegs,
-          },
-        ] as const;
-      }),
-    );
+    const b = body as Record<string, unknown>;
+    const allocationCidsByAdminRaw = b.allocationCidsByAdmin as
+      | Record<string, string[]>
+      | undefined;
+    const updateId = b.updateId as string | undefined;
+    // The wallet accept archived the connected party's own request, so this is
+    // normally []; the service consumes any provably-live cids.
+    const allocationRequestCids = (b.allocationRequestCids as string[] | undefined) ?? [];
+    // Optional: when set, the settle records RFQ fees against this pair.
+    const dexPairCid = (b.dexPairCid as string | undefined) ?? null;
+
+    // The connected party's wallet-authored allocation cids grouped by registry
+    // admin, OR an updateId for operator-discovery. On the updateId path the
+    // service recovers and groups the cids; here we convert the explicit object.
+    let batchesByAdmin:
+      | Map<Party, { allocationCids: ContractId<"Allocation">[] }>
+      | undefined;
+    if (allocationCidsByAdminRaw !== undefined) {
+      if (
+        typeof allocationCidsByAdminRaw !== "object" ||
+        allocationCidsByAdminRaw === null ||
+        Array.isArray(allocationCidsByAdminRaw)
+      ) {
+        throw new ValidationError(
+          "allocationCidsByAdmin must be a JSON object keyed by admin party",
+          { field: "allocationCidsByAdmin" },
+        );
+      }
+      batchesByAdmin = new Map(
+        Object.entries(allocationCidsByAdminRaw).map(([admin, cids]) => {
+          if (!Array.isArray(cids) || cids.length === 0) {
+            throw new ValidationError(
+              `allocationCidsByAdmin.${admin} must be a non-empty array of allocation cids`,
+              { field: `allocationCidsByAdmin.${admin}` },
+            );
+          }
+          return [
+            admin as Party,
+            { allocationCids: cids as ContractId<"Allocation">[] },
+          ] as const;
+        }),
+      );
+    } else if (!updateId) {
+      throw new ValidationError(
+        "supply allocationCidsByAdmin or an updateId",
+        { field: "allocationCidsByAdmin" },
+      );
+    }
+
     const result = await backend.matchedTrade.settle({
       tradeCid: tradeCid as never,
       batchesByAdmin,
+      updateId: updateId ?? null,
       allocationRequestCids: allocationRequestCids as never[],
+      dexPairCid: dexPairCid as never,
     });
     respondJson(res, 200, { result });
     return;

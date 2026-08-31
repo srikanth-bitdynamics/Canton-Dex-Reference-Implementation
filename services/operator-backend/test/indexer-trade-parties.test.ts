@@ -22,18 +22,18 @@ import type {
 const TRADER = "alice::1220ab";
 const DEALER = "northwind::1220ab";
 const VENUE = "operator::1220ab";
+const ADMIN = "admin::1220ab";
 
 /** One MatchedTrade whose base leg runs in whichever direction the test sets. */
 function ledgerWith(baseSender: string, baseReceiver: string, withReceipt = true) {
   const trade = {
     contractId: "#trade:0",
     venue: VENUE,
-    admin: "admin::1220ab",
-    transferLegs: [
-      { transferLegId: "base", sender: { owner: baseSender },
-        receiver: { owner: baseReceiver }, amount: "0.001", instrumentId: "dBTC" },
-      { transferLegId: "quote", sender: { owner: baseReceiver },
-        receiver: { owner: baseSender }, amount: "89.17", instrumentId: "dUSD" },
+    tradeLegs: [
+      { admin: ADMIN, leg: { transferLegId: "base", sender: { owner: baseSender },
+        receiver: { owner: baseReceiver }, amount: "0.001", instrumentId: "dBTC" } },
+      { admin: ADMIN, leg: { transferLegId: "quote", sender: { owner: baseReceiver },
+        receiver: { owner: baseSender }, amount: "89.17", instrumentId: "dUSD" } },
     ],
     settlementDeadline: null,
     policyReceipt: withReceipt

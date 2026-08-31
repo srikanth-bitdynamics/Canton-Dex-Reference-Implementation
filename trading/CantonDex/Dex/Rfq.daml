@@ -14,9 +14,9 @@ module CantonDex.Dex.Rfq where
 
 import DA.Foldable (forA_)
 import DA.List qualified as List
-import DA.Text qualified as Text
 
 import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.MetadataV1
 
 import CantonDex.Dex.MatchedTrade qualified as MT
@@ -49,8 +49,10 @@ template Rfq with
     operator : Party
     rfqId : Text
       -- ^ Operator-scoped unique id for this request.
-    pair : Text
-      -- ^ "BASE/QUOTE".
+    baseInstrumentId : HoldingV2.InstrumentId
+      -- ^ Base asset `{admin, id}`; its admin may differ from the quote's.
+    quoteInstrumentId : HoldingV2.InstrumentId
+      -- ^ Quote asset `{admin, id}`.
     side : RfqSide
       -- ^ Buy or sell, from the trader's perspective.
     size : Decimal
@@ -66,7 +68,9 @@ template Rfq with
 
     ensure
       rfqId /= ""
-        && validPair pair
+        && baseInstrumentId.id /= ""
+        && quoteInstrumentId.id /= ""
+        && baseInstrumentId /= quoteInstrumentId
         && size > 0.0
         && createdAt < expiresAt
         && whitelist /= []
@@ -99,7 +103,6 @@ template Rfq with
         consideredQuoteCids : [ContractId RfqQuote]
           -- ^ All valid quotes the matcher considered, in ACS order; the
           --   policy ranking over these is the audit anchor.
-        admin : Party
         currentTime : Time
         signature : Text
           -- ^ Operator-supplied receipt digest; opaque on-ledger.
@@ -163,43 +166,32 @@ template Rfq with
 
         -- Trade legs from the accepted quote: BUY = trader pays quote, receives
         -- base; SELL is the inverse.
-        let (baseSym, quoteSym) = splitPair pair
+        let baseSym = baseInstrumentId.id
+            quoteSym = quoteInstrumentId.id
             traderAccount = Utils.basicAccount trader
             dealerAccount = Utils.basicAccount accepted.dealer
             quoteNotional = accepted.price * size
-            legs = case side of
-              RFQ_Buy ->
-                [ V2.TransferLeg with
-                    transferLegId = "base-leg"
-                    sender = dealerAccount
-                    receiver = traderAccount
-                    amount = size
-                    instrumentId = baseSym
-                    meta = emptyMetadata
-                , V2.TransferLeg with
-                    transferLegId = "quote-leg"
-                    sender = traderAccount
-                    receiver = dealerAccount
-                    amount = quoteNotional
-                    instrumentId = quoteSym
-                    meta = emptyMetadata
-                ]
-              RFQ_Sell ->
-                [ V2.TransferLeg with
-                    transferLegId = "base-leg"
-                    sender = traderAccount
-                    receiver = dealerAccount
-                    amount = size
-                    instrumentId = baseSym
-                    meta = emptyMetadata
-                , V2.TransferLeg with
-                    transferLegId = "quote-leg"
-                    sender = dealerAccount
-                    receiver = traderAccount
-                    amount = quoteNotional
-                    instrumentId = quoteSym
-                    meta = emptyMetadata
-                ]
+            mkLeg legId sender receiver amount instrumentId =
+              V2.TransferLeg with
+                transferLegId = legId
+                sender
+                receiver
+                amount
+                instrumentId
+                meta = emptyMetadata
+            -- Base and quote may be administered by different registries, so
+            -- each leg carries its own instrument admin.
+            (baseSender, baseReceiver, quoteSender, quoteReceiver) = case side of
+              RFQ_Buy -> (dealerAccount, traderAccount, traderAccount, dealerAccount)
+              RFQ_Sell -> (traderAccount, dealerAccount, dealerAccount, traderAccount)
+            tradeLegs =
+              [ MT.TradeLeg with
+                  admin = baseInstrumentId.admin
+                  leg = mkLeg "base-leg" baseSender baseReceiver size baseSym
+              , MT.TradeLeg with
+                  admin = quoteInstrumentId.admin
+                  leg = mkLeg "quote-leg" quoteSender quoteReceiver quoteNotional quoteSym
+              ]
 
         -- Rfq_Accept is consuming, so self is archived automatically. Quotes
         -- are dealer-signed; the trader consumes them via their own choice.
@@ -207,8 +199,7 @@ template Rfq with
 
         tradeCid <- create MT.MatchedTrade with
           venue = operator
-          admin
-          transferLegs = legs
+          tradeLegs
           settlementDeadline = Some expiresAt
           policyReceipt = Some receipt
 
@@ -278,16 +269,6 @@ policyCmp a b =
 -- construction.
 applyPolicyPairs : [(ContractId RfqQuote, RfqQuote)] -> [(ContractId RfqQuote, RfqQuote)]
 applyPolicyPairs = List.sortBy (\x y -> policyCmp x._2 y._2)
-
--- | Split "BASE/QUOTE"; returns ("","") on malformed input.
-splitPair : Text -> (Text, Text)
-splitPair pair = case Text.splitOn "/" pair of
-  [b, q] -> (b, q)
-  _ -> ("", "")
-
-validPair : Text -> Bool
-validPair pair = case splitPair pair of
-  (base, quote) -> base /= "" && quote /= "" && base /= quote
 
 uniqueParties : [Party] -> Bool
 uniqueParties parties =

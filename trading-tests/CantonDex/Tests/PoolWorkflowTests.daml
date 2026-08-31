@@ -12,17 +12,21 @@
 module CantonDex.Tests.PoolWorkflowTests where
 
 import DA.Assert
+import DA.List (head)
+import DA.Map qualified as Map
 import DA.Optional (isSome)
 
 import Daml.Script
 
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Testing.Utils (emptyExtraArgs)
 
 import CantonDex.Dex.Pool qualified as Pool
 import CantonDex.Dex.PoolRules qualified as PRules
 import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.AdminBatch qualified as AB
 import CantonDex.Trading.WorkflowConstructors qualified as WC
 import CantonDex.Tests.WorkflowTestFixtures
 
@@ -102,11 +106,13 @@ testPoolFullLifecycle = do
   submitMustFail operator $ exerciseCmd rulesCid PRules.PoolRules_Swap with
     expectedPoolId = poolId; poolCid; poolStateCid = pausedCid
     swapperAccount = Utils.basicAccount alice
-    inputInstrumentId = "USDC"; inputAmount = 1.0; minOutputAmount = 0.0
-    swapperAllocationCid = _baseSlice.allocationCid
+    inputInstrumentId = HoldingV2.InstrumentId with admin; id = "USDC"
+    inputAmount = 1.0; minOutputAmount = 0.0
+    swapperAllocationCidsByAdmin = Map.fromList [(admin, _baseSlice.allocationCid)]
     inputSliceCid = initRes.quoteSliceCid
     outputSliceCids = [initRes.baseSliceCid]
-    factoryCid = _settleCid; extraArgs = emptyExtraArgs
+    batchesByAdmin = Map.fromList [(admin, AB.RegistryBatchInput _settleCid emptyExtraArgs)]
+    swapAllocationRequestCids = []
     quoteBinding = Some pausedBinding
 
   resumedCid <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_Resume with
@@ -178,11 +184,13 @@ testPoolSwapWorkflow = do
   reqRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid
     swapper = bob
-    inputInstrumentId = "USDC"
+    inputInstrumentId = HoldingV2.InstrumentId with admin; id = "USDC"
     inputAmount = 100.0
+    requestedAt = now
+    settleAt = None
     quoteBinding
   let bobAllocateArg = WC.mkAllocationFactoryAllocate
-        reqRes.settlement reqRes.allocationSpec now [] [bob] emptyExtraArgs
+        reqRes.settlement (head reqRes.allocationSpecs) now [] [bob] emptyExtraArgs
 
   bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
   bobAllocationCid <- case bobInstr.output of
@@ -196,14 +204,14 @@ testPoolSwapWorkflow = do
     poolCid
     poolStateCid = initRes.poolStateCid
     swapperAccount = bobAccount
-    inputInstrumentId = "USDC"
+    inputInstrumentId = HoldingV2.InstrumentId with admin; id = "USDC"
     inputAmount = 100.0
     minOutputAmount = 0.0
-    swapperAllocationCid = bobAllocationCid
+    swapperAllocationCidsByAdmin = Map.fromList [(admin, bobAllocationCid)]
     inputSliceCid = initRes.quoteSliceCid
     outputSliceCids = [initRes.baseSliceCid]
-    factoryCid = settleCid
-    extraArgs = emptyExtraArgs
+    batchesByAdmin = Map.fromList [(admin, AB.RegistryBatchInput settleCid emptyExtraArgs)]
+    swapAllocationRequestCids = [reqRes.swapRequestCid]
     quoteBinding = reqRes.quoteBinding
 
   -- Verify reserves moved.
@@ -262,8 +270,10 @@ testPoolSwapViaRequestSwap = do
   reqRes <- submit operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid
     swapper = bob
-    inputInstrumentId = "USDC"
+    inputInstrumentId = HoldingV2.InstrumentId with admin; id = "USDC"
     inputAmount = 100.0
+    requestedAt = now
+    settleAt = None
     quoteBinding = Some (PRules.SwapQuoteBinding with
       expectedPoolId = poolId
       poolStateCid = initRes.poolStateCid
@@ -274,7 +284,7 @@ testPoolSwapViaRequestSwap = do
   -- Bob (the wallet) authors that exact spec via the allocation factory.
   let bobAccount = Utils.basicAccount bob
       bobAllocateArg = WC.mkAllocationFactoryAllocate
-        reqRes.settlement reqRes.allocationSpec now [] [bob] emptyExtraArgs
+        reqRes.settlement (head reqRes.allocationSpecs) now [] [bob] emptyExtraArgs
   bobInstr <- submit bob $ exerciseCmd factoryCid bobAllocateArg
   bobAllocationCid <- case bobInstr.output of
     V2.AllocationInstructionResult_Completed cid -> pure cid
@@ -286,14 +296,14 @@ testPoolSwapViaRequestSwap = do
     poolCid
     poolStateCid = initRes.poolStateCid
     swapperAccount = bobAccount
-    inputInstrumentId = "USDC"
+    inputInstrumentId = HoldingV2.InstrumentId with admin; id = "USDC"
     inputAmount = 100.0
     minOutputAmount = 0.0
-    swapperAllocationCid = bobAllocationCid
+    swapperAllocationCidsByAdmin = Map.fromList [(admin, bobAllocationCid)]
     inputSliceCid = initRes.quoteSliceCid
     outputSliceCids = [initRes.baseSliceCid]
-    factoryCid = settleCid
-    extraArgs = emptyExtraArgs
+    batchesByAdmin = Map.fromList [(admin, AB.RegistryBatchInput settleCid emptyExtraArgs)]
+    swapAllocationRequestCids = [reqRes.swapRequestCid]
     quoteBinding = reqRes.quoteBinding
 
   Some state <- queryContractId operator swapRes.poolStateCid

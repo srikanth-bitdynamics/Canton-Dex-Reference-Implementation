@@ -13,6 +13,7 @@
 module CantonDex.Tests.TradeWorkflowTests where
 
 import DA.Assert
+import DA.List (head)
 import DA.Map qualified as Map
 import DA.Time
 
@@ -22,10 +23,12 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as AllocationInstructionV2
 import Splice.Api.Token.AllocationRequestV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.MetadataV1
 import Splice.Testing.Utils (emptyExtraArgs)
 
 import CantonDex.Dex.MatchedTrade qualified as MT
+import CantonDex.Dex.DexPair qualified as DexPair
 import CantonDex.Dex.PolicyReceipt qualified as PR
 import CantonDex.Dex.Rfq qualified as Rfq
 import CantonDex.Trading.Utils qualified as Utils
@@ -65,12 +68,19 @@ testTradeAllocationRequestAcceptArchivesRequest = do
         meta = emptyMetadata
 
   reqCid <- submit operator $ createCmd MT.TradeAllocationRequest with
-    authorizer = aliceAccount
-    admin
     settlement
-    settlementDeadline = Some (addRelTime now (hours 1))
-    transferLegs = [leg]
+    settleAt = Some (addRelTime now (hours 1))
     requestedAt = now
+    allocations =
+      [ V2.AllocationSpecification with
+          admin
+          authorizer = aliceAccount
+          transferLegSides = Utils.legsToSides aliceAccount [leg]
+          settlementDeadline = Some (addRelTime now (hours 1))
+          nextIterationFunding = None
+          committed = False
+          meta = emptyMetadata
+      ]
 
   -- Act: Alice accepts through the standard interface.
   let reqIfaceCid : ContractId V2.AllocationRequest = toInterfaceContractId reqCid
@@ -110,7 +120,8 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
     trader = alice
     operator
     rfqId
-    pair = "BTC/USDC"
+    baseInstrumentId = HoldingV2.InstrumentId with admin = admin; id = "BTC"
+    quoteInstrumentId = HoldingV2.InstrumentId with admin = admin; id = "USDC"
     side = Rfq.RFQ_Buy
     size = 5.0
     expiresAt
@@ -157,7 +168,6 @@ testRfqAcceptProducesMatchedTradeWithReceipt = do
     exerciseCmd rfqCid Rfq.Rfq_Accept with
       acceptedQuoteCid = quoteJump
       consideredQuoteCids = [quoteOrca, quoteJump, quoteGalaxy]
-      admin
       currentTime = now
       signature = "0xtest-signature"
 
@@ -193,7 +203,8 @@ testRfqExpireOperatorCleanup = do
     trader = alice
     operator
     rfqId = "rfq-expire-001"
-    pair = "BTC/USDC"
+    baseInstrumentId = HoldingV2.InstrumentId with admin = operator; id = "BTC"
+    quoteInstrumentId = HoldingV2.InstrumentId with admin = operator; id = "USDC"
     side = Rfq.RFQ_Buy
     size = 1.0
     expiresAt
@@ -248,8 +259,7 @@ testMatchedTradeFullSettle = do
         ]
   tradeCid <- submit operator $ createCmd MT.MatchedTrade with
     venue = operator
-    admin
-    transferLegs = legs
+    tradeLegs = [MT.TradeLeg with admin = admin; leg | leg <- legs]
     settlementDeadline = None
     policyReceipt = None
 
@@ -272,8 +282,7 @@ testMatchedTradeFullSettle = do
             settlement = MT.mkTradeSettlementInfo tradeCid
               (MT.MatchedTrade with
                  venue = operator
-                 admin
-                 transferLegs = legs
+                 tradeLegs = [MT.TradeLeg with admin = admin; leg | leg <- legs]
                  settlementDeadline = None
                  policyReceipt = None)
             spec = V2.AllocationSpecification with
@@ -298,7 +307,7 @@ testMatchedTradeFullSettle = do
 
   -- We need to know which request belongs to whom. Query and split.
   reqs <- query @MT.TradeAllocationRequest operator
-  let reqsByOwner = [ (Utils.accountOwner req.authorizer, cid) | (cid, req) <- reqs ]
+  let reqsByOwner = [ (Utils.accountOwner (head req.allocations).authorizer, cid) | (cid, req) <- reqs ]
   -- The active req cids may differ from the freshly-returned reqCids
   -- because authorizers haven't accepted yet. Find the per-party CIDs.
   let aliceReqCid = case [ c | (p, c) <- reqsByOwner, p == alice ] of
@@ -322,7 +331,6 @@ testMatchedTradeFullSettle = do
   settleResult <- submit operator $ exerciseCmd tradeCid MT.MatchedTrade_Settle with
     batchesByAdmin = Map.fromList
       [ (admin, MT.SettlementBatchV2 with
-          transferLegs = Some legs
           allocations =
             [ Utils.finalAllocation aliceAllocCid
             , Utils.finalAllocation bobAllocCid
@@ -335,4 +343,95 @@ testMatchedTradeFullSettle = do
 
   -- Verify the result has one per-admin entry.
   Map.size settleResult.resultsByAdmin === 1
+  pure ()
+
+-- Cross-admin fee accrual --------------------------------------------------
+--
+-- A matched trade whose two legs are administered by different registries
+-- settles one batch per admin and, when a DexPair is supplied, records fees per
+-- instrument keyed by full identity across BOTH admins (there is no single-admin
+-- gate). MockRegistry neither locks nor moves funds; this proves the fee-counter
+-- shape, not value movement.
+-- | Proves MatchedTrade_Settle accrues per-instrument fees across two admins.
+testCrossAdminSettleRecordsPerInstrumentFees : Script ()
+testCrossAdminSettleRecordsPerInstrumentFees = do
+  operator <- allocateParty "venue-xfee"
+  adminA <- allocateParty "adminA-xfee"
+  adminB <- allocateParty "adminB-xfee"
+  alice <- allocateParty "alice-xfee"
+  bob <- allocateParty "bob-xfee"
+  now <- getTime
+
+  (factoryA, settleA) <- setupRegistries adminA [operator, alice, bob]
+  (factoryB, settleB) <- setupRegistries adminB [operator, alice, bob]
+
+  let aliceAcct = Utils.basicAccount alice
+      bobAcct = Utils.basicAccount bob
+      baseId = HoldingV2.InstrumentId with admin = adminA; id = "AAA"
+      quoteId = HoldingV2.InstrumentId with admin = adminB; id = "BBB"
+      baseLeg = V2.TransferLeg with
+        transferLegId = "base-leg"; sender = aliceAcct; receiver = bobAcct
+        amount = 2.0; instrumentId = "AAA"; meta = emptyMetadata
+      quoteLeg = V2.TransferLeg with
+        transferLegId = "quote-leg"; sender = bobAcct; receiver = aliceAcct
+        amount = 6.0; instrumentId = "BBB"; meta = emptyMetadata
+      tradeLegs =
+        [ MT.TradeLeg with admin = adminA; leg = baseLeg
+        , MT.TradeLeg with admin = adminB; leg = quoteLeg
+        ]
+      tradeRec = MT.MatchedTrade with
+        venue = operator; tradeLegs; settlementDeadline = None; policyReceipt = None
+  tradeCid <- submit operator $ createCmd tradeRec
+  let settlement = MT.mkTradeSettlementInfo tradeCid tradeRec
+      allocFor factory party admin acct legs = do
+        let spec = V2.AllocationSpecification with
+              admin; authorizer = acct
+              transferLegSides = Utils.legsToSides acct legs
+              settlementDeadline = None; nextIterationFunding = None
+              committed = False; meta = emptyMetadata
+            arg = AllocationInstructionV2.AllocationFactory_Allocate with
+              settlement; allocation = spec; requestedAt = now
+              inputHoldingCids = []; actors = [party]; extraArgs = emptyExtraArgs
+        instr <- submit party $ exerciseCmd factory arg
+        case instr.output of
+          V2.AllocationInstructionResult_Completed cid -> pure cid
+          _ -> abort "alloc must complete"
+  aliceBase <- allocFor factoryA alice adminA aliceAcct [baseLeg]
+  bobBase <- allocFor factoryA bob adminA bobAcct [baseLeg]
+  bobQuote <- allocFor factoryB bob adminB bobAcct [quoteLeg]
+  aliceQuote <- allocFor factoryB alice adminB aliceAcct [quoteLeg]
+
+  pairCid <- submit operator $ createCmd DexPair.DexPair with
+    operator
+    baseInstrumentId = baseId
+    quoteInstrumentId = quoteId
+    tradingMode = DexPair.TM_Both
+    feeModel = DexPair.FeeModel with makerFeeBps = 10; takerFeeBps = 20; poolFeeBps = 0
+    active = True
+    publicReaders = None
+    accumulatedMakerFees = None
+    accumulatedTakerFees = None
+
+  -- Cross-admin settle with a DexPair records fees across both admins.
+  settleRes <- submit operator $ exerciseCmd tradeCid MT.MatchedTrade_Settle with
+    batchesByAdmin = Map.fromList
+      [ (adminA, MT.SettlementBatchV2 with
+          allocations = [Utils.finalAllocation aliceBase, Utils.finalAllocation bobBase]
+          factoryCid = settleA; extraArgs = emptyExtraArgs)
+      , (adminB, MT.SettlementBatchV2 with
+          allocations = [Utils.finalAllocation bobQuote, Utils.finalAllocation aliceQuote]
+          factoryCid = settleB; extraArgs = emptyExtraArgs)
+      ]
+    allocationRequests = []
+    dexPairCid = Some pairCid
+  Map.size settleRes.resultsByAdmin === 2
+
+  -- The pair carries per-instrument fee accrual for both admins' legs.
+  [(_, pair)] <- query @DexPair.DexPair operator
+  let maker = optional Map.empty identity pair.accumulatedMakerFees
+      taker = optional Map.empty identity pair.accumulatedTakerFees
+  Map.lookup baseId maker === Some 0.002   -- 2.0 * 10bps
+  Map.lookup quoteId maker === Some 0.006  -- 6.0 * 10bps
+  Map.lookup baseId taker === Some 0.004   -- 2.0 * 20bps
+  Map.lookup quoteId taker === Some 0.012  -- 6.0 * 20bps
   pure ()

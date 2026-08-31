@@ -31,7 +31,7 @@
 //
 // Env (ledger + parties):
 //   CANTON_LEDGER_URL, CANTON_LEDGER_TOKEN, CANTON_SYNCHRONIZER,
-//   CANTON_DEX_PACKAGE_ID (e.g. #canton-dex-trading),
+//   CANTON_DEX_PACKAGE_ID (e.g. #canton-dex-trading-v2),
 //   CANTON_ALLOC_INSTR_PACKAGE_ID (e.g. #splice-api-token-allocation-instruction-v2),
 //   CANTON_USER_ID (default ledger-api-user),
 //   CANTON_OPERATOR -- the venue party; admin + lpRegistrar are read off the
@@ -115,8 +115,9 @@ interface Tx { transaction: { updateId: string; events: Ev[] } }
 
 // On-ledger payloads, as the JSON API renders them.
 interface PoolArg {
-  poolId: string; operator: string; lpRegistrar: string; admin: string;
-  baseInstrumentId: string; quoteInstrumentId: string;
+  poolId: string; operator: string; lpRegistrar: string;
+  baseInstrumentId: { admin: string; id: string };
+  quoteInstrumentId: { admin: string; id: string };
   lpInstrumentId: { admin: string; id: string }; feeBps: string | number;
 }
 interface PoolStateArg {
@@ -140,9 +141,13 @@ interface SwapQuoteBinding {
 }
 interface SwapRequestResult {
   settlement: unknown;
-  allocationSpec: unknown;
+  allocationSpecs: unknown[];
+  swapRequestCid: string;
   quoteBinding: SwapQuoteBinding | null;
 }
+interface AddAllocationPlan { baseReceiver: unknown; quoteReceiver: unknown; lpMintSender: unknown }
+// A RegistryBatchInput: the settlement factory + choice context for one admin.
+type RegistryBatchInput = { factoryCid: string; extraArgs: typeof EXTRA };
 
 const argOf = <T>(c: Created): T => c.createArgument as unknown as T;
 
@@ -326,6 +331,24 @@ async function authorAlloc(
   return only(creates(tx, "CantonDex.Registry.V2:Allocation"), `${label} allocation`).contractId;
 }
 
+// Stage one operator/registrar allocation from a preview plan: the plan is a
+// complete AllocationFactory_Allocate argument (settlement, spec, actors, empty
+// context), exercised on the admin's registry under the plan's actor. The
+// operator and registrar already observe their registries, so no disclosure.
+async function authorPlanAlloc(
+  factoryCid: string, actAs: string, plan: unknown, label: string,
+): Promise<string> {
+  const tx = await submit([actAs], cmdId(`stage-${label}`, factoryCid, actAs), [{
+    ExerciseCommand: {
+      templateId: `${cfg.pkgAllocInstr}:Splice.Api.Token.AllocationInstructionV2:AllocationFactory`,
+      contractId: factoryCid,
+      choice: "AllocationFactory_Allocate",
+      choiceArgument: plan,
+    },
+  }]);
+  return only(creates(tx, "CantonDex.Registry.V2:Allocation"), `${label} allocation`).contractId;
+}
+
 // The Registry is `signatory admin, observer users`, so a separately allocated
 // test party outside `users` cannot see the factory it must exercise.
 // Explicit contract disclosure is the mechanism for exactly this: fetch the
@@ -357,8 +380,8 @@ async function main() {
       pools.filter((c) => {
         const p = argOf<PoolArg>(c);
         return p.operator === cfg.operator
-          && p.baseInstrumentId === cfg.base
-          && p.quoteInstrumentId === cfg.quote
+          && p.baseInstrumentId.id === cfg.base
+          && p.quoteInstrumentId.id === cfg.quote
           && (cfg.poolId === null || p.poolId === cfg.poolId);
       }),
       `Pool for ${cfg.base}/${cfg.quote}${cfg.poolId ? ` (poolId ${cfg.poolId})` : ""}`,
@@ -410,14 +433,16 @@ async function main() {
         (await acs(admin, "CantonDex.Registry.V2:Registry")).filter((c) => argOf<RegistryArg>(c).admin === admin),
         `Registry.V2 with admin ${short(admin)}`,
       ).contractId;
-    const registryCid = cfg.registryCid ?? (await registryFor(pool.admin));
+    const registryCid = cfg.registryCid ?? (await registryFor(pool.baseInstrumentId.admin));
     const lpRegistryCid = cfg.lpRegistryCid
-      ?? (pool.lpRegistrar === pool.admin ? registryCid : await registryFor(pool.lpRegistrar));
+      ?? (pool.lpRegistrar === pool.baseInstrumentId.admin ? registryCid : await registryFor(pool.lpRegistrar));
 
     return { poolC, pool, stateC, state, rulesC, dvpC, policyC, registryCid, lpRegistryCid };
   });
 
   const { pool } = ctx;
+  // Single-admin proof: base and quote share the asset registry admin.
+  const admin = pool.baseInstrumentId.admin;
   const lp = cfg.lp ?? pool.lpRegistrar;
   const swapper = cfg.swapper ?? lp;
   const feeBps = Number(pool.feeBps);
@@ -433,16 +458,16 @@ async function main() {
   const outputId = inputIsBase ? pool.quoteInstrumentId : pool.baseInstrumentId;
 
   console.log(`pool ${pool.poolId} (${ctx.state.status}) fee ${feeBps}bps`);
-  console.log(`operator=${short(cfg.operator)} admin=${short(pool.admin)} lpRegistrar=${short(pool.lpRegistrar)}`);
+  console.log(`operator=${short(cfg.operator)} admin=${short(admin)} lpRegistrar=${short(pool.lpRegistrar)}`);
   console.log(`lp=${short(lp)} swapper=${short(swapper)} lpInstrument=${pool.lpInstrumentId.id}`);
   console.log(`reserves ${ctx.state.reserves.baseAmount} ${cfg.base} / ${ctx.state.reserves.quoteAmount} ${cfg.quote}, LP supply ${ctx.state.totalLpSupply}`);
 
   // 2. Mint what the add and the swap consume ------------------------------
   const configCidFor = async (instrumentId: string): Promise<string> =>
     only(
-      (await acs(pool.admin, "CantonDex.Registry.V2:InstrumentConfig")).filter((c) => {
+      (await acs(admin, "CantonDex.Registry.V2:InstrumentConfig")).filter((c) => {
         const i = argOf<InstrumentConfigArg>(c);
-        return i.admin === pool.admin && i.instrumentId === instrumentId;
+        return i.admin === admin && i.instrumentId === instrumentId;
       }),
       `Registry.V2 InstrumentConfig for ${instrumentId}`,
     ).contractId;
@@ -455,7 +480,7 @@ async function main() {
       retrying(`mint ${instrumentId}`, async (attempt) => {
         // Re-resolved per attempt: the previous mint rotated the config cid.
         const configCid = await configCidFor(instrumentId);
-        const tx = await submit([pool.admin, owner], cmdId(`mint-${purpose}-${attempt}`, instrumentId, amount, owner), [{
+        const tx = await submit([admin, owner], cmdId(`mint-${purpose}-${attempt}`, instrumentId, amount, owner), [{
           ExerciseCommand: {
             templateId: tid("CantonDex.Registry.V2:Registry"), contractId: ctx.registryCid,
             choice: "Registry_Mint",
@@ -465,10 +490,10 @@ async function main() {
         return only(creates(tx, "CantonDex.Registry.V2:Holding"), `minted ${instrumentId} Holding`).contractId;
       }));
 
-  const baseHoldingCid = await mint("seed-base", pool.baseInstrumentId, cfg.seedBase, lp);
-  const quoteHoldingCid = await mint("seed-quote", pool.quoteInstrumentId, cfg.seedQuote, lp);
+  const baseHoldingCid = await mint("seed-base", pool.baseInstrumentId.id, cfg.seedBase, lp);
+  const quoteHoldingCid = await mint("seed-quote", pool.quoteInstrumentId.id, cfg.seedQuote, lp);
   // A separate holding for the swap: the add locks the two deposits.
-  const swapHoldingCid = await mint("swap-in", inputId, cfg.swapIn, swapper);
+  const swapHoldingCid = await mint("swap-in", inputId.id, cfg.swapIn, swapper);
 
   // 3. DvP add: request -> the LP authors 3 allocations -> settle -----------
   console.log("\n== ADD LIQUIDITY ==");
@@ -504,6 +529,45 @@ async function main() {
   const receipt = await step("LP authors LP receipt", () =>
     authorAlloc(lp, ctx.lpRegistryCid, settlement, receiptSpec, [], "add-receipt"));
 
+  // Stage the operator receiver and registrar mint allocations. Base and quote
+  // are authored on the asset registry, the LP mint on the registrar's registry
+  // (a different contract when lpRegistrar != admin). The settle then derives
+  // the per-admin batches, so allocationContextByAdmin stays empty.
+  const addRequestedAt = new Date().toISOString();
+  const addPrep = {
+    expectedPoolId: pool.poolId, poolCid: ctx.poolC.contractId, poolStateCid: ctx.stateC.contractId,
+    lpPolicyCid: ctx.policyC.contractId, requestCid: reqAdd.cid, acceptanceCid: null, recipient: lp,
+    lpBaseDepositCid: baseDep, lpQuoteDepositCid: quoteDep, lpReceiptCid: receipt,
+    baseAmount: cfg.seedBase, quoteAmount: cfg.seedQuote,
+    minLpTokens: "0.0", knownTotalLpSupply: ctx.state.totalLpSupply,
+  };
+  const addPlan = await step("PoolLiquidityRules_PreviewAddAllocations", async () => {
+    const tx = await submit([cfg.operator, pool.lpRegistrar], cmdId("add-preview", reqAdd.cid), [{
+      ExerciseCommand: {
+        templateId: tid("CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules"), contractId: ctx.dvpC.contractId,
+        choice: "PoolLiquidityRules_PreviewAddAllocations",
+        choiceArgument: { preparation: addPrep, requestedAt: addRequestedAt },
+      },
+    }]);
+    const result = exercisedResult(tx, "PoolLiquidityRules_PreviewAddAllocations")
+      ?? (await treeExercisedResult(tx.transaction.updateId, cfg.operator, "PoolLiquidityRules_PreviewAddAllocations"));
+    if (!result) throw new Error("participant did not expose the PreviewAddAllocations result");
+    return result as AddAllocationPlan;
+  });
+  const opBaseReceiver = await step("stage operator base receiver", () =>
+    authorPlanAlloc(ctx.registryCid, cfg.operator, addPlan.baseReceiver, "add-op-base"));
+  const opQuoteReceiver = await step("stage operator quote receiver", () =>
+    authorPlanAlloc(ctx.registryCid, cfg.operator, addPlan.quoteReceiver, "add-op-quote"));
+  const registrarMint = await step("stage registrar LP mint", () =>
+    authorPlanAlloc(ctx.lpRegistryCid, pool.lpRegistrar, addPlan.lpMintSender, "add-mint"));
+
+  // Distinct settlement admins: the asset admin and the LP registrar, each with
+  // its own registry as the settlement factory. They collapse to one entry when
+  // lpRegistrar == admin.
+  const settleAdmins = [...new Set([admin, pool.lpRegistrar])];
+  const settleFactoryFor = (a: string): string =>
+    a === pool.lpRegistrar ? ctx.lpRegistryCid : ctx.registryCid;
+
   const lpBefore = await lpBalance(lp, pool);
   const addState = await step("PoolLiquidityRules_SettleAddLiquidity", async () => {
     const tx = await submit([cfg.operator, pool.lpRegistrar], cmdId("add-settle", reqAdd.cid), [{
@@ -515,10 +579,15 @@ async function main() {
           lpPolicyCid: ctx.policyC.contractId, requestCid: reqAdd.cid, acceptanceCid: null, recipient: lp,
           lpBaseDepositCid: baseDep, lpQuoteDepositCid: quoteDep, lpReceiptCid: receipt,
           baseFactoryCid: ctx.registryCid, quoteFactoryCid: ctx.registryCid, lpFactoryCid: ctx.lpRegistryCid,
-          baseQuoteSettleCid: ctx.registryCid, lpSettleCid: ctx.lpRegistryCid,
           baseAmount: cfg.seedBase, quoteAmount: cfg.seedQuote,
           minLpTokens: "0.0", knownTotalLpSupply: ctx.state.totalLpSupply,
-          requestedAt: new Date().toISOString(), poolAdminExtraArgs: EXTRA, lpRegistrarExtraArgs: EXTRA,
+          requestedAt: addRequestedAt,
+          batchesByAdmin: settleAdmins.map((a): [string, RegistryBatchInput] =>
+            [a, { factoryCid: settleFactoryFor(a), extraArgs: EXTRA }]),
+          operatorBaseReceiverCid: opBaseReceiver,
+          operatorQuoteReceiverCid: opQuoteReceiver,
+          registrarMintCid: registrarMint,
+          allocationContextByAdmin: [],
         },
       },
     }]);
@@ -560,8 +629,8 @@ async function main() {
   const reserveIn = dec.parseDecimal(inputIsBase ? addState.arg.reserves.baseAmount : addState.arg.reserves.quoteAmount);
   const reserveOut = dec.parseDecimal(inputIsBase ? addState.arg.reserves.quoteAmount : addState.arg.reserves.baseAmount);
   const expectedOut = constantProductOut(reserveIn, reserveOut, feeBps, swapIn);
-  if (expectedOut <= 0n) throw new Error(`swap of ${cfg.swapIn} ${inputId} prices out at 0 ${outputId}`);
-  if (expectedOut >= reserveOut) throw new Error(`swap of ${cfg.swapIn} ${inputId} would drain the ${outputId} reserve`);
+  if (expectedOut <= 0n) throw new Error(`swap of ${cfg.swapIn} ${inputId.id} prices out at 0 ${outputId.id}`);
+  if (expectedOut >= reserveOut) throw new Error(`swap of ${cfg.swapIn} ${inputId.id} would drain the ${outputId.id} reserve`);
   // The provided prefix has to cover amountOut; the ledger draws from the
   // front of it and leaves the rest untouched.
   const outputSliceCids: string[] = [];
@@ -572,7 +641,7 @@ async function main() {
     if (covered >= expectedOut) break;
   }
   if (covered < expectedOut) {
-    throw new Error(`${outputId} slices cover ${dec.formatDecimal(covered)}, need ${dec.formatDecimal(expectedOut)}`);
+    throw new Error(`${outputId.id} slices cover ${dec.formatDecimal(covered)}, need ${dec.formatDecimal(expectedOut)}`);
   }
   const quoteBinding: SwapQuoteBinding = {
     expectedPoolId: pool.poolId,
@@ -582,8 +651,8 @@ async function main() {
     minOutputAmount: dec.formatDecimal(expectedOut),
   };
 
-  const inBefore = await balance(swapper, pool.admin, inputId);
-  const outBefore = await balance(swapper, pool.admin, outputId);
+  const inBefore = await balance(swapper, inputId.admin, inputId.id);
+  const outBefore = await balance(swapper, outputId.admin, outputId.id);
 
   const swapReq = await step("PoolRules_RequestSwap", async () => {
     const tx = await submit([cfg.operator], cmdId("swap-req"), [{
@@ -593,6 +662,7 @@ async function main() {
         choiceArgument: {
           poolCid: ctx.poolC.contractId, swapper,
           inputInstrumentId: inputId, inputAmount: cfg.swapIn,
+          requestedAt: new Date().toISOString(), settleAt: null,
           quoteBinding,
         },
       },
@@ -614,10 +684,15 @@ async function main() {
   // The swapper is an arbitrary, separately allocated party, so it is not an
   // observer of the asset registry. Disclose the registry to it.
   const registryDisclosure = await step("disclose registry to the swapper", () =>
-    discloseRegistry(pool.admin, ctx.registryCid));
+    discloseRegistry(admin, ctx.registryCid));
 
+  // Input and output are asset instruments under one admin, so the swap
+  // collapses to one combined allocation and one settlement batch.
+  const swapAdmins = [...new Set([inputId.admin, outputId.admin])];
+  const swapSpec = swapReq.allocationSpecs[0];
+  if (!swapSpec) throw new Error("PoolRules_RequestSwap returned no allocation spec");
   const swapAlloc = await step("swapper authors the input allocation", () =>
-    authorAlloc(swapper, ctx.registryCid, swapReq.settlement, swapReq.allocationSpec, [swapHoldingCid],
+    authorAlloc(swapper, ctx.registryCid, swapReq.settlement, swapSpec, [swapHoldingCid],
       "swap-in", registryDisclosure));
 
   const swapState = await step("PoolRules_Swap", async () => {
@@ -633,9 +708,11 @@ async function main() {
           // choice aborts instead of settling a swap this script would then
           // have to explain.
           minOutputAmount: dec.formatDecimal(expectedOut),
-          swapperAllocationCid: swapAlloc,
+          swapperAllocationCidsByAdmin: swapAdmins.map((a): [string, string] => [a, swapAlloc]),
           inputSliceCid: headInput.contractId, outputSliceCids,
-          factoryCid: ctx.registryCid, extraArgs: EXTRA,
+          batchesByAdmin: swapAdmins.map((a): [string, RegistryBatchInput] =>
+            [a, { factoryCid: ctx.registryCid, extraArgs: EXTRA }]),
+          swapAllocationRequestCids: [],
           quoteBinding,
         },
       },
@@ -658,10 +735,10 @@ async function main() {
   // The fee stays in the pool, so the invariant may only grow.
   atLeast(dec.mul(newBase, newQuote), dec.mul(oldBase, oldQuote), "x*y=k non-decreasing");
 
-  const inAfter = await balance(swapper, pool.admin, inputId);
-  const outAfter = await balance(swapper, pool.admin, outputId);
-  eqDec(inBefore - inAfter, swapIn, `swapper paid ${inputId}`);
-  eqDec(outAfter - outBefore, expectedOut, `swapper received ${outputId}`);
+  const inAfter = await balance(swapper, inputId.admin, inputId.id);
+  const outAfter = await balance(swapper, outputId.admin, outputId.id);
+  eqDec(inBefore - inAfter, swapIn, `swapper paid ${inputId.id}`);
+  eqDec(outAfter - outBefore, expectedOut, `swapper received ${outputId.id}`);
 
   // Reserves are derived state; the slices are the funds. Prove they still
   // agree ON-LEDGER (the choice aborts if any per-side sum diverges).
@@ -681,9 +758,9 @@ async function main() {
     return { slices: cids.length };
   });
 
-  console.log(`\nfinal reserves: ${swapState.arg.reserves.baseAmount} ${pool.baseInstrumentId} / ${swapState.arg.reserves.quoteAmount} ${pool.quoteInstrumentId}`);
-  console.log(`swap: in ${cfg.swapIn} ${inputId} -> out ${dec.formatDecimal(expectedOut)} ${outputId} (fee ${feeBps}bps, ${reconciled.slices} slices reconciled)`);
-  console.log(`swapper balances: ${inputId} ${dec.formatDecimal(inBefore)} -> ${dec.formatDecimal(inAfter)}, ${outputId} ${dec.formatDecimal(outBefore)} -> ${dec.formatDecimal(outAfter)}`);
+  console.log(`\nfinal reserves: ${swapState.arg.reserves.baseAmount} ${pool.baseInstrumentId.id} / ${swapState.arg.reserves.quoteAmount} ${pool.quoteInstrumentId.id}`);
+  console.log(`swap: in ${cfg.swapIn} ${inputId.id} -> out ${dec.formatDecimal(expectedOut)} ${outputId.id} (fee ${feeBps}bps, ${reconciled.slices} slices reconciled)`);
+  console.log(`swapper balances: ${inputId.id} ${dec.formatDecimal(inBefore)} -> ${dec.formatDecimal(inAfter)}, ${outputId.id} ${dec.formatDecimal(outBefore)} -> ${dec.formatDecimal(outAfter)}`);
   console.log(`LP supply ${swapState.arg.totalLpSupply}`);
   console.log("PASS: existing pool seeded via the wallet-authored DvP add, and a swap settled and asserted against it");
   console.log(`state changed on participant: run=${RUN}, pool=${pool.poolId}`);

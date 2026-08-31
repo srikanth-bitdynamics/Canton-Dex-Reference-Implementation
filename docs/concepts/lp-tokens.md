@@ -1,9 +1,9 @@
 # LP tokens
 
 An LP token is an ordinary V2 holding whose mint and burn ride the *same*
-atomic settlement that moves the underlying base and quote. There is no
-separate issuance lifecycle — no settle, no mint. One fungible instrument per
-pool, and its value is realised only by redeeming it.
+atomic settlement that moves the underlying base and quote. Under the liquidity
+choices there is no separate issuance lifecycle — no settle, no mint. One
+fungible instrument per pool, and its value is realised only by redeeming it.
 
 ## One fungible instrument per pool
 
@@ -26,13 +26,15 @@ backs. (Why this matters for wallets and downstream dApps is in
 Adding and removing liquidity settle through `PoolLiquidityRules` —
 `PoolLiquidityRules_SettleAddLiquidity` and
 `PoolLiquidityRules_SettleRemoveLiquidity`. Each choice is one atomic
-transaction that runs *two* `SettlementFactory_SettleBatch` calls under
-different authorities (a split-admin DvP):
+transaction that groups settlement per instrument admin and exercises one
+`SettlementFactory_SettleBatch` per admin — one to three in all:
 
-- the base/quote batch under `pool.admin`, moving the real assets into or out of
-  the operator-custodied reserves;
-- the LP mint/burn batch under `pool.lpRegistrar`, creating or destroying the LP
-  holding.
+- the base and quote batches, each under its asset's own registry admin, moving
+  the real assets into or out of the operator-custodied reserves;
+- the LP mint/burn batch under the LP registrar (`lpRegistrar`), creating or
+  destroying the LP holding.
+
+When base and quote share an admin, their batches collapse into one.
 
 A mint and a burn are just transfer legs to and from two reserved accounts whose
 `owner` is `None`. `Registry.V2` recognises exactly these as admin-authorised
@@ -64,12 +66,20 @@ Two things about this are non-obvious:
   legs. Both batches are all-or-nothing together: you cannot receive LP tokens
   without your base+quote landing in the reserves, and you cannot pull assets out
   without your LP holding burning. The mint is a sibling of the delivery, not a
-  standalone issuance step that could run on its own.
+  standalone issuance step that could run on its own. This guarantee is a
+  property of `PoolLiquidityRules_SettleAddLiquidity` and
+  `PoolLiquidityRules_SettleRemoveLiquidity`, not of the LP instrument itself: the
+  reference registry still exposes the raw `Registry_Mint`/`Registry_Burn`, and
+  the policy's `LPTokenPolicy_RecordMint`/`_RecordBurn` (controller `lpRegistrar`)
+  can be exercised on their own. A registrar driving those choices directly sits
+  outside this guarantee.
 - **The mint amount is bounded, not trusted.** The LP receipt carries the
-  operator's off-ledger quote, but the settle recomputes the fair entitlement
-  on-ledger — `sqrt(base·quote)` at first funding, else pro-rata — and rejects a
-  receipt claiming more than that beyond a `1e-6` dust tolerance. The registrar
-  signs the mint; `PoolLiquidityRules` bounds it.
+  operator's off-ledger quote, and that quoted amount is what mints; the settle
+  validates it against the fair entitlement — `sqrt(base·quote)` at first
+  funding, else pro-rata — within a `1e-6` dust tolerance, rejecting a receipt
+  that claims more. This check runs procedurally inside the add choice, not as a
+  template invariant. The registrar signs the mint; `PoolLiquidityRules` bounds
+  it.
 
 ```mermaid
 flowchart TB
@@ -88,7 +98,10 @@ flowchart TB
 Supply is tracked in two places and kept in lockstep: `LPTokenPolicy.totalSupply`
 and `PoolState.totalLpSupply`. Each settle asserts they already agree, then
 `LPTokenPolicy_RecordMint` / `LPTokenPolicy_RecordBurn` moves the policy's total
-while the same choice rewrites `PoolState` with the matching delta.
+while the same choice rewrites `PoolState` with the matching delta. The lockstep
+is maintained by the settle choices; `LPTokenPolicy_RecordMint`/`_RecordBurn`
+exercised on their own move only the policy's total, leaving `PoolState`
+untouched.
 
 ## Value is realised by redemption
 
@@ -104,12 +117,23 @@ baseOut  = reserves.baseAmount  · share           -- floored
 quoteOut = reserves.quoteAmount · share            -- floored
 ```
 
-Because the reserves include accrued fees, redeeming a share returns more base
-and quote than backed it at deposit time — that surplus *is* the LP return.
-Rounding is one-directional (`floorDiv`/`floorMul`), so the pool never pays out
-more than the exact share and `x·y = k` stays non-decreasing. A pool that never
-traded returns exactly what went in; there is no off-ledger event a holder must
-crystallise first.
+Redemption pays the floored pro-rata share of the pool's *current* reserves.
+A directional swap raises one reserve and lowers the other, so as the pool
+trades its reserves settle into a shifted mix — more of whatever was swapped in,
+less of what was taken out — on top of the fees that accrue in the pool. A fixed
+LP balance's share of that mix can therefore be worth more or less per side than
+what backed it at deposit time, depending on net trade direction. What grows
+monotonically is `x·y` (the constant-product `k`): each swap's fee stays in the
+pool and enlarges it (in pool terms, before rounding). That growth in pool units
+is not a guaranteed gain in outside value, though. Measured against an external
+numeraire, adverse price moves (impermanent loss) and the one-directional floor
+rounding can leave a redeemer with less value than simply holding the deposited
+base and quote. Rounding is one-directional (`floorDiv`/`floorMul`), so the pool
+never pays out more than the exact share.
+The paid-out base and quote leave the reserves, so removal *lowers* them and
+`x·y = k` falls; `k` stays non-decreasing only across swaps, not on removal. A
+pool that never traded returns exactly what went in; there is no off-ledger
+event a holder must crystallise first.
 
 ---
 

@@ -10,6 +10,7 @@
 // Idempotent.
 
 import { openDb } from "../src/indexer/db.js";
+import { deriveTradeParties } from "../src/indexer/trade-parties.js";
 import * as dec from "../src/pool/decimal.js";
 import { rootLogger } from "../src/lib/logger.js";
 
@@ -113,32 +114,17 @@ const updateTrade = db.prepare(
 
 for (const t of trades) {
   tradesChecked += 1;
-  let parsed: {
-    transferLegs?: Array<{
-      sender?: { owner?: string };
-      receiver?: { owner?: string };
-    }>;
-    policyReceipt?: { acceptedDealer?: string | null } | null;
-  };
+  let payload: unknown;
   try {
-    parsed = JSON.parse(t.payload);
+    payload = JSON.parse(t.payload);
   } catch {
     continue;
   }
-  const legs = parsed.transferLegs ?? [];
-  const legParties = [
-    ...new Set(
-      legs.flatMap((l) => [l.sender?.owner, l.receiver?.owner]).filter(Boolean),
-    ),
-  ] as string[];
-
-  // Same derivation as the indexer.
-  const acceptedDealer = parsed.policyReceipt?.acceptedDealer ?? null;
-  const dealer = acceptedDealer;
-  const trader = acceptedDealer
-    ? (legParties.find((x) => x !== acceptedDealer) ?? null)
-    : (legs[0]?.sender?.owner ?? null);
-  const counterparty = legParties.find((x) => x !== trader) ?? null;
+  // Same derivation as the indexer, shared via `deriveTradeParties`.
+  const { trader, dealer, counterparty } = deriveTradeParties(payload);
+  // No identifiable leg parties (empty, legacy-empty, or malformed payload):
+  // leave the stored row untouched rather than overwriting it with null.
+  if (trader === null && counterparty === null) continue;
 
   if (trader === t.trader && dealer === t.dealer && counterparty === t.counterparty) {
     continue;

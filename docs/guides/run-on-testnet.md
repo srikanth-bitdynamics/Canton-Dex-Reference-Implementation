@@ -121,6 +121,10 @@ npm run testnet
 | `ALLOWED_ORIGINS` | yes for cross-origin browser access | Exact comma-separated web origins. Unset is default-deny. |
 | `DEX_CALLER_JWT_SECRET`, `DEX_CALLER_JWT_AUDIENCE` | optional | Bind private reads and trader-subject writes to `X-Caller-Token.sub` in a multi-user deployment. |
 | `DEX_HOSTED_RFQ_RELAY` | optional, default `0` | Custodial RFQ create/cancel/accept under hosted trader authority; enabling it requires caller binding and participant rights for those traders. |
+| `DEX_EXTERNAL_REGISTRIES` | optional | JSON map of third-party instrument-admin party id to that admin's CIP-112 registry base URL. Unset keeps every instrument on the bootstrap-configured registrars. |
+| `DEX_EXTERNAL_REGISTRY_TOKEN` | optional | Bearer token sent to the external registry HTTP APIs. |
+| `DEX_AMULET_SCAN_URL` | optional | Trusted Scan node URL. Registers the live DSO party as an external registry for the Amulet (CC) leg, and switches `/v1/status`'s slot to the latest open Amulet mining round. |
+| `DEX_AMULET_REGISTRY_BASE` | optional | Overrides the Amulet registry mount (default `<DEX_AMULET_SCAN_URL>/api/scan`). |
 
 The exact variable contract is the header of
 [`testnet-server.ts`](../../services/operator-backend/src/testnet-server.ts);
@@ -199,8 +203,12 @@ curl -s http://localhost:8080/v1/pools   | python3 -m json.tool
 
 Expected:
 
-- `/v1/status` returns the configured network and a live slot.
-- `/v1/context` returns operator/admin/LP registrar parties and factory CIDs.
+- `/v1/status` returns the configured network and a live slot (the participant
+  ledger-end offset, or the latest open Amulet mining round when
+  `DEX_AMULET_SCAN_URL` is set).
+- `/v1/context` returns exactly the operator, LP registrar, and asset-admin
+  parties plus the network label. It carries no factory CIDs; those are
+  discovered per operation via `POST /v1/registry/allocation-factory`.
 - `/v1/pairs` and `/v1/pools` return the on-ledger contracts visible to the
   operator party.
 
@@ -222,8 +230,11 @@ bash scripts/deploy-testnet.sh
 ```
 
 This phase first requires `/v1/status` to succeed. It queries existing pairs and
-pools, creates only missing BTC/USDC metadata, and stops on any HTTP failure. It
-creates an **unfunded** pool; it does not fabricate reserves or LP holdings.
+pools, creates the pair/pool metadata only if missing, and stops on any HTTP
+failure. The base/quote symbols default to the placeholders `BTC`/`USDC` (both on
+`CANTON_ADMIN`); override them with `DEPLOY_BASE`, `DEPLOY_QUOTE`, and
+`DEPLOY_LP_INSTRUMENT` to seed a real instrument pair. It creates an **unfunded**
+pool; it does not fabricate reserves or LP holdings.
 
 Expected checkpoint:
 

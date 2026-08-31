@@ -72,6 +72,23 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   const projectId = (import.meta.env.VITE_WC_PROJECT_ID ?? "") as string;
   const networkId = (import.meta.env.VITE_CANTON_NETWORK_ID ??
     "canton:devnet") as string;
+  // Loop (`loop_connect`) and PartyLayer (`active_session`) persist a connection
+  // without recording its network. A session restored after the deployment
+  // network changes still carries a ticket minted against the old network, so
+  // connect fails with "ticket invalid or expired". Drop those sessions whenever
+  // the configured network differs from the last one this browser saw.
+  if (typeof window !== "undefined") {
+    try {
+      const seenKey = "canton-dex:wallet-network";
+      if (window.localStorage.getItem(seenKey) !== networkId) {
+        window.localStorage.removeItem("loop_connect");
+        window.localStorage.removeItem("active_session");
+        window.localStorage.setItem(seenKey, networkId);
+      }
+    } catch {
+      // Storage may be unavailable; the adapters still load.
+    }
+  }
   const apiBase =
     (import.meta.env.VITE_API_BASE ?? "http://localhost:8080") as string;
   const enableSdk =

@@ -41,8 +41,8 @@ export function Layout() {
     ? isInMemoryPreview
       ? 'Preview · no Canton'
       : status.synced
-      ? `Synced · slot ${status.slot.toLocaleString()}`
-      : `Catching up · slot ${status.slot.toLocaleString()}`
+      ? `Synced · round ${status.slot.toLocaleString()}`
+      : `Catching up · round ${status.slot.toLocaleString()}`
     : 'Connecting…';
 
   return (

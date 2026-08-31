@@ -51,7 +51,10 @@ re-floated through IEEE-754. The indexer derives reserve deltas with the
 fixed-point decimal module, stores them as strings, and `/v1/swaps` serves those
 exact strings. In addition,
 `/v1/instruments` reports each instrument's `decimals` so a client can learn
-scale from the API. Existing projection rows can be reindexed after an upgrade.
+scale from the API. Corrections after a code upgrade reach existing projection
+rows through append-only migrations that backfill them in place; the indexer
+reconciles the current active contract set on each tick and only appends rows it
+has not already recorded, so it does not re-derive rows already written.
 
 Proven by
 [`decimal-money.test.ts`](../../services/operator-backend/test/decimal-money.test.ts)
@@ -110,8 +113,8 @@ Proven by
 [`swaps-kind-filter.test.ts`](../../services/operator-backend/test/swaps-kind-filter.test.ts)
 (`?kind=` returns add- and remove-liquidity rows and composes with `?pair=`) and
 [`order-fill-recording.test.ts`](../../services/operator-backend/test/order-fill-recording.test.ts)
-(a discovered cross settles in exactly one submission, leaving no stranded
-collateral).
+(a discovered cross settles in one value-moving submission after a read-only
+preview, leaving no stranded collateral).
 
 ### Answered by design
 

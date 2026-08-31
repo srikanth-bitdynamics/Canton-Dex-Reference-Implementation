@@ -135,20 +135,21 @@ describe("test taxonomy boundaries", () => {
     assert.deepEqual(websitePaths, expected);
   });
 
-  it("uses the live official archive for SDK 3.5 learning links", () => {
+  it("uses the current Canton Network docs for the Daml learning links", () => {
     const docs = [
       readFileSync(join(ROOT, "README.md"), "utf8"),
       readFileSync(join(ROOT, "docs/getting-started.md"), "utf8"),
       readFileSync(join(ROOT, "docs/concepts/canton-daml-primer.md"), "utf8"),
     ].join("\n");
+    // The versioned 3.5 manuals were retired; links point at the current docs.
+    assert.doesNotMatch(docs, /archived\.docs\.digitalasset\.com/);
     assert.doesNotMatch(docs, /https:\/\/docs\.digitalasset\.com\/build\/3\.5/);
-    assert.match(
-      docs,
-      /https:\/\/archived\.docs\.digitalasset\.com\/build\/3\.5\/dpm\/manual-install\.html/,
-    );
+    assert.match(docs, /https:\/\/docs\.canton\.network\/sdks-tools\/cli-tools\/dpm/);
+    assert.match(docs, /https:\/\/docs\.canton\.network\/sdks-tools\/sdks\/daml-sdk/);
+    assert.match(docs, /https:\/\/docs\.canton\.network\/appdev\/modules\/m3-contract-templates/);
   });
 
-  it("keeps registry documentation operation-specific and fail-closed", () => {
+  it("keeps registry documentation operation-specific and staged-atomic for liquidity", () => {
     const guide = readFileSync(join(ROOT, "docs/guides/choice-context.md"), "utf8");
     const obsolete = [
       ["get", "Factories"],
@@ -163,7 +164,9 @@ describe("test taxonomy boundaries", () => {
       /POST \/registry\/allocation-instruction\/v2\/allocation-factory/,
     );
     assert.match(guide, /POST \/registry\/allocation\/v2\/settlement-factory/);
-    assert.match(guide, /RegistryError\("unsupported", \.\.\.\)/);
-    assert.match(guide, /do not exist before that transaction/);
+    // Add/remove liquidity is now staged but atomic over any standard registry;
+    // the old "generic HTTP cannot drive atomic liquidity" limitation was removed.
+    assert.match(guide, /staged but atomic/i);
+    assert.doesNotMatch(guide, /RegistryError\("unsupported"/);
   });
 });

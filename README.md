@@ -179,12 +179,12 @@ contract IDs. Use the Daml tests below to exercise real contract semantics.
 - [Node.js 24 or newer](https://nodejs.org/en/download) and its bundled npm.
 - [Git](https://git-scm.com/downloads/).
 - [Eclipse Temurin JDK 17 or newer](https://adoptium.net/temurin/releases/?version=17),
-  [DPM](https://archived.docs.digitalasset.com/build/3.5/dpm/manual-install.html), and
+  [DPM](https://docs.canton.network/sdks-tools/cli-tools/dpm), and
   Daml SDK 3.5.2 for Daml builds/tests and the default live-Canton proof.
 
 See the [full prerequisites](docs/getting-started.md#prerequisites). If the
 language is new to you, start with Digital Asset's official
-[Get started with Daml](https://archived.docs.digitalasset.com/build/3.5/tutorials/get-started/index.html)
+[Get started with Daml](https://docs.canton.network/sdks-tools/sdks/daml-sdk)
 tutorial.
 
 ### 1. Install
@@ -225,7 +225,7 @@ dApp is using before treating any displayed state as ledger-backed.
 
 ### 4. Explore
 
-1. Confirm Trade and Pools show the seeded `BTC/USDC` market.
+1. Confirm Trade and Pools show the seeded `Amulet/USDCx` market.
 2. Select **Mock Wallet (dev)** and inspect the `trader-demo` holdings.
 3. Change a swap amount and inspect the quote, fee, and price impact.
 4. Browse Pools, Orders, RFQ, Portfolio, and Admin to learn the surfaces.

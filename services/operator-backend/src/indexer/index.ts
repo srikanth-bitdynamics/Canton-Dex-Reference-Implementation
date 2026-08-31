@@ -9,6 +9,7 @@
 // so a crash just means a missed poll, not a corrupt DB.
 
 import type { Db } from "./db.js";
+import { deriveTradeParties } from "./trade-parties.js";
 import type { LedgerSubmitter } from "../ledger/index.js";
 import type { InstrumentId, Party } from "../types.js";
 import * as dec from "../pool/decimal.js";
@@ -203,25 +204,10 @@ export class Indexer {
         // label and parties come from each leg.
         const tradeLegs = t.tradeLegs ?? [];
         const legs = tradeLegs.map((tl) => tl.leg);
-        // The trader does not follow leg direction: legs[0]'s sender flips
-        // with the side, so reading both parties off it inverted every buy.
-        // The venue-signed receipt names the dealer; the trader is the other
-        // party. Both writers put the base leg first, so the pair reads off
-        // leg order, but the roles never do.
-        const legParties = Array.from(
-          new Set(
-            legs.flatMap((l) => [l.sender?.owner, l.receiver?.owner]).filter(Boolean),
-          ),
-        ) as Party[];
-        const acceptedDealer = t.policyReceipt?.acceptedDealer ?? null;
-        // `dealer` is a role only a receipt establishes; `counterparty` is
-        // the other party either way, since /v1/trades serves named columns.
-        const dealer = acceptedDealer;
-        const trader = acceptedDealer
-          ? (legParties.find((x) => x !== acceptedDealer) ?? null)
-          : (legs[0]?.sender?.owner ?? null);
-        const counterparty =
-          legParties.find((x) => x !== trader) ?? null;
+        // Roles come from the venue-signed receipt plus the leg parties, never
+        // from leg direction. Shared with the reindex script so the two writers
+        // cannot drift apart.
+        const { trader, dealer, counterparty } = deriveTradeParties(t);
         const baseSym = legs[0]?.instrumentId ?? "";
         const quoteSym = legs[1]?.instrumentId ?? "";
         const pair = `${baseSym}/${quoteSym}`;

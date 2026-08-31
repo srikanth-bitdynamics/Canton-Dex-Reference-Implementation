@@ -27,11 +27,16 @@ side of every leg in the batch, with no missing or superfluous authorizations.
 
 ## Instrument identity
 
-`InstrumentId = { admin : Party, id : Text }` is the identity of an asset
-everywhere internally — Daml records, matching keys, HTTP payloads, indexer
-schema, pricing keys, wallet balances, UI routes, and history. Text symbols are
-display labels only; two registries may both issue an asset called `USDC`, so a
-bare id never identifies an instrument. `InstrumentId` derives `Ord`, so it is a
+`InstrumentId = { admin : Party, id : Text }` is the identity of an asset in the
+settlement and matching model — Daml records, matching keys, admin-keyed
+batching, HTTP settlement payloads, indexer schema, wallet balances, and history
+carry the full `{admin, id}`. Text symbols are display labels only; two
+registries may both issue an asset called `USDC`, so a bare id cannot safely
+identify an instrument for settlement. Some display and pricing paths still match
+by bare symbol: pool price lookups fall back to first match when a pair segment
+is not admin-qualified, and a bare swap `inputInstrumentId` is resolved against
+the pool and rejected as ambiguous only when both sides share that id.
+`InstrumentId` derives `Ord`, so it is a
 valid `Map` key; amount tables keyed by instrument (fees, notionals) use
 `Map InstrumentId Decimal`, never a text-serialized key.
 
@@ -50,15 +55,27 @@ These hold for every flow.
   an external registrar (USDCx). Every per-admin batch settles on the
   registry-returned disclosures merged into the transaction plus the operator's
   existing allocation visibility. No flow reads as an external admin.
-- **Bind by view, not position.** Allocations created by a wallet batch are
-  associated to their role by fetching each allocation view and matching
-  `{admin, authorizer, settlement, authorized leg sides}` — never by
-  transaction-tree event order. Settlement results are mapped back to their
-  allocations through a tagged batch plan, never by raw list position.
-- **Atomic multi-allocation cleanup.** When a settlement aborts (a stale quote,
-  a withdrawn allocation), every allocation involved is cancellable in one
-  operation, each with its own per-admin choice context; one missing context or
-  failed cancel rolls the whole cleanup back.
+- **Bind by admin across batches, by position within one.** Settlement results
+  are mapped back to their allocations through a tagged batch plan keyed by
+  admin, not by raw position across the merged batches. Within a single admin's
+  batch, though, the returned next-iteration cids are position-correlated with
+  that admin's input allocations: `AdminBatch.nextIterationFor` `zip`s
+  `frag.allocations` with the settle result's `nextIterationAllocationCids`, then
+  matches each allocation to its next cid by cid. Recovery is the one path that
+  leans on tree order: when a
+  wallet returns only an `updateId`, `recoverCreatedAllocations` reads the
+  created `Allocation` cids from the transaction tree in node/command order and
+  the caller maps them to admins positionally, so it relies on deterministic
+  creation order in the tree. Within a single flow the recovered cids are then
+  bound to their roles by index: `settleAddLiquidity` destructures them as
+  `[lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid]`, and a swap takes the
+  input-admin cid first. This is why the wallet must author the allocations in
+  the canonical order for that flow.
+- **Cleanup on abort.** When a settlement aborts (a stale quote, a withdrawn
+  allocation), the order book cancels all of an order's allocations in one
+  all-or-nothing `Order_Cancel`. Swap and liquidity flows have no single atomic
+  cleanup: their uncommitted allocations are withdrawn individually by the trader
+  through the registry's `Allocation_Withdraw`.
 
 ## RFQ / OTC (implemented, `3c165e3`)
 
@@ -72,14 +89,17 @@ resolves each leg's admin from the listed venue pair.
 ## AMM swaps and liquidity
 
 `Pool` carries `baseInstrumentId`, `quoteInstrumentId`, `lpInstrumentId :
-InstrumentId`. `PoolSlice` stores `instrumentId : InstrumentId`, and every
-settle/reconcile path validates the slice allocation view against it.
+InstrumentId`. `PoolSlice` stores `instrumentId : InstrumentId`. A settle path
+validates the slice allocation view against it; reconcile does not re-inspect the
+allocation. `PoolRules_ReconcileState` fetches the pool's slices, checks each
+slice's `instrumentId` against its pool side, and sums `PoolSlice.amount` against
+`PoolState.reserves` — auditing the recorded slice amounts and instrument ids and
+trusting the slice-to-allocation binding established at settle time.
 
 Swap and liquidity settle through admin-keyed batches:
 
 ```
 data RegistryBatchInput = RegistryBatchInput with
-  traderAllocationCids : [ContractId V2.Allocation]
   factoryCid : ContractId V2.SettlementFactory
   extraArgs : ExtraArgs
 
@@ -135,10 +155,11 @@ allocation and one batch.
   `Some TextMap.empty`); otherwise all finalize with `nextIterationFunding =
   None` and the order closes.
 - **Tagged results.** `OrderMatchExecution_Execute` takes
-  `batchesByAdmin : Map Party RegistrySettlementInput`
-  (`RegistrySettlementInput = { factoryCid, extraArgs }`), builds a tagged batch
+  `batchesByAdmin : Map Party RegistryBatchInput`
+  (`RegistryBatchInput = { factoryCid, extraArgs }`), builds a tagged batch
   plan, and zips each `SettleBatchResult` back to its allocations to produce
-  `nextAllocationCidsByAdmin`. It never reads results by position.
+  each order's next-iteration allocations by admin. It never reads results by
+  position.
 - **Atomic cancel.** `Order_Cancel` cancels every allocation in
   `allocationCidsByAdmin`, all-or-nothing.
 
@@ -158,8 +179,8 @@ concrete legs at settlement. `OrderMatchExecution` constrains those legs to the
 matched price, quantity, pair, and ownership, but the registry itself cannot
 prove the operator entered through that choice rather than another. This is the
 operator trust the order book already relies on; cross-admin support does not
-widen it. Self-custody wallets that authorize their own allocations bound this
-trust to a single fill.
+widen it. AMM swaps and liquidity differ — the trader authors every leg side up
+front, so settlement cannot add or alter trader authority.
 
 ## Deployment cutover
 

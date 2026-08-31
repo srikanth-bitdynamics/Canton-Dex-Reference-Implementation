@@ -51,10 +51,12 @@ trader.
 - **Base URL.** Served on the configured port (default `8080`); examples use
   `http://localhost:8080`.
 - **Versioning.** Every route is under `/v1`.
-- **JSON everywhere.** Amounts are Daml `Decimal` **strings** at scale 10, never
-  JSON numbers — the API never round-trips a value through a float. (Derived
-  ratios that are not amounts — a 24h price change — are the one exception, and
-  are documented as such.)
+- **JSON everywhere.** Monetary amounts are Daml `Decimal` **strings** at scale
+  10, never JSON numbers — the API never round-trips a value through a float. A
+  few fields are genuine JSON numbers: `slot`, `feeBps`, and the `/v1/stats/24h`
+  trio. Two of that trio are non-amounts — `priceChange24h` (a ratio) and
+  `swapCount24h` (a count) — but `volume24h` is the one exception to the strings
+  rule: a monetary (summed base-asset) amount emitted as a number.
 - **Request id.** Every response carries `X-Request-Id`, echoed from the request
   if supplied, otherwise generated.
 - **Body limit.** POST bodies over 1 MiB are rejected with **413**.
@@ -72,10 +74,12 @@ The error envelope:
 }
 ```
 
-A handful of store-gated routes (see
-[indexer-backed reads](#reads--history-stats-indexer-backed)) answer with a bare
-`{ "error": "…" }` and **503** when their backing store is absent, rather than
-the full envelope.
+Only the central error handler emits that full envelope. `X-Request-Id` is set
+on every response, but many inline responses — validation and auth rejections,
+and the store-gated **503**s (see
+[indexer-backed reads](#reads--history-stats-indexer-backed)) — answer with a
+bare `{ "error": "…" }` (sometimes `{ "error": "…", "code": "…" }`) and no
+`requestId` field.
 
 ## Authorization
 
@@ -119,31 +123,32 @@ Auth is **open** for market reads unless the row says otherwise. Rows marked
 
 | Method · Path | Purpose |
 |---|---|
-| `GET /v1/context` | Static parties and factory CIDs the dApp needs to build wallet intents |
-| `GET /v1/status` | Network id, ledger slot (offset), sync flag, server time |
+| `GET /v1/context` | Static venue parties (operator, lpRegistrar, admin) and network id |
+| `GET /v1/status` | Network id, ledger slot, sync flag, server time |
 | `GET /v1/pairs` | All `DexPair` contracts (whether or not they have a pool) |
-| `GET /v1/pools` | All active pools |
+| `GET /v1/pools` | Every pool that is not `Paused` (includes `Unfunded` pools) |
 | `GET /v1/instruments` | Instrument metadata, merged from the registry configs; `?ids=BTC,USDC` filters |
 | `GET /v1/prices?pairs=` | Advisory pool mid-prices for fiat display |
 
-`GET /v1/context` returns the `DexContext` — the operator holds the knowledge of
-which admin governs which instrument and which factory to allocate against, so
-it surfaces it here rather than making the dApp guess:
+`GET /v1/context` returns the `DexContext` — the static venue parties and the
+network id, nothing more. Factory CIDs, choice contexts, and disclosures are
+**not** here; they are discovered per operation from the relevant registry once
+the exact choice arguments exist (see
+[factory discovery](#factory-discovery)):
 
 ```json
-{
-  "operator": "...", "lpRegistrar": "...", "admin": "...",
-  "allocationFactoryCid": "...", "settlementFactoryCid": "...",
-  "allocationFactoryExtraArgs": { "context": { "values": {} }, "meta": { "values": {} } },
-  "allocationFactoryDisclosure": [ /* DisclosedContract[] for the wallet */ ],
-  "network": "canton:devnet"
-}
+{ "operator": "...", "lpRegistrar": "...", "admin": "...", "network": "canton:devnet" }
 ```
 
-`GET /v1/status` reports `slot` as the participant's latest ledger-end offset,
-polled every two seconds. `synced` reflects the **most recent** probe. A failed
-configured-participant probe keeps the last real offset and returns
-`synced:false`; only the no-Canton in-memory dev server uses a local counter:
+`GET /v1/status` reports `slot` as the participant's latest ledger-end offset by
+default, polled every two seconds; when `DEX_AMULET_SCAN_URL` is set it instead
+reports the latest open Amulet mining-round number. `synced` reflects the
+**most recent** probe. A failed configured-participant probe keeps the last real
+offset and returns `synced:false`; the no-Canton in-memory dev server uses a
+local counter. When the Amulet scan is configured, a successful mining-round
+poll sets `synced:true` and returns before the poll reaches the participant
+offset probe, so `synced:true` can reflect a healthy scan without a successful
+participant probe:
 
 ```json
 { "network": "canton:devnet", "slot": 1234567, "synced": true, "serverTime": "2026-05-17T..." }
@@ -161,6 +166,30 @@ fields until `registry-client` implements the standard's off-ledger
 
 ```json
 [ { "instrumentId": "BTC", "symbol": "BTC", "decimals": 8, "isin": null, "cusip": null, "description": null } ]
+```
+
+### Factory discovery
+
+| Method · Path | Purpose | Auth |
+|---|---|---|
+| `POST /v1/registry/allocation-factory` | Resolve the Token Standard V2 allocation factory for one registry admin | open |
+
+Wallet intents allocate against a registry's `AllocationFactory`, whose CID and
+choice context are discovered per operation once the exact
+`AllocationFactory_Allocate` argument exists — not baked into `/v1/context`. The
+caller supplies the registry `admin` and the exact Daml-JSON `choiceArguments`;
+the response carries the factory to exercise, its extra choice arguments, and
+the disclosed contracts the wallet needs:
+
+```json
+// request
+{ "admin": "...", "choiceArguments": { /* AllocationFactory_Allocate arg */ } }
+// response
+{
+  "factoryCid": "...",
+  "extraArgs": { "context": { "values": {} }, "meta": { "values": {} } },
+  "disclosure": [ /* DisclosedContract[] for the wallet */ ]
+}
 ```
 
 ### Reads — order book
@@ -216,8 +245,11 @@ a role, set only where a signed policy receipt names one, so it is `null` on
 order-book fills. On `/v1/swaps`, `inputAmount`/`outputAmount` are derived
 textually from the signed reserve deltas the indexer stores — a positive
 `baseDelta` means the pool gained base, i.e. the swapper sent base and received
-quote — so the stored scale survives. `/v1/stats/24h`'s `priceChange24h` is the
-one genuinely float-valued field on the API: it is a ratio, not an amount.
+quote — so the stored scale survives. `/v1/stats/24h` answers with JSON numbers, not
+decimal strings — `priceChange24h` (a ratio), `volume24h` (a summed base
+amount, the one monetary value this API emits as a number rather than a
+string), and `swapCount24h` (a count); `priceChange24h` and `volume24h` are
+`null` until the window holds enough data.
 
 ### Reads — RFQ
 
@@ -277,9 +309,11 @@ or the logical id (e.g. `"BTC-USDC"`).
 
 ## Write endpoints
 
-All writes below return **400** for malformed JSON or a missing/invalid field
+Most writes below return **400** for malformed JSON or a missing/invalid field
 (amounts must be `Decimal` strings, parties canonical `hint::fingerprint`, cids
-non-empty), **413** over 1 MiB, and require the **operator** token unless noted.
+non-empty) and **413** over 1 MiB, and require the **operator** token unless
+noted. Some inline handlers answer with a different status instead — a
+store-gated **503**, a disabled-route **404** — carrying a bare `{ "error": "…" }`.
 Field-level specs live in
 [`services/operator-backend/src/http/validate.ts`](../../services/operator-backend/src/http/validate.ts).
 
@@ -290,8 +324,10 @@ operator holds only one side of it. So each runs as two operator calls around on
 wallet step:
 
 1. **`POST …/request`** — the operator opens the flow (for LP, by creating a
-   `LiquidityAllocationRequest`) and returns the allocation specs, factories,
-   choice contexts, and disclosures the wallet needs, alongside a quote.
+   `LiquidityAllocationRequest`) and returns the on-ledger allocation specs and
+   settlement info, alongside a quote. The factory CID, choice context, and
+   disclosures the wallet allocates against are fetched separately from
+   [`POST /v1/registry/allocation-factory`](#factory-discovery).
 2. The trader's **wallet** authors the allocations via
    `AllocationFactory_Allocate`, locking the trader's funds under the trader's own
    authority.
@@ -307,8 +343,8 @@ from the transaction tree so the settle can still be assembled.
 
 | Method · Path | Purpose |
 |---|---|
-| `POST /v1/pools/swap/request` | Open a swap; returns the allocation spec + choice context |
-| `POST /v1/pools/swap` | Settle with the wallet-created allocation (`PoolRules_Swap`) |
+| `POST /v1/pools/swap/request` | Open a swap; returns the allocation specs, swap-request cid, settlement, and quote binding |
+| `POST /v1/pools/swap` | Settle with the wallet-created allocations (`PoolRules_Swap`) |
 | `POST /v1/pools/add-liquidity/request` | Open add-LP; create `LiquidityAllocationRequest`, return quote + specs |
 | `POST /v1/pools/add-liquidity/settle` | `PoolLiquidityRules_SettleAddLiquidity` (operator + lpRegistrar) |
 | `POST /v1/pools/remove-liquidity/request` | Open remove-LP |
@@ -316,12 +352,15 @@ from the transaction tree so the settle can still be assembled.
 | `POST /v1/pools/recover-dvp-allocations` | Recover created allocation cids from an `updateId`-only receipt |
 
 `POST /v1/pools/swap/request` requires `poolCid`, `swapper`,
-`inputInstrumentId`, `inputAmount`, and `minOutputAmount`. Its response includes
-the `settlement`, exact `allocationSpec`, registry context/disclosure, and a
-`quoteBinding` containing the pool id, state cid, selected slice cids, and
-minimum. Pass that binding unchanged to `POST /v1/pools/swap` with the wallet's
-`swapperAllocationCid`. If the state or slices have moved, settlement fails and
-the terminal, uncommitted swap allocation remains withdrawable by its trader.
+`inputInstrumentId`, `inputAmount`, and `minOutputAmount`. Its response is a
+`PoolRequestSwapResult` — `allocationSpecs` (one per admin), the
+`swapRequestCid`, the `settlement`, and a `quoteBinding` containing the pool id,
+state cid, selected slice cids, and minimum. Pass that binding unchanged to
+`POST /v1/pools/swap` along with the wallet-authored allocations — the per-admin
+`swapperAllocationCids` (one per admin: single-admin swaps supply one,
+cross-admin two), or an `updateId` the operator recovers them from. If the state
+or slices have moved, settlement fails and
+the terminal, uncommitted swap allocation(s) remain withdrawable by their trader.
 
 **An add off the reserve ratio is only partly taken.** LP tokens are minted
 against whichever leg is short relative to the pool's ratio
@@ -378,9 +417,12 @@ some failed, **502** when every one did.
 | `POST /v1/matched-trades/settle` | `MatchedTrade_Settle` — one allocation batch per admin |
 | `POST /v1/matched-trades/cancel` | `MatchedTrade_Cancel` — release allocations |
 
-`settle` and `cancel` carry a `batchesByAdmin` / `allocationsByAdmin` object
-keyed by admin party; each admin's batch must cover exactly its own legs, or the
-request is rejected with **400** before it reaches the ledger.
+`settle` takes `tradeCid` plus either an `allocationCidsByAdmin` object keyed by
+admin party or an `updateId` the operator recovers the cids from; `cancel` takes
+`tradeCid` plus `allocationsByAdmin`. Each admin's entry must cover exactly its
+own legs, or the request is rejected with **400** before it reaches the ledger.
+(`batchesByAdmin` is the internal Daml choice argument, not a public request
+field.)
 
 ### RFQ
 
@@ -399,7 +441,10 @@ mode is disabled.
 
 ```json
 // POST /v1/rfq
-{ "trader": "...", "rfqId": "...", "pair": "BTC/USDC", "side": "RFQ_Buy",
+{ "trader": "...", "rfqId": "...",
+  "baseInstrumentId": { "admin": "...", "id": "BTC" },
+  "quoteInstrumentId": { "admin": "...", "id": "USDC" },
+  "side": "RFQ_Buy",
   "size": "0.5", "expiresAt": "2026-...", "whitelist": [], "createdAt": "..." }
 ```
 
@@ -523,7 +568,9 @@ curl -s -X POST http://localhost:8080/v1/swaps/quote \
 # Create an RFQ on a trader's behalf (operator token)
 curl -s -X POST http://localhost:8080/v1/rfq \
   -H "authorization: Bearer $DEX_OPERATOR_API_TOKEN" -H 'content-type: application/json' \
-  -d '{"trader":"'"$TRADER"'","rfqId":"rfq-1","pair":"BTC/USDC","side":"RFQ_Buy",
+  -d '{"trader":"'"$TRADER"'","rfqId":"rfq-1",
+       "baseInstrumentId":{"admin":"'"$BASE_ADMIN"'","id":"BTC"},
+       "quoteInstrumentId":{"admin":"'"$QUOTE_ADMIN"'","id":"USDC"},"side":"RFQ_Buy",
        "size":"0.5","expiresAt":"2026-12-31T00:00:00Z","whitelist":[],"createdAt":"2026-07-01T00:00:00Z"}'
 ```
 
@@ -531,7 +578,11 @@ curl -s -X POST http://localhost:8080/v1/rfq \
 > derived amount or party fields; rows already stored in SQLite retain their
 > original values until rebuilt.
 > [`services/operator-backend/scripts/reindex-derived.ts`](../../services/operator-backend/scripts/reindex-derived.ts)
-> recomputes both in place (idempotent, `--dry-run` first) with no ledger read.
+> recomputes both in place with no ledger read: it re-derives parties from each
+> row's retained payload — the current `tradeLegs` shape, and the legacy flat
+> `transferLegs` shape for older rows — and rewrites only the rows whose derived
+> values changed, so a re-run is idempotent. Run it with `--dry-run` first to see
+> what would change.
 
 ---
 

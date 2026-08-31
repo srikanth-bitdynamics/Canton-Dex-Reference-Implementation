@@ -86,16 +86,16 @@ sequenceDiagram
     actor W as Your wallet
     participant D as dApp
     participant O as Operator backend
-    Note over W,O: Wallet holds your keys and signs trader-authority allocations.<br/>The dApp holds none; the operator orchestrates settlement.
+    Note over W,O: Wallet holds your keys and signs trader-authority allocations.<br/>The dApp holds none. The operator orchestrates settlement.
     D->>O: 1. Ask for a Daml-built spec (e.g. PoolRules_RequestSwap)
-    O-->>D: allocationSpec + settlement + disclosed factory context
+    O-->>D: allocation specs + settlement + disclosed factory context
     D->>W: 2. Hand off the intent (e.g. request-swap)
     W->>W: Sign AllocationFactory_Allocate
     W-->>D: Trader-authorized Allocation (or updateId)
     D->>O: 3. Settle
     O->>O: Exercise PoolRules_Swap / SettleBatch (operator authority)
     O-->>D: Atomic settlement
-    Note over W,O: You receive the output; holdings and pool reserves refresh.
+    Note over W,O: You receive the output. Holdings and pool reserves refresh.
 ```
 
 For a swap, the specification contains the exact input and output sides for a
@@ -154,7 +154,7 @@ a share of swap fees.
    tokens are minted to you, atomically.
 6. Your LP balance appears under **Your LP position** once settled.
 
-LP tokens are **unversioned**: any holder of `BTC-USDC-LP` holds the same
+LP tokens are **unversioned**: any holder of `Amulet-USDCx-LP` holds the same
 instrument regardless of when they minted. See
 [LP tokens](../concepts/lp-tokens.md) for why.
 
@@ -238,10 +238,20 @@ writes are disabled.
    quotes were considered.
 
 Accepted RFQs move to the **Accepted** tab; those that expire with no acceptance
-(or no quotes) move to **Expired**. The page does not claim that acceptance
-itself moved balances. The later `MatchedTrade` allocation and settle choices
-are demonstrated by the Daml tests and operator API, but are not driven by this
-RFQ screen.
+(or no quotes) move to **Expired**. Acceptance itself does not move balances — it
+creates the `MatchedTrade`. Once the accept returns, the screen drives that
+trade's settlement (`POST /v1/matched-trades/settle`), and the Accepted tab shows
+a per-row settlement status (Settling → Settled, or an error). Settlement funds
+the connected party's own side: the screen finds this party's
+`TradeAllocationRequest`, selects its input holdings, and hands it to the wallet
+(`fund-matched-trade`), which accepts the request and authors this party's
+allocations self-custodially. The operator then settles the per-admin batches.
+The wallet accept archives this party's request, so no request cid is consumed at
+settle. A genuine two-party RFQ stops here — this session funds only its own side
+and the settle reports that the counterparty has not yet funded its allocation
+request; both sides must fund from their own sessions before the trade can settle.
+The single-admin demo case, where the connected party is the sole non-venue
+funder, settles in one pass.
 
 ---
 
@@ -297,26 +307,31 @@ nonconsuming choice PoolRules_Swap : PoolRules_SwapResult
   ...
 ```
 
-Swap and order funding each use one `AllocationFactory_Allocate` exercise that
-locks the named holdings ([`commands.ts`](../../app/web/src/wallet/commands.ts)):
+Every allocation-backed action authors its holdings through one command: a
+single `BatchingUtility_ExecuteBatch` exercise that accepts the operator's
+request and authors each allocation the request named, in one atomic Daml
+transaction. Holdings are threaded through the utility's holding map, and the
+registry locks only what each allocation needs, returning the rest as change
+([`commands.ts`](../../app/web/src/wallet/commands.ts)):
 
 ```ts
-choice: "AllocationFactory_Allocate",
+choice: "BatchingUtility_ExecuteBatch",
 choiceArgument: {
-  settlement,
-  allocation: spec,
-  requestedAt,
-  inputHoldingCids,
-  actors: [party],
-  extraArgs,
+  inputHoldingMap,
+  actions: [
+    { tag: "TSA_AllocationRequest_AcceptV2", value: { cid: requestCid, arg: { actors: [party], extraArgs } } },
+    { tag: "TSA_AllocationFactory_AllocateV2", value: { cid: factoryCid, arg: { settlement, allocation: spec, requestedAt, inputHoldingCids: [], actors: [party], extraArgs } } },
+    // ...one AllocateV2 action per allocation the request names
+  ],
+  archiveAfterExecution: true,
 },
 ```
 
-Add and remove liquidity need three allocations across two registry admins.
-Their wallet command is one `BatchingUtility_ExecuteBatch` exercise containing
-one `AllocationRequest_Accept` action followed by three
-`AllocationFactory_Allocate` actions. The utility keeps the wallet approval to
-one top-level command while preserving one atomic Daml transaction.
+The request names one allocation per instrument admin: a swap or order funding
+authors one for a single-admin pair and two across a cross-admin pair; add and
+remove liquidity author three (base deposit, quote deposit, and the LP receipt
+or burn). The utility keeps the wallet approval to one top-level command while
+preserving one atomic Daml transaction.
 
 **Proven on-ledger** (each line links the choice and the test that pins it):
 

@@ -2,8 +2,10 @@
 
 Notable changes to this reference implementation are recorded here. The
 repository release and the `canton-dex-trading-v2` Daml package have independent
-versions. Package upgrades are checked against the deployed baseline in
-`trading/upgrade-baseline/`.
+versions. A smart-upgrade compatibility gate runs in CI, but it stays armed and
+dormant until a baseline DAR is committed under `trading/upgrade-baseline/`;
+until then it takes its "first deploy of a new lineage" path, so a green run does
+not yet attest upgrade compatibility.
 
 ## Unreleased
 

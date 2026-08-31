@@ -31,6 +31,10 @@ services:
       DEX_CALLER_JWT_SECRET: "${DEX_CALLER_JWT_SECRET:-}"
       DEX_CALLER_JWT_AUDIENCE: "${DEX_CALLER_JWT_AUDIENCE:-}"
       DEX_HOSTED_RFQ_RELAY: "${DEX_HOSTED_RFQ_RELAY:-0}"
+      DEX_EXTERNAL_REGISTRIES: "${DEX_EXTERNAL_REGISTRIES:-}"
+      DEX_EXTERNAL_REGISTRY_TOKEN: "${DEX_EXTERNAL_REGISTRY_TOKEN:-}"
+      DEX_AMULET_SCAN_URL: "${DEX_AMULET_SCAN_URL:-}"
+      DEX_AMULET_REGISTRY_BASE: "${DEX_AMULET_REGISTRY_BASE:-}"
       # Browsers serialize the default HTTP port as http://localhost (without
       # :80), so this must match the actual Origin header exactly.
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost}"

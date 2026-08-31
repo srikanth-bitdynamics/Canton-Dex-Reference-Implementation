@@ -8,9 +8,9 @@ but have not built a Canton application.
 This primer teaches the ledger concepts used by this repository. It is not a
 complete Daml language course. Before editing Daml, complete Digital Asset's
 official
-[Get started with Daml](https://archived.docs.digitalasset.com/build/3.5/tutorials/get-started/index.html)
+[Get started with Daml](https://docs.canton.network/sdks-tools/sdks/daml-sdk)
 tutorial and
-[basic contracts lesson](https://archived.docs.digitalasset.com/build/3.5/tutorials/smart-contracts/contracts.html).
+[basic contracts lesson](https://docs.canton.network/appdev/modules/m3-contract-templates).
 Installation comes later in Step 3,
 [Getting started](../getting-started.md#prerequisites).
 
@@ -223,13 +223,14 @@ the repository.
 | Permission to use exact funds for a trade | trader-authored `Allocation` tied to settlement terms |
 | Pool reserves used for pricing | `PoolState.reserves` |
 | Pool inventory that backs those reserves | committed allocation slices represented by `PoolSlice` |
-| Atomic input-for-output exchange | `SettlementFactory_SettleBatch` inside the pool swap transaction |
+| Atomic input-for-output exchange | one `SettlementFactory_SettleBatch` per instrument admin (one or two) inside the pool swap transaction |
 | LP share | a Token Standard V2 LP instrument held in ordinary `Holding` contracts |
 
 An allocation is intentionally narrower than an ERC-20 router allowance. It
 locks identified backing for a particular settlement specification and names
-the authorized settlement context. The operator can execute a valid settle; it
-cannot silently rewrite the trader's signed legs.
+the authorized settlement context. In a swap or liquidity operation the trader
+authors every leg up front, so the operator can execute a valid settle but
+cannot add to or rewrite those signed legs.
 
 ## One swap, in Canton terms
 

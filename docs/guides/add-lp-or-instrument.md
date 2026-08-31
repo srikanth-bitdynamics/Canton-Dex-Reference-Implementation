@@ -45,10 +45,11 @@ reference-registry behavior, not a Token Standard requirement.
 ## A. Vanilla LP token — already built
 
 The add-liquidity DvP flow already mints an LP token; there is nothing extra to
-write. The token has `instrumentId = "<BASE>-<QUOTE>-LP"`, `admin = lpRegistrar`,
-and is a real V2 `Holding` — fungible with other V2 holdings, usable as
-`TransferInstruction` input, and lockable into an `Allocation`, so LP tokens can
-themselves back orders or pools.
+write. Its `instrumentId` is `"<BASE>-<QUOTE>-LP"` by convention — the pool and
+policy enforce only a non-empty id whose `admin = lpRegistrar` — and it is a real
+V2 `Holding` — fungible with other V2 holdings, usable as `TransferInstruction`
+input, and lockable into an `Allocation`, so LP tokens can themselves back orders
+or pools.
 
 Mint and burn ride the V2 allocation surface as ordinary transfer legs to and
 from two reserved accounts whose `owner` is `None`. An account with no owner is
@@ -80,10 +81,11 @@ lpBurnLeg holder lpInstrumentId amount = V2.TransferLeg with
 [`LPTokenPolicy`](../../trading/CantonDex/Lp/Policy.daml) supply;
 `PoolLiquidityRules_SettleRemoveLiquidity` settles the burn leg and draws it
 back down. The policy tracks circulating LP supply on its own; it is
-bookkeeping, not a cap. If you need a hard cap on LP supply, register an
-`InstrumentConfig` with `supplyCap = Some 10_000_000.0` — but note the LP mint
-path drives `LPTokenPolicy_RecordMint`, not `InstrumentConfig_BumpSupply`, so
-that cap is not enforced on the LP token today.
+bookkeeping, not a cap. `LPTokenPolicy` has no supply cap: the LP mint path
+drives `LPTokenPolicy_RecordMint`, which only bumps `totalSupply`. An
+`InstrumentConfig` `supplyCap` would not bound LP supply — it bounds only tokens
+minted through `Registry_Mint` / `InstrumentConfig_BumpSupply`, which the LP mint
+path never touches.
 
 ## B. A fresh base or quote instrument
 
@@ -124,9 +126,9 @@ await ledger.submit({
 });
 ```
 
-The `admin, owner` joint authority is by V2 design: a receiver must consent to
-receive a token, so the operator backend cannot mint to `alice` without her
-wallet co-signing. In a real deployment this is a CIP-0103 prepare/execute
+The `admin, owner` joint authority is a property of this reference registry's
+`Registry.V2`: a receiver must consent to receive a token, so the operator
+backend cannot mint to `alice` without her wallet co-signing. In a real deployment this is a CIP-0103 prepare/execute
 round-trip through the trader's wallet. On-ledger, `Registry_Mint` bumps supply
 and creates the holding:
 

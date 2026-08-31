@@ -20,7 +20,7 @@ LP custody, and asset governance across three parties so those
 responsibilities can be handed to different custodians later:
 
 - `CANTON_OPERATOR` — DEX market venue party. Signatory on `DexPair`,
-  `Pool`, `Order`. Observer on `Holding` (so the indexer can read).
+  `Pool`, `Order`.
 - `CANTON_LP_REGISTRAR` — holds the `LPTokenPolicy` and accepts LP
   mint/burn. Logically distinct so the operator can hand off LP custody to a
   regulated custodian later.
@@ -119,7 +119,8 @@ npm start
 - `DB_PATH` on persistent storage (the indexer carries trade history and
   idempotency keys).
 - TLS termination by a reverse proxy in front of `:8080`.
-- Logs scraped from stdout / stderr (JSON, one event per line).
+- Logs scraped from stdout / stderr (most events structured JSON, one per
+  line; startup and fatal lines are plain text).
 
 ### 4. Verify the deployment
 
@@ -142,22 +143,25 @@ Every write below is issued either from the **Admin** page or against the HTTP
 API. Admin routes carry `OPERATOR_ADMIN_TOKEN`; the matching pass carries
 `DEX_OPERATOR_API_TOKEN`. The reference implementations for the admin routes
 live in [`services/operator-backend/src/admin/index.ts`](../../services/operator-backend/src/admin/index.ts) —
-each HTTP route maps 1:1 to a method there and to one Daml choice.
+each write route maps to one backend method there, which drives one or more
+Daml choices. A simple admin write (set active, update fees) is a single
+choice, but the staged flows run a sequence: liquidity settle previews
+allocations, creates them per admin, previews settlement, then settles, and a
+matching pass previews each fill before its single value-moving execute.
 
 ### Create a trading pair
 
-**Admin** page → **Pairs** → **+ Add pair**, or:
+**Admin** page → **Trading Pairs** → **+ Add Pair**, or:
 
 ```bash
 curl -X POST http://localhost:8080/v1/admin/pairs \
   -H "Authorization: Bearer $OPERATOR_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "admin":"admin::1220::...",
-    "baseInstrumentId":"BTC",
-    "quoteInstrumentId":"USDC",
-    "feeModel":{"makerFeeBps":10,"takerFeeBps":30,"poolFeeBps":30},
-    "tradingMode":"TM_Both"
+    "baseInstrumentId":{"admin":"admin::1220::...","id":"Amulet"},
+    "quoteInstrumentId":{"admin":"admin::1220::...","id":"USDCx"},
+    "tradingMode":"TM_Both",
+    "feeModel":{"makerFeeBps":10,"takerFeeBps":30,"poolFeeBps":30}
   }'
 ```
 
@@ -197,7 +201,7 @@ production policy requires pair-wide enforcement.
 
 ### Create a pool
 
-Admin → **Pool operations** → **+ Create pool**, or:
+Admin → **Pool Operations** → **+ Create Pool**, or:
 
 ```bash
 curl -X POST http://localhost:8080/v1/admin/pools \
@@ -205,18 +209,17 @@ curl -X POST http://localhost:8080/v1/admin/pools \
   -H "Content-Type: application/json" \
   -d '{
     "lpRegistrar":"lp::1220::...",
-    "admin":"admin::1220::...",
-    "baseInstrumentId":"BTC",
-    "quoteInstrumentId":"USDC",
-    "lpInstrumentId":"BTC-USDC-LP",
+    "baseInstrumentId":{"admin":"admin::1220::...","id":"Amulet"},
+    "quoteInstrumentId":{"admin":"admin::1220::...","id":"USDCx"},
+    "lpInstrumentId":"Amulet-USDCx-LP",
     "feeBps":30
   }'
 ```
 
-`createPool` creates four contracts in one flow: the immutable `Pool`, the hot
-`PoolState` in `PS_Unfunded`, the per-venue `PoolRules` /
-co-controlled `PoolLiquidityRules` (created once and reused across pools), and
-the matching `LPTokenPolicy` signed by `lpRegistrar`. The pool starts empty;
+`createPool` creates the pool's contracts in one flow: the immutable `Pool`, the
+hot `PoolState` in `PS_Unfunded`, the shared per-venue `PoolRules` and
+co-controlled `PoolLiquidityRules` (each created once and reused across pools),
+and the matching `LPTokenPolicy` signed by `lpRegistrar`. The pool starts empty;
 the first LP completes the same add-liquidity request/allocate/settle DvP flow
 as every later LP, and that settle mints the initial LP supply at
 `sqrt(baseAmount * quoteAmount)` and transitions the state to `PS_Active`.
@@ -254,17 +257,19 @@ unfunded orders.
 
 ### Stale RFQ cleanup
 
-`RfqService.sweepExpired(now)` cancels RFQs whose `expiresAt` has passed. Run
-it on a schedule (cron or systemd timer) from an authenticated operator
-environment. The runbook's
+`RfqService.sweepExpired(now)` exists to cancel RFQs whose `expiresAt` has
+passed, but it is not currently wired to a scheduler or HTTP route, so there is
+no operator action to run it. No cleanup is required for correctness: an RFQ
+past `expiresAt` is already inert, because `Rfq_Accept` asserts
+`currentTime < expiresAt`. The runbook's
 [stale RFQs and quotes](operator-runbook.md#stale-rfqs-and-quotes) section
-covers the choice-level behavior — an RFQ past `expiresAt` is already inert,
-because `Rfq_Accept` asserts `currentTime < expiresAt`.
+covers the choice-level behavior.
 
 ### Fees and revenue
 
-Admin → **Fee accrual** shows per-pool 24h volume and fees. The entire swap fee
-(`feeBps` on each pool) accrues to LPs through the constant-product (`x·y=k`)
+Per-pool 24h volume and swap counts are available from `GET /v1/stats/24h`. The
+entire swap fee (`feeBps` on each pool) accrues to LPs through the
+constant-product (`x·y=k`)
 invariant — the fee is retained in the reserve, so `k` is non-decreasing across
 a swap. There is no operator fee split in this reference implementation; see
 [`../concepts/pricing.md`](../concepts/pricing.md#how-the-pool-prices-a-swap)
@@ -276,8 +281,9 @@ for how the pool prices and where the fee lands.
 
 ### Logs
 
-The backend emits structured JSON, one event per line. Required fields: `ts`,
-`level`, `msg`. Errors go to stderr; everything else to stdout. Scrape both.
+Most operational logs are structured JSON, one event per line, with required
+fields `ts`, `level`, `msg`. Startup and fatal lines are plain text. Errors and
+warnings go to stderr; everything else to stdout. Scrape both.
 
 ```
 {"ts":"2026-05-17T14:18:23Z","level":"info","msg":"request completed",
@@ -287,8 +293,10 @@ The backend emits structured JSON, one event per line. Required fields: `ts`,
 
 ### Status endpoint
 
-`GET /v1/status` returns network label, current ledger slot, and sync state.
-Wire it to your uptime monitor with a 5-second poll.
+`GET /v1/status` returns network label, current `slot`, and sync state. The
+`slot` is the participant ledger-end offset by default, the latest open Amulet
+mining round when `DEX_AMULET_SCAN_URL` is set, and a local counter on the
+in-memory dev server. Wire it to your uptime monitor with a 5-second poll.
 
 ### Indexer health
 
@@ -321,7 +329,8 @@ to the runbook's [recovery procedures](operator-runbook.md#recovery-procedures).
   operator-discovery path for wallet flows that returned before the backend
   observed the allocations.
 - **Stale idempotency keys.** `IdempotentLedger.sweep()` drops keys older than
-  the 24h TTL; run it hourly from an authenticated operational environment.
+  the 24h TTL. It runs automatically on an internal hourly timer in
+  `testnet-server`; no operator cron or systemd action is needed.
 - **Forgotten admin token.** Set a new `OPERATOR_ADMIN_TOKEN` (or
   `DEX_OPERATOR_API_TOKEN`) and restart. In-flight admin writes that hadn't
   settled aren't replayable under the new token — re-submit them.

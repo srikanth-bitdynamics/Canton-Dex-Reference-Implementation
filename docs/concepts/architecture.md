@@ -51,17 +51,21 @@ Three bands, top to bottom:
 
 The trust boundary is the pair of dashed edges crossing into the ledger. For
 self-custodial flows the operator drives DEX choices under its own authority,
-but it can neither fund a trade nor bypass the validation those choices perform
-on-ledger. [The executor-control constraint](#the-executor-control-constraint)
-makes that boundary precise. The operator-mediated RFQ path instead requires trader
+but it cannot fund a self-custodial trade, and it cannot alter the checks a
+DEX choice performs when it is used. What those checks do not settle is the
+operator's route: a resting order names the operator as settlement executor, so
+the registry cannot prove the operator entered through the DEX choice rather
+than another settlement. [The executor-control constraint](#the-executor-control-constraint)
+makes that residual operator-executor trust precise. The operator-mediated RFQ path instead requires trader
 act-as rights and must not be mistaken for the self-custodial path.
 
 ## What settles value: the Token Standard V2 spine
 
 Every value movement in the DEX reduces to two things: a set of **allocations**
 (funds locked by their owner, pinned to a settlement) and one
-**`SettlementFactory_SettleBatch`** that atomically executes the transfer legs
-those allocations authorize.
+**`SettlementFactory_SettleBatch`** per instrument admin — one to three of them —
+grouped into a single atomic Daml choice that executes the transfer legs those
+allocations authorize.
 
 Two properties of the V2 allocation surface are load-bearing here:
 
@@ -207,14 +211,19 @@ locks the funding as `nextIterationFunding` with no legs; a match carries the
 concrete legs through `SettleBatch` and rolls the residual budget forward;
 cancel releases the allocation.
 
-`OrderMatchExecution_Execute` is where a resting order is defended. It fetches
-both orders and refuses any fill outside their own limit prices, remaining
-quantities, instruments, or bound allocations, so a buggy or malicious
-off-ledger matcher cannot fill an order on terms its owner never agreed to. The
-fill, the roll-forward of both remainders, and the trade record all happen in
-one transaction — the settle archives the very allocations the orders are bound
-to, so a partly-completed match could otherwise strand an order pointing at a
-consumed allocation.
+`OrderMatchExecution_Execute` is where a resting order is defended. It re-runs
+the match against live state and constrains any fill to both orders' own limit
+prices, remaining quantities, instruments, and bound allocations. These are
+DEX-side checks on what a fill through this choice may do: a resting order is
+backed by a prefunded iterated allocation naming the operator as settlement
+executor, and the operator supplies the concrete legs at match time, so the
+registry itself cannot prove the operator entered through this choice rather than
+another. That is the operator trust the order book already relies on — AMM swaps
+and liquidity differ, because the trader or LP authors every leg side up front,
+so settlement cannot add or alter their authority. The fill, the roll-forward of
+both remainders, and the trade record all happen in one transaction — the settle
+archives the very allocations the orders are bound to, so a partly-completed
+match could otherwise strand an order pointing at a consumed allocation.
 
 Matching and partial-fill roll-forward belong exclusively to
 `OrderMatchExecution_Execute`.
@@ -234,8 +243,9 @@ authorizer, group settlement by admin, and settle with
 Pool shares are their own Token Standard instrument (`Lp.LPTokenPolicy`), minted
 and burned under DEX rules by the `lpRegistrar` — a party deliberately separate
 from the operator — and holdable like any other V2 instrument. Add- and
-remove-liquidity are delivery-versus-payment: the deposit legs and the LP
-mint/burn settle atomically, each batch under its own registry admin.
+remove-liquidity are staged and atomic: a request stages the intent, then a
+single settle choice settles the funding allocations and the LP mint or burn
+together as delivery-versus-payment, one batch per registry admin.
 
 ## The executor-control constraint
 

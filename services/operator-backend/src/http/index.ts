@@ -281,7 +281,41 @@ export function startHttpServer(
   const slotToken = cfg.ledgerToken;
   const hasParticipantProbe = Boolean(slotUrl && slotToken);
   let lastPollSucceeded = !hasParticipantProbe;
+  // When an Amulet scan is configured, report the latest open mining round
+  // rather than the participant offset: the round is the network-meaningful
+  // position a user recognises. Falls back to the ledger offset if unset.
+  const roundScanBase = (process.env.DEX_AMULET_SCAN_URL ?? "").replace(/\/$/, "");
+  async function pollRound(): Promise<boolean> {
+    if (!roundScanBase) return false;
+    try {
+      const res = await fetch(`${roundScanBase}/v0/open-and-issuing-mining-rounds`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cached_open_mining_round_contract_ids: [],
+          cached_issuing_round_contract_ids: [],
+        }),
+      });
+      if (!res.ok) return false;
+      const rounds = (await res.json())?.open_mining_rounds;
+      let latest = -1;
+      for (const entry of Object.values(rounds ?? {})) {
+        const n = Number(
+          (entry as { contract?: { payload?: { round?: { number?: unknown } } } })
+            ?.contract?.payload?.round?.number,
+        );
+        if (Number.isFinite(n) && n > latest) latest = n;
+      }
+      if (latest < 0) return false;
+      slot = latest;
+      lastPollSucceeded = true;
+      return true;
+    } catch {
+      return false;
+    }
+  }
   async function pollSlot(): Promise<void> {
+    if (await pollRound()) return;
     if (!hasParticipantProbe || !slotUrl || !slotToken) {
       slot += 1;
       lastPollSucceeded = true;

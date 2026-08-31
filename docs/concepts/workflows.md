@@ -26,8 +26,13 @@ same sequence:
 5. **Settle and record.** The registry moves all legs atomically; the same Daml
    transaction closes or recreates the affected market state.
 
-The backend may discover contracts, calculate candidates, and submit commands,
-but it cannot bypass the checks in steps 3 and 4.
+The backend may discover contracts, calculate candidates, and submit commands.
+It cannot alter the checks a DEX choice performs when that choice is used: for
+swaps and liquidity the trader or LP authors every leg, so the checks bind a
+settle through the choice. For the order book the registry cannot prove the
+operator entered through the DEX choice rather than another settlement of the
+same domain, so there the flow relies on the operator as settlement executor —
+made precise in the order lifecycle below.
 
 ## Two workflow families
 
@@ -100,10 +105,12 @@ non-obvious part:
   separate decision: it guarantees executor availability but restricts the
   authorizer's withdrawal right.
 - **Per-admin batches.** Legs are grouped by the registry `admin` that governs
-  the instrument. Liquidity settles as *split-admin* DvP: base and quote under
-  `pool.admin`, the LP mint/burn under `pool.lpRegistrar` — two
-  `SettleBatch`es in one transaction, each carrying its own registry choice
-  context.
+  each instrument, and one `SettleBatch` runs per distinct admin inside a single
+  Daml transaction. The batch count is the number of admins the flow touches: a
+  swap settles under one or two admins, add/remove liquidity under one to three
+  (base, quote, and the LP registrar), an order fill under one or two. A
+  single-admin flow collapses to one batch, and each batch carries its own
+  registry choice context.
 
 ## Swap against a pool
 
@@ -134,7 +141,7 @@ the exact input sender side and every output receiver side. The wallet signs
 that complete specification. `PoolRules_Swap` re-derives `amountOut` from the
 bound reserves *inside the choice* (`constantProductOut`, see
 [Pricing](pricing.md)), requires the signed legs to match, and settles the
-swapper against the pool in one batch. The operator cannot lower the output or
+swapper against the pool under the one or two registry admins the pair touches. The operator cannot lower the output or
 use a different pool snapshot if doing so changes the signed legs.
 The input reserve slice rolls forward grown by the full input; the output side
 is drained from an ordered slice prefix so a routine swap never touches every
@@ -180,7 +187,7 @@ sequenceDiagram
     O->>L: PreviewAddSettlement
     O->>O: discover exact settlement factories + choice contexts
     O->>L: PoolLiquidityRules_SettleAddLiquidity
-    Note over O,L: base/quote batch under pool.admin,<br/>LP mint batch under pool.lpRegistrar
+    Note over O,L: base/quote batches by instrument admin,<br/>LP mint batch under lpRegistrar
     L-->>O: funds in pool, LP tokens minted, PoolState rewritten
 ```
 
@@ -198,22 +205,16 @@ enters the reserves; the excess is refunded in the same batch, so it never buys
 LP tokens.
 
 ```daml
--- base/quote batch (pool.admin): deposits in and reserve allocations continue
--- with the funding declared by their allocation specifications.
-bqResult <- exercise baseQuoteSettleCid V2.SettlementFactory_SettleBatch with
-  settlement
-  transferLegs = [baseDepositLeg, quoteDepositLeg] ++ baseRefundLegs ++ quoteRefundLegs
-  allocations = ...
-  actors = [operator]
-  extraArgs = poolAdminExtraArgs
-...
--- LP-mint batch (pool.lpRegistrar).
-_ <- exercise lpSettleCid V2.SettlementFactory_SettleBatch with
-  settlement
-  transferLegs = [lpMintLeg]
-  allocations = [Utils.finalAllocation regMint, Utils.finalAllocation lpReceiptCid]
-  actors = [operator]
-  extraArgs = lpRegistrarExtraArgs
+-- Fragments are grouped by each instrument's registry admin: base and quote may
+-- share one admin or split across two, and the LP mint always settles under the
+-- LP registrar.
+let grouped = AB.groupByAdmin
+      [ (pool.baseInstrumentId.admin, baseFrag)
+      , (pool.quoteInstrumentId.admin, quoteFrag)
+      , (pool.lpRegistrar, lpFrag)
+      ]
+-- One SettleBatch is exercised per distinct admin, all in this transaction.
+results <- AB.settleByAdmin prepared.addSettlement [operator] grouped batchesByAdmin
 ```
 
 Remove is the mirror: `PoolLiquidityRules_SettleRemoveLiquidity` draws the
@@ -263,10 +264,15 @@ The funding request and the allocation request serve different purposes:
    deliberately neither matchable nor cancellable as a funded position.
 
 A resting order is an authorization for a future match whose exact legs are not
-yet known — a prefunded, iterated allocation, not a one-shot one.
-`OrderMatchExecution_Execute` fetches both orders and refuses any fill their own
-terms do not permit, so a buggy or malicious matcher cannot cross a resting
-order outside its limit price or for instruments it never agreed to.
+yet known — a prefunded, iterated allocation, not a one-shot one. The allocation
+names the operator as its settlement executor, and the operator supplies the
+concrete legs at match time. `OrderMatchExecution_Execute` re-runs the match
+against both orders' live terms and rejects any fill outside the matched price,
+quantity, pair, and ownership. These are DEX-side checks: the registry itself
+cannot prove the operator entered through this choice rather than another, so
+this is the operator trust the order book relies on. AMM swaps and liquidity
+differ — the trader or LP authors every leg side up front, so settlement cannot
+add or alter trader authority.
 
 ```daml
 assertMsg "fill price must be positive" (match.fillPrice > 0.0)
@@ -276,7 +282,8 @@ assertMsg "fill price below ask limit"
   (match.fillPrice >= sellOrder.limitPrice)
 ```
 
-The same transaction settles the batch and rolls both orders forward: a fully
+The same transaction settles the fill's per-admin batches and rolls both orders
+forward: a fully
 filled order is archived, a partial fill is recreated bound to the allocation
 the settle minted, and a `SettledTrade` records the fill. Doing this in one
 choice is load-bearing — the settle archives the allocations the orders point
@@ -324,7 +331,7 @@ sequenceDiagram
 ```
 
 `Rfq_Accept` is jointly controlled by `trader, operator`: the trader consumes
-the `Rfq` and every quote, the operator signs the resulting `MatchedTrade`. It
+the `Rfq` and the considered quotes, the operator signs the resulting `MatchedTrade`. It
 ranks the considered quotes, records the winner and its rank in a
 [`PolicyReceipt`](../../trading/CantonDex/Dex/PolicyReceipt.daml) (evidence the
 published policy was applied, not that the price was good), and copies the RFQ's
@@ -354,8 +361,7 @@ those later steps.
 ```daml
 tradeCid <- create MT.MatchedTrade with
   venue = operator
-  admin
-  transferLegs = legs
+  tradeLegs
   settlementDeadline = Some expiresAt
   policyReceipt = Some receipt
 ```

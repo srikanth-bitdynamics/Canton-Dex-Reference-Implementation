@@ -32,9 +32,13 @@ export interface CreatePoolInput {
   feeBps: number;
 }
 
-// A stable command suffix for one instrument, admin included.
+// A stable command suffix for one instrument, admin included. The admin is
+// hashed rather than inlined: a party id is not a valid Daml-LF command-id
+// substring (it carries characters the ledger rejects), and the digest keeps
+// same-symbol instruments from different registries distinct.
 function instrumentTag(i: InstrumentId): string {
-  return `${i.id}@${i.admin}`;
+  const adminDigest = createHash("sha256").update(i.admin).digest("hex").slice(0, 8);
+  return `${i.id}-${adminDigest}`;
 }
 
 // Pool id unique per full (base, quote) identity. Two instruments can share a

@@ -34,7 +34,7 @@ operator-controlled update choices.
 | Claim | Executable proof | Focused command |
 |---|---|---|
 | Fee model, active flag, trading mode, and readers recreate one successor listing and preserve unrelated fields. | [`testDexPairLifecycleUpdates`](../../trading-tests/CantonDex/Tests/DexPairTests.daml) | `dpm test -p testDexPairLifecycleUpdates` |
-| The registry admin observes the pair but cannot exercise the operator-controlled update. | [`testDexPairUpdatesRequireOperator`](../../trading-tests/CantonDex/Tests/DexPairTests.daml) | `dpm test -p testDexPairUpdatesRequireOperator` |
+| The registry admin cannot exercise the operator-controlled update on the pair. | [`testDexPairUpdatesRequireOperator`](../../trading-tests/CantonDex/Tests/DexPairTests.daml) | `dpm test -p testDexPairUpdatesRequireOperator` |
 | Maker/taker fee counters accumulate the configured arithmetic; no test claims those counters move or collect assets. | [`testDexPairRecordsMatchedTradeFees`](../../trading-tests/CantonDex/Tests/DexPairTests.daml) | `dpm test -p testDexPairRecordsMatchedTradeFees` |
 
 `active` and `tradingMode` are not settlement gates in this reference. That is

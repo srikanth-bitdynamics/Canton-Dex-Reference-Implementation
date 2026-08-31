@@ -68,7 +68,8 @@ That is how the fee remains in the pool and accrues to LPs.
 
 ### Run the arithmetic proof
 
-From `trading-tests/`:
+From the repository root, move into the tests package (you stay here through
+section 6):
 
 ```bash
 cd trading-tests
@@ -143,7 +144,8 @@ The operator exercises `PoolRules_RequestSwap`. Its result contains:
 ```daml
 data PoolRules_RequestSwapResult = PoolRules_RequestSwapResult with
     settlement : V2.SettlementInfo
-    allocationSpec : V2.AllocationSpecification
+    allocationSpecs : [V2.AllocationSpecification]
+    swapRequestCid : ContractId SwapReq.SwapAllocationRequest
     quoteBinding : Optional SwapQuoteBinding
 ```
 
@@ -164,23 +166,26 @@ bound `PoolState` or a bound slice first, the old quote cannot settle. The
 operator must produce a fresh request; it cannot reuse the trader's authority
 against different state.
 
-Inside `PoolRules_RequestSwap`, Daml builds the specification from the prepared
-input and output legs:
+Inside `PoolRules_RequestSwap`, Daml builds one specification per instrument
+admin from the prepared input and output legs:
 
 ```daml
-allocationSpec =
-  Utils.mkIteratedAllocationSpecification
-    pool.admin
-    swapperAccount
-    None
-    (prepared.preparedSwapInLeg :: prepared.preparedOutputDelivery.legs)
-    None
-    False
+swapperAllocationSpecs prepared =
+  let swapperAccount = prepared.preparedSwapInLeg.sender
+      swapInLeg = prepared.preparedSwapInLeg
+      outputLegs = prepared.preparedOutputDelivery.legs
+      spec admin legs =
+        Utils.mkIteratedAllocationSpecification admin swapperAccount None legs None False
+  in if prepared.preparedInputAdmin == prepared.preparedOutputAdmin
+       then [spec prepared.preparedInputAdmin (swapInLeg :: outputLegs)]
+       else [ spec prepared.preparedInputAdmin [swapInLeg]
+            , spec prepared.preparedOutputAdmin outputLegs ]
 ```
 
-The operator prepares this specification, but the trader's wallet authors the
-allocation against it. Preparing terms and authorizing funds are separate
-actions.
+When input and output share one admin the swapper authors a single two-sided
+allocation; a cross-admin swap emits one spec per admin. The operator prepares
+these specifications, but the trader's wallet authors an allocation against
+each. Preparing terms and authorizing funds are separate actions.
 
 ## 4. Follow authority, not HTTP calls
 
@@ -200,7 +205,6 @@ allocation.
 ### Run the choreography proof
 
 ```bash
-cd trading-tests
 dpm test -p testPoolSwapViaRequestSwap
 ```
 
@@ -229,19 +233,17 @@ file header says so explicitly.
 
 `PoolRules_Swap` recomputes the output from the bound pool snapshot and checks
 that every supplied contract ID and the minimum output match the quote binding.
-It then calls the registry's batch settlement factory:
+It groups the legs and allocations by instrument admin and exercises one
+`SettlementFactory_SettleBatch` per admin inside a single Daml choice:
 
 ```daml
-settleResult <- exercise factoryCid V2.SettlementFactory_SettleBatch with
-  settlement
-  transferLegs = swapInLeg :: outDel.legs
-  allocations = swapperFinalized :: inputFinalized :: outDel.sliceFinalizeds
-  actors = [operator]
-  extraArgs
+settleResultsByAdmin <-
+  AB.settleByAdmin (poolSettlement poolCid operator) [operator] grouped batchesByAdmin
 ```
 
-Because this is nested in one Daml transaction, settlement and the following
-state changes are atomic. After successful settlement the choice:
+A single-admin swap collapses to one batch; a cross-admin swap runs one batch
+per admin. Because these are nested in one Daml transaction, settlement and the
+following state changes are atomic. After successful settlement the choice:
 
 1. rolls the input reserve allocation forward with the full input added;
 2. consumes enough output slices to pay the trader and recreates any leftover
@@ -258,7 +260,6 @@ Now run the test whose fixture creates actual Token Standard holdings and uses
 an upstream context-requiring V2 registry:
 
 ```bash
-cd trading-tests
 dpm test -p testRealRegistryDvpSwapSettles
 ```
 
@@ -315,7 +316,7 @@ After the Daml tests pass, run the browser preview from
 [Getting started](../getting-started.md#mode-1-run-the-browser-preview). On the
 Trade page:
 
-1. change the BTC or USDC input and observe the quote;
+1. change the Amulet or USDCx input and observe the quote;
 2. open browser developer tools and find the quote/request calls;
 3. connect Mock Wallet and inspect the wallet intent logged to the console;
 4. notice that its returned `#mock-…:0` value is not the allocation created in
@@ -335,7 +336,7 @@ You can now trace add and remove liquidity with the same questions:
 | What records intent? | `LiquidityAllocationRequest` |
 | Who authorizes base/quote or LP value? | the liquidity provider through allocation factory choices |
 | Who executes? | operator and LP registrar on the liquidity rules choice |
-| What makes it atomic? | one settlement batch combines deposits/redemption with LP mint/burn |
+| What makes it atomic? | one settlement batch per admin combines deposits/redemption with LP mint/burn, nested in one Daml transaction |
 | Which real-value test should I read? | `testDvpAddLiquidity`, `testDvpRemoveDeliversToHolder`, and their negative cases in `PoolLiquidityRulesTests.daml` |
 
 Then read [Liquidity and custody](../concepts/liquidity-and-custody.md) for the

@@ -33,7 +33,7 @@ participant.
 |---|---|---|
 | **Holding** | Spendable units of one token owned by an account. | BTC, quote assets, and LP shares are registry-managed V2 holdings. |
 | **Market object** | A DEX contract that records terms or accounting, but does not contain token balances. | `Order`, `MatchedTrade`, `PoolState`, and `Rfq` describe what may happen. |
-| **Allocation** | Holdings locked by their owner for a named future settlement. It is narrower than an open-ended token allowance. | A wallet authors the allocation that funds an order, swap, or liquidity action. |
+| **Allocation** | Holdings locked by their owner for a named future settlement. It is narrower than an open-ended token allowance. | A wallet authors the allocations that fund an order, swap, or liquidity action. |
 | **DvP batch** | Delivery versus payment: every required transfer succeeds in one transaction, or none does. | `SettlementFactory_SettleBatch` moves the trader and pool/counterparty legs together. |
 | **Iterated settlement** | A settlement can create a successor allocation carrying the remaining locked funds. | Pool slices and partially filled orders continue without asking the owner to re-fund every step. |
 
@@ -43,7 +43,9 @@ lock, and settle the actual value.
 
 ## One swap in plain language
 
-Suppose a trader wants to sell `0.1 BTC` into a BTC/USDC pool:
+Suppose a trader wants to sell `0.1 BTC` into a BTC/USDC pool (an illustrative
+pair — the DEX lists any Token Standard V2 assets, and the testnet reference
+deployment uses `CC`/`USDCx`):
 
 1. `PoolState` records the aggregate BTC and USDC reserves. Separate
    `PoolSlice` contracts reference the committed allocations that actually back
@@ -132,7 +134,7 @@ that party without their wallet or delegated authority.
 |---|---|---|
 | Trader / liquidity provider | create market intent; lock their holdings in allocations; authorize an RFQ acceptance | settle or redirect pool inventory |
 | Dealer | create an RFQ quote; lock their side of an accepted trade | select the winning quote or settle the trade |
-| DEX operator | list markets; propose matches; invoke validated settle and recovery choices | lock a self-custodial user's holdings or fill outside signed terms |
+| DEX operator | list markets; propose matches; invoke validated settle and recovery choices | lock a self-custodial user's holdings; on swaps and liquidity the trader authors every leg, so it cannot fill outside those signed terms |
 | Asset registry admin | token holding, allocation, and settlement behavior for its instruments | change DEX market rules |
 | LP registrar | authorize LP mint and burn accounting | move base or quote reserves by itself |
 

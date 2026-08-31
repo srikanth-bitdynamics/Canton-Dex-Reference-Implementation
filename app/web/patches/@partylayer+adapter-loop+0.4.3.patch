@@ -1,0 +1,162 @@
+diff --git a/node_modules/@partylayer/adapter-loop/dist/index.js b/node_modules/@partylayer/adapter-loop/dist/index.js
+index 15304ca..84308c9 100644
+--- a/node_modules/@partylayer/adapter-loop/dist/index.js
++++ b/node_modules/@partylayer/adapter-loop/dist/index.js
+@@ -110,8 +110,8 @@ var LoopAdapter = class {
+             ctx.logger.debug("Loop transaction update", payload);
+           },
+           options: {
+-            openMode: "popup",
+-            requestSigningMode: "popup"
++            openMode: "tab",
++            requestSigningMode: "tab"
+           },
+           onAccept: async (provider) => {
+             if (resolved) return;
+@@ -376,6 +376,9 @@ var LoopAdapter = class {
+       if (this.isSubmitRoute(requestMethod, resource)) {
+         return this.handleSubmitCommand(resource, body);
+       }
++      if (requestMethod.toUpperCase() === "GET" && resource.replace(/\/+$/, "") === "/v2/state/ledger-end") {
++        return { response: JSON.stringify({ offset: 0 }) };
++      }
+       throw new core.CapabilityNotSupportedError(
+         this.walletId,
+         `ledgerApi endpoint "${route}" is not supported by Loop wallet. Supported: POST /v2/state/acs, GET /v2/state/acs/active-contracts, POST /v2/commands/submit, POST /v2/commands/submit-and-wait. For full Ledger API access, use Console or Nightly wallet.`
+@@ -434,6 +437,13 @@ var LoopAdapter = class {
+               interfaceId = templates[0].interfaceId;
+               break;
+             }
++            for (const c of (pf.cumulative || [])) {
++              const iv = c?.identifierFilter?.InterfaceFilter?.value;
++              const tv = c?.identifierFilter?.TemplateFilter?.value;
++              if (iv?.interfaceId) { interfaceId = iv.interfaceId; break; }
++              if (tv?.templateId) { templateId = tv.templateId; break; }
++            }
++            if (templateId || interfaceId) break;
+           }
+         }
+         if (!templateId && parsed.templateId) {
+@@ -445,6 +455,29 @@ var LoopAdapter = class {
+       } catch {
+       }
+     }
++    if (interfaceId && /holding/i.test(interfaceId) && typeof provider.getHolding === "function") {
++      const raw = await provider.getHolding();
++      const list = Array.isArray(raw) ? raw : (raw?.holdings ?? raw?.balances ?? raw?.data ?? raw?.result ?? []);
++      const arr = Array.isArray(list) ? list : [];
++      const owner = provider.party_id ?? provider.partyId;
++      const events = [];
++      for (const h of arr) {
++        const inst = h?.instrument_id ?? h?.instrumentId ?? h?.instrument ?? {};
++        const admin = inst?.admin ?? h?.admin;
++        const id = inst?.id ?? inst?.instrumentId ?? h?.instrumentId ?? h?.symbol ?? h?.id;
++        if (id == null || admin == null) continue;
++        const unlocked = h?.total_unlocked_coin ?? h?.unlocked ?? h?.available ?? h?.amount ?? h?.balance;
++        const lockedAmt = h?.total_locked_coin ?? h?.locked_coin ?? h?.locked;
++        const key = `${admin}:${id}`;
++        if (unlocked != null && Number(unlocked) !== 0) {
++          events.push({ createdEvent: { contractId: `loop-holding:${key}`, createArgument: { owner, instrumentId: { admin, id }, amount: String(unlocked), lock: null } } });
++        }
++        if (lockedAmt != null && Number(lockedAmt) !== 0) {
++          events.push({ createdEvent: { contractId: `loop-holding-locked:${key}`, createArgument: { owner, instrumentId: { admin, id }, amount: String(lockedAmt), lock: {} } } });
++        }
++      }
++      return { response: JSON.stringify({ activeContracts: events }) };
++    }
+     let result;
+     try {
+       result = await provider.getActiveContracts({
+@@ -550,9 +583,10 @@ var LoopAdapter = class {
+   mapNetworkToLoop(network) {
+     if (network === "local") return "local";
+     if (network === "devnet") return "devnet";
++    if (network === "testnet") return "testnet";
+     if (network === "mainnet") return "mainnet";
+     throw new Error(
+-      `Loop wallet does not support the "${network}" network (supported: local, devnet, mainnet).`
++      `Loop wallet does not support the "${network}" network (supported: local, devnet, testnet, mainnet).`
+     );
+   }
+ };
+diff --git a/node_modules/@partylayer/adapter-loop/dist/index.mjs b/node_modules/@partylayer/adapter-loop/dist/index.mjs
+index 887898a..d0bf8db 100644
+--- a/node_modules/@partylayer/adapter-loop/dist/index.mjs
++++ b/node_modules/@partylayer/adapter-loop/dist/index.mjs
+@@ -108,8 +108,8 @@ var LoopAdapter = class {
+             ctx.logger.debug("Loop transaction update", payload);
+           },
+           options: {
+-            openMode: "popup",
+-            requestSigningMode: "popup"
++            openMode: "tab",
++            requestSigningMode: "tab"
+           },
+           onAccept: async (provider) => {
+             if (resolved) return;
+@@ -374,6 +374,9 @@ var LoopAdapter = class {
+       if (this.isSubmitRoute(requestMethod, resource)) {
+         return this.handleSubmitCommand(resource, body);
+       }
++      if (requestMethod.toUpperCase() === "GET" && resource.replace(/\/+$/, "") === "/v2/state/ledger-end") {
++        return { response: JSON.stringify({ offset: 0 }) };
++      }
+       throw new CapabilityNotSupportedError(
+         this.walletId,
+         `ledgerApi endpoint "${route}" is not supported by Loop wallet. Supported: POST /v2/state/acs, GET /v2/state/acs/active-contracts, POST /v2/commands/submit, POST /v2/commands/submit-and-wait. For full Ledger API access, use Console or Nightly wallet.`
+@@ -432,6 +435,13 @@ var LoopAdapter = class {
+               interfaceId = templates[0].interfaceId;
+               break;
+             }
++            for (const c of (pf.cumulative || [])) {
++              const iv = c?.identifierFilter?.InterfaceFilter?.value;
++              const tv = c?.identifierFilter?.TemplateFilter?.value;
++              if (iv?.interfaceId) { interfaceId = iv.interfaceId; break; }
++              if (tv?.templateId) { templateId = tv.templateId; break; }
++            }
++            if (templateId || interfaceId) break;
+           }
+         }
+         if (!templateId && parsed.templateId) {
+@@ -443,6 +453,29 @@ var LoopAdapter = class {
+       } catch {
+       }
+     }
++    if (interfaceId && /holding/i.test(interfaceId) && typeof provider.getHolding === "function") {
++      const raw = await provider.getHolding();
++      const list = Array.isArray(raw) ? raw : (raw?.holdings ?? raw?.balances ?? raw?.data ?? raw?.result ?? []);
++      const arr = Array.isArray(list) ? list : [];
++      const owner = provider.party_id ?? provider.partyId;
++      const events = [];
++      for (const h of arr) {
++        const inst = h?.instrument_id ?? h?.instrumentId ?? h?.instrument ?? {};
++        const admin = inst?.admin ?? h?.admin;
++        const id = inst?.id ?? inst?.instrumentId ?? h?.instrumentId ?? h?.symbol ?? h?.id;
++        if (id == null || admin == null) continue;
++        const unlocked = h?.total_unlocked_coin ?? h?.unlocked ?? h?.available ?? h?.amount ?? h?.balance;
++        const lockedAmt = h?.total_locked_coin ?? h?.locked_coin ?? h?.locked;
++        const key = `${admin}:${id}`;
++        if (unlocked != null && Number(unlocked) !== 0) {
++          events.push({ createdEvent: { contractId: `loop-holding:${key}`, createArgument: { owner, instrumentId: { admin, id }, amount: String(unlocked), lock: null } } });
++        }
++        if (lockedAmt != null && Number(lockedAmt) !== 0) {
++          events.push({ createdEvent: { contractId: `loop-holding-locked:${key}`, createArgument: { owner, instrumentId: { admin, id }, amount: String(lockedAmt), lock: {} } } });
++        }
++      }
++      return { response: JSON.stringify({ activeContracts: events }) };
++    }
+     let result;
+     try {
+       result = await provider.getActiveContracts({
+@@ -548,9 +581,10 @@ var LoopAdapter = class {
+   mapNetworkToLoop(network) {
+     if (network === "local") return "local";
+     if (network === "devnet") return "devnet";
++    if (network === "testnet") return "testnet";
+     if (network === "mainnet") return "mainnet";
+     throw new Error(
+-      `Loop wallet does not support the "${network}" network (supported: local, devnet, mainnet).`
++      `Loop wallet does not support the "${network}" network (supported: local, devnet, testnet, mainnet).`
+     );
+   }
+ };

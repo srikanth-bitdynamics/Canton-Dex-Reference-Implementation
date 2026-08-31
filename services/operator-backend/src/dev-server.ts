@@ -4,7 +4,7 @@
 // participant running.
 //
 // Scope:
-//   - Seeds: one DexPair (BTC/USDC), one Pool (BTC/USDC, Active, two
+//   - Seeds: one DexPair (Amulet/USDCx), one Pool (Amulet/USDCx, Active, two
 //     slices per side), some Holdings for a demo trader.
 //   - Registers ledger choice handlers needed by the HTTP endpoints the
 //     dApp calls today (PoolRules_Swap, the DvP add/remove settles,
@@ -218,10 +218,10 @@ async function seed(
   admin: Party,
   trader: Party,
 ): Promise<void> {
-  // DexPair BTC/USDC.
+  // DexPair Amulet/USDCx.
   await ledger.submit({
     actAs: [operator],
-    commandId: "seed-pair-btcusdc",
+    commandId: "seed-pair-amulet-usdcx",
     command: {
       kind: "create",
       templateId: "CantonDex.Dex.DexPair:DexPair",
@@ -245,7 +245,7 @@ async function seed(
   const poolId = DEMO_POOL_ID;
   await ledger.submit({
     actAs: [operator],
-    commandId: "seed-pool-btcusdc",
+    commandId: "seed-pool-amulet-usdcx",
     command: {
       kind: "create",
       templateId: "CantonDex.Dex.Pool:Pool",
@@ -262,7 +262,7 @@ async function seed(
   });
   await ledger.submit({
     actAs: [operator],
-    commandId: "seed-pool-state-btcusdc",
+    commandId: "seed-pool-state-amulet-usdcx",
     command: {
       kind: "create",
       templateId: "CantonDex.Dex.PoolState:PoolState",
@@ -321,7 +321,7 @@ async function seed(
   // lpInstrumentId + lpRegistrar.
   await ledger.submit({
     actAs: [lpRegistrar],
-    commandId: "seed-lp-policy-btcusdc",
+    commandId: "seed-lp-policy-amulet-usdcx",
     command: {
       kind: "create",
       templateId: "CantonDex.Lp.Policy:LPTokenPolicy",

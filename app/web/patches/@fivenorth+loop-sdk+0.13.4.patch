@@ -1,0 +1,28 @@
+diff --git a/node_modules/@fivenorth/loop-sdk/dist/index.js b/node_modules/@fivenorth/loop-sdk/dist/index.js
+index 04dcdbd..2ff18eb 100644
+--- a/node_modules/@fivenorth/loop-sdk/dist/index.js
++++ b/node_modules/@fivenorth/loop-sdk/dist/index.js
+@@ -1,3 +1,4 @@
++const console = { log() {}, warn: (...a) => globalThis.console.warn(...a), error: (...a) => globalThis.console.error(...a) };
+ var __create = Object.create;
+ var __getProtoOf = Object.getPrototypeOf;
+ var __defProp = Object.defineProperty;
+@@ -3229,6 +3230,7 @@ class LoopSDK {
+           this.onAccept?.(this.provider);
+           this.hideQrCode();
+           console.log("[LoopSDK] HANDSHAKE_ACCEPT: closing popup (if exists)");
++          try { this.popupWindow?.close(); } catch {}
+           this.popupWindow = null;
+         } catch (error) {
+           console.error("Failed to update local storage with auth token.", error);
+@@ -3308,7 +3310,9 @@ class LoopSDK {
+       } catch {}
+       return popup;
+     }
+-    return window.open(url, "_blank", "noopener,noreferrer");
++    const tab = window.open(url, "_blank");
++    if (tab) { this.popupWindow = tab; try { tab.focus(); } catch {} }
++    return tab;
+   }
+   injectModalStyles() {
+     if (document.getElementById("loop-connect-styles"))

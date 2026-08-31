@@ -150,8 +150,11 @@ The load-bearing seams:
 ## Backend HTTP smoke
 
 [`scripts/backend-http-smoke.sh`](../../scripts/backend-http-smoke.sh) starts the development
-backend with `InMemoryLedger`, checks selected reads and quotes, confirms that
-an unauthenticated admin write returns 401, and stops the process. It does not
+backend with `InMemoryLedger` and asserts the Amulet/USDCx preview seed across
+selected read and quote routes: `/v1/pools` and `/v1/pairs` list Amulet,
+`trader-demo`'s holdings include USDCx, and the swap-quote, order-book, and
+prices routes answer for the Amulet/USDCx pair. It also confirms that an
+unauthenticated admin write returns 401, then stops the process. It does not
 start the dApp or Canton, submit a successful write, or exercise a wallet.
 
 Install the backend dependencies once, then run the script from the repository

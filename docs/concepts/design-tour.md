@@ -27,11 +27,17 @@ The recurring workflow is:
 2. The holder's wallet creates the exact `V2.Allocation` needed by the flow.
 3. An operator-controlled DEX choice fetches the market state and validates the
    proposed action.
-4. The registry's `SettlementFactory_SettleBatch` consumes all allocations and
-   moves all transfer legs in one transaction.
+4. The DEX choice groups the allocations and legs by instrument admin and
+   exercises one `SettlementFactory_SettleBatch` per admin — one to three
+   depending on the flow — inside a single atomic transaction.
 
 The operator can decide when to propose an action. It cannot author a trader's
-allocation or settle transfer legs outside the checks in the DEX choice.
+allocation. For swaps and liquidity the trader or LP authors every leg up front,
+so settlement cannot add or alter their authority. The order book instead relies
+on the operator as settlement executor: `OrderMatchExecution`'s checks constrain
+the legs it fills to the matched price, quantity, pair, and ownership, but the
+registry itself cannot prove the operator entered through that choice rather than
+another.
 
 ## Know the actors
 
@@ -88,8 +94,10 @@ Read:
 ## Signed pool swaps
 
 `PoolRules_RequestSwap` reads a precise pool snapshot and returns one allocation
-specification containing both the trader's input side and every pool-to-trader
-output side. The wallet signs that complete specification.
+specification per instrument admin — one combined specification for a
+single-admin pair, or two (input admin and output admin) when base and quote
+are on different registries. Together they carry the trader's input side and
+every pool-to-trader output side. The wallet signs the returned specifications.
 
 A pool's reserves are not held as one balance per side: each side is a set of
 many small `PoolSlice` allocations (detailed in the next section). A swap
@@ -146,8 +154,10 @@ why simply adding a deadline would not give holders an exit — is in
 
 ## Prefunded orders
 
-An order has two objects: an operator-signed `Order` containing market terms and
-a trader-authored allocation containing the reserved funds.
+An order has two parts: an operator-signed `Order` containing market terms and
+the trader-authored allocations containing the reserved funds — one for a
+single-admin pair, one per instrument admin when base and quote are on different
+registries.
 
 ```mermaid
 flowchart LR
@@ -180,12 +190,13 @@ Read:
 
 An RFQ records a trader request and dealer quotes. `Rfq_Accept` jointly requires
 the trader and operator, records the ranking in a `PolicyReceipt`, and
-creates a `MatchedTrade`. Each counterparty then authors an allocation and
-`MatchedTrade_Settle` groups the transfer legs by registry admin before calling
-that admin's settlement factory.
+creates a `MatchedTrade`. Each counterparty then authors its allocations — one
+specification per instrument admin it touches — and `MatchedTrade_Settle` groups
+the transfer legs by registry admin before calling that admin's settlement
+factory.
 
 The accepted RFQ state does not mean value moved. Settlement occurs only after
-both allocations exist and the matched-trade settle succeeds.
+both sides' allocations exist and the matched-trade settle succeeds.
 
 Read:
 

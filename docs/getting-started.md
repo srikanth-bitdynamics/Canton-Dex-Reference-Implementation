@@ -48,19 +48,21 @@ git --version
 
 - A JDK 17 or newer. CI uses
   [Eclipse Temurin 17](https://adoptium.net/temurin/releases/?version=17).
-- [DPM](https://archived.docs.digitalasset.com/build/3.5/dpm/manual-install.html), the
+- [DPM](https://docs.canton.network/sdks-tools/cli-tools/dpm), the
   Daml Package Manager.
 - The Daml SDK pinned by this repository: 3.5.2.
 - Bash and `curl` for the default live-Canton proof.
 
-Digital Asset keeps the version-pinned 3.5 manuals in its official documentation
-archive. The links above intentionally use that archive so their commands match
-this repository's SDK instead of a newer toolchain.
+Digital Asset's Daml documentation now lives at
+[docs.canton.network](https://docs.canton.network/); the older version-pinned 3.5
+manuals are being retired. This repository pins Daml SDK 3.5.2 — install that
+exact version with DPM (above) so your commands match the pinned toolchain, even
+though the linked pages track the current release.
 
 If Daml syntax itself is new, complete Digital Asset's official
-[Get started with Daml](https://archived.docs.digitalasset.com/build/3.5/tutorials/get-started/index.html)
+[Get started with Daml](https://docs.canton.network/sdks-tools/sdks/daml-sdk)
 tutorial and its
-[basic contracts lesson](https://archived.docs.digitalasset.com/build/3.5/tutorials/smart-contracts/contracts.html)
+[basic contracts lesson](https://docs.canton.network/appdev/modules/m3-contract-templates)
 before the first code-change tutorial. The repository primer explains this
 application's mental model; the official tutorial teaches the language.
 
@@ -124,9 +126,15 @@ Leave the process running. A successful start ends with lines like:
 
 The backend seeds:
 
-- one active `BTC/USDC` pair and constant-product pool;
+- one active `Amulet/USDCx` pair and constant-product pool;
 - two reserve slices per side;
-- `0.2500000000 BTC` and `5000.0000000000 USDC` for `trader-demo`.
+- `0.2500000000 Amulet` and `5000.0000000000 USDCx` for `trader-demo`.
+
+> The demo seed creates `Amulet` and `USDCx` under a demo admin (`admin-demo`);
+> these are not the real Canton Coin or USDCx registries. The DEX is
+> asset-agnostic — it lists any Token Standard V2 pair — so read the market as
+> illustrative; the testnet reference deployment uses the real `CC`/`USDCx`
+> assets.
 
 ### 3. Terminal 2 — start the dApp
 
@@ -144,7 +152,7 @@ Local:   http://localhost:5173/
 ```
 
 Open <http://localhost:5173>. The Trade and Pools pages should show the seeded
-`BTC/USDC` market. Connect **Mock Wallet (dev)** to view the seeded
+`Amulet/USDCx` market. Connect **Mock Wallet (dev)** to view the seeded
 `trader-demo` portfolio. The header must say `in-memory preview`, the status pill
 must say `Preview · no Canton`, and the page warning must state that wallet
 actions do not settle token value. Those labels are part of the safety boundary.
@@ -166,8 +174,8 @@ The status response contains the following stable fields; `slot` and
 {"network":"preview:in-memory","slot":0,"synced":true,"serverTime":"<ISO-8601 timestamp>"}
 ```
 
-The pair and pool responses are JSON arrays containing `BTC`, `USDC`, and
-`BTC-USDC`. If those commands succeed but the dApp reports a network error,
+The pair and pool responses are JSON arrays containing `Amulet`, `USDCx`, and
+`Amulet-USDCx`. If those commands succeed but the dApp reports a network error,
 check that Terminal 1 includes exactly the origin printed by Vite in
 `ALLOWED_ORIGINS`.
 

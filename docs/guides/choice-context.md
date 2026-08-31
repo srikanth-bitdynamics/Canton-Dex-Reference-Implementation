@@ -180,7 +180,9 @@ logic. Each supported settlement flow obtains the candidate
 
 1. `PoolRules_PreviewSwapSettlement` reads the current pool and returns the
    candidate settlement batch.
-2. The backend calls `getSettlementFactory(pool.admin, previewResult)`.
+2. The backend discovers one settlement factory per instrument admin, calling
+   `getSettlementFactory(admin, choiceArgs)` for each — the swap-in admin and
+   the swap-out admin, or a single admin for a single-admin pool.
 3. `PoolRules_Swap` receives that factory, its context, and disclosures.
 4. The real choice re-reads current state and enforces quote binding,
    constant-product calculation, allocation binding, and minimum output.
@@ -230,55 +232,61 @@ allocations have the same admin. The resulting `ExtraArgs` values remain paired
 with their allocation CIDs. Treating context as one cached value per admin
 would lose that binding.
 
-The order cancellation path performs the same lookup for its funding
-allocation. When a pending order has no allocation, no registry allocation is
-being cancelled, so empty `ExtraArgs` is sufficient for the app choice.
+The order cancellation path performs the same lookup for each of the order's
+funding allocations — one per pair admin, so a single-admin order cancels one
+and a cross-admin order cancels two. When a pending order has no allocations, no
+registry allocation is being cancelled, so empty `ExtraArgs` is sufficient for
+the app choice.
 
-## 7. Atomic add/remove liquidity boundary
+## 7. Add and remove liquidity: staged but atomic
 
-This is the one workflow where the standard HTTP preflight cannot be performed
-with exact arguments in the current design.
+Add and remove liquidity settle through a staged flow that is still one atomic
+settlement transaction. The stages exist only because the operator and
+registrar allocation contract IDs do not exist until they are created, and the
+standard settlement-factory lookup needs those IDs inside the candidate
+`SettleBatch` argument. Staging creates them first so each registry can return
+its operation-specific context before the single settle choice runs.
 
-`PoolLiquidityRules_SettleAddLiquidity` and
-`PoolLiquidityRules_SettleRemoveLiquidity` create operator/registrar
-allocations and immediately settle them inside the same Daml transaction. Their
-contract IDs do not exist before that transaction. The standard settlement
-factory endpoint expects the candidate `SettleBatch` argument, including those
-allocation IDs.
+The flow is request, then an optional preview, then one settle choice:
+
+1. `PoolLiquidityRules_PreviewAddAllocations` (or the remove equivalent) is a
+   read-only plan that returns the allocation candidates without creating them.
+2. The backend creates the operator receiver and registrar mint allocations,
+   discovering each admin's allocation-factory context as it goes. Then
+   `PoolLiquidityRules_PreviewAddSettlement` returns the exact per-admin
+   `SettleBatch` arguments so each registry can return its own settlement
+   context.
+3. `PoolLiquidityRules_SettleAddLiquidity` receives those per-admin batches and
+   contexts, settles the allocations, creates the pool slices, mints or burns
+   LP, and updates reserves and LP supply — all in one transaction.
+
+A single-admin pool collapses the base and quote batches into one; a
+cross-admin pool settles one batch per instrument admin, plus the LP registrar.
 
 ```mermaid
 flowchart TD
-  Q["HTTP preflight needs<br/>future allocation CIDs"]
-  T["Atomic Daml transaction<br/>creates those CIDs"]
-  Q -. "CIDs do not exist yet" .-> T
-  T --> C["Create temporary allocations"]
-  C --> S["Settle them immediately"]
+  R["Request add or remove"]
+  P1["Preview allocation plan<br/>read-only, creates nothing"]
+  C["Create operator receiver<br/>and registrar mint allocations"]
+  P2["Preview per-admin<br/>SettleBatch arguments"]
+  D["Discover one settlement<br/>factory and context per admin"]
+  S["Single settle choice<br/>settle, slice, mint or burn, update reserves"]
+  R --> P1 --> C --> P2 --> D --> S
 ```
 
-The repository handles this limitation explicitly:
+The backend wires this end to end:
 
 - `FixedRegistryClient` supports the configured reference self-registry. Its
-  factory CIDs are deployed with the operator, its context is empty, and its
-  required disclosures are known before the transaction.
-- The generic HTTP `RegistryClient` throws
-  `RegistryError("unsupported", ...)` before an add/remove settlement is
-  submitted. It does not send placeholder CIDs and does not pretend a 404 means
-  empty context.
-- A context-requiring external registry needs a workflow redesign for atomic
-  liquidity settlement. One option is a recoverable prepare-then-settle
-  protocol with explicit expiry, cancellation, idempotency, and cleanup. An
-  interactive transaction-authoring design is another possibility if the
-  selected Canton/wallet stack can supply registry data at the correct stage.
-  Either approach changes the protocol and must be threat-modelled; it is not a
-  configuration switch in this reference.
-
-This limitation applies to the backend's **atomic add/remove settlement
-integration**, not to allocation discovery, swaps, matched trades, order
-matches, or allocation cancellation.
+  factory CIDs are deployed with the operator, and its required disclosures are
+  known before the transaction.
+- The generic HTTP `RegistryClient` performs a fresh per-admin lookup for each
+  allocation factory and settlement batch. Only the read-only preview plan runs
+  before that discovery, so a missing endpoint fails the flow closed before the
+  settle submission. It does not send placeholder CIDs and does not pretend a
+  404 means empty context.
 
 The Daml tests against a context-requiring registry prove that the Daml choices
-thread context correctly when it is supplied. They do not manufacture a way
-for an HTTP client to know future contract IDs.
+thread context correctly when it is supplied.
 
 ## 8. Disclosure handling
 
@@ -311,7 +319,7 @@ The client raises a typed `RegistryError` and fails closed:
 | Is the exact request body sent, normalized, and never cached? | [`registry-client.test.ts`](../../services/operator-backend/test/registry-client.test.ts) |
 | Does a two-admin trade keep preview arguments, contexts, and disclosures separate? | [`matched-trade.test.ts`](../../services/operator-backend/test/matched-trade.test.ts) |
 | Does order matching preview before one atomic value-moving execute? | [`match-leg-shape.test.ts`](../../services/operator-backend/test/match-leg-shape.test.ts) and [`order-fill-recording.test.ts`](../../services/operator-backend/test/order-fill-recording.test.ts) |
-| Is the fixed atomic-liquidity path explicit, and does generic HTTP discovery fail before submission? | [`pool.test.ts`](../../services/operator-backend/test/pool.test.ts) |
+| Does the staged add-liquidity flow run only the read-only preview before per-admin registry discovery, and fail closed before the settle submission when an endpoint is missing? | [`pool.test.ts`](../../services/operator-backend/test/pool.test.ts) |
 | Are split-admin Daml contexts kept in their correct fields? | `testDvpSettleThreadsBothAdminContexts` in [`ChoiceContextWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/ChoiceContextWorkflowTests.daml) |
 | Does a context-requiring registry reject missing context? | `testRealRegistryDvpRejectsMissingContext` in [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml) |
 

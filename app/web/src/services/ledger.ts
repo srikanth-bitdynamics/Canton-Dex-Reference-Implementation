@@ -90,13 +90,13 @@ async function getWalletNativeHoldings(owner: string): Promise<Holding[] | null>
   const providerId = walletState.activeProviderId;
   if (!providerId || walletState.account?.party !== owner) return null;
 
+  const provider = getProvider(providerId);
+  if (!provider.listHoldings) return null;
   try {
-    const provider = getProvider(providerId);
-    if (!provider.listHoldings) return null;
     return await provider.listHoldings(owner);
   } catch (err) {
-    console.warn('[wallet] falling back to operator holdings read', err);
-    return null;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`wallet holdings read failed (${providerId}): ${msg}`);
   }
 }
 

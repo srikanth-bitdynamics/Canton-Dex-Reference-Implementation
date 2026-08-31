@@ -85,6 +85,7 @@ lookup (reference).
 | [Overview](concepts/overview.md) | Everyone | What the DEX is, the trust model, and how it maps onto Token Standard V2. |
 | [Architecture](concepts/architecture.md) | Builder, integrator | The system model, component boundaries, and executor-authority constraints. |
 | [Workflows](concepts/workflows.md) | Builder, integrator | The venue workflows, the actor model, and the design principles behind them. |
+| [Cross-admin settlement](concepts/cross-admin.md) | Builder, integrator | Multi-registry settlement across two instrument admins: legs grouped per admin into one SettleBatch each, committed atomically, and the operator trust boundary. |
 | [Liquidity & Custody](concepts/liquidity-and-custody.md) | Integrator | How the pool represents and custodies LP liquidity (operator-custodied; delivery-versus-payment — DvP — at the boundary). |
 | [LP Tokens](concepts/lp-tokens.md) | Builder, integrator | Why LP tokens are a single, unversioned V2 instrument per pool. |
 | [Pricing](concepts/pricing.md) | Operator, integrator | Where prices come from — pool-derived, order book, RFQ — and the (absent) oracle attachment points. |

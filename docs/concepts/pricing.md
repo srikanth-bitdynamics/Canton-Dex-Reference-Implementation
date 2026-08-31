@@ -30,8 +30,8 @@ Two things about this implementation matter more than the curve itself:
 
 - **The fee is retained in the pool.** It is charged on the input
   (`Δin · (1 − fee)` drives the curve) while the full `Δin` still lands in the
-  reserve, so `k` is strictly non-decreasing across a swap. That surplus is what
-  accrues to liquidity providers.
+  reserve, so `k` is non-decreasing across a swap (unchanged when `feeBps` is
+  0). That surplus is what accrues to liquidity providers.
 - **The trader signs the exact output authority.** `PoolRules_RequestSwap`
   computes `Δout`, binds the current `PoolState` and selected slices, and returns
   a specification containing both the trader's input sender side and every

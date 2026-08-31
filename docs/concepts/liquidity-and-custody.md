@@ -23,6 +23,9 @@ template PoolSlice with
     operator : Party
     side : Side
       -- ^ Which pool leg (base or quote) this slice funds.
+    instrumentId : HoldingV2.InstrumentId
+      -- ^ Full identity `{ admin, id }` of the instrument this slice holds;
+      --   settlement validates the allocation view against it.
     allocationCid : ContractId V2.Allocation
       -- ^ The committed allocation holding this slice's funds.
     amount : Decimal
@@ -106,9 +109,10 @@ transaction — so holdings and reserves change co-atomically, or nothing change
 - **Add.** The LP's base and quote deposits settle into operator-authored
   receiver allocations, which roll forward (via `nextIterationFunding`) into the
   two new slices; the registrar mints LP tokens to the LP; `PoolState` is
-  rewritten once with the new reserves and supply. Base/quote settle under
-  `pool.admin` and the LP mint under `pool.lpRegistrar`, so this is two
-  per-admin batches in the same transaction.
+  rewritten once with the new reserves and supply. Settlement groups by
+  instrument admin — the base admin, the quote admin, and the LP registrar —
+  so this is one to three per-admin batches in the same transaction (they
+  collapse when admins coincide).
 - **Remove** is symmetric to swap: the sourced slices deliver base and quote to
   the holder (exactly as `PoolRules_Swap` delivers to the swapper), each fully
   drawn slice drains, the boundary slice re-wraps its leftover, the holder's LP
@@ -144,8 +148,12 @@ a 30 bps fee (`feeBps = 30`); every figure is what the on-ledger `Decimal` math
    product `x · y` has grown, and that growth is the fee — now owned by the LPs.
 4. **Alice redeems.** She is the only LP, so burning all `1,414.2135623730` LP
    returns the entire current reserves: `11.0 BTC` + `181,867.7821223971 USDC`.
-   She deposited `10 BTC + 200,000 USDC` and withdrew `11 BTC + 181,867.78 USDC`;
-   the difference is Bob's fee.
+   She deposited `10 BTC + 200,000 USDC` and withdrew `11 BTC + 181,867.78 USDC`
+   — more BTC, less USDC, because Bob's swap shifted the pool's mix toward the
+   side he paid in, so the per-side change tracks swap direction. In pool terms
+   the growth in `x · y` is Bob's fee, but measured against an external numeraire
+   the outcome also reflects the price move (impermanent loss) and the
+   one-directional floored rounding, so the "extra" is not purely the fee.
 
 [`PoolRoundingTests.daml`](../../trading-tests/CantonDex/Tests/PoolRoundingTests.daml)
 guarantees the pool never pays out more than the exact floored amount, so these

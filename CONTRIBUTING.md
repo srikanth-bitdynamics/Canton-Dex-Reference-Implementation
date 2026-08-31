@@ -30,6 +30,10 @@ builder evaluating Canton + Token Standard V2.
    `trading/daml.yaml`.
 2. Build and test Daml: `bash scripts/run-local-daml-tests.sh`.
 3. Check Daml package compatibility: `bash scripts/check-upgrade-compat.sh`.
+   Until a baseline DAR is committed under `trading/upgrade-baseline/` (which
+   holds only a `.gitkeep` today), this is a no-op "first deploy" pass that
+   compares nothing and exits green; a passing run does not yet attest upgrade
+   compatibility.
 4. Test the backend: `cd services/operator-backend && npm ci && npm run typecheck && npm test`.
 5. Test the dApp: `cd app/web && npm ci && npx tsc --noEmit && npm test && npm run build`.
 6. Build the docs site: `cd website && npm ci && npm run build`.

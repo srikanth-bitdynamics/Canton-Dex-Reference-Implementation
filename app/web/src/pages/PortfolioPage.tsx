@@ -8,10 +8,11 @@ import { fmt } from '@/primitives/format';
 
 export function PortfolioPage() {
   const party = useCurrentParty();
-  const { data: holdings, isLoading } = useQuery({
+  const { data: holdings, isLoading, error: holdingsError } = useQuery({
     queryKey: ['holdings', party],
     queryFn: () => ledger.getHoldings(party!),
     enabled: !!party,
+    retry: false,
   });
   const { data: pools } = useQuery({
     queryKey: ['pools'],
@@ -72,6 +73,13 @@ export function PortfolioPage() {
   if (isLoading) {
     return (
       <EmptyState title="Loading portfolio">Reading holdings and activity for your party.</EmptyState>
+    );
+  }
+  if (holdingsError) {
+    return (
+      <EmptyState title="Could not read wallet holdings">
+        {holdingsError instanceof Error ? holdingsError.message : String(holdingsError)}
+      </EmptyState>
     );
   }
 

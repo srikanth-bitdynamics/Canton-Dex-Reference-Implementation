@@ -15,17 +15,17 @@ creation will succeed but trades will not flow.
 
 ## What a listing is, and what it isn't
 
-`DexPair` is signed by the operator and observed by the pair's registry `admin` (plus
-any `publicReaders`):
+`DexPair` is signed by the operator and observed only by its `publicReaders`
+(nobody when `publicReaders` is `None`):
 
 ```daml
 signatory operator
-observer admin :: optional [] identity publicReaders
+observer optional [] identity publicReaders
 ```
 
-So the operator owns the listing, the admin can see it, and traders see it only if
-you add them as public readers. The listing carries the trading mode and fee model;
-tradability comes from elsewhere:
+So the operator owns the listing, and traders see it only if you add them as public
+readers — the registry `admin` is not automatically an observer. The listing carries
+the trading mode and fee model; tradability comes from elsewhere:
 
 ```mermaid
 flowchart TB
@@ -42,7 +42,6 @@ flowchart TB
 | `quoteInstrumentId : { admin, id }` | the quote asset's full `InstrumentId`; its admin may differ from the base's |
 | `tradingMode : "TM_OrderBook" \| "TM_Pool" \| "TM_Both"` | which surfaces are enabled |
 | `feeModel : { makerFeeBps, takerFeeBps, poolFeeBps }` | fee schedule, in basis points |
-| `publicReaders : [Party]` (Optional) | parties that should observe the listing |
 
 ## Step 1 — List the pair (`DexPair`)
 
@@ -94,11 +93,10 @@ curl -X POST http://localhost:8080/v1/admin/pools \
   -H "Authorization: Bearer $OPERATOR_ADMIN_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
-    "baseInstrumentId": "ETH",
-    "quoteInstrumentId": "USDT",
+    "baseInstrumentId": { "admin": "<base-admin-party>", "id": "ETH" },
+    "quoteInstrumentId": { "admin": "<quote-admin-party>", "id": "USDT" },
     "lpInstrumentId": "ETH-USDT-LP",
     "lpRegistrar": "<lp-registrar-party>",
-    "admin": "<admin-party>",
     "feeBps": 30
   }'
 ```
@@ -123,10 +121,12 @@ The first LP moves the pool from `PS_Unfunded` to `PS_Active` through the same
 add-liquidity DvP used for every later deposit:
 
 1. Hold V2 base and quote holdings of the amounts to deposit.
-2. `POST /v1/pools/add-liquidity/request` — returns the request plus the allocation
-   specs and factory contract ids the wallet needs.
-3. The wallet authors the three requested allocations with `AllocationFactory_Allocate`:
-   base deposit, quote deposit, and the LP receipt.
+2. `POST /v1/pools/add-liquidity/request` — returns the request and the on-ledger
+   allocation specs the wallet authors.
+3. The wallet discovers each instrument admin's allocation factory via
+   `POST /v1/registry/allocation-factory`, then authors the three requested
+   allocations with `AllocationFactory_Allocate`: base deposit, quote deposit, and
+   the LP receipt.
 4. `POST /v1/pools/add-liquidity/settle` — operator and `lpRegistrar` co-settle via
    `PoolLiquidityRules_SettleAddLiquidity`, which seeds the first pool slices,
    transitions the pool to `PS_Active`, and mints `sqrt(baseAmount * quoteAmount)` LP
@@ -134,21 +134,26 @@ add-liquidity DvP used for every later deposit:
 
 ## Step 4 — Surface and verify
 
-The dApp's `/v1/pairs` returns the new listing and the Pools page shows the pool
-once it is seeded. The current Trade page is pool-driven: it reads active pools
+The dApp's `/v1/pairs` returns the new listing, and `/v1/pools` lists the pool as
+soon as it is created — in `PS_Unfunded`, before any seed — it just is not tradable
+until the first LP moves it to `PS_Active`. The current Trade page is pool-driven: it reads active pools
 and does not filter them through `DexPair.active` or `tradingMode`. Treat those
 fields as discovery metadata unless your application adds an off-ledger filter
 or an on-ledger terminal-choice gate.
 
 ```bash
-curl -s http://localhost:8080/v1/pairs | jq '.[] | select(.baseInstrumentId=="ETH")'
-curl -s http://localhost:8080/v1/pools | jq '.[] | select(.baseInstrumentId=="ETH")'
+curl -s http://localhost:8080/v1/pairs | jq '.[] | select(.baseInstrumentId.id=="ETH")'
+curl -s http://localhost:8080/v1/pools | jq '.[] | select(.baseInstrumentId.id=="ETH")'
 ```
 
-After the first seed, liquidity and swap events show up on `/v1/swaps`:
+After the first seed, swap events show up on the default `/v1/swaps` feed. Liquidity
+moves are a separate `kind` (the feed defaults to `swap`), so pass `?kind=add_liquidity`
+to see the seed and later deposits — valid kinds are `swap`, `add_liquidity`,
+`remove_liquidity`, and `state_change`:
 
 ```bash
 curl -s 'http://localhost:8080/v1/swaps?pair=ETH/USDT&limit=10'
+curl -s 'http://localhost:8080/v1/swaps?kind=add_liquidity&pair=ETH/USDT&limit=10'
 ```
 
 ## Common pitfalls

@@ -62,9 +62,11 @@ settlement deadline has passed."
 
 DEX usage:
 
-- `PoolLiquidityRules.mkOperatorReceiver` and `PoolLiquidityRules.dvpSpec`
-  (`trading/CantonDex/Dex/PoolLiquidityRules.daml`) build committed specs for
-  pool slices and LP DvP legs.
+- `PoolLiquidityRules.mkOperatorReceiver`
+  (`trading/CantonDex/Dex/PoolLiquidityRules.daml`) builds committed specs for
+  pool slices. `PoolLiquidityRules.dvpSpec` is parameterized on `committed`: the
+  add-liquidity deposit legs and the LP burn leg are committed, while the
+  remove-liquidity base and quote withdrawal legs are deliberately uncommitted.
 - `Order.orderFundingSpecification` commits an expiring order only through its
   deadline. A GTC order has no bounded deadline, so it is deliberately
   uncommitted and its trader can exercise `Allocation_Withdraw` at any time.

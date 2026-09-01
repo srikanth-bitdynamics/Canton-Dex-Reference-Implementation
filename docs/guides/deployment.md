@@ -313,18 +313,20 @@ API bearer token is an accepted production build argument.
 
 - [ ] Separate strong `OPERATOR_ADMIN_TOKEN` and `DEX_OPERATOR_API_TOKEN` values set
 - [ ] Tokens delivered through a trusted session/BFF or short-lived validator tab—not compiled as `VITE_*`
-- [ ] `ALLOWED_ORIGINS` contains only the exact dApp host (unset denies all cross-origin browsers)
+- [ ] `ALLOWED_ORIGINS` contains only the exact dApp host — the backend denies all cross-origin browsers when it is unset, but `docker-compose.yml` supplies a `http://localhost` default, so set it explicitly under Compose
 - [ ] Multi-user deployments enable caller binding so account/history reads and trader-subject writes are party-scoped
 - [ ] `CANTON_DEX_PACKAGE_ID` and `CANTON_SYNCHRONIZER` pinned to the vetted values
 - [ ] Asset factory pair set to the live asset registry cid; LP factory pair also set when the registrar differs
-- [ ] `/v1/status` reports `synced: true` after a genuine participant ledger-end probe (not merely HTTP 200)
+- [ ] `/v1/status` reports `synced: true` from a genuine probe — a participant ledger-end probe, or, when `DEX_AMULET_SCAN_URL` is set, a successful Amulet mining-round poll (which sets `synced` before the participant probe runs), not merely HTTP 200
 - [ ] Exactly one tested production wallet path enabled; no DEV-only provider or relay relied upon
 - [ ] Hosted RFQ is either off on both tiers, or deliberately enabled with both `DEX_HOSTED_RFQ_RELAY=1` and `VITE_ENABLE_HOSTED_RFQ=1`, mandatory caller binding, and scoped trader rights
 - [ ] Backend is private behind ingress and runs as the image's non-root `node` user
 - [ ] Indexer DB on a persistent volume (`backend-data` under Compose; `DB_PATH=/var/lib/dex/operator.db` bare)
 - [ ] Process supervisor restarts on crash (systemd / pm2 / `restart: unless-stopped`)
 - [ ] TLS terminated at your ingress in front of `:80` (Compose) or `:8080` (bare)
-- [ ] Backups for the indexer DB (it carries trade history and idempotency keys)
+- [ ] Backups for the indexer DB (it holds accumulated trade/swap/pool/RFQ
+      history, the `dealers` whitelist, the `operator_kv` admin store, and the
+      idempotency keys — none of it rebuildable from the ledger)
 - [ ] Registry bootstrap run once per ledger
 - [ ] Monitoring: scrape stdout/stderr; alert on `level: error` lines
 

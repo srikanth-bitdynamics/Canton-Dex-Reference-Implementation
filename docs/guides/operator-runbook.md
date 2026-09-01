@@ -272,8 +272,9 @@ Recovery starts from one distinction: what is authoritative versus what is a
 rebuildable projection. The on-ledger ACS is authoritative and replicated by
 the synchronizer. The operator backend's `operator.db` holds mostly projections
 of it, with three off-ledger exceptions the ACS cannot rebuild: `operator_kv`,
-which carries generic runtime knobs (fee-bps overrides, feature flags) that were
-never written on-ledger, the `dealers` registry (RFQ counterparties and the
+a generic operator-set key-value store (fee-bps overrides, feature flags) that
+is settable through the admin API but is not currently read by any runtime code
+and is never written on-ledger, the `dealers` registry (RFQ counterparties and the
 `whitelisted` flag, managed via `/v1/admin/dealers`), which is not an ACS
 projection, and the `command_submissions` idempotency cache, whose dedup records
 are local-only and lost if the file is deleted. (The RFQ policy version is a code

@@ -136,8 +136,8 @@ an operator assertion, not spendable inventory.
 ## 3. See why quoting is not authorization
 
 The browser can compute or request a quote without moving funds. A settle needs
-an allocation specification that binds the trader to exact transfer-leg sides
-and one pool snapshot.
+the allocation specifications — one per instrument admin — that bind the trader to
+exact transfer-leg sides and one pool snapshot.
 
 The operator exercises `PoolRules_RequestSwap`. Its result contains:
 
@@ -193,7 +193,7 @@ The essential swap has three ledger steps:
 
 | Step | Daml action | Required authority | Result |
 |---|---|---|---|
-| Prepare | exercise `PoolRules_RequestSwap` | operator | exact settlement info, allocation spec, and quote binding |
+| Prepare | exercise `PoolRules_RequestSwap` | operator | exact settlement info, allocation specs (one per instrument admin), and quote binding |
 | Allocate | exercise `AllocationFactory_Allocate` | trader, plus any registry-required context/actors | trader's input value locked for those terms |
 | Settle | exercise `PoolRules_Swap` | operator | input and output settle atomically; state/slices roll forward |
 
@@ -350,8 +350,8 @@ You have completed this tutorial when you can point to:
 - the function that computes `amountOut`;
 - the contracts that separate pool configuration, aggregate state, and reserve
   backing;
-- the choice that builds the trader's exact allocation specification;
-- the line where the trader—not the operator—authors the allocation;
+- the choice that builds the trader's exact allocation specifications (one per admin);
+- the line where the trader—not the operator—authors the allocations;
 - the nested batch-settlement choice;
 - one mock-registry choreography test and one real-holding value test;
 - the final checkpoint of the DPM sandbox proof;

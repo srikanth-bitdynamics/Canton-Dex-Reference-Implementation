@@ -136,8 +136,10 @@ add-liquidity DvP used for every later deposit:
 
 The dApp's `/v1/pairs` returns the new listing, and `/v1/pools` lists the pool as
 soon as it is created — in `PS_Unfunded`, before any seed — it just is not tradable
-until the first LP moves it to `PS_Active`. The current Trade page is pool-driven: it reads active pools
-and does not filter them through `DexPair.active` or `tradingMode`. Treat those
+until the first LP moves it to `PS_Active`. The current Trade page is
+pool-driven: it reads the pools `/v1/pools` returns — both `PS_Active` and
+`PS_Unfunded`, since only `PS_Paused` is filtered out — and shows each pool's
+status rather than gating on `DexPair.active` or `tradingMode`. Treat those
 fields as discovery metadata unless your application adds an off-ledger filter
 or an on-ledger terminal-choice gate.
 

@@ -124,9 +124,19 @@ policy failure into a confusing ledger rejection.
 
 ## 4. Allocation creation: dApp to registry to wallet
 
-For a swap, order, or liquidity request, the operator first returns settlement
-terms and an allocation specification. The wallet chooses the holdings it will
-lock. The dApp then builds the candidate allocation choice:
+For a swap or order request, the operator first returns settlement terms and one
+allocation specification per instrument admin: a same-admin pair collapses to one
+combined specification, and a cross-admin pair returns one per admin. A liquidity
+request is different — it returns a fixed set of three: a base leg, a quote leg,
+and an LP-token leg under the LP registrar. Their directions flip with the
+operation: adding liquidity locks the base and quote deposits and receives the
+minted LP token, while removing liquidity receives the base and quote back and
+locks the LP token to burn. The two asset legs stay separate even when base and
+quote share one admin, so a liquidity request never collapses to a single
+per-admin specification.
+The wallet chooses the holdings it will lock. For each specification the dApp
+builds the candidate allocation choice — the snippet below shows one, and a
+request with more specifications repeats it per specification:
 
 ```typescript
 const choiceArguments = {
@@ -153,7 +163,7 @@ placeholder when the wallet authors the actual
 
 ```mermaid
 flowchart LR
-  R["Operator returns<br/>settlement + allocation spec"]
+  R["Operator returns<br/>settlement + allocation specs"]
   W["Wallet selects<br/>input holdings"]
   A["dApp builds complete<br/>Allocate candidate"]
   P["DEX backend proxy"]
@@ -179,11 +189,12 @@ logic. Each supported settlement flow obtains the candidate
 ### Pool swap
 
 1. `PoolRules_PreviewSwapSettlement` reads the current pool and returns the
-   candidate settlement batch.
+   candidate settlement batch per instrument admin.
 2. The backend discovers one settlement factory per instrument admin, calling
    `getSettlementFactory(admin, choiceArgs)` for each — the swap-in admin and
    the swap-out admin, or a single admin for a single-admin pool.
-3. `PoolRules_Swap` receives that factory, its context, and disclosures.
+3. `PoolRules_Swap` receives those per-admin factories, their contexts, and
+   disclosures.
 4. The real choice re-reads current state and enforces quote binding,
    constant-product calculation, allocation binding, and minimum output.
 

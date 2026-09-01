@@ -13,8 +13,10 @@ before reading the endpoint tables:
    operator-mediated RFQ routes. These are gated by a bearer token.
 
 Order funding, holding allocation, swaps, and LP actions preserve a
-self-custodial boundary: a trader wallet authors the allocation and this API
-only requests or settles it. The RFQ write endpoints are a custodial exception.
+self-custodial boundary: a trader wallet authors the allocations each request
+needs (one per instrument admin for a swap or order; a fixed base, quote, and
+LP-token set for liquidity) and this API only requests or settles them. The RFQ
+write endpoints are a custodial exception.
 They submit as configured trader parties, and acceptance also submits as the
 operator, so the backend ledger user must hold those act-as rights.
 `testnet-server.ts` disables that relay by default; opting in requires
@@ -40,8 +42,8 @@ flowchart LR
   UI -.->|WalletIntent| A -.->|trader authority| L
 ```
 
-A DvP flow crosses both lanes: the operator `POST …/request` returns an
-allocation spec, the **wallet** authors the allocations that lock the trader's
+A DvP flow crosses both lanes: the operator `POST …/request` returns the
+allocation specs, the **wallet** authors the allocations that lock the trader's
 funds, and the operator `POST …/settle` invokes the atomic value transfer. The
 wallet-authored lock is the step the backend cannot perform for a self-custodial
 trader.
@@ -124,7 +126,7 @@ Auth is **open** for market reads unless the row says otherwise. Rows marked
 | Method · Path | Purpose |
 |---|---|
 | `GET /v1/context` | Static venue parties (operator, lpRegistrar, admin) and network id |
-| `GET /v1/status` | Network id, ledger slot, sync flag, server time |
+| `GET /v1/status` | Network id, `slot` (ledger offset or Amulet round — see below), sync flag, server time |
 | `GET /v1/pairs` | All `DexPair` contracts (whether or not they have a pool) |
 | `GET /v1/pools` | Every pool that is not `Paused` (includes `Unfunded` pools) |
 | `GET /v1/instruments` | Instrument metadata, merged from the registry configs; `?ids=BTC,USDC` filters |
@@ -280,7 +282,8 @@ defined in
 
 A quote is advisory. The authoritative `/v1/pools/swap/request` call accepts the
 trader's minimum, binds a pool-state snapshot and slice set on-ledger, and
-returns an allocation specification with the exact input and output leg sides.
+returns the allocation specifications — one per instrument admin — with the exact
+input and output leg sides.
 The dApp verifies that response before the wallet signs it. `PoolRules_Swap`
 then re-derives the output and rejects any snapshot or allocation whose legs no
 longer match, so the operator cannot quote one number and settle another.
@@ -419,9 +422,14 @@ some failed, **502** when every one did.
 
 `settle` takes `tradeCid` plus either an `allocationCidsByAdmin` object keyed by
 admin party or an `updateId` the operator recovers the cids from; `cancel` takes
-`tradeCid` plus `allocationsByAdmin`. Each admin's entry must cover exactly its
-own legs, or the request is rejected with **400** before it reaches the ledger.
-(`batchesByAdmin` is the internal Daml choice argument, not a public request
+`tradeCid`, `allocationsByAdmin` (the `Allocation` cids to cancel, per admin), and
+`allocationRequestCids` (the outstanding `TradeAllocationRequest` cids to archive)
+— all three required. A **400** covers only missing or malformed fields — a
+`settle` body that supplies neither `allocationCidsByAdmin` nor `updateId`, or an
+empty per-admin array, is rejected up front. Whether each admin's allocations
+cover exactly that admin's legs is validated **on-ledger** by the settling (or
+cancelling) choice, which rejects a mismatch at settlement, not before.
+(`batchesByAdmin` is settle's internal Daml choice argument, not a public request
 field.)
 
 ### RFQ
@@ -502,8 +510,8 @@ For self-custodial allocation writes, the frontend hands an intent to the active
 | `FundOrderIntent` | Trader locks holdings for a pending order |
 | `PlaceOrderIntent` | Trader places a new order |
 | `RequestSwapIntent` | Trader initiates a pool swap |
-| `AddLiquidityIntent` | Trader authors the base / quote / LP-receipt allocations for an add |
-| `RemoveLiquidityIntent` | Trader authors the base / quote-receipt and LP burn-sender allocations for a remove |
+| `AddLiquidityIntent` | Trader authors the base-deposit, quote-deposit, and LP-receipt allocations for an add |
+| `RemoveLiquidityIntent` | Trader authors the base-receipt, quote-receipt, and LP burn-sender allocations for a remove |
 The wallet also exposes `SplitHoldingIntent` / `MergeHoldingsIntent` for holding
 management; those are a wallet concern and have no operator endpoint.
 

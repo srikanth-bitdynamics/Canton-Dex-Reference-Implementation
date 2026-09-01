@@ -87,8 +87,9 @@ export CANTON_LP_SETTLE_FACTORY_CID="<lpRegistryCid>"
 ```
 
 The included server maps the configured asset admin and LP registrar
-separately. A venue that lists additional third-party admins should replace
-this two-admin configuration with discovery from each admin's registry API, as
+separately. A venue that lists additional third-party admins extends this
+two-admin configuration with per-admin registry discovery via
+`DEX_EXTERNAL_REGISTRIES` — the base and quote admins stay configured — as
 described in [Registry integration](registry-integration.md).
 
 ## 2. Start the operator backend
@@ -233,8 +234,10 @@ This phase first requires `/v1/status` to succeed. It queries existing pairs and
 pools, creates the pair/pool metadata only if missing, and stops on any HTTP
 failure. The base/quote symbols default to the placeholders `BTC`/`USDC` (both on
 `CANTON_ADMIN`); override them with `DEPLOY_BASE`, `DEPLOY_QUOTE`, and
-`DEPLOY_LP_INSTRUMENT` to seed a real instrument pair. It creates an **unfunded**
-pool; it does not fabricate reserves or LP holdings.
+`DEPLOY_LP_INSTRUMENT` to seed a differently named pair — still under
+`CANTON_ADMIN`, since real external assets are wired through the registry settings
+(`DEX_AMULET_SCAN_URL`, `DEX_EXTERNAL_REGISTRIES`), not these symbols. It creates
+an **unfunded** pool; it does not fabricate reserves or LP holdings.
 
 Expected checkpoint:
 

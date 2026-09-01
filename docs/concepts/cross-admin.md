@@ -157,9 +157,10 @@ allocation and one batch.
 - **Tagged results.** `OrderMatchExecution_Execute` takes
   `batchesByAdmin : Map Party RegistryBatchInput`
   (`RegistryBatchInput = { factoryCid, extraArgs }`), builds a tagged batch
-  plan, and zips each `SettleBatchResult` back to its allocations to produce
-  each order's next-iteration allocations by admin. It never reads results by
-  position.
+  plan, and maps each `SettleBatchResult` back to its admin's allocations —
+  position-correlated within that admin's batch (the `zip` in
+  `nextIterationFor`), then matched to each allocation by cid. It never reads
+  results by raw position across the merged batches.
 - **Atomic cancel.** `Order_Cancel` cancels every allocation in
   `allocationCidsByAdmin`, all-or-nothing.
 

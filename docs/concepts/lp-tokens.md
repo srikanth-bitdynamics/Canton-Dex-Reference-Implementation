@@ -123,8 +123,9 @@ trades its reserves settle into a shifted mix — more of whatever was swapped i
 less of what was taken out — on top of the fees that accrue in the pool. A fixed
 LP balance's share of that mix can therefore be worth more or less per side than
 what backed it at deposit time, depending on net trade direction. What grows
-monotonically is `x·y` (the constant-product `k`): each swap's fee stays in the
-pool and enlarges it (in pool terms, before rounding). That growth in pool units
+monotonically is `x·y` (the constant-product `k`): each swap retains its fee in
+the pool and its floored output can leave a little extra, so `k` grows — the
+growth is the retained fee plus rounding, not the fee alone. That growth in pool units
 is not a guaranteed gain in outside value, though. Measured against an external
 numeraire, adverse price moves (impermanent loss) and the one-directional floor
 rounding can leave a redeemer with less value than simply holding the deposited
@@ -132,8 +133,9 @@ base and quote. Rounding is one-directional (`floorDiv`/`floorMul`), so the pool
 never pays out more than the exact share.
 The paid-out base and quote leave the reserves, so removal *lowers* them and
 `x·y = k` falls; `k` stays non-decreasing only across swaps, not on removal. A
-pool that never traded returns exactly what went in; there is no off-ledger
-event a holder must crystallise first.
+pool that never traded returns, on a full redemption, exactly what went in (a
+partial redemption floors its share); there is no off-ledger event a holder must
+crystallise first.
 
 ---
 

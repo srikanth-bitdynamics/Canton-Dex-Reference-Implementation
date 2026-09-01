@@ -243,14 +243,14 @@ sequenceDiagram
   participant O as Operator
   participant W as Wallet
   participant L as Canton / Daml
-  D->>O: Request quote and Daml-built allocation specification
+  D->>O: Request quote and Daml-built allocation specs (one per admin)
   O->>L: Exercise PoolRules_RequestSwap
   L-->>O: Exact input/output legs bound to a pool snapshot
   O-->>D: Wallet intent + disclosed context
-  D->>W: Ask trader to authorize allocation
+  D->>W: Ask trader to authorize the allocations
   W->>L: AllocationFactory_Allocate as trader
-  L-->>D: Trader allocation contract / correlated update
-  D->>O: Settle using that allocation
+  L-->>D: Trader allocation contracts / correlated update
+  D->>O: Settle using those allocations
   O->>L: PoolRules_Swap as operator
   L->>L: Validate quote, settle batch, update state and slices atomically
   L-->>T: Updated visible holdings

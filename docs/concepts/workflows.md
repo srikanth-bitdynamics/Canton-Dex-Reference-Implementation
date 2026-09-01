@@ -125,20 +125,21 @@ sequenceDiagram
     participant L as Ledger (Token Standard + Pool)
     D->>O: POST /v1/pools/swap/request
     O->>L: PoolRules_RequestSwap
-    L-->>O: allocation spec + settlement descriptor
-    O-->>D: spec
+    L-->>O: allocation specs (one per admin) + settlement descriptor
+    O-->>D: specs
     T->>L: AllocationFactory_Allocate (exact input + output sides)
     Note over T,L: trader signs the exact input and output legs (CIP-0103)
-    D->>O: POST /v1/pools/swap (allocation cid)
+    D->>O: POST /v1/pools/swap (allocation cids)
     O->>L: PoolRules_Swap -> SettlementFactory_SettleBatch
     Note over O,L: swapper + input slice + output slices settle atomically (DvP)
     L-->>O: settled, PoolState rolled forward
 ```
 
 `PoolRules_RequestSwap` binds the current `PoolState`, selected input/output
-slices, and `minOutputAmount`, then emits an allocation specification containing
-the exact input sender side and every output receiver side. The wallet signs
-that complete specification. `PoolRules_Swap` re-derives `amountOut` from the
+slices, and `minOutputAmount`, then emits one allocation specification per
+instrument admin — the exact input sender side and the output receiver side (a
+single-admin pair collapses them into one combined spec). The wallet signs the
+complete set in one command. `PoolRules_Swap` re-derives `amountOut` from the
 bound reserves *inside the choice* (`constantProductOut`, see
 [Pricing](pricing.md)), requires the signed legs to match, and settles the
 swapper against the pool under the one or two registry admins the pair touches. The operator cannot lower the output or

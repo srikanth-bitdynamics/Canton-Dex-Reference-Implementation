@@ -116,11 +116,12 @@ npm start
   server only).
 - `ALLOWED_ORIGINS` narrowed to your dApp host (not `*`). CORS
   default-denies when it is unset.
-- `DB_PATH` on persistent storage (the indexer carries trade history and
-  idempotency keys).
+- `DB_PATH` on persistent storage (the indexer holds accumulated
+  trade/swap/pool/RFQ history, the `dealers` and `operator_kv` admin state, and
+  idempotency keys — none rebuildable from the ledger).
 - TLS termination by a reverse proxy in front of `:8080`.
 - Logs scraped from stdout / stderr (most events structured JSON, one per
-  line; startup and fatal lines are plain text).
+  line; startup, fatal, and some component warnings/errors are plain text).
 
 ### 4. Verify the deployment
 
@@ -247,8 +248,10 @@ one bad pair cannot stop the rest, so the status is **200** when all settled,
 
 A fill whose spend exhausts the side's committed budget closes that order out
 even when quantity remains: the residual has no collateral behind it and no
-later fill could back it. Production deployments run matching on a tick (every
-1–5 seconds) plus on order-placement events.
+later fill could back it. This reference exposes matching only as a manual
+`POST /v1/orders/match`; it runs no matching scheduler. A production deployment
+would drive that endpoint on a tick (every 1–5 seconds) and on order-placement
+events.
 
 *Proven by* [`test/matching.test.ts`](../../services/operator-backend/test/matching.test.ts):
 the matcher clears at the resting side's limit, never crosses a party against
@@ -282,8 +285,12 @@ for how the pool prices and where the fee lands.
 ### Logs
 
 Most operational logs are structured JSON, one event per line, with required
-fields `ts`, `level`, `msg`. Startup and fatal lines are plain text. Errors and
-warnings go to stderr; everything else to stdout. Scrape both.
+fields `ts`, `level`, `msg`. Not every line is JSON, though: startup and fatal
+lines are plain text, and a handful of component warnings and errors — indexer
+tick failures, RFQ-expiry failures, and some testnet-relay warnings — log as
+plain `[component] message` lines instead. Errors and warnings go to stderr;
+everything else to stdout. Scrape both, and don't assume every line parses as
+JSON.
 
 ```
 {"ts":"2026-05-17T14:18:23Z","level":"info","msg":"request completed",
@@ -302,10 +309,17 @@ in-memory dev server. Wire it to your uptime monitor with a 5-second poll.
 
 The SQLite indexer is a single file at `$DB_PATH` (default
 `./data/operator.db`). It reconciles from the current ACS on every tick, so a
-missed tick doesn't corrupt state, but it carries the only copy of trade
-history older than the ACS-archive cutoff plus the idempotency keys. Back it up
-on a schedule and check its mtime if you suspect the indexer has stalled. Tune
-the cadence with `INDEXER_INTERVAL_MS` (default 5s).
+missed tick doesn't corrupt the current projections — but because it only
+samples the ACS, a contract created and archived between two ticks is never
+recorded regardless of age, so the history/intermediate feed can have gaps. It
+also holds the only durable copy of state the live ledger cannot rebuild:
+accumulated trade, swap, pool-state-transition, and RFQ history past the
+ACS-archive cutoff (`trades`, `swaps`, `pool_states`, `rfq_history`), the
+idempotency keys (`command_submissions`), and the admin-mutable settings edited
+through `/v1/admin/*` — the dealer whitelist (`dealers`) and the operator
+key/value store (`operator_kv`). None of that survives a lost `$DB_PATH`, so back
+it up on a schedule and check its mtime if you suspect the indexer has stalled.
+Tune the cadence with `INDEXER_INTERVAL_MS` (default 5s).
 
 The runbook's [observability](operator-runbook.md#observability) section maps
 each audit question ("why did this RFQ accept go to this dealer?", "where did

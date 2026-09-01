@@ -133,8 +133,13 @@ The backend seeds:
 > The demo seed creates `Amulet` and `USDCx` under a demo admin (`admin-demo`);
 > these are not the real Canton Coin or USDCx registries. The DEX is
 > asset-agnostic — it lists any Token Standard V2 pair — so read the market as
-> illustrative; the testnet reference deployment uses the real `CC`/`USDCx`
-> assets.
+> illustrative. `DEPLOY_BASE`/`DEPLOY_QUOTE` (in `scripts/deploy-testnet.sh`)
+> only set the ticker symbols of the seeded pair — both under the operator's own
+> admin (`CANTON_ADMIN`) by default — so they name instruments, they do not make
+> them real. A real asset is identified by its registry admin (Canton Coin, for
+> instance, lives under the DSO party), which a deployment wires in through the
+> external-registry settings (`DEX_AMULET_SCAN_URL`/`DEX_AMULET_REGISTRY_BASE`
+> register the live Amulet/CC leg), not through a symbol in `DEPLOY_BASE`.
 
 ### 3. Terminal 2 — start the dApp
 

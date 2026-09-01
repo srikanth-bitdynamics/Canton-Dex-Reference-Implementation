@@ -88,19 +88,21 @@ sequenceDiagram
     participant O as Operator backend
     Note over W,O: Wallet holds your keys and signs trader-authority allocations.<br/>The dApp holds none. The operator orchestrates settlement.
     D->>O: 1. Ask for a Daml-built spec (e.g. PoolRules_RequestSwap)
-    O-->>D: allocation specs + settlement + disclosed factory context
+    O-->>D: allocation specs + settlement (factory context fetched separately)
     D->>W: 2. Hand off the intent (e.g. request-swap)
     W->>W: Sign AllocationFactory_Allocate
-    W-->>D: Trader-authorized Allocation (or updateId)
+    W-->>D: Trader-authorized Allocations (or updateId)
     D->>O: 3. Settle
     O->>O: Exercise PoolRules_Swap / SettleBatch (operator authority)
     O-->>D: Atomic settlement
     Note over W,O: You receive the output. Holdings and pool reserves refresh.
 ```
 
-For a swap, the specification contains the exact input and output sides for a
-specific pool snapshot. The wallet signs those sides, and the settle step
-re-derives the same numbers on the ledger. The operator therefore cannot alter
+For a swap, the specifications carry the exact input and output sides for a
+specific pool snapshot — one per instrument admin, so a cross-admin pair yields
+two and a same-admin pair collapses to one. The wallet signs those sides, and the
+settle step re-derives the same numbers on the ledger. The operator therefore
+cannot alter
 the output after authorization. The exact template and choice names behind each
 action are in
 [Reference: what the wallet signs](#reference-what-the-wallet-signs-and-what-settles).
@@ -117,9 +119,11 @@ pool. Use this when you want immediate execution at the pool's current rate.
    update live.
 3. Set slippage tolerance via the ⚙ settings button (default 0.5 %).
 4. Click **Review Swap** → confirm the on-ledger sequence.
-5. Click **Approve & Submit**. The dApp has already asked the operator for a
-   Daml-built swap allocation spec (`PoolRules_RequestSwap`); your wallet signs
-   the matching `AllocationFactory_Allocate`, locking the input. The operator
+5. Click **Approve & Submit**. The dApp has already asked the operator for the
+   Daml-built swap allocation specs (`PoolRules_RequestSwap`) — one per
+   instrument admin, so a cross-admin swap returns two; your wallet signs an
+   `AllocationFactory_Allocate` for each spec, batched into a single approval
+   (`BatchingUtility_ExecuteBatch`), locking only the input leg. The operator
    then settles with `PoolRules_Swap`.
 6. A toast banner shows each on-ledger phase as it completes. When the final
    phase ("Pool roll-forward") goes green, your holdings and the pool reserves
@@ -247,11 +251,32 @@ the connected party's own side: the screen finds this party's
 (`fund-matched-trade`), which accepts the request and authors this party's
 allocations self-custodially. The operator then settles the per-admin batches.
 The wallet accept archives this party's request, so no request cid is consumed at
-settle. A genuine two-party RFQ stops here — this session funds only its own side
-and the settle reports that the counterparty has not yet funded its allocation
-request; both sides must fund from their own sessions before the trade can settle.
-The single-admin demo case, where the connected party is the sole non-venue
-funder, settles in one pass.
+settle.
+
+The screen completes only the case where the connected party is the **sole
+non-venue funder** — it authors every allocation the trade needs and no separate
+counterparty request exists. That case can be cross-admin: a single request whose
+sender leg the party locks on one registry while it merely receives on the other
+settles in one pass (the frontend covers exactly this cross-admin, single-request
+path). What decides completion is whether a second party's `TradeAllocationRequest`
+is outstanding, not how many admins the pair spans — so this is **not** a
+"single-admin only" limitation.
+
+A genuine two-party RFQ (the operator returns both parties' requests) is not
+supported end-to-end from the dApp: each session can author only its own side, and
+no path aggregates both parties' allocations into one settlement. Note the order of
+operations — the screen funds this party's side **first** (the wallet authors and
+locks its allocations) and only **then** discovers the counterparty is unfunded and
+aborts. The trader's allocations are already created and locked at that point, and
+the dApp offers no button to release them — but the funds are recoverable two ways.
+The holder can withdraw their own allocations out-of-band (an `Allocation_Withdraw`
+as the allocation's authorizer, via their wallet or a direct ledger client;
+permitted because these allocations are uncommitted and carry a settlement
+deadline). Or the venue can release them: `MatchedTrade_Cancel` (controller: the
+venue) exercises `Allocation_Cancel` on each locked allocation — and since the
+venue is the trade's sole settlement executor, and cancellation is the executor's
+choice, the operator backend exposes exactly this as `POST /v1/matched-trades/cancel`.
+The only real gap is that the screen surfaces neither action.
 
 ---
 
@@ -327,11 +352,13 @@ choiceArgument: {
 },
 ```
 
-The request names one allocation per instrument admin: a swap or order funding
-authors one for a single-admin pair and two across a cross-admin pair; add and
-remove liquidity author three (base deposit, quote deposit, and the LP receipt
-or burn). The utility keeps the wallet approval to one top-level command while
-preserving one atomic Daml transaction.
+The number of allocations a request names depends on the flow: a swap or order
+funding authors one per instrument admin (one for a single-admin pair, two across
+a cross-admin pair), while add and remove liquidity author three — a base leg, a
+quote leg, and the LP-token leg (base/quote deposits plus the minted LP receipt
+for add; base/quote receipts plus the LP burn-sender for remove). The utility
+keeps the wallet approval to one top-level command while preserving one atomic
+Daml transaction.
 
 **Proven on-ledger** (each line links the choice and the test that pins it):
 

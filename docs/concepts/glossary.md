@@ -254,8 +254,9 @@ Settling in steps, where each step rolls the remaining backing forward to the
 next iteration via `nextIterationFunding`. Pool reserve slices and resting orders
 use it so one allocation can back many settlements: a resting order is prefunded
 with no legs at placement — `nextIterationFunding` covers the lock — and the
-operator supplies the concrete legs at match time. The trader's swap allocation
-is terminal and signs its exact input and output sides. Iteration is
+operator supplies the concrete legs at match time. The trader's swap allocations
+— one per instrument admin — are terminal and sign the exact input and output
+sides. Iteration is
 independent of whether an allocation is committed. Enforced in
 [`Registry.V2`](../../trading/CantonDex/Registry/V2.daml); proven in
 [`RegistryConservationTests`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)

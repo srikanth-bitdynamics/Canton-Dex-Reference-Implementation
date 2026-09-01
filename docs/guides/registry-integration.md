@@ -8,7 +8,7 @@ separates hard V2 interface requirements from the reference registry's optional
 
 ## The registry boundary
 
-The DEX touches a registry through exactly five surfaces. Everything else about
+The DEX touches a registry through a small, fixed set of surfaces. Everything else about
 your asset — issuance policy, precision, lifecycle, credential rules — stays
 behind that line, and the DEX never reaches across it.
 
@@ -26,7 +26,8 @@ flowchart LR
   end
   W -->|"AllocationFactory_Allocate<br/>locks holdings into an Allocation"| AF
   OB -->|"SettlementFactory_SettleBatch<br/>atomic net settlement"| SF
-  OB -->|"Allocation_Cancel<br/>cancel or withdraw a locked allocation"| H
+  OB -->|"Allocation_Cancel<br/>operator cancels a locked allocation"| H
+  W -->|"Allocation_Withdraw<br/>holder withdraws its own allocation"| H
   W -.->|"observe / select"| H
   AF --> H
   SF --> H
@@ -36,10 +37,12 @@ flowchart LR
 
 Solid arrows are on-ledger interface choices; dashed arrows are off-ledger
 reads. These two factory choices are the core settlement contract the DEX
-depends on. A third on-ledger choice, `Allocation_Cancel`, lets the DEX cancel
-or withdraw a locked allocation on-ledger and return the holdings. The holding
-read and the per-allocation cancel/withdraw context lookup round out the five
-surfaces above:
+depends on. Two further on-ledger choices act on an existing allocation with
+different authority: the operator cancels one via `Allocation_Cancel` (executor
+authority), while a holder withdraws its own uncommitted or expired allocation
+via `Allocation_Withdraw` (authorizer authority) — distinct choices, not one.
+The holding read and the per-allocation cancel/withdraw context lookups complete
+the set above:
 
 ```daml
 -- AllocationInstructionV2.daml -- the trader locks funds under their own authority

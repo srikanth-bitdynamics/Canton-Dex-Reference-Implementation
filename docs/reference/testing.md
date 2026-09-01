@@ -40,11 +40,11 @@ production. Run them with:
 bash scripts/run-local-daml-tests.sh
 ```
 
-which builds the `canton-dex-trading` DAR against the committed Token Standard
+which builds the `canton-dex-trading-v2` DAR against the committed Token Standard
 DARs (`scripts/build-trading-surface.sh`) and then runs the core suite. By hand:
 
 ```bash
-(cd trading       && dpm build)   # -> trading/.daml/dist/canton-dex-trading-0.1.4.dar
+(cd trading       && dpm build)   # -> trading/.daml/dist/canton-dex-trading-v2-1.0.0.dar
 (cd trading-tests && dpm test)    # every script reports "ok"
 ```
 
@@ -77,17 +77,17 @@ change, and balance conservation. Value movement is therefore tested against
 | [`PolicyReceiptTests.daml`](../../trading-tests/CantonDex/Tests/PolicyReceiptTests.daml) | 10 | `PolicyReceipt` + `MatchedTrade` shape invariants: `policyReceiptValues` encoding, `foldPolicyReceiptIntoMetadata`, `isWellFormed`, and the authority guard that rejects a receipt whose `signedBy` is not the venue | pure |
 | [`PoolRoundingTests.daml`](../../trading-tests/CantonDex/Tests/PoolRoundingTests.daml) | 5 | four focused arithmetic proofs plus one holding-backed swap prove that pool-favouring rounding also preserves the settlement invariant | pure `PoolModel` (4); `Registry.V2` holding-backed swap (1) |
 | [`PoolWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/PoolWorkflowTests.daml) | 3 | pool initialization, pause/resume, quote/state binding, swap replacement, and request-to-settlement choreography; it does not prove value movement | `MockRegistry` |
-| [`OrderWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/OrderWorkflowTests.daml) | 7 | order funding, allocation binding, limit enforcement, rejection paths, and atomic remainder roll-forward; it does not prove locked backing | `MockRegistry` |
-| [`TradeWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/TradeWorkflowTests.daml) | 4 | allocation-request consumption, RFQ ranking receipts and expiry, and bilateral settlement assembly; it does not prove balance movement | `MockRegistry` |
+| [`OrderWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/OrderWorkflowTests.daml) | 8 | order funding, allocation binding, limit enforcement, rejection paths, and atomic remainder roll-forward; it does not prove locked backing | `MockRegistry` |
+| [`TradeWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/TradeWorkflowTests.daml) | 5 | allocation-request consumption, RFQ ranking receipts and expiry, and bilateral settlement assembly; it does not prove balance movement | `MockRegistry` |
 | [`ChoiceContextWorkflowTests.daml`](../../trading-tests/CantonDex/Tests/ChoiceContextWorkflowTests.daml) | 5 | allocation and split-admin settlement choice contexts reach the correct registry factories and missing context is rejected; it does not prove value movement | context-requiring `MockRegistry` factories |
 | [`DexPairTests.daml`](../../trading-tests/CantonDex/Tests/DexPairTests.daml) | 3 | operator-only listing updates, consuming replacement/visibility, and fee-counter accounting; explicitly does not claim that listing metadata gates pool or order execution | pure listing state |
 | [`LifecycleChoiceTests.daml`](../../trading-tests/CantonDex/Tests/LifecycleChoiceTests.daml) | 5 | the exits that happy-path suites can obscure: request cancel/reject, funded-order cancel, matched-trade cancel, RFQ cancel/quote withdraw, and match abort, including controller failures and release of real locked holdings | `Registry.V2` where value release matters |
 | [`TokenStandardHarnessTests.daml`](../../trading-tests/CantonDex/Tests/TokenStandardHarnessTests.daml) | 1 | the matched-trade flow driven through the `RegistryApi` interface, mirroring `splice-token-standard-test-v2`'s `TradingAppV2` exercise | `DexRegistry` |
 | [`PoolLiquidityRulesTests.daml`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml) | 16 | DvP liquidity against real holdings: an atomic add funds base + quote and mints LP tokens in one flow; remove delivers base + quote to the holder and burns LP via the burn account; stale-quote rejection; the settle is co-controlled by operator + `lpRegistrar` | `Registry.V2` |
-| [`PoolStateInvariantTests.daml`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml) | 5 | `PoolState.reserves` always equals the sum of the live `PoolSlice` holdings: `PoolRules_ReconcileState` succeeds across an add → swap → remove lifecycle and fails on an omitted slice, an operator-fabricated state, or a foreign slice | `Registry.V2` |
-| [`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml) | 26 | V2 factory, actor, deadline, withdrawal, cancellation, and settle-time conservation rules: an executor cannot draw more than locked backing; roll-forward carries real backing; surplus returns to the authorizer; batch settlement rejects imbalance and coverage mismatches | `Registry.V2` |
+| [`PoolStateInvariantTests.daml`](../../trading-tests/CantonDex/Tests/PoolStateInvariantTests.daml) | 6 | `PoolState.reserves` always equals the sum of the live `PoolSlice` holdings: `PoolRules_ReconcileState` succeeds across an add → swap → remove lifecycle and fails on an omitted slice, an operator-fabricated state, or a foreign slice | `Registry.V2` |
+| [`RegistryConservationTests.daml`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml) | 25 | V2 factory, actor, deadline, withdrawal, cancellation, and settle-time conservation rules: an executor cannot draw more than locked backing; roll-forward carries real backing; surplus returns to the authorizer; batch settlement rejects imbalance and coverage mismatches | `Registry.V2` |
 | [`RfqSettlementTests.daml`](../../trading-tests/CantonDex/Tests/RfqSettlementTests.daml) | 4 | the RFQ round trip against real holdings: each side funds its own leg from its own inventory, successful settlement leaves no residual locks, expiry blocks late settlement, and every considered quote must be live when accepted | `Registry.V2` |
-| [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml) | 6 | the per-admin choice context against a genuinely context-requiring upstream registry: a DvP add settles across two registries in one transaction (base/quote under `TestTokenV2_RegistryV2`, the LP mint under `Registry.V2`), and dropping the real disclosed context aborts the settle | `TestTokenV2_RegistryV2` + `Registry.V2` |
+| [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml) | 11 | the per-admin choice context against genuinely context-requiring registries: DvP add/swap/remove and cross-admin order matching settle across two distinct registries in one transaction, each admin's disclosed context reaching only its own batch, and dropping it aborts the settle | `TestTokenV2_RegistryV2` + `Registry.V2` |
 
 A concept doc points at several of these as its worked proof — for example the
 rounding rules in [`PoolRoundingTests.daml`](../../trading-tests/CantonDex/Tests/PoolRoundingTests.daml)
@@ -150,8 +150,11 @@ The load-bearing seams:
 ## Backend HTTP smoke
 
 [`scripts/backend-http-smoke.sh`](../../scripts/backend-http-smoke.sh) starts the development
-backend with `InMemoryLedger`, checks selected reads and quotes, confirms that
-an unauthenticated admin write returns 401, and stops the process. It does not
+backend with `InMemoryLedger` and asserts the Amulet/USDCx preview seed across
+selected read and quote routes: `/v1/pools` and `/v1/pairs` list Amulet,
+`trader-demo`'s holdings include USDCx, and the swap-quote, order-book, and
+prices routes answer for the Amulet/USDCx pair. It also confirms that an
+unauthenticated admin write returns 401, then stops the process. It does not
 start the dApp or Canton, submit a successful write, or exercise a wallet.
 
 Install the backend dependencies once, then run the script from the repository

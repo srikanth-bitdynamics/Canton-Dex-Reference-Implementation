@@ -36,8 +36,9 @@ export interface ExecuteArgument {
   };
   buyOrderCid: string;
   sellOrderCid: string;
-  buyerAllocationCid: string;
-  sellerAllocationCid: string;
+  // GenMap: array of [admin, cid] pairs. Single-admin here, so one entry each.
+  buyerAllocationCidsByAdmin: Array<[Party, string]>;
+  sellerAllocationCidsByAdmin: Array<[Party, string]>;
   /** Ignored, as on-ledger: the budget comes from the allocation. */
   buyerCommittedFunding: Record<string, string>;
   sellerCommittedFunding: Record<string, string>;
@@ -66,18 +67,24 @@ interface LegRow {
   instrumentId: string;
 }
 
+// A SettledTrade's admin-tagged leg (`TradeLeg`): the instrument admin alongside
+// the underlying transfer leg.
+interface TradeLegRow {
+  admin: Party;
+  leg: LegRow;
+}
+
 export interface SettledTradeRow {
   contractId: string;
   operator: Party;
-  admin: Party;
   matchId: string;
   settledAt: string;
-  transferLegs: LegRow[];
+  tradeLegs: TradeLegRow[];
 }
 
 interface ExecuteResult {
-  buyerNextAllocationCid: string | null;
-  sellerNextAllocationCid: string | null;
+  buyerNextAllocationCidsByAdmin: Array<[Party, string]>;
+  sellerNextAllocationCidsByAdmin: Array<[Party, string]>;
   buyRemainderCid: string | null;
   sellRemainderCid: string | null;
   settledTradeCid: string | null;
@@ -110,18 +117,20 @@ export class MatchingLedger implements LedgerSubmitter {
    */
   rest(o: Order): void {
     const qty = dec.parseDecimal(o.remainingQty);
+    // Single-admin: one allocation covers both fill sides.
+    const allocationCid = o.allocationCidsByAdmin[0]?.[1] ?? null;
     this.liveOrders.set(o.contractId, {
       order: o,
       remainingQty: qty,
-      allocationCid: o.allocationCid ?? null,
+      allocationCid,
     });
-    if (!o.allocationCid) return;
-    this.liveAllocations.add(o.allocationCid);
+    if (!allocationCid) return;
+    this.liveAllocations.add(allocationCid);
     this.lockedBacking.set(
-      o.allocationCid,
+      allocationCid,
       o.side === "Bid"
-        ? one(o.quoteInstrumentId, dec.mul(qty, dec.parseDecimal(o.limitPrice)))
-        : one(o.baseInstrumentId, qty),
+        ? one(o.quoteInstrumentId.id, dec.mul(qty, dec.parseDecimal(o.limitPrice)))
+        : one(o.baseInstrumentId.id, qty),
     );
   }
 
@@ -161,11 +170,20 @@ export class MatchingLedger implements LedgerSubmitter {
     }
     if (cmd.choice === "OrderMatchExecution_PreviewSettlement") {
       const arg = cmd.argument as ExecuteArgument;
-      return {
-        previewFor: arg.matchId,
-        actors: [arg.operator],
-        extraArgs: { context: { values: {} }, meta: { values: {} } },
-      } as R;
+      // Map Party SettleBatch: one admin key here (single-admin pair).
+      const admin = arg.buyerAllocationCidsByAdmin[0]![0];
+      return [
+        [
+          admin,
+          {
+            settlement: { executors: [arg.operator], id: arg.matchId, cid: null, meta: { values: {} } },
+            transferLegs: [],
+            allocations: [],
+            actors: [arg.operator],
+            extraArgs: { context: { values: {} }, meta: { values: {} } },
+          },
+        ],
+      ] as R;
     }
     return this.execute(cmd.argument as ExecuteArgument) as R;
   }
@@ -173,10 +191,13 @@ export class MatchingLedger implements LedgerSubmitter {
   private execute(arg: ExecuteArgument): ExecuteResult {
     const buy = this.orderOf(arg.buyOrderCid);
     const sell = this.orderOf(arg.sellOrderCid);
-    if (buy.allocationCid !== arg.buyerAllocationCid) {
+    const admin = arg.buyerAllocationCidsByAdmin[0]![0];
+    const buyerAllocationCid = arg.buyerAllocationCidsByAdmin[0]![1];
+    const sellerAllocationCid = arg.sellerAllocationCidsByAdmin[0]![1];
+    if (buy.allocationCid !== buyerAllocationCid) {
       throw new Error("buyer allocation is not the bid order's allocation");
     }
-    if (sell.allocationCid !== arg.sellerAllocationCid) {
+    if (sell.allocationCid !== sellerAllocationCid) {
       throw new Error("seller allocation is not the ask order's allocation");
     }
 
@@ -185,54 +206,64 @@ export class MatchingLedger implements LedgerSubmitter {
     const quoteAmount = dec.mul(qty, dec.parseDecimal(arg.match.fillPrice));
 
     const buyerNext = this.remainder(
-      arg.buyerAllocationCid, quote, quoteAmount, qty >= buy.remainingQty,
+      buyerAllocationCid, quote, quoteAmount, qty >= buy.remainingQty,
     );
     const sellerNext = this.remainder(
-      arg.sellerAllocationCid, base, qty, qty >= sell.remainingQty,
+      sellerAllocationCid, base, qty, qty >= sell.remainingQty,
     );
     const buyerNextAllocationCid = this.settle(
-      arg.buyerAllocationCid, one(quote, quoteAmount), one(base, qty), buyerNext,
+      buyerAllocationCid, one(quote, quoteAmount), one(base, qty), buyerNext,
     );
     const sellerNextAllocationCid = this.settle(
-      arg.sellerAllocationCid, one(base, qty), one(quote, quoteAmount), sellerNext,
+      sellerAllocationCid, one(base, qty), one(quote, quoteAmount), sellerNext,
     );
 
     const buyRemainderCid = this.roll(
-      arg.buyOrderCid, buy, qty, buyerNextAllocationCid,
+      arg.buyOrderCid, buy, qty, buyerNextAllocationCid, admin,
     );
     const sellRemainderCid = this.roll(
-      arg.sellOrderCid, sell, qty, sellerNextAllocationCid,
+      arg.sellOrderCid, sell, qty, sellerNextAllocationCid, admin,
     );
 
     const settledTradeCid = `#settled:${this.settledTrades.length + 1}`;
+    const baseAdmin = buy.order.baseInstrumentId.admin;
+    const quoteAdmin = buy.order.quoteInstrumentId.admin;
     this.settledTrades.push({
       contractId: settledTradeCid,
       operator: arg.operator,
-      admin: buy.order.admin,
       matchId: arg.matchId,
       settledAt: SETTLED_AT,
-      // Mirrors mkMatchTransferLegs: base delivery first, then quote payment.
-      transferLegs: [
+      // Mirrors mkMatchTransferLegs: base delivery first, then quote payment,
+      // each admin-tagged with its instrument's registry.
+      tradeLegs: [
         {
-          transferLegId: "base-delivery",
-          sender: { owner: arg.match.sellerAccount.owner },
-          receiver: { owner: arg.match.buyerAccount.owner },
-          amount: dec.formatDecimal(qty),
-          instrumentId: base,
+          admin: baseAdmin,
+          leg: {
+            transferLegId: "base-delivery",
+            sender: { owner: arg.match.sellerAccount.owner },
+            receiver: { owner: arg.match.buyerAccount.owner },
+            amount: dec.formatDecimal(qty),
+            instrumentId: base,
+          },
         },
         {
-          transferLegId: "quote-payment",
-          sender: { owner: arg.match.buyerAccount.owner },
-          receiver: { owner: arg.match.sellerAccount.owner },
-          amount: dec.formatDecimal(quoteAmount),
-          instrumentId: quote,
+          admin: quoteAdmin,
+          leg: {
+            transferLegId: "quote-payment",
+            sender: { owner: arg.match.buyerAccount.owner },
+            receiver: { owner: arg.match.sellerAccount.owner },
+            amount: dec.formatDecimal(quoteAmount),
+            instrumentId: quote,
+          },
         },
       ],
     });
 
     return {
-      buyerNextAllocationCid,
-      sellerNextAllocationCid,
+      buyerNextAllocationCidsByAdmin:
+        buyerNextAllocationCid === null ? [] : [[admin, buyerNextAllocationCid]],
+      sellerNextAllocationCidsByAdmin:
+        sellerNextAllocationCid === null ? [] : [[admin, sellerNextAllocationCid]],
       buyRemainderCid,
       sellRemainderCid,
       settledTradeCid,
@@ -290,6 +321,7 @@ export class MatchingLedger implements LedgerSubmitter {
     row: LiveOrderRow,
     filledQty: bigint,
     nextAllocationCid: string | null,
+    admin: Party,
   ): string | null {
     this.liveOrders.delete(orderCid);
     if (nextAllocationCid === null) return null;
@@ -304,7 +336,7 @@ export class MatchingLedger implements LedgerSubmitter {
         contractId: remainderCid as Order["contractId"],
         remainingQty: dec.formatDecimal(newRemaining),
         status: "PartiallyFilled",
-        allocationCid: nextAllocationCid as Order["allocationCid"],
+        allocationCidsByAdmin: [[admin, nextAllocationCid]] as Order["allocationCidsByAdmin"],
         // The remainder is created by the settling transaction, so it rests
         // from now — behind anything that was already on the book.
         ledgerCreatedAt: SETTLED_AT,

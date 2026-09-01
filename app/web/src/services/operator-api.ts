@@ -42,14 +42,18 @@ export interface PoolSlice {
   amount: Decimal;
 }
 
+export interface InstrumentId {
+  admin: Party;
+  id: string;
+}
+
 export interface Pool {
   contractId: ContractId<"Pool">;
   operator: Party;
   lpRegistrar: Party;
-  admin: Party;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
-  lpInstrumentId: { admin: Party; id: string };
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
+  lpInstrumentId: InstrumentId;
   feeBps: number;
   status: "Active" | "Paused" | "Unfunded";
   reserves: { baseAmount: Decimal; quoteAmount: Decimal };
@@ -87,7 +91,8 @@ export interface LedgerRfq {
   trader: Party;
   operator: Party;
   rfqId: string;
-  pair: string;
+  baseInstrumentId: { admin: Party; id: string };
+  quoteInstrumentId: { admin: Party; id: string };
   side: "RFQ_Buy" | "RFQ_Sell";
   size: Decimal;
   expiresAt: string;
@@ -116,7 +121,9 @@ export class OperatorApi {
 
   async computeSwapQuote(req: {
     poolId: string;
-    inputInstrumentId: string;
+    // Full instrument identity: the backend decides the swap side by {admin, id}
+    // equality, so a same-symbol cross-admin pair is unambiguous.
+    inputInstrumentId: InstrumentId;
     inputAmount: Decimal;
   }): Promise<{ outputAmount: Decimal }> {
     return this.post("/v1/swaps/quote", req);
@@ -129,16 +136,22 @@ export class OperatorApi {
     return this.post("/v1/registry/allocation-factory", req);
   }
 
-  // Operator builds the exact two-sided allocation against one pool snapshot;
-  // the wallet authorizes it and swap() settles that same quote binding.
+  // Operator builds the per-admin allocation specs against one pool snapshot and
+  // a SwapAllocationRequest carrying them; the wallet authorizes them and swap()
+  // settles that same quote binding.
   async requestSwap(req: {
     poolCid: ContractId<"Pool">;
     swapper: Party;
-    inputInstrumentId: string;
+    // Full instrument identity: the swap choice decides side by {admin, id}
+    // equality, so USD@A and USD@B are unambiguous.
+    inputInstrumentId: InstrumentId;
     inputAmount: Decimal;
     minOutputAmount: Decimal;
   }): Promise<{
-    allocationSpec: unknown;
+    // One spec per (swapper, admin): input admin first, then output admin; one
+    // combined spec for a single-admin swap.
+    allocationSpecs: unknown;
+    swapRequestCid: ContractId<"SwapAllocationRequest">;
     settlement: unknown;
     quoteBinding: SwapQuoteBinding;
   }> {
@@ -148,12 +161,13 @@ export class OperatorApi {
   async swap(req: {
     poolCid: ContractId<"Pool">;
     swapperAccount: { owner: Party; provider: Party | null; id: string };
-    inputInstrumentId: string;
+    inputInstrumentId: InstrumentId;
     inputAmount: Decimal;
     minOutputAmount: Decimal;
     quoteBinding: SwapQuoteBinding;
-    // Either the explicit created cid, or an updateId for operator-discovery.
-    swapperAllocationCid?: ContractId<"Allocation">;
+    // The created cids in canonical admin order (input admin first), or an
+    // updateId for operator-discovery.
+    swapperAllocationCids?: ContractId<"Allocation">[];
     updateId?: string;
   }): Promise<unknown> {
     return this.post("/v1/pools/swap", req);
@@ -170,7 +184,8 @@ export class OperatorApi {
   async createRfq(req: {
     trader: Party;
     rfqId: string;
-    pair: string;
+    baseInstrumentId: { admin: Party; id: string };
+    quoteInstrumentId: { admin: Party; id: string };
     side: "RFQ_Buy" | "RFQ_Sell";
     size: Decimal;
     expiresAt: string;
@@ -193,10 +208,47 @@ export class OperatorApi {
     rfqCid: ContractId<"Rfq">;
     acceptedQuoteCid: ContractId<"RfqQuote">;
     consideredQuoteCids: ContractId<"RfqQuote">[];
-    admin: Party;
     now: string;
   }): Promise<RfqAcceptResult> {
     return this.post("/v1/rfq/accept", req);
+  }
+
+  // === matched-trade settlement ============================================
+  // Drives an accepted RFQ's MatchedTrade to settlement: request the per-
+  // authorizer TradeAllocationRequests, the wallet funds the connected party's
+  // side, then the operator settles the cross-admin batches.
+
+  async requestMatchedTradeAllocations(req: {
+    tradeCid: ContractId<"MatchedTrade">;
+  }): Promise<{
+    // One request per non-venue authorizer; each carries the specs that
+    // authorizer must author (spanning one or two admins) so the wallet can
+    // accept it and author every AllocationFactory_Allocate in one command.
+    allocationRequests: Array<{
+      requestCid: ContractId<"TradeAllocationRequest">;
+      settlement: unknown;
+      requestedAt: string;
+      allocations: unknown;
+    }>;
+  }> {
+    return this.post("/v1/matched-trades/request-allocations", req);
+  }
+
+  async settleMatchedTrade(req: {
+    tradeCid: ContractId<"MatchedTrade">;
+    // The connected party's authored allocation cids grouped by registry admin,
+    // or an updateId for operator-discovery. The operator derives the trade's
+    // legs from the trade itself and assembles the counterparty's side; it never
+    // settles caller-supplied transfer legs.
+    allocationCidsByAdmin?: Record<Party, ContractId<"Allocation">[]>;
+    updateId?: string;
+    // Trade allocation requests still active for the operator to consume. The
+    // wallet accept archives the connected party's own, so this is normally [].
+    allocationRequestCids?: ContractId<"TradeAllocationRequest">[];
+    // When set, RFQ fees accrue against this pair on settle; omitted = no accrual.
+    dexPairCid?: ContractId<"DexPair">;
+  }): Promise<{ result: unknown }> {
+    return this.post("/v1/matched-trades/settle", req);
   }
 
   async bindOrder(req: {
@@ -209,7 +261,9 @@ export class OperatorApi {
     orderCid: ContractId<"Order">;
     allocationRequestCid: ContractId<"OrderAllocationRequest">;
     settlement: unknown;
-    allocationSpec: unknown;
+    // One spec per distinct admin: the lock-admin funding spec, plus a
+    // counter-admin receipt for a cross-admin pair; one for a single-admin pair.
+    allocationSpecs: unknown;
   }> {
     return this.post("/v1/orders/bind", req);
   }
@@ -217,9 +271,8 @@ export class OperatorApi {
   // === admin =================================================================
 
   async createPair(req: {
-    admin: Party;
-    baseInstrumentId: string;
-    quoteInstrumentId: string;
+    baseInstrumentId: InstrumentId;
+    quoteInstrumentId: InstrumentId;
     tradingMode: "TM_OrderBook" | "TM_Pool" | "TM_Both";
     feeModel: { makerFeeBps: number; takerFeeBps: number; poolFeeBps: number };
     active?: boolean;
@@ -249,9 +302,8 @@ export class OperatorApi {
 
   async createPool(req: {
     lpRegistrar: Party;
-    admin: Party;
-    baseInstrumentId: string;
-    quoteInstrumentId: string;
+    baseInstrumentId: InstrumentId;
+    quoteInstrumentId: InstrumentId;
     lpInstrumentId: string;
     feeBps: number;
   }): Promise<{ poolCid: ContractId<"Pool"> }> {
@@ -260,8 +312,9 @@ export class OperatorApi {
 
   async fundOrder(req: {
     orderCid: ContractId<"Order">;
-    // Either the explicit created cid, or an updateId for operator-discovery.
-    allocationCid?: ContractId<"Allocation">;
+    // The created cids (one per admin; Order_Fund binds each by allocation-view
+    // admin, so order is immaterial), or an updateId for operator-discovery.
+    allocationCids?: ContractId<"Allocation">[];
     updateId?: string;
     // The OrderAllocationRequest from bind, consumed by Order_Fund so it does
     // not linger after funding.

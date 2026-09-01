@@ -1,11 +1,14 @@
--- | Resting order backed by a prefunded V2.Allocation: placement creates an
+-- | Resting order backed by prefunded V2.Allocations: placement creates an
 -- allocation with no legs and nextIterationFunding covering the locked
 -- amount; matching carries the concrete legs through SettleBatch; partial
--- fills roll the next-iteration allocation forward; cancel releases it.
+-- fills roll the next-iteration allocations forward; cancel releases them.
+-- A cross-admin pair funds the locked side under one registry and holds a
+-- zero-funding receipt authorization under the other.
 --
 -- Design guide: `docs/concepts/design-tour.md#prefunded-orders`.
 module CantonDex.Dex.Order where
 
+import DA.Foldable (forA_)
 import DA.Map qualified as Map
 import DA.Optional (isSome)
 import DA.TextMap qualified as TextMap
@@ -26,30 +29,17 @@ data Side = Bid | Ask
 -- | Order lifecycle state.
 data OrderStatus
   = OS_Pending         -- ^ Placed but not yet funded by an allocation.
-  | OS_Funded          -- ^ Backed by a live prefunded allocation; matchable.
+  | OS_Funded          -- ^ Backed by live prefunded allocations; matchable.
   | OS_PartiallyFilled -- ^ Partly filled; the remainder rolled forward.
   deriving (Eq, Show)
 
 data Order_FundResult = Order_FundResult with
     orderCid : ContractId Order
-    allocationCid : ContractId V2.Allocation
-  deriving (Eq, Show)
-
--- [COMPAT] Result shape retained for package lineage only. The
--- `Order_Adjust` choice is retired and always rejects.
-data Order_MatchResult = Order_MatchResult with
-    adjustedAllocationCid : ContractId V2.Allocation
-  deriving (Eq, Show)
-
--- [COMPAT] Result shape retained for package lineage only. Active matching
--- returns `OrderMatch_ExecuteResult` from `OrderMatchExecution_Execute`.
-data Order_SettleResult = Order_SettleResult with
-    settleResult : V2.SettlementFactory_SettleBatchResult
-    remainingOrderCid : Optional (ContractId Order)
+    allocationCidsByAdmin : Map.Map Party (ContractId V2.Allocation)
   deriving (Eq, Show)
 
 data Order_CancelResult = Order_CancelResult with
-    cancelResult : Optional V2.AllocationResult
+    cancelResultsByAdmin : Map.Map Party V2.AllocationResult
     releasedHoldings : TextMap.TextMap [ContractId V2.Holding]
   deriving (Eq, Show)
 
@@ -64,28 +54,30 @@ makeOrderRefFromText refId = SettlementRef with
   id = "DexOrder-" <> refId
   cid = None
 
--- All orders for one operator, registry, and instrument pair share a
--- settlement domain. Buy and sell allocations can therefore be settled in
--- the same V2 batch, while allocations from another venue or pair cannot.
+-- All orders for one operator and instrument pair share one admin-independent
+-- settlement domain, keyed by both full instrument identities and the policy
+-- version. Buy and sell allocations, across both registries and across the
+-- fills that roll them forward, settle that domain; allocations from another
+-- pair or venue cannot.
 orderBookSettlement
-  : Party -> Party -> Text -> Text -> V2.SettlementInfo
-orderBookSettlement operator admin baseInstrumentId quoteInstrumentId =
+  : Party -> V2.InstrumentId -> V2.InstrumentId -> V2.SettlementInfo
+orderBookSettlement operator baseInstrumentId quoteInstrumentId =
   V2.SettlementInfo with
     executors = [operator]
-    id = "CantonDex/OrderBook/" <> show (operator, admin, baseInstrumentId, quoteInstrumentId)
+    id = "CantonDex/OrderBook/v2/" <> show (operator, baseInstrumentId, quoteInstrumentId)
     cid = None
     meta = emptyMetadata
 
 orderFundingSpecification
-  : Party -> Party -> Text -> Decimal -> Optional Time
+  : V2.InstrumentId -> Party -> Decimal -> Optional Time
   -> V2.AllocationSpecification
-orderFundingSpecification admin trader lockInstrumentId lockAmount expiry =
+orderFundingSpecification lockInstrument trader lockAmount expiry =
   V2.AllocationSpecification with
-    admin
+    admin = lockInstrument.admin
     authorizer = Utils.basicAccount trader
     transferLegSides = []
     settlementDeadline = expiry
-    nextIterationFunding = Some (TextMap.fromList [(lockInstrumentId, lockAmount)])
+    nextIterationFunding = Some (TextMap.fromList [(lockInstrument.id, lockAmount)])
     -- A committed allocation without a deadline cannot be withdrawn by its
     -- authorizer. Expiring orders remain committed until their deadline; GTC
     -- orders stay uncommitted so the trader retains a unilateral exit if the
@@ -93,15 +85,61 @@ orderFundingSpecification admin trader lockInstrumentId lockAmount expiry =
     committed = isSome expiry
     meta = emptyMetadata
 
+-- A zero-funding receipt authorization under the counter admin of a cross-admin
+-- pair: it locks nothing and authorizes the incoming fill side. Its commitment
+-- matches the funding allocation's, so an expiring order commits both under the
+-- same deadline and the trader cannot withdraw one while the other stays locked.
+orderReceiptSpecification
+  : Party -> Party -> Optional Time -> V2.AllocationSpecification
+orderReceiptSpecification receiptAdmin trader expiry =
+  V2.AllocationSpecification with
+    admin = receiptAdmin
+    authorizer = Utils.basicAccount trader
+    transferLegSides = []
+    settlementDeadline = expiry
+    nextIterationFunding = Some TextMap.empty
+    committed = isSome expiry
+    meta = emptyMetadata
+
+-- The specifications the trader authorizes: the funding spec under the lock
+-- admin, plus a receipt spec under the counter admin when the pair spans two
+-- registries. A single-admin pair exposes only the funding spec, whose one
+-- allocation authorizes both fill sides.
+orderAllocationSpecs
+  : V2.InstrumentId -> Decimal -> Optional Party -> Party -> Optional Time
+  -> [V2.AllocationSpecification]
+orderAllocationSpecs lockInstrument lockAmount receiptAdmin trader expiry =
+  orderFundingSpecification lockInstrument trader lockAmount expiry
+    :: [orderReceiptSpecification ra trader expiry | Some ra <- [receiptAdmin]]
+
+-- The instrument an order locks to deliver, the amount it locks, and the counter
+-- admin that authorizes the incoming fill side (None for a single-admin pair).
+-- Derived purely from the pair, side, quantity, and limit price, so both order
+-- placement and Order_Fund reproduce the same funding without a shared request.
+orderLockTerms
+  : V2.InstrumentId -> V2.InstrumentId -> Side -> Decimal -> Decimal
+  -> (V2.InstrumentId, Decimal, Optional Party)
+orderLockTerms baseInstrumentId quoteInstrumentId side quantity limitPrice =
+  let (lockInstrument, receiptInstrument) = case side of
+        Bid -> (quoteInstrumentId, baseInstrumentId)
+        Ask -> (baseInstrumentId, quoteInstrumentId)
+      lockAmount = case side of
+        Bid -> quantity * limitPrice
+        Ask -> quantity
+      receiptAdmin =
+        if receiptInstrument.admin == lockInstrument.admin
+          then None
+          else Some receiptInstrument.admin
+  in (lockInstrument, lockAmount, receiptAdmin)
+
 template Order with
     operator : Party
     trader : Party
-    admin : Party
-      -- ^ Registry admin for the base + quote instruments.
-    baseInstrumentId : Text
-      -- ^ `id` component of the base instrument, under `admin`.
-    quoteInstrumentId : Text
-      -- ^ `id` component of the quote instrument, under `admin`.
+    baseInstrumentId : V2.InstrumentId
+      -- ^ Full identity `{ admin, id }` of the base instrument.
+    quoteInstrumentId : V2.InstrumentId
+      -- ^ Full identity `{ admin, id }` of the quote instrument; its admin may
+      --   differ from the base's.
     side : Side
       -- ^ Bid (buy base) or Ask (sell base).
     limitPrice : Decimal
@@ -111,122 +149,130 @@ template Order with
     expiry : Optional Time
       -- ^ Optional good-till time; None = good-till-cancelled.
     status : OrderStatus
-    allocationCid : Optional (ContractId V2.Allocation)
-      -- ^ The prefunded allocation backing the order once funded.
+    allocationCidsByAdmin : Map.Map Party (ContractId V2.Allocation)
+      -- ^ The prefunded allocations backing the order once funded, keyed by
+      --   instrument admin: one entry for a single-admin pair, two (the lock
+      --   admin plus the counter admin) when the pair spans two registries.
     settlementRef : SettlementRef
   where
     signatory operator
     observer trader
 
     ensure
-      baseInstrumentId /= ""
-        && quoteInstrumentId /= ""
+      baseInstrumentId.id /= ""
+        && quoteInstrumentId.id /= ""
         && baseInstrumentId /= quoteInstrumentId
         && limitPrice > 0.0
         && remainingQty > 0.0
         && settlementRef.id /= ""
-        && case (status, allocationCid) of
-             (OS_Pending, None) -> True
-             (OS_Funded, Some _) -> True
-             (OS_PartiallyFilled, Some _) -> True
-             _ -> False
+        && case status of
+             OS_Pending -> Map.null allocationCidsByAdmin
+             OS_Funded -> not (Map.null allocationCidsByAdmin)
+             OS_PartiallyFilled -> not (Map.null allocationCidsByAdmin)
 
-    -- Bind an already-trader-funded allocation onto the order. This does NOT
-    -- call the factory: the trader authors the allocation (so their holdings
-    -- fund it) directly against the factory, and the operator binds the
-    -- resulting cid here, Pending -> Funded.
+    -- Bind the already-trader-funded allocations onto the order. This does NOT
+    -- call the factory: the trader authors each allocation (so their holdings
+    -- fund it) directly against its registry's factory, and the operator binds
+    -- the resulting cids here, Pending -> Funded. A single-admin order binds
+    -- one allocation; a cross-admin order binds the funding and receipt
+    -- allocations, each under its own admin.
+    --
+    -- The expected specifications are derived from the order's own terms, not
+    -- fetched from the request: a standard V2 wallet archives the
+    -- OrderAllocationRequest when it accepts it, so funding cannot depend on the
+    -- request still being live.
     choice Order_Fund : Order_FundResult
       with
-        allocationCid : ContractId V2.Allocation
-        -- The OrderAllocationRequest this order was bound with. It is consumed
-        -- here so it cannot linger as a stale funding request once the order is
-        -- funded. The wallet authors the allocation directly; this request is
-        -- the correlation record consumed by `Order_Fund`.
-        -- [COMPAT] The Optional encoding is retained for package lineage, but
-        -- every active exercise must supply `Some requestCid`.
+        allocationCids : [ContractId V2.Allocation]
         allocationRequestCid : Optional (ContractId OrderAllocationRequest)
+          -- ^ The correlation request, when it is still live. Supplied to clean
+          --   it up here; omitted (None) when a wallet already archived it via
+          --   acceptance. Funding never requires it to exist.
       controller operator
       do
         assertMsg "Order must be in Pending status to fund" (status == OS_Pending)
-        case allocationRequestCid of
-          None -> abort "Order_Fund requires allocationRequestCid"
-          Some reqCid -> do
-            req <- fetch reqCid
-            assertMsg "OrderAllocationRequest does not target this order"
-              ( req.orderRef == settlementRef
-                  && req.trader == trader
-                  && req.operator == operator )
-            allocation <- fetch allocationCid
-            let allocationView = view allocation
-                requestSettlement = optional
-                  (V2.SettlementInfo with
-                    executors = [operator]
-                    id = req.orderRef.id
-                    cid = req.orderRef.cid
-                    meta = emptyMetadata)
-                  identity
-                  req.allocationSettlement
-                expectedSpec = orderFundingSpecification
-                  admin trader req.lockInstrumentId req.lockAmount req.expiry
-            assertMsg "Order funding allocation belongs to a different settlement"
-              (allocationView.settlement == requestSettlement)
-            assertMsg "Order funding allocation does not match the request"
-              (allocationView.allocation == expectedSpec)
-            archive reqCid
+        let (lockInstrument, lockAmount, receiptAdmin) =
+              orderLockTerms baseInstrumentId quoteInstrumentId side remainingQty limitPrice
+            settlement = orderBookSettlement operator baseInstrumentId quoteInstrumentId
+            -- The expected specification for each admin the order funds, rebuilt
+            -- from the order so a bound allocation is verified, not trusted.
+            expectedSpecsByAdmin = Map.fromList
+              [ (spec.admin, spec)
+              | spec <- orderAllocationSpecs
+                  lockInstrument lockAmount receiptAdmin trader expiry
+              ]
+        boundEntries <- forA allocationCids $ \allocCid -> do
+          allocation <- fetch allocCid
+          let allocationView = view allocation
+              admin = allocationView.allocation.admin
+          expectedSpec <- case Map.lookup admin expectedSpecsByAdmin of
+            Some s -> pure s
+            None -> abort "Order funding allocation for an unexpected admin"
+          assertMsg "Order funding allocation belongs to a different settlement"
+            (allocationView.settlement == settlement)
+          assertMsg "Order funding allocation does not match the order's own terms"
+            (allocationView.allocation == expectedSpec)
+          pure (admin, allocCid)
+        let allocationCidsByAdmin = Map.fromList boundEntries
+        -- Exactly one allocation per expected admin: no duplicate admin and no
+        -- admin left unfunded.
+        assertMsg "Order funding must bind exactly one allocation per admin"
+          ( Map.size allocationCidsByAdmin == length boundEntries
+              && Map.keys allocationCidsByAdmin == Map.keys expectedSpecsByAdmin )
+        -- Best-effort cleanup: archive the correlation request only when a live
+        -- cid is supplied, after checking it targets this order. A None means a
+        -- wallet already consumed it on acceptance.
+        forA_ allocationRequestCid $ \reqCid -> do
+          req <- fetch reqCid
+          assertMsg "OrderAllocationRequest does not target this order"
+            ( req.orderRef == settlementRef
+                && req.trader == trader
+                && req.operator == operator )
+          archive reqCid
         newOrderCid <- create this with
           status = OS_Funded
-          allocationCid = Some allocationCid
+          allocationCidsByAdmin
         pure Order_FundResult with
           orderCid = newOrderCid
-          allocationCid
+          allocationCidsByAdmin
 
-    -- [RETIRED] Retained for package lineage and always rejects. Matching is
-    -- implemented by `OrderMatchExecution_Execute`; there is no adjustment
-    -- phase in the active workflow.
-    nonconsuming choice Order_Adjust : Order_MatchResult
-      with
-        matchTransferLegs : [V2.TransferLeg]
-        allowFutureIterations : Bool
-      controller operator
-      do abort "[RETIRED] Order_Adjust: use OrderMatchExecution_Execute"
-
+    -- Cancel every allocation backing the order, all-or-nothing: each admin's
+    -- allocation is cancelled with its own per-admin choice context, and a
+    -- missing context or failed cancel rolls the whole cancel back.
     choice Order_Cancel : Order_CancelResult
       with
-        extraArgs : ExtraArgs
+        extraArgsByAdmin : Map.Map Party ExtraArgs
+          -- ^ One choice context per allocation admin.
       controller operator
       do
-        case allocationCid of
-          None ->
-            pure Order_CancelResult with
-              cancelResult = None
-              releasedHoldings = TextMap.empty
-          Some allocCid -> do
-            let cancelArg = WC.mkAllocationCancel [operator] extraArgs
-            result <- exercise allocCid cancelArg
-            pure Order_CancelResult with
-              cancelResult = Some result
-              releasedHoldings = result.authorizerHoldingCids
-
-    -- [RETIRED] Retained for package lineage and always rejects. A fill rolls
-    -- its order forward atomically inside `OrderMatchExecution_Execute`.
-    choice Order_RecordPartialFill : Optional (ContractId Order)
-      with
-        filledQty : Decimal
-        newAllocationCid : Optional (ContractId V2.Allocation)
-      controller operator
-      do abort "[RETIRED] Order_RecordPartialFill: use OrderMatchExecution_Execute"
+        results <- forA (Map.toList allocationCidsByAdmin) $ \(admin, allocCid) -> do
+          extraArgs <- case Map.lookup admin extraArgsByAdmin of
+            Some e -> pure e
+            None -> abort ("Order_Cancel: missing choice context for admin " <> show admin)
+          result <- exercise allocCid (WC.mkAllocationCancel [operator] extraArgs)
+          pure (admin, result)
+        pure Order_CancelResult with
+          cancelResultsByAdmin = Map.fromList results
+          releasedHoldings =
+            foldl
+              (\acc (_, r) -> Utils.textMapUnionWith (<>) acc r.authorizerHoldingCids)
+              TextMap.empty
+              results
 
 -- | Trader-observed request issued by the operator to fund a specific Order.
--- Its interface view supplies the V2 allocation specification. The current
--- dApp authors that allocation directly; Order_Fund receives its cid and
--- consumes this request as the workflow's correlation record.
+-- Its interface view supplies one V2 allocation specification per distinct
+-- admin. The current dApp authors those allocations directly; Order_Fund
+-- receives their cids and consumes this request as the workflow's correlation
+-- record.
 template OrderAllocationRequest with
     operator : Party
     trader : Party
-    admin : Party
     orderRef : SettlementRef
-    lockInstrumentId : Text
+    lockInstrumentId : V2.InstrumentId
     lockAmount : Decimal
+    receiptAdmin : Optional Party
+      -- ^ Counter admin authorizing the incoming fill side; None for a
+      --   single-admin pair, whose one allocation authorizes both sides.
     expiry : Optional Time
     requestedAt : Time
     allocationSettlement : Optional V2.SettlementInfo
@@ -235,10 +281,11 @@ template OrderAllocationRequest with
     observer trader
 
     ensure
-      lockInstrumentId /= ""
+      lockInstrumentId.id /= ""
         && lockAmount > 0.0
         && orderRef.id /= ""
         && requestedAt <= optional requestedAt identity expiry
+        && receiptAdmin /= Some lockInstrumentId.admin
 
     interface instance V2.AllocationRequest for OrderAllocationRequest where
       view = V2.AllocationRequestView with
@@ -252,9 +299,11 @@ template OrderAllocationRequest with
           identity
           allocationSettlement
         allocations =
-          -- Prefunded: no legs at request time; the trader locks lockAmount as
-          -- next-iteration funding, concrete legs travel with the match flow.
-          [orderFundingSpecification admin trader lockInstrumentId lockAmount expiry]
+          -- Prefunded: no legs at request time. The trader locks lockAmount as
+          -- next-iteration funding under the lock admin and, for a cross-admin
+          -- pair, a zero-funding receipt under the counter admin; concrete legs
+          -- travel with the match flow.
+          orderAllocationSpecs lockInstrumentId lockAmount receiptAdmin trader expiry
         requestedAt
         settleAt = expiry
         availableActions = Map.fromList

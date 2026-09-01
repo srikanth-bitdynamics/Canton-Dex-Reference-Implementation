@@ -7,8 +7,10 @@ older tags or releases.
 
 This repository does not provision or promise a public testnet deployment. An
 operator's supported ledger surface is the exact DAR/package id they deploy from
-`main`; the committed upgrade baseline exists only to validate Daml package
-compatibility and is not evidence that a public service is currently running.
+`main`. Once a version is deployed, its DAR is committed under
+`trading/upgrade-baseline/` to validate future Daml package compatibility; no
+baseline is committed yet, so that check is dormant and a green CI run is not
+evidence that a public service is currently running.
 
 ## Reporting a vulnerability
 

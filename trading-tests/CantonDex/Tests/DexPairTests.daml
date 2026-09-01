@@ -8,9 +8,11 @@
 module CantonDex.Tests.DexPairTests where
 
 import DA.Assert
+import DA.Map qualified as Map
 import DA.Optional (fromSome)
-import DA.TextMap qualified as TextMap
 import Daml.Script
+
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 
 import CantonDex.Dex.DexPair
 
@@ -24,9 +26,8 @@ createPair : Party -> Party -> Script (ContractId DexPair)
 createPair operator admin =
   submit operator $ createCmd DexPair with
     operator
-    admin
-    baseInstrumentId = "BTC"
-    quoteInstrumentId = "USDC"
+    baseInstrumentId = HoldingV2.InstrumentId with admin; id = "BTC"
+    quoteInstrumentId = HoldingV2.InstrumentId with admin; id = "USDC"
     tradingMode = TM_Both
     feeModel = initialFeeModel
     active = True
@@ -62,8 +63,8 @@ testDexPairLifecycleUpdates = do
     newReaders = [reader]
 
   Some pair <- queryContractId reader pair4
-  pair.baseInstrumentId === "BTC"
-  pair.quoteInstrumentId === "USDC"
+  pair.baseInstrumentId.id === "BTC"
+  pair.quoteInstrumentId.id === "USDC"
   pair.feeModel === replacementFees
   pair.active === False
   pair.tradingMode === TM_Pool
@@ -96,17 +97,20 @@ testDexPairRecordsMatchedTradeFees = do
   admin <- allocateParty "pair-fee-admin"
   pair0 <- createPair operator admin
 
+  let btc = HoldingV2.InstrumentId with admin; id = "BTC"
+      usdc = HoldingV2.InstrumentId with admin; id = "USDC"
+
   submitMustFail operator $ exerciseCmd pair0 DexPair_RecordMatchedTrade with
-    legNotionals = TextMap.fromList [("BTC", -1.0)]
+    legNotionals = Map.fromList [(btc, -1.0)]
   pair1 <- submit operator $ exerciseCmd pair0 DexPair_RecordMatchedTrade with
-    legNotionals = TextMap.fromList [("BTC", 2.0), ("USDC", 100.0)]
+    legNotionals = Map.fromList [(btc, 2.0), (usdc, 100.0)]
   pair2 <- submit operator $ exerciseCmd pair1 DexPair_RecordMatchedTrade with
-    legNotionals = TextMap.fromList [("BTC", 3.0)]
+    legNotionals = Map.fromList [(btc, 3.0)]
 
   Some pair <- queryContractId operator pair2
   let maker = fromSome pair.accumulatedMakerFees
       taker = fromSome pair.accumulatedTakerFees
-  TextMap.lookup "BTC" maker === Some 0.005
-  TextMap.lookup "USDC" maker === Some 0.1
-  TextMap.lookup "BTC" taker === Some 0.01
-  TextMap.lookup "USDC" taker === Some 0.2
+  Map.lookup btc maker === Some 0.005
+  Map.lookup usdc maker === Some 0.1
+  Map.lookup btc taker === Some 0.01
+  Map.lookup usdc taker === Some 0.2

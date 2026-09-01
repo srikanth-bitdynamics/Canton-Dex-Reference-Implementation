@@ -21,7 +21,7 @@
 //
 // Env:
 //   CANTON_LEDGER_URL, CANTON_LEDGER_TOKEN,
-//   CANTON_DEX_PACKAGE_ID (e.g. #canton-dex-trading),
+//   CANTON_DEX_PACKAGE_ID (e.g. #canton-dex-trading-v2),
 //   CANTON_ALLOC_INSTR_PACKAGE_ID
 //     (e.g. #splice-api-token-allocation-instruction-v2),
 //   CANTON_USER_ID (default ledger-api-user),
@@ -63,6 +63,10 @@ const cfg = {
   pkgAllocInstr: req("CANTON_ALLOC_INSTR_PACKAGE_ID"),
 };
 const lpRegistrar = cfg.admin; // self-registry: admin issues base/quote AND LP
+// Distinct settlement admins for a DvP add/remove batch: the asset admin and
+// the LP registrar. They collapse to one key when they are the same party, so
+// batchesByAdmin has exactly one entry per distinct admin the pool settles.
+const settleAdmins = [...new Set([cfg.admin, lpRegistrar])];
 
 const RUN = `dvp-${Date.now()}`;
 const BASE = "BTC", QUOTE = "USDC", LP = `BTC-USDC-LP-${RUN}`;
@@ -114,9 +118,14 @@ interface RequestArg { allocations: unknown[]; settlement: unknown }
 interface PolicyArg { totalSupply: string; lpInstrumentId: { admin: string; id: string } }
 interface SwapRequestResult {
   settlement: unknown;
-  allocationSpec: unknown;
+  allocationSpecs: unknown[];
+  swapRequestCid: string;
   quoteBinding: SwapQuoteBinding | null;
 }
+interface AddAllocationPlan { baseReceiver: unknown; quoteReceiver: unknown; lpMintSender: unknown }
+interface RemoveAllocationPlan { lpBurnReceiver: unknown }
+// A RegistryBatchInput: the settlement factory + choice context for one admin.
+type RegistryBatchInput = { factoryCid: string; extraArgs: typeof EXTRA };
 interface SwapQuoteBinding {
   expectedPoolId: string;
   poolStateCid: string;
@@ -314,6 +323,29 @@ async function authorAlloc(
   ).contractId;
 }
 
+// Stage one operator/registrar allocation from a preview plan: the plan is a
+// complete AllocationFactory_Allocate argument (settlement, spec, actors, empty
+// context), so it is exercised on the registry as-is under the plan's actor.
+async function authorPlanAlloc(
+  regCid: string,
+  actAs: string,
+  plan: unknown,
+  label: string,
+): Promise<string> {
+  const tx = await submit([actAs], `${RUN}-stage-${label}`, [{
+    ExerciseCommand: {
+      templateId: `${cfg.pkgAllocInstr}:Splice.Api.Token.AllocationInstructionV2:AllocationFactory`,
+      contractId: regCid,
+      choice: "AllocationFactory_Allocate",
+      choiceArgument: plan,
+    },
+  }]);
+  return only(
+    creates(tx, "CantonDex.Registry.V2:Allocation"),
+    `${label} allocation`,
+  ).contractId;
+}
+
 async function holdingsFor(
   party: string,
   instrumentId: string,
@@ -444,8 +476,10 @@ async function main() {
       CreateCommand: {
         templateId: tid("CantonDex.Dex.Pool:Pool"),
         createArguments: {
-          poolId, operator: cfg.operator, lpRegistrar, admin: cfg.admin,
-          baseInstrumentId: BASE, quoteInstrumentId: QUOTE, lpInstrumentId,
+          poolId, operator: cfg.operator, lpRegistrar,
+          baseInstrumentId: { admin: cfg.admin, id: BASE },
+          quoteInstrumentId: { admin: cfg.admin, id: QUOTE },
+          lpInstrumentId,
           feeBps: "30",
         },
       },
@@ -522,6 +556,38 @@ async function main() {
     authorAlloc(regCid, cfg.trader, settlement, quoteSpec, [addQuoteH.cid], "add-quote"));
   const receipt = await step("trader authors LP receipt", () =>
     authorAlloc(regCid, cfg.trader, settlement, receiptSpec, [], "add-receipt"));
+
+  // Stage the operator receiver and registrar mint allocations. The settle
+  // derives the per-admin batches; the driver pre-creates the operator-side
+  // allocations exactly as the backend does, so allocationContextByAdmin stays
+  // empty. PreviewAddAllocations returns the exact factory arguments to author.
+  const addRequestedAt = new Date().toISOString();
+  const addPrep = {
+    expectedPoolId: poolId, poolCid, poolStateCid: stateCid, lpPolicyCid: policyCid,
+    requestCid: reqAdd.cid, acceptanceCid: null, recipient: cfg.trader,
+    lpBaseDepositCid: baseDep, lpQuoteDepositCid: quoteDep, lpReceiptCid: receipt,
+    baseAmount: ADD_BASE, quoteAmount: ADD_QUOTE, minLpTokens: "0.0", knownTotalLpSupply: "0.0",
+  };
+  const addPlan = await step("PoolLiquidityRules_PreviewAddAllocations", async () => {
+    const tx = await submit([cfg.operator, lpRegistrar], `${RUN}-add-preview`, [{
+      ExerciseCommand: {
+        templateId: tid("CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules"), contractId: dvpCid,
+        choice: "PoolLiquidityRules_PreviewAddAllocations",
+        choiceArgument: { preparation: addPrep, requestedAt: addRequestedAt },
+      },
+    }]);
+    const result = exercisedResult(tx, "PoolLiquidityRules_PreviewAddAllocations")
+      ?? await treeExercisedResult(tx.transaction.updateId, cfg.operator, "PoolLiquidityRules_PreviewAddAllocations");
+    if (!result) throw new Error("participant did not expose the PreviewAddAllocations result");
+    return result as AddAllocationPlan;
+  });
+  const opBaseReceiver = await step("stage operator base receiver", () =>
+    authorPlanAlloc(regCid, cfg.operator, addPlan.baseReceiver, "add-op-base"));
+  const opQuoteReceiver = await step("stage operator quote receiver", () =>
+    authorPlanAlloc(regCid, cfg.operator, addPlan.quoteReceiver, "add-op-quote"));
+  const registrarMint = await step("stage registrar LP mint", () =>
+    authorPlanAlloc(regCid, lpRegistrar, addPlan.lpMintSender, "add-mint"));
+
   const addRes = await step("PoolLiquidityRules_SettleAddLiquidity", async () => {
     const tx = await submit([cfg.operator, lpRegistrar], `${RUN}-add-settle`, [{
       ExerciseCommand: {
@@ -532,9 +598,14 @@ async function main() {
           requestCid: reqAdd.cid, acceptanceCid: null, recipient: cfg.trader,
           lpBaseDepositCid: baseDep, lpQuoteDepositCid: quoteDep, lpReceiptCid: receipt,
           baseFactoryCid: regCid, quoteFactoryCid: regCid, lpFactoryCid: regCid,
-          baseQuoteSettleCid: regCid, lpSettleCid: regCid,
           baseAmount: ADD_BASE, quoteAmount: ADD_QUOTE, minLpTokens: "0.0", knownTotalLpSupply: "0.0",
-          requestedAt: new Date().toISOString(), poolAdminExtraArgs: EXTRA, lpRegistrarExtraArgs: EXTRA,
+          requestedAt: addRequestedAt,
+          batchesByAdmin: settleAdmins.map((a): [string, RegistryBatchInput] =>
+            [a, { factoryCid: regCid, extraArgs: EXTRA }]),
+          operatorBaseReceiverCid: opBaseReceiver,
+          operatorQuoteReceiverCid: opQuoteReceiver,
+          registrarMintCid: registrarMint,
+          allocationContextByAdmin: [],
         },
       },
     }]);
@@ -618,8 +689,10 @@ async function main() {
         choiceArgument: {
           poolCid,
           swapper: cfg.swapper,
-          inputInstrumentId: QUOTE,
+          inputInstrumentId: { admin: cfg.admin, id: QUOTE },
           inputAmount: SWAP_IN,
+          requestedAt: new Date().toISOString(),
+          settleAt: null,
           quoteBinding,
         },
       },
@@ -641,16 +714,26 @@ async function main() {
     "request preserves quoted minimum",
   );
 
+  // Input (QUOTE) and output (BASE) share cfg.admin, so the swap collapses to a
+  // single combined allocation and a single settlement batch under that admin.
+  const swapAdmins = [...new Set([cfg.admin, cfg.admin])];
+  const swapSpec = swapRequest.allocationSpecs[0];
+  if (!swapSpec) throw new Error("swap request did not return an allocation spec");
   const swapAllocationCid = await step("swapper authors the exact swap allocation", () =>
     authorAlloc(
       regCid,
       cfg.swapper,
       swapRequest.settlement,
-      swapRequest.allocationSpec,
+      swapSpec,
       [swapHolding.cid],
       "swap-input",
     ));
 
+  // Settle exactly as the production backend does: the operator acts alone,
+  // with NO readAs on the swapper. The operator is the settlement executor named
+  // on the swapper's allocation, so it already observes it; the registry factory
+  // is the operator's own regCid. A swapper readAs here would flatter the proof
+  // by granting a visibility production never takes.
   const swapRes = await step("PoolRules_Swap", async () => {
     const tx = await submit([cfg.operator], `${RUN}-swap-settle`, [{
       ExerciseCommand: {
@@ -662,18 +745,20 @@ async function main() {
           poolCid,
           poolStateCid: stateCid,
           swapperAccount: acct(cfg.swapper),
-          inputInstrumentId: QUOTE,
+          inputInstrumentId: { admin: cfg.admin, id: QUOTE },
           inputAmount: SWAP_IN,
           minOutputAmount: quoteBinding.minOutputAmount,
-          swapperAllocationCid: swapAllocationCid,
+          swapperAllocationCidsByAdmin: swapAdmins.map((a): [string, string] =>
+            [a, swapAllocationCid]),
           inputSliceCid: quoteBinding.inputSliceCid,
           outputSliceCids: quoteBinding.outputSliceCids,
-          factoryCid: regCid,
-          extraArgs: EXTRA,
+          batchesByAdmin: swapAdmins.map((a): [string, RegistryBatchInput] =>
+            [a, { factoryCid: regCid, extraArgs: EXTRA }]),
+          swapAllocationRequestCids: [],
           quoteBinding,
         },
       },
-    }], [cfg.swapper]);
+    }]);
     const state = only(
       creates(tx, "CantonDex.Dex.PoolState:PoolState")
         .filter((created) => argOf<PoolStateArg>(created).poolId === poolId),
@@ -799,6 +884,38 @@ async function main() {
       "remove-lp-burn",
     ));
 
+  // Stage the registrar burn-receiver allocation. Remove authors only the LP
+  // burn side (base/quote come from existing slices), so allocationContextByAdmin
+  // stays empty. PreviewRemoveAllocations returns the exact factory arguments.
+  const removeRequestedAt = new Date().toISOString();
+  const removePrep = {
+    expectedPoolId: poolId, poolCid, poolStateCid: stateCid, lpPolicyCid: policyCid,
+    requestCid: removeRequest.cid, acceptanceCid: null, holder: cfg.trader,
+    lpTokensToRedeem: dec.formatDecimal(redeemAmount),
+    knownTotalLpSupply: dec.formatDecimal(supplyBeforeRemove),
+    minBaseOut: dec.formatDecimal(baseOut),
+    minQuoteOut: dec.formatDecimal(quoteOut),
+    baseSliceCids: basePlan.cids,
+    quoteSliceCids: quotePlan.cids,
+    holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid,
+  };
+  const removePlan = await step("PoolLiquidityRules_PreviewRemoveAllocations", async () => {
+    const tx = await submit([cfg.operator, lpRegistrar], `${RUN}-remove-preview`, [{
+      ExerciseCommand: {
+        templateId: tid("CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules"),
+        contractId: dvpCid,
+        choice: "PoolLiquidityRules_PreviewRemoveAllocations",
+        choiceArgument: { preparation: removePrep, requestedAt: removeRequestedAt },
+      },
+    }]);
+    const result = exercisedResult(tx, "PoolLiquidityRules_PreviewRemoveAllocations")
+      ?? await treeExercisedResult(tx.transaction.updateId, cfg.operator, "PoolLiquidityRules_PreviewRemoveAllocations");
+    if (!result) throw new Error("participant did not expose the PreviewRemoveAllocations result");
+    return result as RemoveAllocationPlan;
+  });
+  const registrarBurnReceiver = await step("stage registrar LP burn receiver", () =>
+    authorPlanAlloc(regCid, lpRegistrar, removePlan.lpBurnReceiver, "remove-burn"));
+
   const removeRes = await step("PoolLiquidityRules_SettleRemoveLiquidity", async () => {
     const tx = await submit([cfg.operator, lpRegistrar], `${RUN}-remove-settle`, [{
       ExerciseCommand: {
@@ -822,14 +939,12 @@ async function main() {
           holderBaseReceiptCid,
           holderQuoteReceiptCid,
           holderBurnSenderCid,
-          baseFactoryCid: regCid,
-          quoteFactoryCid: regCid,
           lpFactoryCid: regCid,
-          baseQuoteSettleCid: regCid,
-          lpSettleCid: regCid,
-          requestedAt: new Date().toISOString(),
-          poolAdminExtraArgs: EXTRA,
-          lpRegistrarExtraArgs: EXTRA,
+          requestedAt: removeRequestedAt,
+          batchesByAdmin: settleAdmins.map((a): [string, RegistryBatchInput] =>
+            [a, { factoryCid: regCid, extraArgs: EXTRA }]),
+          registrarBurnReceiverCid: registrarBurnReceiver,
+          allocationContextByAdmin: [],
         },
       },
     }]);

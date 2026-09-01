@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Pool } from '@/types/contracts';
 import { useSwapQuote } from '@/hooks/useSwapQuote';
 import { ledger } from '@/services/ledger';
+import { instrumentLabel, instrumentKey } from '@/primitives/assets';
 import { useCurrentParty } from '@/wallet/hooks';
 import { useToast } from '@/primitives/ToastProvider';
 
@@ -30,20 +31,28 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
   const [reviewOpen, setReviewOpen] = useState(false);
   const [swapError, setSwapError] = useState<string | null>(null);
 
-  const inputInstrumentId = direction === 'base-to-quote' ? pool.baseInstrumentId : pool.quoteInstrumentId;
-  const outputInstrumentId = direction === 'base-to-quote' ? pool.quoteInstrumentId : pool.baseInstrumentId;
+  // Full instrument identity from the selected direction; the bare id is used
+  // only for display labels and the display quote.
+  const inputInstrument = direction === 'base-to-quote' ? pool.baseInstrumentId : pool.quoteInstrumentId;
+  const outputInstrument = direction === 'base-to-quote' ? pool.quoteInstrumentId : pool.baseInstrumentId;
+  const inputInstrumentId = inputInstrument.id;
+  const outputInstrumentId = outputInstrument.id;
+  const inputLabel = instrumentLabel(inputInstrumentId);
+  const outputLabel = instrumentLabel(outputInstrumentId);
   const parsedInput = parseFloat(inputAmount) || 0;
 
   const { data: quote, isLoading: quoteLoading } = useSwapQuote(
     pool.contractId,
-    inputInstrumentId,
+    inputInstrument,
     parsedInput > 0 ? parsedInput : null,
   );
 
   const outputAmount = quote?.outputAmount ?? 0;
   const minReceived = outputAmount * (1 - slippagePct / 100);
   const rate = parsedInput > 0 && outputAmount > 0 ? outputAmount / parsedInput : 0;
-  const inputBalance = userBalances[inputInstrumentId] ?? 0;
+  // Balances are keyed by full {admin, id} identity so two registries' assets
+  // with the same symbol do not collide.
+  const inputBalance = userBalances[instrumentKey(inputInstrument)] ?? 0;
 
   // Price impact: how far the executed rate is from the pool mid. Constant-
   // product slippage. Mid = reserveOut / reserveIn at the spot before the trade.
@@ -78,7 +87,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
     }
     setSwapError(null);
     setIsSubmitting(true);
-    const label = `Swap ${parsedInput} ${inputInstrumentId} → ${outputInstrumentId}`;
+    const label = `Swap ${parsedInput} ${inputLabel} → ${outputLabel}`;
     let toastId = 0;
     try {
       // Push the toast so the user sees the lifecycle while the wallet
@@ -94,11 +103,10 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
         context,
         pool: {
           contractId: pool.contractId,
-          admin: pool.admin,
           baseInstrumentId: pool.baseInstrumentId,
           quoteInstrumentId: pool.quoteInstrumentId,
         },
-        inputInstrumentId,
+        inputInstrumentId: inputInstrument,
         inputAmount: parsedInput,
         minOutputAmount: minReceived,
         swapperParty: party,
@@ -113,7 +121,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
     } finally {
       setIsSubmitting(false);
     }
-  }, [party, parsedInput, outputAmount, pool, context, inputInstrumentId, outputInstrumentId, minReceived, onSwapComplete, toast, queryClient]);
+  }, [party, parsedInput, outputAmount, pool, context, inputInstrument, inputLabel, outputLabel, minReceived, onSwapComplete, toast, queryClient]);
 
   return (
     <div className="card p-6 max-w-md mx-auto">
@@ -166,11 +174,11 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
             className="flex-1 bg-surface-muted border border-surface-border rounded-sm px-4 py-3 text-text-primary font-mono text-lg focus:outline-none focus:border-[var(--border-strong)]"
           />
           <div className="bg-surface-muted border border-surface-border rounded-sm px-4 py-3 text-text-primary font-mono font-semibold min-w-[100px] text-center">
-            {inputInstrumentId}
+            {inputLabel}
           </div>
         </div>
         <div className="text-text-muted text-xs font-sans mt-1">
-          Balance: {inputBalance.toLocaleString()} {inputInstrumentId}
+          Balance: {inputBalance.toLocaleString()} {inputLabel}
         </div>
       </div>
 
@@ -192,7 +200,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
             {quoteLoading ? '...' : outputAmount > 0 ? `~${outputAmount.toFixed(6)}` : '0.00'}
           </div>
           <div className="bg-surface-muted border border-surface-border rounded-sm px-4 py-3 text-text-primary font-mono font-semibold min-w-[100px] text-center">
-            {outputInstrumentId}
+            {outputLabel}
           </div>
         </div>
       </div>
@@ -203,7 +211,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
           <div className="flex justify-between text-text-secondary">
             <span>Rate</span>
             <span className="font-mono">
-              1 {inputInstrumentId} = {rate.toFixed(6)} {outputInstrumentId}
+              1 {inputLabel} = {rate.toFixed(6)} {outputLabel}
             </span>
           </div>
           <div className="flex justify-between text-text-secondary">
@@ -220,7 +228,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
           </div>
           <div className="flex justify-between text-text-secondary">
             <span>Min received</span>
-            <span className="font-mono">{minReceived.toFixed(6)} {outputInstrumentId}</span>
+            <span className="font-mono">{minReceived.toFixed(6)} {outputLabel}</span>
           </div>
           {impactLevel === 'high' && (
             <div
@@ -318,7 +326,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                       className="mono"
                       style={{ fontSize: 18, fontWeight: 600 }}
                     >
-                      {parsedInput.toFixed(6)} {inputInstrumentId}
+                      {parsedInput.toFixed(6)} {inputLabel}
                     </div>
                   </div>
                   <span style={{ color: 'var(--text-2)' }}>→</span>
@@ -328,7 +336,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                       className="mono"
                       style={{ fontSize: 18, fontWeight: 600 }}
                     >
-                      ~{outputAmount.toFixed(6)} {outputInstrumentId}
+                      ~{outputAmount.toFixed(6)} {outputLabel}
                     </div>
                   </div>
                 </div>
@@ -351,7 +359,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                 <div>
                   ①{' '}
                   <span style={{ color: 'var(--text)' }}>Lock</span>{' '}
-                  {parsedInput.toFixed(6)} {inputInstrumentId} in trader
+                  {parsedInput.toFixed(6)} {inputLabel} in trader
                   Allocation{' '}
                   <span className="alloc-pill">prefunded</span>
                 </div>
@@ -378,9 +386,9 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
               <div className="kv">
                 <span className="k">Rate</span>
                 <span className="v">
-                  1 {inputInstrumentId} ={' '}
+                  1 {inputLabel} ={' '}
                   <span className="num">{rate.toFixed(6)}</span>{' '}
-                  {outputInstrumentId}
+                  {outputLabel}
                 </span>
               </div>
               <div className="kv">
@@ -389,7 +397,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                   <span className="num">
                     {(parsedInput * (pool.feeBps / 10000)).toFixed(6)}
                   </span>{' '}
-                  {inputInstrumentId}
+                  {inputLabel}
                 </span>
               </div>
               <div className="kv">
@@ -406,7 +414,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
                 <span className="k">Min received</span>
                 <span className="v">
                   <span className="num">{minReceived.toFixed(6)}</span>{' '}
-                  {outputInstrumentId}
+                  {outputLabel}
                 </span>
               </div>
 
@@ -455,7 +463,7 @@ export function SwapCard({ pool, userBalances, onSwapComplete }: SwapCardProps) 
 
       {/* Pool info */}
       <div className="mt-4 pt-4 border-t border-surface-border text-xs text-text-muted font-sans">
-        <div>Pool reserves: {pool.reserves.baseAmount.toLocaleString()} {pool.baseInstrumentId} / {pool.reserves.quoteAmount.toLocaleString()} {pool.quoteInstrumentId}</div>
+        <div>Pool reserves: {pool.reserves.baseAmount.toLocaleString()} {instrumentLabel(pool.baseInstrumentId.id)} / {pool.reserves.quoteAmount.toLocaleString()} {instrumentLabel(pool.quoteInstrumentId.id)}</div>
       </div>
     </div>
   );

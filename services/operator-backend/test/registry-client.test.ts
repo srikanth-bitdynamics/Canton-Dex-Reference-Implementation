@@ -44,9 +44,14 @@ describe("RegistryClient operation-specific Token Standard V2 discovery", () => 
       authToken: "registry-token",
       fetchImpl: async (input, init) => {
         calls += 1;
+        // The base-URL path prefix (`/base`) is preserved: registrars mount the
+        // standard endpoints under a prefix (DA Utilities under
+        // /api/token-standard/v0/registrars/<admin>, Splice Scan under
+        // /api/scan), so the endpoint path is appended, not resolved against
+        // the origin.
         assert.equal(
           input.toString(),
-          "https://registry.example/registry/allocation-instruction/v2/allocation-factory",
+          "https://registry.example/base/registry/allocation-instruction/v2/allocation-factory",
         );
         assert.equal(init?.method, "POST");
         assert.equal(

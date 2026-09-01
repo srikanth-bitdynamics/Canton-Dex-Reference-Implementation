@@ -8,7 +8,7 @@
 //   CANTON_OPERATOR      Operator party (DEX market venue).
 //   CANTON_LP_REGISTRAR  LP registrar party.
 //   CANTON_ADMIN         Asset admin party.
-//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex-trading`) for template ids.
+//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex-trading-v2`) for template ids.
 //
 // Defaulted / optional:
 //   CANTON_USER_ID       JSON Ledger API user id (default: ledger-api-user).
@@ -46,11 +46,19 @@ import { openDb } from "./indexer/db.js";
 import { Indexer } from "./indexer/index.js";
 import { IdempotentLedger } from "./indexer/idempotency.js";
 import { DealersService } from "./dealers/index.js";
-import { FixedRegistryClient, RegistryError } from "@canton-dex/registry-client";
+import {
+  FixedRegistryClient,
+  RegistryClient,
+  RegistryError,
+} from "@canton-dex/registry-client";
 import type {
+  ChoiceArguments,
+  ChoiceContextRef,
   ContractId,
+  FactoryChoiceContextRef,
   FactoryRefs,
   Party,
+  RegistryDiscovery,
 } from "@canton-dex/registry-client";
 import { rootLogger } from "./lib/logger.js";
 
@@ -84,6 +92,124 @@ class ConfiguredRegistry extends FixedRegistryClient {
       return factories;
     });
   }
+}
+
+// Routes registry discovery by instrument admin. The DEX's own registrars use
+// their bootstrap-configured factory cids (ConfiguredRegistry); any admin listed
+// in DEX_EXTERNAL_REGISTRIES is discovered live over the CIP-112 registry HTTP
+// API (e.g. USDCx via the DA Utilities registry). External registries return
+// their own choice context and disclosures, which the settlement path threads
+// per admin already.
+class RoutingRegistry implements RegistryDiscovery {
+  constructor(
+    private readonly self: RegistryDiscovery,
+    private readonly external: RegistryDiscovery,
+    private readonly isExternal: (admin: Party) => boolean,
+  ) {}
+
+  private pick(admin: Party): RegistryDiscovery {
+    return this.isExternal(admin) ? this.external : this.self;
+  }
+
+  getAllocationFactory(
+    admin: Party,
+    args: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef> {
+    return this.pick(admin).getAllocationFactory(admin, args);
+  }
+
+  getSettlementFactory(
+    admin: Party,
+    args: ChoiceArguments,
+  ): Promise<FactoryChoiceContextRef> {
+    return this.pick(admin).getSettlementFactory(admin, args);
+  }
+
+  getAllocationCancelContext(
+    admin: Party,
+    allocationId: string,
+    meta?: Record<string, string>,
+  ): Promise<ChoiceContextRef> {
+    return this.pick(admin).getAllocationCancelContext(admin, allocationId, meta);
+  }
+
+  getAllocationWithdrawContext(
+    admin: Party,
+    allocationId: string,
+    meta?: Record<string, string>,
+  ): Promise<ChoiceContextRef> {
+    return this.pick(admin).getAllocationWithdrawContext(admin, allocationId, meta);
+  }
+}
+
+// DEX_EXTERNAL_REGISTRIES = {"<instrument-admin-party>":"<registry-base-url>"}.
+// Maps a third-party instrument admin to the CIP-112 registry HTTP API that
+// serves its factories and choice contexts. Empty/unset keeps every instrument
+// on the bootstrap-configured registrars. Example (USDCx on TestNet): the
+// decentralized-usdc-interchain-rep admin -> the DA Utilities registry URL.
+function externalRegistries(): Map<Party, string> {
+  const raw = process.env.DEX_EXTERNAL_REGISTRIES;
+  if (!raw) return new Map();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    log.error("DEX_EXTERNAL_REGISTRIES is not valid JSON");
+    process.exit(1);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    log.error("DEX_EXTERNAL_REGISTRIES must be a JSON object of admin -> url");
+    process.exit(1);
+  }
+  const map = new Map<Party, string>();
+  for (const [admin, url] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof url !== "string" || !/^https?:\/\//.test(url)) {
+      log.error("DEX_EXTERNAL_REGISTRIES url must be http(s)", { admin });
+      process.exit(1);
+    }
+    map.set(admin, url);
+  }
+  return map;
+}
+
+// Optional Canton Coin / Amulet leg. Amulet's instrument admin is the DSO
+// party, which is not a fixed constant: it is fetched live from the trusted
+// Scan node's /v0/dso-party-id. When DEX_AMULET_SCAN_URL is set, that DSO party
+// is registered as an external registry served under the Scan token-standard
+// mount (default <scan>/api/scan, overridable via DEX_AMULET_REGISTRY_BASE).
+// Fails closed if the lookup does not return a party.
+async function resolveAmuletRegistry(): Promise<
+  { admin: Party; url: string } | null
+> {
+  const scan = process.env.DEX_AMULET_SCAN_URL;
+  if (!scan) return null;
+  const base = scan.replace(/\/+$/, "");
+  const registryBase =
+    process.env.DEX_AMULET_REGISTRY_BASE?.replace(/\/+$/, "") ??
+    `${base}/api/scan`;
+  let dso: string;
+  try {
+    const res = await fetch(`${base}/v0/dso-party-id`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      log.error("dso-party-id lookup failed", { status: res.status });
+      process.exit(1);
+    }
+    const body = (await res.json()) as { dso_party_id?: unknown };
+    if (typeof body.dso_party_id !== "string" || body.dso_party_id.length === 0) {
+      log.error("dso-party-id response missing dso_party_id");
+      process.exit(1);
+    }
+    dso = body.dso_party_id;
+  } catch (e) {
+    log.error("dso-party-id lookup error", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    process.exit(1);
+  }
+  log.info("amulet registry resolved", { dso, registryBase });
+  return { admin: dso, url: registryBase };
 }
 
 async function main(): Promise<void> {
@@ -167,9 +293,40 @@ async function main(): Promise<void> {
   const sweepTimer = setInterval(() => ledger.sweep(), 60 * 60 * 1000);
   if (typeof sweepTimer.unref === "function") sweepTimer.unref();
 
+  const configuredRegistry = new ConfiguredRegistry(factoriesByAdmin);
+  const externalRegistryMap = externalRegistries();
+  const amulet = await resolveAmuletRegistry();
+  if (amulet) externalRegistryMap.set(amulet.admin, amulet.url);
+  const registry: RegistryDiscovery =
+    externalRegistryMap.size === 0
+      ? configuredRegistry
+      : new RoutingRegistry(
+          configuredRegistry,
+          new RegistryClient({
+            baseUrl: (a: Party) => {
+              const url = externalRegistryMap.get(a);
+              if (!url) {
+                throw new RegistryError(
+                  "factory-stale",
+                  `no external registry url for admin=${a}`,
+                  false,
+                );
+              }
+              return url;
+            },
+            authToken: process.env.DEX_EXTERNAL_REGISTRY_TOKEN || undefined,
+          }),
+          (a) => externalRegistryMap.has(a),
+        );
+  if (externalRegistryMap.size > 0) {
+    log.info("external registries enabled", {
+      admins: [...externalRegistryMap.keys()],
+    });
+  }
+
   const backend = new OperatorBackend({
     ledger,
-    registry: new ConfiguredRegistry(factoriesByAdmin),
+    registry,
     operatorParty: operator,
   });
 

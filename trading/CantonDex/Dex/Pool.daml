@@ -38,13 +38,11 @@ template Pool with
     operator : Party
     lpRegistrar : Party
       -- ^ Owns the LP instrument and accepts mint/burn; separate from operator.
-    admin : Party
-      -- ^ Asset admin (registrar) for the base + quote instruments.
-    baseInstrumentId : Text
-      -- ^ `id` component of the base instrument, under `admin` (shared-admin
-      --   convention); the full asset identity is `{ admin, id }`.
-    quoteInstrumentId : Text
-      -- ^ `id` component of the quote instrument, under `admin`.
+    baseInstrumentId : V2.InstrumentId
+      -- ^ Full identity `{ admin, id }` of the base instrument.
+    quoteInstrumentId : V2.InstrumentId
+      -- ^ Full identity `{ admin, id }` of the quote instrument; its admin may
+      --   differ from the base's.
     lpInstrumentId : V2.InstrumentId
       -- ^ Full identity of the LP token instrument (admin = lpRegistrar).
     feeBps : Int
@@ -56,8 +54,8 @@ template Pool with
 
     ensure
       poolId /= ""
-        && baseInstrumentId /= ""
-        && quoteInstrumentId /= ""
+        && baseInstrumentId.id /= ""
+        && quoteInstrumentId.id /= ""
         && baseInstrumentId /= quoteInstrumentId
         && lpInstrumentId.id /= ""
         && lpInstrumentId.admin == lpRegistrar

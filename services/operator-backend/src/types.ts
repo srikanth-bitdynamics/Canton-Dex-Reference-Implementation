@@ -60,6 +60,11 @@ export interface V2SettlementInfo {
   meta: Record<string, string>;
 }
 
+export interface InstrumentId {
+  admin: Party;
+  id: string;
+}
+
 export type Side = "Bid" | "Ask";
 export type OrderStatus = "Pending" | "Funded" | "PartiallyFilled";
 
@@ -67,15 +72,19 @@ export interface Order {
   contractId: ContractId<"Order">;
   operator: Party;
   trader: Party;
-  admin: Party;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   side: Side;
   limitPrice: Decimal;
   remainingQty: Decimal;
   expiry: Time | null;
   status: OrderStatus;
-  allocationCid: ContractId<"Allocation"> | null;
+  // The prefunded allocations backing a Funded order, keyed by instrument
+  // admin: one entry for a single-admin pair, two (lock admin plus counter
+  // admin) when the pair spans two registries. A Pending order has none.
+  // A Daml `Map Party X` is a GenMap, whose JSON encoding is an array of
+  // [admin, cid] pairs.
+  allocationCidsByAdmin: Array<[Party, ContractId<"Allocation">]>;
   settlementRef: V2Reference;
   /**
    * Ledger create time of this contract, stamped from the ACS event rather
@@ -99,20 +108,14 @@ export interface PoolSlice {
   side: "BaseSide" | "QuoteSide";
 }
 
-export interface InstrumentId {
-  admin: Party;
-  id: string;
-}
-
 // Raw on-ledger contract shapes.
 export interface PoolConfigContract {
   contractId: ContractId<"Pool">;
   poolId: string;
   operator: Party;
   lpRegistrar: Party;
-  admin: Party;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   lpInstrumentId: InstrumentId;
   feeBps: number;
 }
@@ -184,9 +187,8 @@ export interface Pool {
   poolLiquidityRulesCid: ContractId<"PoolLiquidityRules"> | null;
   operator: Party;
   lpRegistrar: Party;
-  admin: Party;
-  baseInstrumentId: string;
-  quoteInstrumentId: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   lpInstrumentId: InstrumentId;
   feeBps: number;
   status: PoolStatus;
@@ -214,7 +216,8 @@ export interface Rfq {
   trader: Party;
   operator: Party;
   rfqId: string;
-  pair: string;
+  baseInstrumentId: InstrumentId;
+  quoteInstrumentId: InstrumentId;
   side: RfqSide;
   size: Decimal;
   expiresAt: Time;

@@ -104,7 +104,7 @@ async function queryHoldings(party: string, instrumentId: string) {
                   TemplateFilter: {
                     value: {
                       // Canton 3.5+ requires `#package-name` in query filters.
-                      templateId: `#canton-dex-trading:CantonDex.Registry.V2:Holding`,
+                      templateId: `#canton-dex-trading-v2:CantonDex.Registry.V2:Holding`,
                       includeCreatedEventBlob: false,
                     },
                   },
@@ -214,10 +214,11 @@ async function main() {
       {
         CreateCommand: {
           templateId: tid(cfg.pkgDex, "CantonDex.Dex.MatchedTrade:MatchedTrade"),
+          // Each leg carries its instrument admin, so settlement derives the
+          // per-admin batches from the trade itself.
           createArguments: {
             venue: cfg.venue,
-            admin: cfg.admin,
-            transferLegs: [leg],
+            tradeLegs: [{ admin: cfg.admin, leg }],
             settlementDeadline: null,
             policyReceipt: null,
           },
@@ -239,21 +240,14 @@ async function main() {
         },
       },
     ]);
-    // TradeAllocationRequest carries bidirectional TransferLegs;
-    // AllocationSpecification expects one-sided TransferLegSides.
-    type Leg = { transferLegId: string; sender: { owner: string }; receiver: { owner: string }; amount: string; instrumentId: string; meta: unknown };
-    const legToSide = (authorizer: string, leg: Leg) =>
-      leg.sender.owner === authorizer
-        ? { transferLegId: leg.transferLegId, side: "SenderSide", otherside: leg.receiver, amount: leg.amount, instrumentId: leg.instrumentId, meta: leg.meta }
-        : { transferLegId: leg.transferLegId, side: "ReceiverSide", otherside: leg.sender, amount: leg.amount, instrumentId: leg.instrumentId, meta: leg.meta };
+    // Each TradeAllocationRequest carries one AllocationSpecification per
+    // (authorizer, admin) — a single-admin trade has one — so the wallet
+    // authors the request's spec directly instead of rebuilding it from legs.
+    type Spec = { admin: string; authorizer: { owner: string }; transferLegSides: unknown[] };
     return findCreates(tx, "CantonDex.Dex.MatchedTrade:TradeAllocationRequest").map((c) => {
-      const args = c.createArgument as { authorizer: { owner: string }; settlement: unknown; transferLegs: Leg[] };
-      return {
-        cid: c.contractId,
-        authorizerOwner: args.authorizer.owner,
-        settlement: args.settlement,
-        transferLegSides: args.transferLegs.map((l) => legToSide(args.authorizer.owner, l)),
-      };
+      const args = c.createArgument as { settlement: unknown; allocations: Spec[] };
+      const spec = args.allocations[0]!;
+      return { cid: c.contractId, authorizerOwner: spec.authorizer.owner, settlement: args.settlement, spec };
     });
   });
   const aliceReq = reqInfos.find((r) => r.authorizerOwner === cfg.alice)!;
@@ -261,15 +255,6 @@ async function main() {
 
   // Alice accepts and allocates her side (coverage-enforced by the factory).
   const aliceAllocCid = await step("alice: Accept + AllocationFactory_Allocate (coverage check)", async () => {
-    const allocSpec = {
-      settlement: aliceReq.settlement,
-      admin: cfg.admin,
-      transferLegSides: aliceReq.transferLegSides,
-      nextIterationFunding: null,
-      committed: false,
-      authorizer: basicAccount(cfg.alice),
-      meta: { values: {} },
-    };
     const tx = await submit([cfg.alice, cfg.admin], `${RUN_ID}-alice-accept`, [
       {
         ExerciseCommand: {
@@ -285,7 +270,8 @@ async function main() {
           contractId: registryCid,
           choice: "AllocationFactory_Allocate",
           choiceArgument: {
-            allocation: allocSpec,
+            settlement: aliceReq.settlement,
+            allocation: aliceReq.spec,
             requestedAt: "1970-01-01T00:00:00Z",
             inputHoldingCids: [aliceHoldingCid],
             extraArgs: EMPTY_EXTRA,
@@ -299,15 +285,6 @@ async function main() {
 
   // Bob accepts and allocates his side (receipt; no holdings locked).
   const bobAllocCid = await step("bob: Accept + AllocationFactory_Allocate (receipt)", async () => {
-    const allocSpec = {
-      settlement: bobReq.settlement,
-      admin: cfg.admin,
-      transferLegSides: bobReq.transferLegSides,
-      nextIterationFunding: null,
-      committed: false,
-      authorizer: basicAccount(cfg.bob),
-      meta: { values: {} },
-    };
     const tx = await submit([cfg.bob, cfg.admin], `${RUN_ID}-bob-accept`, [
       {
         ExerciseCommand: {
@@ -323,7 +300,8 @@ async function main() {
           contractId: registryCid,
           choice: "AllocationFactory_Allocate",
           choiceArgument: {
-            allocation: allocSpec,
+            settlement: bobReq.settlement,
+            allocation: bobReq.spec,
             requestedAt: "1970-01-01T00:00:00Z",
             inputHoldingCids: [],
             extraArgs: EMPTY_EXTRA,
@@ -344,11 +322,12 @@ async function main() {
           contractId: tradeCid,
           choice: "MatchedTrade_Settle",
           choiceArgument: {
+            // The trade owns the legs; a batch carries only its finalized
+            // allocations plus the factory and context for that admin.
             batchesByAdmin: [
               [
                 cfg.admin,
                 {
-                  transferLegs: [leg],
                   allocations: [
                     { allocationCid: aliceAllocCid, extraTransferLegSides: [], nextIterationFunding: null },
                     { allocationCid: bobAllocCid, extraTransferLegSides: [], nextIterationFunding: null },

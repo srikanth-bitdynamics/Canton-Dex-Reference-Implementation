@@ -5,7 +5,7 @@
 //
 // `usePrices` returns prices for a set of trading pairs.
 // `useAssetPriceUsd` is the common case: USD price of one symbol
-// (anchored on `${sym}/USDC`; USDC itself = 1).
+// (anchored on `${sym}/USDCx`; USDCx itself = 1).
 
 import { useQuery } from '@tanstack/react-query';
 
@@ -47,8 +47,8 @@ export function usePrices(pairs: string[]) {
 }
 
 /**
- * USD price lookup helper. Anchored on `<sym>/USDC` per the same
- * convention used by the backend pricing service. USDC is 1.0 by
+ * USD price lookup helper. Anchored on `<sym>/USDCx` per the same
+ * convention used by the backend pricing service. USDCx is 1.0 by
  * definition; everything else queries the live price endpoint.
  *
  * Returns `null` when no source has a price for the symbol — callers
@@ -58,12 +58,12 @@ export function useAssetPricesUsd(symbols: string[]): {
   prices: Record<string, number | null>;
   loading: boolean;
 } {
-  const needed = [...new Set(symbols.filter((s) => s !== 'USDC'))];
-  const pairs = needed.map((s) => `${s}/USDC`);
+  const needed = [...new Set(symbols.filter((s) => s !== 'USDCx'))];
+  const pairs = needed.map((s) => `${s}/USDCx`);
   const { data, isLoading } = usePrices(pairs);
-  const out: Record<string, number | null> = { USDC: 1 };
+  const out: Record<string, number | null> = { USDCx: 1 };
   for (const sym of needed) {
-    const p = data?.[`${sym}/USDC`];
+    const p = data?.[`${sym}/USDCx`];
     out[sym] = typeof p === 'number' ? p : null;
   }
   return { prices: out, loading: isLoading };

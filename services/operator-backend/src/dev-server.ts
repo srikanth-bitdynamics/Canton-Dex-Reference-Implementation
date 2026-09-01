@@ -4,7 +4,7 @@
 // participant running.
 //
 // Scope:
-//   - Seeds: one DexPair (BTC/USDC), one Pool (BTC/USDC, Active, two
+//   - Seeds: one DexPair (Amulet/USDCx), one Pool (Amulet/USDCx, Active, two
 //     slices per side), some Holdings for a demo trader.
 //   - Registers ledger choice handlers needed by the HTTP endpoints the
 //     dApp calls today (PoolRules_Swap, the DvP add/remove settles,
@@ -23,10 +23,21 @@ import { FixedRegistryClient } from "@canton-dex/registry-client";
 import type {
   ContractId,
   Decimal,
+  InstrumentId,
   Party,
   Pool,
   PoolSlice,
 } from "./types.js";
+
+// === Demo instrument identities ==============================================
+// The only place the dev-server names an asset. Base and quote share one demo
+// admin until cross-admin settlement lands; the LP admin is the lpRegistrar.
+const DEMO_ADMIN: Party = "admin-demo";
+const DEMO_LP_REGISTRAR: Party = "lp-registrar-demo";
+const DEMO_BASE_INSTRUMENT: InstrumentId = { admin: DEMO_ADMIN, id: "Amulet" };
+const DEMO_QUOTE_INSTRUMENT: InstrumentId = { admin: DEMO_ADMIN, id: "USDCx" };
+const DEMO_LP_INSTRUMENT: InstrumentId = { admin: DEMO_LP_REGISTRAR, id: "Amulet-USDCx-LP" };
+const DEMO_POOL_ID = `${DEMO_BASE_INSTRUMENT.id}-${DEMO_QUOTE_INSTRUMENT.id}`;
 
 // Stub registry that returns canned factory CIDs for any admin party.
 class StubRegistry extends FixedRegistryClient {
@@ -91,7 +102,7 @@ function registerHandlers(
       outputSliceCids: string[];
     };
     const cfg = ctx.acs.get(arg.poolCid)?.payload as
-      | { baseInstrumentId: string; feeBps: number }
+      | { baseInstrumentId: InstrumentId; feeBps: number }
       | undefined;
     const stateEntry = ctx.acs.get(arg.poolStateCid);
     const state = stateEntry?.payload as
@@ -99,7 +110,7 @@ function registerHandlers(
       | undefined;
     if (!cfg || !state) throw new Error("dev-mock: pool config/state not found");
 
-    const isBaseIn = arg.inputInstrumentId === cfg.baseInstrumentId;
+    const isBaseIn = arg.inputInstrumentId === cfg.baseInstrumentId.id;
     const reserveIn = parseFloat(isBaseIn ? state.reserves.baseAmount : state.reserves.quoteAmount);
     const reserveOut = parseFloat(isBaseIn ? state.reserves.quoteAmount : state.reserves.baseAmount);
     const feeMul = (10000 - cfg.feeBps) / 10000;
@@ -207,18 +218,17 @@ async function seed(
   admin: Party,
   trader: Party,
 ): Promise<void> {
-  // DexPair BTC/USDC.
+  // DexPair Amulet/USDCx.
   await ledger.submit({
     actAs: [operator],
-    commandId: "seed-pair-btcusdc",
+    commandId: "seed-pair-amulet-usdcx",
     command: {
       kind: "create",
       templateId: "CantonDex.Dex.DexPair:DexPair",
       argument: {
         operator,
-        admin,
-        baseInstrumentId: "BTC",
-        quoteInstrumentId: "USDC",
+        baseInstrumentId: DEMO_BASE_INSTRUMENT,
+        quoteInstrumentId: DEMO_QUOTE_INSTRUMENT,
         tradingMode: "TM_Both",
         feeModel: { makerFeeBps: 10, takerFeeBps: 30, poolFeeBps: 30 },
         active: true,
@@ -232,10 +242,10 @@ async function seed(
   // Pool: immutable config + Active state + two slices
   // per side (one big + one small, so the UI shows the slice count) + the
   // per-venue rules contract.
-  const poolId = "BTC-USDC";
+  const poolId = DEMO_POOL_ID;
   await ledger.submit({
     actAs: [operator],
-    commandId: "seed-pool-btcusdc",
+    commandId: "seed-pool-amulet-usdcx",
     command: {
       kind: "create",
       templateId: "CantonDex.Dex.Pool:Pool",
@@ -243,17 +253,16 @@ async function seed(
         poolId,
         operator,
         lpRegistrar,
-        admin,
-        baseInstrumentId: "BTC",
-        quoteInstrumentId: "USDC",
-        lpInstrumentId: { admin: lpRegistrar, id: "BTC-USDC-LP" },
+        baseInstrumentId: DEMO_BASE_INSTRUMENT,
+        quoteInstrumentId: DEMO_QUOTE_INSTRUMENT,
+        lpInstrumentId: DEMO_LP_INSTRUMENT,
         feeBps: 30,
       },
     },
   });
   await ledger.submit({
     actAs: [operator],
-    commandId: "seed-pool-state-btcusdc",
+    commandId: "seed-pool-state-amulet-usdcx",
     command: {
       kind: "create",
       templateId: "CantonDex.Dex.PoolState:PoolState",
@@ -312,14 +321,14 @@ async function seed(
   // lpInstrumentId + lpRegistrar.
   await ledger.submit({
     actAs: [lpRegistrar],
-    commandId: "seed-lp-policy-btcusdc",
+    commandId: "seed-lp-policy-amulet-usdcx",
     command: {
       kind: "create",
       templateId: "CantonDex.Lp.Policy:LPTokenPolicy",
       argument: {
         lpRegistrar,
         operator,
-        lpInstrumentId: { admin: lpRegistrar, id: "BTC-USDC-LP" },
+        lpInstrumentId: DEMO_LP_INSTRUMENT,
         totalSupply: "1414.2135623731",
         active: true,
       },
@@ -328,8 +337,8 @@ async function seed(
 
   // A few holdings for the demo trader.
   for (const [instrumentId, amount] of [
-    ["USDC", "5000.0000000000"],
-    ["BTC", "0.2500000000"],
+    [DEMO_QUOTE_INSTRUMENT.id, "5000.0000000000"],
+    [DEMO_BASE_INSTRUMENT.id, "0.2500000000"],
   ]) {
     await ledger.submit({
       actAs: [admin],
@@ -351,8 +360,8 @@ async function seed(
 
 async function main(): Promise<void> {
   const operator: Party = "operator-demo";
-  const lpRegistrar: Party = "lp-registrar-demo";
-  const admin: Party = "admin-demo";
+  const lpRegistrar: Party = DEMO_LP_REGISTRAR;
+  const admin: Party = DEMO_ADMIN;
   const trader: Party = "trader-demo";
 
   const ledger = new InMemoryLedger();

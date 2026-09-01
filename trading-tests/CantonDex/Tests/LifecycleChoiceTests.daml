@@ -8,6 +8,7 @@ module CantonDex.Tests.LifecycleChoiceTests where
 
 import DA.Assert
 import DA.Foldable (forA_)
+import DA.Map qualified as Map
 import DA.Optional (fromSome, isNone)
 import DA.TextMap qualified as TextMap
 import DA.Time (addRelTime, hours)
@@ -16,6 +17,7 @@ import Daml.Script
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
 import Splice.Api.Token.HoldingV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.MetadataV1
 import Splice.Testing.Utils (emptyExtraArgs)
 
@@ -65,9 +67,8 @@ createOrderRequest operator trader admin label =
   submit trader $ createCmd OFR.OrderFundingRequest with
     operator
     trader
-    admin
-    baseInstrumentId = "BTC"
-    quoteInstrumentId = "USDC"
+    baseInstrumentId = HoldingV2.InstrumentId with admin; id = "BTC"
+    quoteInstrumentId = HoldingV2.InstrumentId with admin; id = "USDC"
     side = Order.Bid
     limitPrice = 10.0
     quantity = 2.0
@@ -138,16 +139,17 @@ testOrderCancelReleasesRealFunding = do
   holdingCid <- mintHolding admin trader "USDC" allocationRequest.lockAmount
   let settlement = fromSome allocationRequest.allocationSettlement
       specification = Order.orderFundingSpecification
-        admin trader allocationRequest.lockInstrumentId allocationRequest.lockAmount
+        allocationRequest.lockInstrumentId trader allocationRequest.lockAmount
         allocationRequest.expiry
   allocationCid <- allocate registryCid trader settlement specification
     [toInterfaceContractId holdingCid] now
   funded <- submit operator $ exerciseCmd bound.orderCid Order.Order_Fund with
-    allocationCid
+    allocationCids = [allocationCid]
     allocationRequestCid = Some bound.allocationRequestCid
 
   result <- submit (actAs [operator] <> readAs [admin]) $
-    exerciseCmd funded.orderCid Order.Order_Cancel with extraArgs = emptyExtraArgs
+    exerciseCmd funded.orderCid Order.Order_Cancel with
+      extraArgsByAdmin = Map.fromList [(admin, emptyExtraArgs)]
   assertMsg "cancel returns the released holding ids"
     (not (TextMap.null result.releasedHoldings))
   None <- queryContractId operator funded.orderCid
@@ -183,8 +185,7 @@ testMatchedTradeCancelReleasesRealFunding = do
         meta = emptyMetadata
   tradeCid <- submit operator $ createCmd MT.MatchedTrade with
     venue = operator
-    admin
-    transferLegs = [leg]
+    tradeLegs = [MT.TradeLeg with admin; leg]
     settlementDeadline = None
     policyReceipt = None
   requestCids <- submit operator $
@@ -192,15 +193,10 @@ testMatchedTradeCancelReleasesRealFunding = do
 
   allocationCids <- forA requestCids $ \requestCid -> do
     Some request <- queryContractId operator requestCid
-    let party = fromSome request.authorizer.owner
-        specification = V2.AllocationSpecification with
-          admin
-          authorizer = request.authorizer
-          transferLegSides = Utils.legsToSides request.authorizer request.transferLegs
-          settlementDeadline = request.settlementDeadline
-          nextIterationFunding = None
-          committed = False
-          meta = emptyMetadata
+    specification <- case request.allocations of
+      [spec] -> pure spec
+      _ -> abort "expected one allocation specification per request"
+    let party = fromSome specification.authorizer.owner
         inputs = if party == alice then [toInterfaceContractId aliceHolding] else []
     allocate registryCid party request.settlement specification inputs now
 
@@ -234,7 +230,8 @@ testRfqCancelAndQuoteWithdrawAuthority = do
     trader
     operator
     rfqId = "rfq-cancel"
-    pair = "BTC/USDC"
+    baseInstrumentId = HoldingV2.InstrumentId with admin = operator; id = "BTC"
+    quoteInstrumentId = HoldingV2.InstrumentId with admin = operator; id = "USDC"
     side = Rfq.RFQ_Buy
     size = 1.0
     expiresAt
@@ -282,10 +279,8 @@ testOrderMatchExecutionAbort = do
       fillPrice = 100.0
     buyOrderCid = placeholderOrderCid
     sellOrderCid = placeholderOrderCid
-    buyerAllocationCid = placeholderAllocationCid
-    sellerAllocationCid = placeholderAllocationCid
-    buyerCommittedFunding = TextMap.empty
-    sellerCommittedFunding = TextMap.empty
+    buyerAllocationCidsByAdmin = Map.fromList [(admin, placeholderAllocationCid)]
+    sellerAllocationCidsByAdmin = Map.fromList [(admin, placeholderAllocationCid)]
 
   submitMustFail buyer $ exerciseCmd executionCid OME.OrderMatchExecution_Abort
   submit operator $ exerciseCmd executionCid OME.OrderMatchExecution_Abort

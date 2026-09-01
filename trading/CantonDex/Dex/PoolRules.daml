@@ -5,6 +5,7 @@ module CantonDex.Dex.PoolRules where
 
 import DA.Foldable (forA_)
 import DA.List (dedup)
+import DA.Map qualified as Map
 import DA.Optional (fromSomeNote)
 import DA.TextMap qualified as TextMap
 
@@ -17,7 +18,9 @@ import CantonDex.Dex.PoolState
 import CantonDex.Dex.PoolSlice
 import CantonDex.Dex.PoolModel
 import CantonDex.Dex.PoolExecution qualified as PE
+import CantonDex.Dex.SwapAllocationRequest qualified as SwapReq
 import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.AdminBatch qualified as AB
 
 -- Results -----------------------------------------------------------------
 
@@ -26,17 +29,21 @@ data PoolRules_SwapResult = PoolRules_SwapResult with
     inputSliceCid : ContractId PoolSlice
     boundaryOutputSliceCid : Optional (ContractId PoolSlice)
     outputSlicesConsumed : Int
-    settleResult : V2.SettlementFactory_SettleBatchResult
+    settleResultsByAdmin : Map.Map Party V2.SettlementFactory_SettleBatchResult
     amountOut : Decimal
   deriving (Eq, Show)
 
--- The settlement descriptor + the swapper's exact two-sided spec the wallet
--- must author before a swap can settle. Returned by PoolRules_RequestSwap so
--- the spec is Daml-built (matching what PoolRules_Swap settles against) rather
--- than reconstructed off-ledger.
+-- The settlement descriptor + the swapper's exact per-admin specs the wallet
+-- must author before a swap can settle, plus the on-ledger request carrying
+-- them. Returned by PoolRules_RequestSwap so the specs are Daml-built (matching
+-- what PoolRules_Swap settles against) rather than reconstructed off-ledger.
+-- One spec per (swapper, admin): the swap-in under the input instrument's
+-- admin, the swap-out receipt under the output's; a single-admin swap collapses
+-- to one combined spec.
 data PoolRules_RequestSwapResult = PoolRules_RequestSwapResult with
     settlement : V2.SettlementInfo
-    allocationSpec : V2.AllocationSpecification
+    allocationSpecs : [V2.AllocationSpecification]
+    swapRequestCid : ContractId SwapReq.SwapAllocationRequest
     quoteBinding : Optional SwapQuoteBinding
   deriving (Eq, Show)
 
@@ -57,6 +64,8 @@ data PreparedSwap = PreparedSwap with
     preparedState : PoolState
     preparedInputSlice : PoolSlice
     preparedInputIsBase : Bool
+    preparedInputAdmin : Party
+    preparedOutputAdmin : Party
     preparedAmountOut : Decimal
     preparedDraw : SliceDraw
     preparedSwapInLeg : V2.TransferLeg
@@ -66,7 +75,7 @@ prepareSwap
   : Party
   -> ContractId Pool
   -> V2.Account
-  -> Text
+  -> V2.InstrumentId
   -> Decimal
   -> SwapQuoteBinding
   -> Update PreparedSwap
@@ -74,19 +83,22 @@ prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount bindin
   (pool, state) <- fetchPoolContext
     operator binding.expectedPoolId poolCid binding.poolStateCid
   assertMsg "Pool must be Active" (state.status == PS_Active)
-  assertMsg "inputInstrumentId is not a pool instrument"
-    (inputInstrumentId == pool.baseInstrumentId
-      || inputInstrumentId == pool.quoteInstrumentId)
+  -- Decide the swap side by FULL instrument identity, not the bare text id: two
+  -- registries may both issue an asset called "USD", so a pool with base
+  -- {adminA,"USD"} and quote {adminB,"USD"} shares an id across sides. Matching
+  -- on id alone would treat either input as base and route the swap backwards.
+  let inputIsBase = inputInstrumentId == pool.baseInstrumentId
+      inputIsQuote = inputInstrumentId == pool.quoteInstrumentId
+  assertMsg "inputInstrumentId is not a pool instrument" (inputIsBase || inputIsQuote)
   assertMsg "inputAmount must be positive" (inputAmount > 0.0)
   assertMsg "minOutputAmount must be non-negative" (binding.minOutputAmount >= 0.0)
   assertMsg "Swap needs at least one output slice" (not (null binding.outputSliceCids))
   assertMsg "Swap output slices must be unique"
     (length (dedup binding.outputSliceCids) == length binding.outputSliceCids)
 
-  let inputIsBase = inputInstrumentId == pool.baseInstrumentId
-      inputSide = if inputIsBase then BaseSide else QuoteSide
+  let inputSide = if inputIsBase then BaseSide else QuoteSide
       outputSide = if inputIsBase then QuoteSide else BaseSide
-      outputInstrumentId = if inputIsBase then pool.quoteInstrumentId else pool.baseInstrumentId
+      outputInstrumentId = if inputIsBase then pool.quoteInstrumentId.id else pool.baseInstrumentId.id
       (reserveIn, reserveOut) =
         if inputIsBase then (state.reserves.baseAmount, state.reserves.quoteAmount)
         else (state.reserves.quoteAmount, state.reserves.baseAmount)
@@ -115,7 +127,7 @@ prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount bindin
       swapInLeg = V2.TransferLeg with
         transferLegId = "swap-in"
         sender = swapperAccount; receiver = poolAccount
-        amount = inputAmount; instrumentId = inputInstrumentId
+        amount = inputAmount; instrumentId = inputInstrumentId.id
         meta = emptyMetadata
       outputDelivery =
         PE.buildSideDelivery "swap-out-" poolAccount swapperAccount outputInstrumentId draw
@@ -124,6 +136,8 @@ prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount bindin
     preparedState = state
     preparedInputSlice = inputSlice
     preparedInputIsBase = inputIsBase
+    preparedInputAdmin = if inputIsBase then pool.baseInstrumentId.admin else pool.quoteInstrumentId.admin
+    preparedOutputAdmin = if inputIsBase then pool.quoteInstrumentId.admin else pool.baseInstrumentId.admin
     preparedAmountOut = amountOut
     preparedDraw = draw
     preparedSwapInLeg = swapInLeg
@@ -135,7 +149,7 @@ prepareBoundSwap
   -> ContractId Pool
   -> ContractId PoolState
   -> V2.Account
-  -> Text
+  -> V2.InstrumentId
   -> Decimal
   -> Decimal
   -> ContractId PoolSlice
@@ -154,29 +168,51 @@ prepareBoundSwap
   assertMsg "Swap quote slippage minimum mismatch" (minOutputAmount == binding.minOutputAmount)
   prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount binding
 
-swapSettlementArguments
-  : Party
-  -> ContractId Pool
-  -> ContractId V2.Allocation
-  -> PreparedSwap
-  -> ExtraArgs
-  -> V2.SettlementFactory_SettleBatch
-swapSettlementArguments operator poolCid swapperAllocationCid prepared extraArgs =
-  let poolAccount = Utils.basicAccount operator
+-- The swapper's per-admin allocation specifications: the swap-in leg under the
+-- input instrument's admin, the swap-out legs under the output instrument's. A
+-- single-admin swap collapses to one combined specification, keeping the
+-- single-allocation wallet flow.
+swapperAllocationSpecs : PreparedSwap -> [V2.AllocationSpecification]
+swapperAllocationSpecs prepared =
+  let swapperAccount = prepared.preparedSwapInLeg.sender
+      swapInLeg = prepared.preparedSwapInLeg
+      outputLegs = prepared.preparedOutputDelivery.legs
+      spec admin legs =
+        Utils.mkIteratedAllocationSpecification admin swapperAccount None legs None False
+  in if prepared.preparedInputAdmin == prepared.preparedOutputAdmin
+       then [spec prepared.preparedInputAdmin (swapInLeg :: outputLegs)]
+       else [ spec prepared.preparedInputAdmin [swapInLeg]
+            , spec prepared.preparedOutputAdmin outputLegs ]
+
+-- Group the swap legs and allocations by admin: the swap-in leg and the pool's
+-- input-slice roll-forward under the input instrument's admin; the output
+-- delivery under the output instrument's admin. Each swapper allocation is
+-- placed under its own admin. A single-admin swap collapses to one batch that
+-- carries the swapper's single two-sided allocation exactly once.
+swapFragments
+  : PreparedSwap
+  -> Map.Map Party (ContractId V2.Allocation)
+  -> Map.Map Party AB.AdminFragment
+swapFragments prepared swapperAllocationCidsByAdmin =
+  let poolAccount = prepared.preparedSwapInLeg.receiver
       inputSlice = prepared.preparedInputSlice
       inputInstrumentId = prepared.preparedSwapInLeg.instrumentId
       inputAmount = prepared.preparedSwapInLeg.amount
-      swapperFinalized = Utils.finalAllocation swapperAllocationCid
       inputFinalized = Utils.mkFinalizedAllocation inputSlice.allocationCid
         (Utils.legsToSides poolAccount [prepared.preparedSwapInLeg])
         (Some (TextMap.fromList [(inputInstrumentId, inputSlice.amount + inputAmount)]))
-  in V2.SettlementFactory_SettleBatch with
-      settlement = poolSettlement poolCid operator
-      transferLegs = prepared.preparedSwapInLeg :: prepared.preparedOutputDelivery.legs
-      allocations =
-        swapperFinalized :: inputFinalized :: prepared.preparedOutputDelivery.sliceFinalizeds
-      actors = [operator]
-      extraArgs
+      swapperEntries =
+        [ (admin, AB.AdminFragment [] [Utils.finalAllocation cid])
+        | (admin, cid) <- Map.toList swapperAllocationCidsByAdmin ]
+      inputEntry =
+        ( prepared.preparedInputAdmin
+        , AB.AdminFragment [prepared.preparedSwapInLeg] [inputFinalized] )
+      outputEntry =
+        ( prepared.preparedOutputAdmin
+        , AB.AdminFragment
+            prepared.preparedOutputDelivery.legs
+            prepared.preparedOutputDelivery.sliceFinalizeds )
+  in AB.groupByAdmin (swapperEntries ++ [inputEntry, outputEntry])
 
 -- Result of PoolRules_ReconcileState: the audited slice totals.
 data PoolRules_ReconcileResult = PoolRules_ReconcileResult with
@@ -195,47 +231,46 @@ template PoolRules with
   where
     signatory operator
 
-    -- Build the exact two-sided allocation the wallet authorizes. The trader
-    -- signs both the input and every output leg against one pool snapshot;
-    -- PoolRules_Swap cannot add or alter trader legs during settlement.
+    -- Build the exact per-admin allocations the wallet authorizes and the
+    -- request that carries them. The trader signs both the input and every
+    -- output leg against one pool snapshot; PoolRules_Swap cannot add or alter
+    -- trader legs during settlement.
     nonconsuming choice PoolRules_RequestSwap : PoolRules_RequestSwapResult
       with
         poolCid : ContractId Pool
         swapper : Party
-        inputInstrumentId : Text
+        inputInstrumentId : V2.InstrumentId
         inputAmount : Decimal
+        requestedAt : Time
+        settleAt : Optional Time
         quoteBinding : Optional SwapQuoteBinding
       controller operator
       do
         let swapperAccount = Utils.basicAccount swapper
             binding = fromSomeNote "PoolRules_RequestSwap: quoteBinding is required" quoteBinding
         prepared <- prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount binding
-        let pool = prepared.preparedPool
-            settlement = poolSettlement poolCid operator
-            allocationSpec =
-              Utils.mkIteratedAllocationSpecification
-                pool.admin
-                swapperAccount
-                None
-                (prepared.preparedSwapInLeg :: prepared.preparedOutputDelivery.legs)
-                None
-                False
-        pure PoolRules_RequestSwapResult with settlement; allocationSpec; quoteBinding
+        let settlement = poolSettlement poolCid operator
+            allocationSpecs = swapperAllocationSpecs prepared
+        swapRequestCid <- create SwapReq.SwapAllocationRequest with
+          operator; swapper; settlement; allocations = allocationSpecs; requestedAt; settleAt
+        pure PoolRules_RequestSwapResult with
+          settlement; allocationSpecs; swapRequestCid; quoteBinding
 
-    -- Return the exact SettleBatch argument used by `PoolRules_Swap`. The
-    -- backend sends this value to the instrument registry's canonical
-    -- settlement-factory endpoint, then supplies the returned factory and
-    -- choice context to the real swap.
-    nonconsuming choice PoolRules_PreviewSwapSettlement : V2.SettlementFactory_SettleBatch
+    -- Return the exact per-admin SettleBatch arguments used by `PoolRules_Swap`.
+    -- The backend sends each admin's value to that registry's canonical
+    -- settlement-factory endpoint, then supplies the returned factory and choice
+    -- context to the real swap.
+    nonconsuming choice PoolRules_PreviewSwapSettlement
+      : Map.Map Party V2.SettlementFactory_SettleBatch
       with
         expectedPoolId : PoolId
         poolCid : ContractId Pool
         poolStateCid : ContractId PoolState
         swapperAccount : V2.Account
-        inputInstrumentId : Text
+        inputInstrumentId : V2.InstrumentId
         inputAmount : Decimal
         minOutputAmount : Decimal
-        swapperAllocationCid : ContractId V2.Allocation
+        swapperAllocationCidsByAdmin : Map.Map Party (ContractId V2.Allocation)
         inputSliceCid : ContractId PoolSlice
         outputSliceCids : [ContractId PoolSlice]
         quoteBinding : Optional SwapQuoteBinding
@@ -245,8 +280,8 @@ template PoolRules with
           operator expectedPoolId poolCid poolStateCid swapperAccount
           inputInstrumentId inputAmount minOutputAmount inputSliceCid
           outputSliceCids quoteBinding
-        pure $ swapSettlementArguments
-          operator poolCid swapperAllocationCid prepared Utils.emptyExtraArgs
+        let grouped = swapFragments prepared swapperAllocationCidsByAdmin
+        pure $ AB.previewByAdmin (poolSettlement poolCid operator) [operator] grouped
 
     -- Constant-product swap (multi-slice): prices against global reserves,
     -- sources amountOut from an ordered output-slice prefix (draining full
@@ -257,14 +292,16 @@ template PoolRules with
         poolCid : ContractId Pool
         poolStateCid : ContractId PoolState
         swapperAccount : V2.Account
-        inputInstrumentId : Text
+        inputInstrumentId : V2.InstrumentId
         inputAmount : Decimal
         minOutputAmount : Decimal
-        swapperAllocationCid : ContractId V2.Allocation
+        swapperAllocationCidsByAdmin : Map.Map Party (ContractId V2.Allocation)
+          -- ^ The swapper's allocation per admin: one entry for a single-admin
+          --   swap, two (input admin + output admin) for a cross-admin swap.
         inputSliceCid : ContractId PoolSlice
         outputSliceCids : [ContractId PoolSlice]
-        factoryCid : ContractId V2.SettlementFactory
-        extraArgs : ExtraArgs
+        batchesByAdmin : Map.Map Party AB.RegistryBatchInput
+        swapAllocationRequestCids : [ContractId SwapReq.SwapAllocationRequest]
         quoteBinding : Optional SwapQuoteBinding
       controller operator
       do
@@ -276,50 +313,61 @@ template PoolRules with
             state = prepared.preparedState
             inputSlice = prepared.preparedInputSlice
             inputIsBase = prepared.preparedInputIsBase
+            inputAdmin = prepared.preparedInputAdmin
+            outputAdmin = prepared.preparedOutputAdmin
             amountOut = prepared.preparedAmountOut
-            swapInLeg = prepared.preparedSwapInLeg
             outDel = prepared.preparedOutputDelivery
             draw = prepared.preparedDraw
-            settlementArgs = swapSettlementArguments
-              operator poolCid swapperAllocationCid prepared extraArgs
 
+        -- The swapper allocates one side per admin (both under one admin when
+        -- input and output share a registry). Derive the expected admins from
+        -- the pool and reject a swapper allocation the swap does not need.
+        let expectedSwapperAdmins = dedup [inputAdmin, outputAdmin]
+        forA_ (Map.keys swapperAllocationCidsByAdmin) $ \a ->
+          assertMsg ("swap: unexpected swapper allocation admin " <> show a)
+            (a `elem` expectedSwapperAdmins)
+        forA_ expectedSwapperAdmins $ \a ->
+          assertMsg ("swap: missing swapper allocation for admin " <> show a)
+            (Map.member a swapperAllocationCidsByAdmin)
+
+        forA_ swapAllocationRequestCids $ \reqCid -> do
+          fetch reqCid
+          archive reqCid
+
+        let grouped = swapFragments prepared swapperAllocationCidsByAdmin
         -- The trader authored every leg side, so settlement cannot add or
         -- alter trader authority here. Pool allocations still roll forward.
-        settleResult <- exercise factoryCid settlementArgs
+        settleResultsByAdmin <-
+          AB.settleByAdmin (poolSettlement poolCid operator) [operator] grouped batchesByAdmin
 
-        let nextIterCids = Utils.nextIterationAllocationCids settleResult
-        -- SettleBatch order: [swapper, input, fully…, boundary?]. Guard the
-        -- positional reads against future leg-ordering changes.
-        let boundaryCount = case draw.boundary of Some _ -> 1; None -> 0
-        assertMsg "swap: unexpected next-iteration allocation count"
-          (length nextIterCids == 2 + length draw.fullyConsumed + boundaryCount)
-        let inputNextCid = case nextIterCids of
-              (_ :: Some inNext :: _) -> inNext
-              _ -> error "swap: pool input slice must produce a next-iteration allocation"
+        inputNextCid <- AB.requiredNextIteration
+          grouped settleResultsByAdmin inputAdmin inputSlice.allocationCid
 
         forA_ outDel.drainedSliceCids archive
 
         archive inputSliceCid
+        validateSliceAllocation inputNextCid inputSlice.instrumentId
         newInputSliceCid <- create inputSlice with
           allocationCid = inputNextCid
           amount = inputSlice.amount + inputAmount
 
-        -- Re-wrap the boundary output slice with its leftover. The shared
-        -- assembly hands back (cid, leftover); rebuild the slice fresh from
-        -- pool context (output side), equivalent to the remove path.
+        -- Re-wrap the boundary output slice with its leftover. The draw hands
+        -- back the boundary slice; its roll-forward is read under the output
+        -- admin, equivalent to the remove path.
         let outputSide = if inputIsBase then QuoteSide else BaseSide
-        boundaryOutputSliceCid <- case (outDel.boundary, reverse nextIterCids) of
-          (Some (cid, leftover), boundaryNext :: _) ->
-            case boundaryNext of
-              Some allocCid -> do
-                archive cid
-                newCid <- create PoolSlice with
-                  poolId = pool.poolId; operator; side = outputSide
-                  allocationCid = allocCid; amount = leftover
-                pure (Some newCid)
-              None -> abort "swap: boundary output slice must produce a next-iteration allocation"
-          (None, _) -> pure None
-          _ -> abort "swap: missing boundary next-iteration allocation"
+            outputInstrumentId = if inputIsBase then pool.quoteInstrumentId else pool.baseInstrumentId
+        boundaryOutputSliceCid <- case draw.boundary of
+          Some (oldSliceCid, boundarySlice, _, leftover) -> do
+            allocCid <- AB.requiredNextIteration
+              grouped settleResultsByAdmin outputAdmin boundarySlice.allocationCid
+            archive oldSliceCid
+            validateSliceAllocation allocCid outputInstrumentId
+            newCid <- create PoolSlice with
+              poolId = pool.poolId; operator; side = outputSide
+              instrumentId = outputInstrumentId
+              allocationCid = allocCid; amount = leftover
+            pure (Some newCid)
+          None -> pure None
 
         -- Fee accrues entirely to LPs; operator fee split intentionally out of
         -- scope. The whole fee stays in the pool and accrues to LPs via x*y=k:
@@ -357,7 +405,7 @@ template PoolRules with
           inputSliceCid = newInputSliceCid
           boundaryOutputSliceCid
           outputSlicesConsumed = length draw.fullyConsumed + (case draw.boundary of Some _ -> 1; None -> 0)
-          settleResult
+          settleResultsByAdmin
           amountOut
 
     nonconsuming choice PoolRules_Pause : ContractId PoolState
@@ -412,6 +460,9 @@ template PoolRules with
           assertMsg "reconcile: slice belongs to a different pool"
             (s.poolId == pool.poolId)
           assertMsg "reconcile: slice operator mismatch" (s.operator == operator)
+          assertMsg "reconcile: slice instrument does not match its pool side"
+            (s.instrumentId ==
+              (if s.side == BaseSide then pool.baseInstrumentId else pool.quoteInstrumentId))
         let baseTotal = foldl (\acc s -> acc + s.amount) 0.0
               (filter (\s -> s.side == BaseSide) slices)
             quoteTotal = foldl (\acc s -> acc + s.amount) 0.0

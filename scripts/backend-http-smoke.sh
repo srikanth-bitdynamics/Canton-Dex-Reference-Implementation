@@ -109,11 +109,11 @@ echo "==> Selected read endpoints"
 check_get_contains status-preview "${BASE}/v1/status" '"network":"preview:in-memory"'
 check_get_contains status-sync "${BASE}/v1/status" '"synced":true'
 check_get_contains context "${BASE}/v1/context" '"operator"'
-check_get_contains pools "${BASE}/v1/pools" 'BTC'
-check_get_contains pairs "${BASE}/v1/pairs" 'BTC'
+check_get_contains pools "${BASE}/v1/pools" 'Amulet'
+check_get_contains pairs "${BASE}/v1/pairs" 'Amulet'
 check_status orders-400 400 "${BASE}/v1/orders"
 check_get_contains orders "${BASE}/v1/orders?trader=trader-demo" '['
-check_get_contains holdings "${BASE}/v1/holdings?owner=trader-demo" 'USDC'
+check_get_contains holdings "${BASE}/v1/holdings?owner=trader-demo" 'USDCx'
 
 echo "==> Quote"
 POOL_ID="$(curl -fsS "${BASE}/v1/pools" | node -e '
@@ -126,14 +126,14 @@ POOL_ID="$(curl -fsS "${BASE}/v1/pools" | node -e '
   });
 ')"
 check_post_contains quote "${BASE}/v1/swaps/quote" \
-  "{\"poolId\":\"${POOL_ID}\",\"inputInstrumentId\":\"BTC\",\"inputAmount\":\"0.1\"}" \
+  "{\"poolId\":\"${POOL_ID}\",\"inputInstrumentId\":\"Amulet\",\"inputAmount\":\"0.1\"}" \
   'outputAmount'
 
 echo "==> Order book"
-check_get_contains book "${BASE}/v1/orders/book?base=BTC&quote=USDC" 'bids'
+check_get_contains book "${BASE}/v1/orders/book?base=Amulet&quote=USDCx" 'bids'
 
 echo "==> Prices"
-check_get_contains prices "${BASE}/v1/prices?pairs=BTC/USDC" 'prices'
+check_get_contains prices "${BASE}/v1/prices?pairs=Amulet/USDCx" 'prices'
 
 echo "==> Admin auth gate"
 check_status admin-401 401 -X POST -H 'Content-Type: application/json' -d '{}' \

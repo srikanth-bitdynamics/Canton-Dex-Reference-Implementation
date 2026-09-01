@@ -2,7 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { aggregateBook, matchOrdersForPair } from "../src/order/matching.js";
-import type { Order } from "../src/types.js";
+import type { InstrumentId, Order } from "../src/types.js";
+
+const BTC: InstrumentId = { admin: "admin", id: "BTC" };
+const USDC: InstrumentId = { admin: "admin", id: "USDC" };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mkOrder(o: Record<string, any>): Order {
@@ -10,9 +13,8 @@ function mkOrder(o: Record<string, any>): Order {
     contractId: o.contractId,
     operator: "op",
     trader: o.trader ?? (o.side === "Bid" ? "buyer" : "seller"),
-    admin: "admin",
-    baseInstrumentId: o.baseInstrumentId ?? "BTC",
-    quoteInstrumentId: o.quoteInstrumentId ?? "USDC",
+    baseInstrumentId: o.baseInstrumentId ?? BTC,
+    quoteInstrumentId: o.quoteInstrumentId ?? USDC,
     side: o.side,
     limitPrice: o.limitPrice,
     remainingQty: o.remainingQty,
@@ -32,7 +34,7 @@ describe("matchOrdersForPair", () => {
       mkOrder({ contractId: "b1", side: "Bid", limitPrice: "100", remainingQty: "1" }),
       mkOrder({ contractId: "a1", side: "Ask", limitPrice: "110", remainingQty: "1" }),
     ];
-    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" });
+    const matches = matchOrdersForPair(orders, { base: BTC, quote: USDC });
     assert.equal(matches.length, 0);
   });
 
@@ -43,7 +45,7 @@ describe("matchOrdersForPair", () => {
       mkOrder({ contractId: "a1", trader: "alice", side: "Ask", limitPrice: "100", remainingQty: "1" }),
       mkOrder({ contractId: "b1", trader: "alice", side: "Bid", limitPrice: "110", remainingQty: "1" }),
     ];
-    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" });
+    const matches = matchOrdersForPair(orders, { base: BTC, quote: USDC });
     assert.equal(matches.length, 0);
   });
 
@@ -53,7 +55,7 @@ describe("matchOrdersForPair", () => {
       mkOrder({ contractId: "a-bob", trader: "bob", side: "Ask", limitPrice: "105", remainingQty: "1", ledgerCreatedAt: "2026-01-01T10:30:00Z" }),
       mkOrder({ contractId: "b1", trader: "alice", side: "Bid", limitPrice: "110", remainingQty: "1", ledgerCreatedAt: "2026-01-01T11:00:00Z" }),
     ];
-    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" }, NOW);
+    const matches = matchOrdersForPair(orders, { base: BTC, quote: USDC }, NOW);
     assert.equal(matches.length, 1);
     assert.equal(matches[0]!.buy.contractId, "b1");
     assert.equal(matches[0]!.sell.contractId, "a-bob");
@@ -76,7 +78,7 @@ describe("matchOrdersForPair", () => {
         ledgerCreatedAt: "2026-01-01T11:00:00Z",
       }),
     ];
-    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" }, NOW);
+    const matches = matchOrdersForPair(orders, { base: BTC, quote: USDC }, NOW);
     assert.equal(matches.length, 1);
     assert.equal(matches[0]!.quantity, "1.0000000000");
     assert.equal(matches[0]!.price, "100");
@@ -101,7 +103,7 @@ describe("matchOrdersForPair", () => {
     };
     const matches = matchOrdersForPair(
       [mkOrder(older), mkOrder(newer)],
-      { base: "BTC", quote: "USDC" },
+      { base: BTC, quote: USDC },
       NOW,
     );
     assert.equal(matches.length, 1);
@@ -127,7 +129,7 @@ describe("matchOrdersForPair", () => {
             ledgerCreatedAt: "2026-01-01T11:00:00Z",
           }),
         ],
-        { base: "BTC", quote: "USDC" },
+        { base: BTC, quote: USDC },
         NOW,
       );
       return matches[0]!.price;
@@ -154,7 +156,7 @@ describe("matchOrdersForPair", () => {
           ledgerCreatedAt: at,
         }),
       ],
-      { base: "BTC", quote: "USDC" },
+      { base: BTC, quote: USDC },
       NOW,
     );
     assert.equal(matches[0]!.price, "105.0000000000");
@@ -185,7 +187,7 @@ describe("matchOrdersForPair", () => {
         ledgerCreatedAt: "2026-01-01T11:00:00Z",
       }),
     ];
-    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" }, NOW);
+    const matches = matchOrdersForPair(orders, { base: BTC, quote: USDC }, NOW);
     assert.deepEqual(
       matches.map((m) => m.sell.contractId),
       ["zz", "aa"],
@@ -197,7 +199,7 @@ describe("matchOrdersForPair", () => {
       mkOrder({ contractId: "a1", side: "Ask", limitPrice: "100", remainingQty: "0.5" }),
       mkOrder({ contractId: "b1", side: "Bid", limitPrice: "110", remainingQty: "2" }),
     ];
-    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" }, NOW);
+    const matches = matchOrdersForPair(orders, { base: BTC, quote: USDC }, NOW);
     assert.equal(matches.length, 1);
     assert.equal(matches[0]!.quantity, "0.5000000000");
   });
@@ -214,7 +216,7 @@ describe("matchOrdersForPair", () => {
       mkOrder({ contractId: "b1", side: "Bid", limitPrice: "110", remainingQty: "1" }),
     ];
     assert.equal(
-      matchOrdersForPair(orders, { base: "BTC", quote: "USDC" }, NOW).length,
+      matchOrdersForPair(orders, { base: BTC, quote: USDC }, NOW).length,
       0,
     );
   });
@@ -231,7 +233,7 @@ describe("matchOrdersForPair", () => {
       mkOrder({ contractId: "b1", side: "Bid", limitPrice: "110", remainingQty: "1" }),
     ];
     assert.equal(
-      matchOrdersForPair(orders, { base: "BTC", quote: "USDC" }, NOW).length,
+      matchOrdersForPair(orders, { base: BTC, quote: USDC }, NOW).length,
       1,
     );
   });
@@ -242,7 +244,7 @@ describe("matchOrdersForPair", () => {
       mkOrder({ contractId: "a2", side: "Ask", limitPrice: "101", remainingQty: "1" }),
       mkOrder({ contractId: "b1", side: "Bid", limitPrice: "110", remainingQty: "3" }),
     ];
-    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" });
+    const matches = matchOrdersForPair(orders, { base: BTC, quote: USDC });
     assert.equal(matches.length, 2);
     assert.deepEqual(
       matches.map((m) => m.sell.contractId),
@@ -261,8 +263,46 @@ describe("matchOrdersForPair", () => {
       }),
       mkOrder({ contractId: "b1", side: "Bid", limitPrice: "110", remainingQty: "1" }),
     ];
-    const matches = matchOrdersForPair(orders, { base: "BTC", quote: "USDC" });
+    const matches = matchOrdersForPair(orders, { base: BTC, quote: USDC });
     assert.equal(matches.length, 0);
+  });
+
+  it("does not cross two instruments that share a text id under different admins", () => {
+    // Same symbols, different registries: USDC@a is a distinct instrument from
+    // USDC@b. A crossing bid/ask on the `@a` book must not fill against `@b`
+    // orders, or funds would move between unrelated registries.
+    const BTC_A: InstrumentId = { admin: "reg-a", id: "BTC" };
+    const USDC_A: InstrumentId = { admin: "reg-a", id: "USDC" };
+    const USDC_B: InstrumentId = { admin: "reg-b", id: "USDC" };
+    const orders = [
+      mkOrder({
+        contractId: "ask-b",
+        trader: "seller",
+        side: "Ask",
+        limitPrice: "100",
+        remainingQty: "1",
+        baseInstrumentId: BTC_A,
+        quoteInstrumentId: USDC_B,
+      }),
+      mkOrder({
+        contractId: "bid-a",
+        trader: "buyer",
+        side: "Bid",
+        limitPrice: "110",
+        remainingQty: "1",
+        baseInstrumentId: BTC_A,
+        quoteInstrumentId: USDC_A,
+      }),
+    ];
+    // The prices cross, but the quote instruments differ by admin only.
+    assert.equal(
+      matchOrdersForPair(orders, { base: BTC_A, quote: USDC_A }).length,
+      0,
+    );
+    assert.equal(
+      matchOrdersForPair(orders, { base: BTC_A, quote: USDC_B }).length,
+      0,
+    );
   });
 });
 

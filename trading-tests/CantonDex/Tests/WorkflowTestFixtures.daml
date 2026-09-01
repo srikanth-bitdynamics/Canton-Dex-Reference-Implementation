@@ -11,6 +11,7 @@
 module CantonDex.Tests.WorkflowTestFixtures where
 
 import DA.List (head, tail)
+import DA.Map qualified as Map
 
 import Daml.Script
 
@@ -26,6 +27,7 @@ import CantonDex.Dex.PoolRules qualified as PRules
 import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
 import CantonDex.Testing.MockRegistry qualified as Mock
+import CantonDex.Trading.AdminBatch qualified as AB
 
 -- Create the split pool contracts the operator uses for swap + DvP
 -- liquidity, plus the LP policy.
@@ -48,9 +50,8 @@ setupPool operator lpRegistrar admin = do
     poolId
     operator
     lpRegistrar
-    admin
-    baseInstrumentId = "BTC"
-    quoteInstrumentId = "USDC"
+    baseInstrumentId = V2.InstrumentId with admin; id = "BTC"
+    quoteInstrumentId = V2.InstrumentId with admin; id = "USDC"
     lpInstrumentId
     feeBps = 30
   -- PoolState: the pool's reserve and LP-supply accounting. It starts empty and
@@ -187,6 +188,15 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
       operatorQuoteReceiverCid
       registrarMintCid
 
+  -- One settlement factory + context per instrument admin; the mock pool's
+  -- base/quote admin and LP registrar collapse to (at most) two batches.
+  Some pool <- queryContractId operator poolCid
+  let batchInput = AB.RegistryBatchInput with factoryCid = settleCid; extraArgs
+      batchesByAdmin = Map.fromList
+        [ (pool.baseInstrumentId.admin, batchInput)
+        , (pool.quoteInstrumentId.admin, batchInput)
+        , (pool.lpRegistrar, batchInput)
+        ]
   submit (actAs [operator, lpRegistrar]) $
     exerciseCmd dvpCid Dvp.PoolLiquidityRules_SettleAddLiquidity with
       expectedPoolId = preparation.expectedPoolId
@@ -202,15 +212,13 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
       baseFactoryCid = factoryCid
       quoteFactoryCid = factoryCid
       lpFactoryCid = factoryCid
-      baseQuoteSettleCid = settleCid
-      lpSettleCid = settleCid
       baseAmount = preparation.baseAmount
       quoteAmount = preparation.quoteAmount
       minLpTokens = preparation.minLpTokens
       knownTotalLpSupply = preparation.knownTotalLpSupply
       requestedAt = now
-      poolAdminExtraArgs = extraArgs
-      lpRegistrarExtraArgs = extraArgs
+      batchesByAdmin
       operatorBaseReceiverCid = Some operatorBaseReceiverCid
       operatorQuoteReceiverCid = Some operatorQuoteReceiverCid
       registrarMintCid = Some registrarMintCid
+      allocationContextByAdmin = Map.empty

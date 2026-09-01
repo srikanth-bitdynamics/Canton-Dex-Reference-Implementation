@@ -55,8 +55,7 @@ testMatchedTradeViaTokenStandardRegistry = do
 
   let trade = MT.MatchedTrade with
         venue
-        admin
-        transferLegs = [leg]
+        tradeLegs = [MT.TradeLeg with admin; leg]
         settlementDeadline = None
         policyReceipt = None
   tradeCid <- submit venue $ createCmd trade
@@ -71,15 +70,8 @@ testMatchedTradeViaTokenStandardRegistry = do
   -- `getAllocationFactory`.
   let acceptOne trader cid = do
         Some req <- queryContractId trader cid
-        let traderAccount = Utils.basicAccount trader
-            alloc = V2.AllocationSpecification with
-              admin
-              authorizer = traderAccount
-              transferLegSides = Utils.legsToSides traderAccount req.transferLegs
-              settlementDeadline = req.settlementDeadline
-              nextIterationFunding = None
-              committed = False
-              meta = emptyMetadata
+        -- Single-admin trade, so the request carries exactly one spec to fund.
+        let alloc = head req.allocations
         EnrichedFactoryChoice {factoryCid, arg} <-
           getAllocationFactory registry V2.AllocationFactory_Allocate with
             settlement = req.settlement
@@ -123,7 +115,6 @@ testMatchedTradeViaTokenStandardRegistry = do
     getSettlementFactory registry settleBatchArg
 
   let batch = MT.SettlementBatchV2 with
-        transferLegs = Some [leg]
         allocations
         factoryCid = settleFactoryCid
         extraArgs = emptyExtraArgs

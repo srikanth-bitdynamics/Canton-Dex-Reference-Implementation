@@ -11,6 +11,7 @@
 import { OperatorApi, type SwapQuoteBinding } from './operator-api';
 import { apiAuthHeaders } from './api-auth';
 import { handToWallet } from '@/wallet/handoff';
+import { specFundsHoldings } from '@/wallet/commands';
 import { getProvider } from '@/wallet/registry';
 import { coSignsAdmin } from '@/wallet/capabilities';
 import { useWalletStore } from '@/wallet/store';
@@ -24,6 +25,7 @@ import type {
   Order,
   Holding,
   DexPair,
+  InstrumentId,
   Pool as PoolType,
 } from '@/types/contracts';
 
@@ -88,13 +90,13 @@ async function getWalletNativeHoldings(owner: string): Promise<Holding[] | null>
   const providerId = walletState.activeProviderId;
   if (!providerId || walletState.account?.party !== owner) return null;
 
+  const provider = getProvider(providerId);
+  if (!provider.listHoldings) return null;
   try {
-    const provider = getProvider(providerId);
-    if (!provider.listHoldings) return null;
     return await provider.listHoldings(owner);
   } catch (err) {
-    console.warn('[wallet] falling back to operator holdings read', err);
-    return null;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`wallet holdings read failed (${providerId}): ${msg}`);
   }
 }
 
@@ -191,39 +193,51 @@ function unitsToDecimal10(value: bigint): string {
   return `${sign}${whole.toString()}.${frac}`;
 }
 
+/** Full-identity equality: both registry admin and text id must match. */
+function instrumentIdEq(a: InstrumentId, b: InstrumentId): boolean {
+  return a.admin === b.admin && a.id === b.id;
+}
+
+// Validate the swapper allocation specs the operator returned before the wallet
+// signs. One spec for a single-admin swap (swap-in + swap-out on one
+// allocation), two for a cross-admin swap: the swap-in leg under the input
+// admin, the swap-out receipts under the output admin. The input is a full
+// `{admin, id}`; side is decided by full-identity equality so USD@A and USD@B
+// never collide.
 export function assertSwapAuthority(params: {
   context: DexContext;
   pool: {
     contractId: string;
-    admin: string;
-    baseInstrumentId: string;
-    quoteInstrumentId: string;
+    baseInstrumentId: InstrumentId;
+    quoteInstrumentId: InstrumentId;
   };
   swapper: string;
-  inputInstrumentId: string;
+  inputInstrumentId: InstrumentId;
   inputAmount: string;
   minOutputAmount: string;
-  allocationSpec: V2AllocationSpecification;
+  allocationSpecs: V2AllocationSpecification[];
   settlement: V2SettlementInfo;
   quoteBinding: SwapQuoteBinding;
 }): void {
-  const { allocationSpec: spec, settlement, quoteBinding } = params;
-  const outputInstrumentId = params.inputInstrumentId === params.pool.baseInstrumentId
-    ? params.pool.quoteInstrumentId
-    : params.pool.baseInstrumentId;
+  const { allocationSpecs: specs, settlement, quoteBinding } = params;
+  const inputIsBase = instrumentIdEq(params.inputInstrumentId, params.pool.baseInstrumentId);
+  const inputIsQuote = instrumentIdEq(params.inputInstrumentId, params.pool.quoteInstrumentId);
+  // Transfer legs name the instrument by text id only; the admin lives on the
+  // allocation spec. Leg-side comparisons therefore use the bare id.
+  const inputId = params.inputInstrumentId.id;
+  const outputInstrumentId = inputIsBase
+    ? params.pool.quoteInstrumentId.id
+    : params.pool.baseInstrumentId.id;
+  const inputAdmin = inputIsBase
+    ? params.pool.baseInstrumentId.admin
+    : params.pool.quoteInstrumentId.admin;
+  const outputAdmin = inputIsBase
+    ? params.pool.quoteInstrumentId.admin
+    : params.pool.baseInstrumentId.admin;
   const poolAccount = (account: { owner: string | null; provider: string | null; id: string }) =>
     account.owner === params.context.operator && account.provider === null && account.id === '';
 
-  if (
-    (params.inputInstrumentId !== params.pool.baseInstrumentId &&
-      params.inputInstrumentId !== params.pool.quoteInstrumentId) ||
-    spec.admin !== params.pool.admin ||
-    spec.authorizer.owner !== params.swapper ||
-    spec.authorizer.provider !== null ||
-    spec.authorizer.id !== '' ||
-    spec.nextIterationFunding !== null ||
-    spec.committed
-  ) {
+  if (!inputIsBase && !inputIsQuote) {
     throw new Error('swap: operator returned an invalid trader allocation authority');
   }
   if (
@@ -241,19 +255,44 @@ export function assertSwapAuthority(params: {
     throw new Error('swap: operator returned a quote binding that differs from the request');
   }
 
-  const senderSides = spec.transferLegSides.filter((side) => side.side === 'SenderSide');
-  const receiverSides = spec.transferLegSides.filter((side) => side.side === 'ReceiverSide');
+  // Exactly one spec per expected admin, each a one-shot allocation authorized
+  // by the swapper (uncommitted, no next-iteration funding).
+  const expectedAdmins = inputAdmin === outputAdmin ? [inputAdmin] : [inputAdmin, outputAdmin];
+  if (specs.length !== expectedAdmins.length) {
+    throw new Error('swap: operator returned an invalid trader allocation authority');
+  }
+  for (const spec of specs) {
+    if (
+      !expectedAdmins.includes(spec.admin) ||
+      specs.filter((s) => s.admin === spec.admin).length !== 1 ||
+      spec.authorizer.owner !== params.swapper ||
+      spec.authorizer.provider !== null ||
+      spec.authorizer.id !== '' ||
+      spec.nextIterationFunding !== null ||
+      spec.committed
+    ) {
+      throw new Error('swap: operator returned an invalid trader allocation authority');
+    }
+  }
+  const inputSpec = specs.find((s) => s.admin === inputAdmin)!;
+  const outputSpec = specs.find((s) => s.admin === outputAdmin)!;
+
+  // Input spec: exactly the swap-in sender leg.
+  const senderSides = inputSpec.transferLegSides.filter((side) => side.side === 'SenderSide');
   const sender = senderSides[0];
   if (
     senderSides.length !== 1 ||
     !sender ||
     sender.transferLegId !== 'swap-in' ||
-    sender.instrumentId !== params.inputInstrumentId ||
+    sender.instrumentId !== inputId ||
     decimal10StringUnits(sender.amount) !== decimal10StringUnits(params.inputAmount) ||
     !poolAccount(sender.otherside)
   ) {
     throw new Error('swap: operator returned allocation input that differs from the request');
   }
+
+  // Output spec: the swap-out receiver legs.
+  const receiverSides = outputSpec.transferLegSides.filter((side) => side.side === 'ReceiverSide');
   if (
     receiverSides.length === 0 ||
     receiverSides.some((side, index) =>
@@ -265,9 +304,20 @@ export function assertSwapAuthority(params: {
   ) {
     throw new Error('swap: operator returned invalid allocation output legs');
   }
-  if (senderSides.length + receiverSides.length !== spec.transferLegSides.length) {
+
+  // No stray leg sides: the input spec holds only the sender, the output spec
+  // only the receivers. A single-admin swap has both on one spec.
+  if (inputAdmin === outputAdmin) {
+    if (senderSides.length + receiverSides.length !== inputSpec.transferLegSides.length) {
+      throw new Error('swap: operator returned unsupported allocation leg sides');
+    }
+  } else if (
+    inputSpec.transferLegSides.length !== senderSides.length ||
+    outputSpec.transferLegSides.length !== receiverSides.length
+  ) {
     throw new Error('swap: operator returned unsupported allocation leg sides');
   }
+
   const outputAmount = receiverSides.reduce(
     (sum, side) => sum + decimal10StringUnits(side.amount),
     0n,
@@ -630,6 +680,41 @@ export interface DexStatus {
   serverTime: string;
 }
 
+// Best-effort: match a trade's two instrument identities to a listed DexPair so
+// its fees accrue on settle. The specs carry each side's admin and instrument
+// id, so the trade's full instrument set is reconstructed here. Returns
+// undefined (Daml `None` = no accrual) when no listed pair covers the set or the
+// lookup fails, so fee recording never blocks settlement.
+async function resolveTradeDexPairCid(
+  requests: Array<{ allocations: unknown }>,
+): Promise<ContractId<'DexPair'> | undefined> {
+  const identities = new Map<string, InstrumentId>();
+  for (const r of requests) {
+    for (const spec of r.allocations as V2AllocationSpecification[]) {
+      for (const side of spec.transferLegSides) {
+        identities.set(`${spec.admin} ${side.instrumentId}`, {
+          admin: spec.admin,
+          id: side.instrumentId,
+        });
+      }
+    }
+  }
+  const wanted = [...identities.values()];
+  if (wanted.length !== 2) return undefined;
+  let pairs: DexPair[];
+  try {
+    pairs = await fetchJson<DexPair[]>('/v1/pairs');
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(pairs)) return undefined;
+  const lists = (p: DexPair, iid: InstrumentId): boolean =>
+    (p.baseInstrumentId.admin === iid.admin && p.baseInstrumentId.id === iid.id) ||
+    (p.quoteInstrumentId.admin === iid.admin && p.quoteInstrumentId.id === iid.id);
+  const match = pairs.find((p) => wanted.every((iid) => lists(p, iid)));
+  return match ? (match.contractId as ContractId<'DexPair'>) : undefined;
+}
+
 // === read endpoints (delegate to operator HTTP API) =====================
 
 export const ledger = {
@@ -707,7 +792,7 @@ export const ledger = {
 
   computeSwapQuote: async (
     poolId: string,
-    inputInstrumentId: string,
+    inputInstrumentId: InstrumentId,
     inputAmount: number,
   ) => {
     const out = await operator.computeSwapQuote({
@@ -732,38 +817,44 @@ export const ledger = {
     context: DexContext;
     pool: {
       contractId: string;
-      admin: string;
-      baseInstrumentId: string;
-      quoteInstrumentId: string;
+      baseInstrumentId: InstrumentId;
+      quoteInstrumentId: InstrumentId;
     };
-    inputInstrumentId: string;
+    // Full instrument identity from the pool's base/quote; side is decided by
+    // full-identity equality, not the bare symbol.
+    inputInstrumentId: InstrumentId;
     inputAmount: number;
     minOutputAmount: number;
     swapperParty: string;
     inputHoldingCids?: string[];
   }) => {
-    // Three-call DvP swap: (1) Daml builds the exact two-sided allocation for
-    // one pool snapshot; (2) the wallet authorizes it, locking only the input,
-    // and returns
-    // the created Allocation cid; (3) the operator settles via PoolRules_Swap
-    // with that cid. The promise resolves on the real settle result — no
-    // optimistic success.
+    const inputIsBase = instrumentIdEq(params.inputInstrumentId, params.pool.baseInstrumentId);
+    const inputAdmin = inputIsBase
+      ? params.pool.baseInstrumentId.admin
+      : params.pool.quoteInstrumentId.admin;
+    const inputId = params.inputInstrumentId.id;
+    // Three-call DvP swap: (1) Daml builds the per-admin allocation specs +
+    // request for one pool snapshot; (2) the wallet accepts the request and
+    // authors every spec, locking only the input, returning the created
+    // Allocation cids (input admin first); (3) the operator settles via
+    // PoolRules_Swap with those cids. The promise resolves on the real settle
+    // result — no optimistic success.
     let inputHoldingCids = params.inputHoldingCids;
     if (!inputHoldingCids || inputHoldingCids.length === 0) {
       inputHoldingCids = await normalizeSwapFunding({
-        admin: params.pool.admin,
+        admin: inputAdmin,
         party: params.swapperParty,
-        instrumentId: params.inputInstrumentId,
+        instrumentId: inputId,
         amount: params.inputAmount,
       }) ?? undefined;
     }
     if (!inputHoldingCids || inputHoldingCids.length === 0) {
       throw new Error(
-        `swap: insufficient unlocked ${params.inputInstrumentId} balance to fund ${formatDecimal10(params.inputAmount)}`,
+        `swap: insufficient unlocked ${inputId} balance to fund ${formatDecimal10(params.inputAmount)}`,
       );
     }
 
-    // 1. Operator-built allocation spec + settlement.
+    // 1. Operator-built per-admin allocation specs + request + settlement.
     const req = await operator.requestSwap({
       poolCid: params.pool.contractId as ContractId<'Pool'>,
       swapper: params.swapperParty,
@@ -771,6 +862,7 @@ export const ledger = {
       inputAmount: formatDecimal10(params.inputAmount),
       minOutputAmount: formatDecimal10(params.minOutputAmount),
     });
+    const specs = req.allocationSpecs as V2AllocationSpecification[];
 
     assertSwapAuthority({
       context: params.context,
@@ -779,45 +871,54 @@ export const ledger = {
       inputInstrumentId: params.inputInstrumentId,
       inputAmount: formatDecimal10(params.inputAmount),
       minOutputAmount: formatDecimal10(params.minOutputAmount),
-      allocationSpec: req.allocationSpec as V2AllocationSpecification,
+      allocationSpecs: specs,
       settlement: req.settlement as V2SettlementInfo,
       quoteBinding: req.quoteBinding,
     });
 
     const requestedAt = new Date().toISOString();
-    const factory = await discoverAllocationFactory({
-      admin: params.pool.admin,
-      settlement: req.settlement as V2SettlementInfo,
-      allocation: req.allocationSpec as V2AllocationSpecification,
-      requestedAt,
-      inputHoldingCids,
-      actors: [params.swapperParty],
-    });
+    // Discover a factory per admin; only the swap-in spec draws input holdings.
+    const factories = await Promise.all(
+      specs.map((allocation) =>
+        discoverAllocationFactory({
+          admin: allocation.admin,
+          settlement: req.settlement as V2SettlementInfo,
+          allocation,
+          requestedAt,
+          inputHoldingCids: specFundsHoldings(allocation) ? inputHoldingCids! : [],
+          actors: [params.swapperParty],
+        }),
+      ),
+    );
 
-    // 2. Wallet authors the exact terminal allocation.
+    // 2. Wallet accepts the request and authors every spec in one command.
     const walletResult = await handToWallet({
       kind: 'request-swap',
       poolId: params.pool.contractId,
-      allocationSpec: req.allocationSpec as V2AllocationSpecification,
+      requestCid: req.swapRequestCid,
       settlement: req.settlement as V2SettlementInfo,
+      allocations: specs,
       requestedAt,
-      factoryCid: factory.factoryCid,
-      allocationFactoryExtraArgs: factory.extraArgs,
-      disclosure: factory.disclosure,
+      factoryCids: factories.map((f) => f.factoryCid),
+      allocationFactoryExtraArgs: factories.map((f) => f.extraArgs),
+      allocationRequestExtraArgs: EMPTY_EXTRA_ARGS,
+      disclosure: factories.flatMap((f) => f.disclosure),
       inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
     });
-    const swapperAllocationCid = walletResult.createdAllocationCids?.[0];
-    // updateId-only wallets (e.g. PartyLayer) return no created cid; the operator
-    // recovers the signed swap allocation from the tree by updateId.
+    const swapperAllocationCids = walletResult.createdAllocationCids;
+    // updateId-only wallets (e.g. PartyLayer) return no created cids; the operator
+    // recovers the signed swap allocations from the tree by updateId (one per admin).
     const updateId = walletResult.auxiliaryCids?.updateId;
-    if (!swapperAllocationCid && !updateId) {
+    const haveCids =
+      swapperAllocationCids != null && swapperAllocationCids.length === specs.length;
+    if (!haveCids && !updateId) {
       throw new Error(
-        'swap: wallet returned neither a created allocation cid nor an updateId',
+        'swap: wallet returned neither the created allocation cids nor an updateId',
       );
     }
 
-    // 3. Operator settles the swap against the authored allocation (explicit cid
-    // or operator-discovery from the updateId).
+    // 3. Operator settles the swap against the authored allocations (explicit
+    // cids in admin order, or operator-discovery from the updateId).
     return operator.swap({
       poolCid: params.pool.contractId as ContractId<'Pool'>,
       swapperAccount: { owner: params.swapperParty, provider: null, id: '' },
@@ -825,16 +926,163 @@ export const ledger = {
       inputAmount: formatDecimal10(params.inputAmount),
       minOutputAmount: formatDecimal10(params.minOutputAmount),
       quoteBinding: req.quoteBinding,
-      ...(swapperAllocationCid
-        ? { swapperAllocationCid: swapperAllocationCid as ContractId<'Allocation'> }
+      ...(haveCids
+        ? { swapperAllocationCids: swapperAllocationCids as ContractId<'Allocation'>[] }
         : { updateId }),
+    });
+  },
+
+  /**
+   * Drive an accepted RFQ's MatchedTrade to settlement. The operator requests
+   * one TradeAllocationRequest per non-venue authorizer — the connected party
+   * and, in a real two-party RFQ, the counterparty (a distinct party/session).
+   * This session holds only the connected party's authority, so it funds that
+   * party's request and authors its per-admin allocations via BatchingUtilityV2.
+   *
+   * The connected session cannot author the counterparty's allocations, and the
+   * operator settle binds only caller-supplied cids, so when a separate
+   * counterparty request exists this funds this side and stops short of settling
+   * — settling with one side's cids would omit the other admin's coverage. The
+   * counterparty funds its own request from its own session. When the connected
+   * party is the sole non-venue funder (single request; the single-admin demo
+   * case), its cids cover the trade and settlement completes here.
+   */
+  settleMatchedTrade: async (params: { tradeCid: string; trader: string }) => {
+    const tradeCid = params.tradeCid as ContractId<'MatchedTrade'>;
+    const { allocationRequests } = await operator.requestMatchedTradeAllocations({
+      tradeCid,
+    });
+
+    // Fees accrue against the trade's pair when one is listed; None otherwise.
+    const dexPairCid = await resolveTradeDexPairCid(allocationRequests);
+
+    // Split into this session's own request and the counterparty's. Only the
+    // connected party's specs name it as authorizer, so it funds exactly one.
+    const ownsRequest = (r: { allocations: unknown }) =>
+      (r.allocations as V2AllocationSpecification[]).some(
+        (a) => a.authorizer.owner === params.trader,
+      );
+    const traderRequest = allocationRequests.find(ownsRequest);
+    const counterpartyRequests = allocationRequests.filter((r) => !ownsRequest(r));
+    if (!traderRequest) {
+      // Nothing for this party to fund; let the operator settle what it has.
+      return operator.settleMatchedTrade({
+        tradeCid,
+        allocationRequestCids: [],
+        ...(dexPairCid ? { dexPairCid } : {}),
+      });
+    }
+
+    const specs = traderRequest.allocations as V2AllocationSpecification[];
+    const settlement = traderRequest.settlement as V2SettlementInfo;
+    const requestedAt = traderRequest.requestedAt;
+
+    // Select input holdings for the single sender-leg (funding) spec. A trader
+    // sends exactly one asset in a trade, so at most one spec funds holdings;
+    // the counter-admin spec, if any, only receives.
+    const fundingSpecs = specs.filter(specFundsHoldings);
+    if (fundingSpecs.length > 1) {
+      throw new Error(
+        'matched-trade settle: expected a single funding spec for the connected party',
+      );
+    }
+    let inputHoldingCids: string[] = [];
+    const fundingSpec = fundingSpecs[0];
+    if (fundingSpec) {
+      const senderLeg = fundingSpec.transferLegSides.find((s) => s.side === 'SenderSide');
+      if (!senderLeg) {
+        throw new Error('matched-trade settle: funding spec has no sender leg');
+      }
+      const cids = await normalizeSwapFunding({
+        admin: fundingSpec.admin,
+        party: params.trader,
+        instrumentId: senderLeg.instrumentId,
+        amount: senderLeg.amount,
+      });
+      if (!cids || cids.length === 0) {
+        throw new Error(
+          `matched-trade settle: insufficient unlocked ${senderLeg.instrumentId} balance to fund ${senderLeg.amount}`,
+        );
+      }
+      inputHoldingCids = cids;
+    }
+
+    // Discover a factory per spec; only the funding spec draws holdings.
+    const factories = await Promise.all(
+      specs.map((allocation) =>
+        discoverAllocationFactory({
+          admin: allocation.admin,
+          settlement,
+          allocation,
+          requestedAt,
+          inputHoldingCids: specFundsHoldings(allocation) ? inputHoldingCids : [],
+          actors: [params.trader],
+        }),
+      ),
+    );
+
+    // Wallet accepts the TradeAllocationRequest and authors every spec at once.
+    const walletRes = await handToWallet({
+      kind: 'fund-matched-trade',
+      requestCid: traderRequest.requestCid as ContractId<'TradeAllocationRequest'>,
+      settlement,
+      allocations: specs,
+      requestedAt,
+      factoryCids: factories.map((f) => f.factoryCid),
+      allocationFactoryExtraArgs: factories.map((f) => f.extraArgs),
+      allocationRequestExtraArgs: EMPTY_EXTRA_ARGS,
+      disclosure: factories.flatMap((f) => f.disclosure),
+      inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
+    });
+
+    const createdCids = walletRes.createdAllocationCids;
+    // updateId-only wallets (e.g. PartyLayer / SDK) return no created cids; the
+    // operator recovers the trader's allocations from the tree by updateId.
+    const updateId = walletRes.auxiliaryCids?.updateId;
+    const haveCids = createdCids != null && createdCids.length === specs.length;
+    if (!haveCids && !updateId) {
+      throw new Error(
+        'matched-trade settle: wallet returned neither the created allocation cids nor an updateId',
+      );
+    }
+
+    // Group the created cids by spec admin (specs and cids are parallel).
+    let allocationCidsByAdmin: Record<string, ContractId<'Allocation'>[]> | undefined;
+    if (haveCids) {
+      allocationCidsByAdmin = {};
+      specs.forEach((spec, i) => {
+        (allocationCidsByAdmin![spec.admin] ??= []).push(
+          createdCids![i] as ContractId<'Allocation'>,
+        );
+      });
+    }
+
+    // A separate counterparty request means a genuine two-party RFQ. This
+    // session authored only its own side, so settling now would leave the
+    // counterparty's admin uncovered. Stop rather than settle partially; the
+    // counterparty funds its request from its own session, and settlement
+    // completes once both sides are funded and their cids collected.
+    if (counterpartyRequests.length > 0) {
+      throw new Error(
+        'matched-trade settle: the counterparty has not funded its allocation ' +
+          'request; both sides must fund before the trade can settle',
+      );
+    }
+
+    // Operator settles the cross-admin batches. The trader's request was
+    // archived by the wallet accept, so no request cid is consumed here.
+    return operator.settleMatchedTrade({
+      tradeCid,
+      ...(haveCids ? { allocationCidsByAdmin } : { updateId }),
+      allocationRequestCids: [],
+      ...(dexPairCid ? { dexPairCid } : {}),
     });
   },
 
   placeOrder: async (params: {
     context: DexContext;
-    pairBase: string;
-    pairQuote: string;
+    pairBase: InstrumentId;
+    pairQuote: InstrumentId;
     side: 'Bid' | 'Ask';
     limitPrice: number;
     quantity: number;
@@ -855,7 +1103,6 @@ export const ledger = {
       quantity: formatDecimal10(params.quantity),
       expiry: params.expiry,
       operator: params.context.operator,
-      admin: params.context.admin,
     });
     progress(0); // Submitted to operator.
     const settlementRef = `web-${Date.now()}`;
@@ -881,63 +1128,72 @@ export const ledger = {
     // names the order cid and best-effort cancel it.
     const orderCid = bindRes.orderCid as ContractId<'Order'>;
     try {
-      const lockInstrumentId =
+      const lockInstrument =
         params.side === 'Bid' ? params.pairQuote : params.pairBase;
       const lockAmount =
         params.side === 'Bid'
           ? multiplyDecimal10(params.limitPrice, params.quantity)
           : formatDecimal10(params.quantity);
       const inputHoldingCids = await normalizeSwapFunding({
-        admin: params.context.admin,
+        admin: lockInstrument.admin,
         party: trader,
-        instrumentId: lockInstrumentId,
+        instrumentId: lockInstrument.id,
         amount: lockAmount,
       });
       if (!inputHoldingCids || inputHoldingCids.length === 0) {
         throw new Error(
-          `order funding: insufficient unlocked ${lockInstrumentId} balance to cover ${lockAmount}`,
+          `order funding: insufficient unlocked ${lockInstrument.id} balance to cover ${lockAmount}`,
         );
       }
 
       const requestedAt = new Date().toISOString();
-      const factory = await discoverAllocationFactory({
-        admin: params.context.admin,
-        settlement: bindRes.settlement as V2SettlementInfo,
-        allocation: bindRes.allocationSpec as V2AllocationSpecification,
-        requestedAt,
-        inputHoldingCids,
-        actors: [trader],
-      });
+      const specs = bindRes.allocationSpecs as V2AllocationSpecification[];
+      // Discover a factory per admin; only the lock-admin funding spec draws
+      // input holdings — a cross-admin pair's counter-admin receipt locks nothing.
+      const factories = await Promise.all(
+        specs.map((allocation) =>
+          discoverAllocationFactory({
+            admin: allocation.admin,
+            settlement: bindRes.settlement as V2SettlementInfo,
+            allocation,
+            requestedAt,
+            inputHoldingCids: specFundsHoldings(allocation) ? inputHoldingCids : [],
+            actors: [trader],
+          }),
+        ),
+      );
       const walletRes = await handToWallet({
         kind: 'fund-order',
-        factoryCid: factory.factoryCid,
-        allocationFactoryExtraArgs: factory.extraArgs,
-        disclosure: factory.disclosure,
+        requestCid: bindRes.allocationRequestCid as ContractId<'OrderAllocationRequest'>,
         settlement: bindRes.settlement as V2SettlementInfo,
-        allocationSpec: bindRes.allocationSpec as V2AllocationSpecification,
+        allocations: specs,
         requestedAt,
+        factoryCids: factories.map((f) => f.factoryCid),
+        allocationFactoryExtraArgs: factories.map((f) => f.extraArgs),
+        allocationRequestExtraArgs: EMPTY_EXTRA_ARGS,
+        disclosure: factories.flatMap((f) => f.disclosure),
         inputHoldingCids: inputHoldingCids as ContractId<'Holding'>[],
-        hint: { instrumentId: lockInstrumentId, amount: lockAmount },
+        hint: { instrumentId: lockInstrument.id, amount: lockAmount },
       });
-      progress(2); // Funding allocation locked.
-      const allocationCid = walletRes.createdAllocationCids?.[0];
+      progress(2); // Funding allocation(s) locked.
+      const allocationCids = walletRes.createdAllocationCids;
       // updateId-only wallets (e.g. PartyLayer): the operator recovers the
-      // order's funding allocation from the tree by updateId.
+      // order's funding allocations from the tree by updateId (one per admin).
       const updateId = walletRes.auxiliaryCids?.updateId;
-      if (!allocationCid && !updateId) {
+      const haveCids = allocationCids != null && allocationCids.length === specs.length;
+      if (!haveCids && !updateId) {
         throw new Error(
-          'order funding: wallet returned neither a created allocation cid nor an updateId',
+          'order funding: wallet returned neither the created allocation cids nor an updateId',
         );
       }
 
       const fundRes = await operator.fundOrder({
         orderCid,
-        // Consume the bind's OrderAllocationRequest so it doesn't linger after
-        // funding (the wallet authored the allocation directly, not via accept).
-        allocationRequestCid:
-          bindRes.allocationRequestCid as ContractId<'OrderAllocationRequest'>,
-        ...(allocationCid
-          ? { allocationCid: allocationCid as ContractId<'Allocation'> }
+        // The wallet accepted the OrderAllocationRequest in the funding batch,
+        // so it is already consumed; Order_Fund derives the expected specs from
+        // the order itself and binds the created allocations.
+        ...(haveCids
+          ? { allocationCids: allocationCids as ContractId<'Allocation'>[] }
           : { updateId }),
       });
       progress(3); // In book — awaiting match.
@@ -948,8 +1204,11 @@ export const ledger = {
       // a bound-but-unfunded order silently sitting on-ledger.
       let cancelNote = '';
       try {
-        await ledger.cancelOrder(orderCid);
-        cancelNote = ' The bound order was cancelled.';
+        await ledger.cancelOrder(
+          orderCid,
+          bindRes.allocationRequestCid as string,
+        );
+        cancelNote = ' The bound order and its funding request were cancelled.';
       } catch (cancelErr) {
         const cancelMsg =
           cancelErr instanceof Error ? cancelErr.message : String(cancelErr);
@@ -963,9 +1222,12 @@ export const ledger = {
   },
 
   // Operator-authority write -- straight HTTP, no wallet involvement.
-  cancelOrder: (orderId: string) =>
+  cancelOrder: (orderId: string, allocationRequestCid?: string) =>
     fetchJson<void>(`/v1/orders/${encodeURIComponent(orderId)}/cancel`, {
       method: 'POST',
+      ...(allocationRequestCid
+        ? { body: JSON.stringify({ allocationRequestCid }) }
+        : {}),
     }),
 
   // DvP add, two calls around one wallet submission:

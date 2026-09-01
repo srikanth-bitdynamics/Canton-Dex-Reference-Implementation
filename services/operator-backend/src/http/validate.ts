@@ -96,6 +96,31 @@ export function validateCid(o: Record<string, unknown>, field: string): void {
   }
 }
 
+// Full instrument identity: `{ admin: Party, id: Text }`. Symbols are display
+// only, so the id must be non-empty and the admin a party.
+export function validateInstrumentId(o: Record<string, unknown>, field: string): void {
+  const v = o[field];
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    throw new ValidationError(`field ${field} must be an InstrumentId {admin, id}`, {
+      field,
+      value: v,
+    });
+  }
+  const iid = v as Record<string, unknown>;
+  if (!partyMatches(iid.admin)) {
+    throw new ValidationError(
+      `field ${field}.admin must be a canonical Canton party id (hint::fingerprint)`,
+      { field: `${field}.admin`, value: iid.admin },
+    );
+  }
+  if (typeof iid.id !== "string" || iid.id.length === 0) {
+    throw new ValidationError(`field ${field}.id must be a non-empty instrument id`, {
+      field: `${field}.id`,
+      value: iid.id,
+    });
+  }
+}
+
 export function isDecimalString(v: unknown): v is string {
   return typeof v === "string" && DECIMAL_RE.test(v);
 }
@@ -118,6 +143,7 @@ export interface RouteSpec {
   decimals?: string[];
   parties?: string[];
   cids?: string[];
+  instrumentIds?: string[];
 }
 
 export const WRITE_SPECS: Record<string, RouteSpec> = {
@@ -168,13 +194,25 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
     cids: ["orderCid"],
   },
   "POST /v1/rfq": {
-    required: ["trader", "rfqId", "pair", "side", "size", "expiresAt", "whitelist", "createdAt"],
+    required: [
+      "trader",
+      "rfqId",
+      "baseInstrumentId",
+      "quoteInstrumentId",
+      "side",
+      "size",
+      "expiresAt",
+      "whitelist",
+      "createdAt",
+    ],
     decimals: ["size"],
     parties: ["trader"],
+    instrumentIds: ["baseInstrumentId", "quoteInstrumentId"],
   },
   "POST /v1/rfq/accept": {
-    required: ["rfqCid", "acceptedQuoteCid", "consideredQuoteCids", "admin", "now"],
-    parties: ["admin"],
+    // The trade's admins are derived from the accepted RFQ on-ledger, so accept
+    // carries no admin; the route binds the caller to the RFQ's trader.
+    required: ["rfqCid", "acceptedQuoteCid", "consideredQuoteCids", "now"],
     cids: ["rfqCid", "acceptedQuoteCid"],
   },
   "POST /v1/matched-trades/request-allocations": {
@@ -182,7 +220,10 @@ export const WRITE_SPECS: Record<string, RouteSpec> = {
     cids: ["tradeCid"],
   },
   "POST /v1/matched-trades/settle": {
-    required: ["tradeCid", "batchesByAdmin", "allocationRequestCids"],
+    // `allocationCidsByAdmin` (explicit cids) OR `updateId` (operator-discovery)
+    // — the route rejects a body carrying neither; `allocationRequestCids` is
+    // optional and defaults to [].
+    required: ["tradeCid"],
     cids: ["tradeCid"],
   },
   "POST /v1/matched-trades/cancel": {
@@ -213,4 +254,5 @@ export function validateWriteBody(routeKey: string, body: unknown): void {
   for (const f of spec.decimals ?? []) validateDecimal(obj, f);
   for (const f of spec.parties ?? []) validateParty(obj, f);
   for (const f of spec.cids ?? []) validateCid(obj, f);
+  for (const f of spec.instrumentIds ?? []) validateInstrumentId(obj, f);
 }

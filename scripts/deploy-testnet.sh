@@ -143,17 +143,27 @@ if [[ "${DEPLOY_SEED_MARKETS:-0}" == "1" ]]; then
   curl -fsS "${API_BASE%/}/v1/status" >/dev/null
 
   pairs_json="$(curl -fsS "${API_BASE%/}/v1/pairs")"
-  pair_exists="$(PAIRS_JSON="$pairs_json" BASE="$BASE" QUOTE="$QUOTE" node -e '
+  # /v1/pairs returns DexPair payloads whose base/quoteInstrumentId are full
+  # InstrumentId records { admin, id }, so match on .id and .admin, not the row
+  # against a bare symbol (which never equals an object).
+  pair_exists="$(PAIRS_JSON="$pairs_json" BASE="$BASE" QUOTE="$QUOTE" ADMIN="$CANTON_ADMIN" node -e '
     const rows = JSON.parse(process.env.PAIRS_JSON || "[]");
-    process.stdout.write(rows.some((p) => p.baseInstrumentId === process.env.BASE && p.quoteInstrumentId === process.env.QUOTE) ? "1" : "0");
+    const { BASE, QUOTE, ADMIN } = process.env;
+    process.stdout.write(rows.some((p) =>
+      p.baseInstrumentId?.id === BASE && p.baseInstrumentId?.admin === ADMIN &&
+      p.quoteInstrumentId?.id === QUOTE && p.quoteInstrumentId?.admin === ADMIN
+    ) ? "1" : "0");
   ')"
   if [[ "$pair_exists" == "0" ]]; then
+    # CreatePairInput has no standalone admin; each instrument's admin lives on
+    # its own InstrumentId { admin, id }. This simple seeding path uses one admin
+    # (CANTON_ADMIN) for both legs.
     pair_payload="$(CANTON_ADMIN="$CANTON_ADMIN" BASE="$BASE" QUOTE="$QUOTE" \
       POOL_FEE_BPS="$POOL_FEE_BPS" node -e '
+      const { CANTON_ADMIN, BASE, QUOTE } = process.env;
       process.stdout.write(JSON.stringify({
-        admin: process.env.CANTON_ADMIN,
-        baseInstrumentId: process.env.BASE,
-        quoteInstrumentId: process.env.QUOTE,
+        baseInstrumentId: { admin: CANTON_ADMIN, id: BASE },
+        quoteInstrumentId: { admin: CANTON_ADMIN, id: QUOTE },
         feeModel: {
           makerFeeBps: 10,
           takerFeeBps: 30,
@@ -174,20 +184,28 @@ if [[ "${DEPLOY_SEED_MARKETS:-0}" == "1" ]]; then
   fi
 
   pools_json="$(curl -fsS "${API_BASE%/}/v1/pools")"
-  pool_exists="$(POOLS_JSON="$pools_json" BASE="$BASE" QUOTE="$QUOTE" node -e '
+  # /v1/pools rows carry base/quoteInstrumentId as InstrumentId records too.
+  pool_exists="$(POOLS_JSON="$pools_json" BASE="$BASE" QUOTE="$QUOTE" ADMIN="$CANTON_ADMIN" node -e '
     const rows = JSON.parse(process.env.POOLS_JSON || "[]");
-    process.stdout.write(rows.some((p) => p.baseInstrumentId === process.env.BASE && p.quoteInstrumentId === process.env.QUOTE) ? "1" : "0");
+    const { BASE, QUOTE, ADMIN } = process.env;
+    process.stdout.write(rows.some((p) =>
+      p.baseInstrumentId?.id === BASE && p.baseInstrumentId?.admin === ADMIN &&
+      p.quoteInstrumentId?.id === QUOTE && p.quoteInstrumentId?.admin === ADMIN
+    ) ? "1" : "0");
   ')"
   if [[ "$pool_exists" == "0" ]]; then
+    # CreatePoolInput has no top-level admin either; base/quote are InstrumentId
+    # records, while lpInstrumentId stays a bare id (createPool pairs it with
+    # lpRegistrar as its admin).
     pool_payload="$(CANTON_LP_REGISTRAR="$CANTON_LP_REGISTRAR" \
       CANTON_ADMIN="$CANTON_ADMIN" BASE="$BASE" QUOTE="$QUOTE" \
       LP_INSTRUMENT="$LP_INSTRUMENT" POOL_FEE_BPS="$POOL_FEE_BPS" node -e '
+      const { CANTON_LP_REGISTRAR, CANTON_ADMIN, BASE, QUOTE, LP_INSTRUMENT } = process.env;
       process.stdout.write(JSON.stringify({
-        lpRegistrar: process.env.CANTON_LP_REGISTRAR,
-        admin: process.env.CANTON_ADMIN,
-        baseInstrumentId: process.env.BASE,
-        quoteInstrumentId: process.env.QUOTE,
-        lpInstrumentId: process.env.LP_INSTRUMENT,
+        lpRegistrar: CANTON_LP_REGISTRAR,
+        baseInstrumentId: { admin: CANTON_ADMIN, id: BASE },
+        quoteInstrumentId: { admin: CANTON_ADMIN, id: QUOTE },
+        lpInstrumentId: LP_INSTRUMENT,
         feeBps: Number(process.env.POOL_FEE_BPS),
       }));
     ')"

@@ -8,7 +8,7 @@ separates hard V2 interface requirements from the reference registry's optional
 
 ## The registry boundary
 
-The DEX touches a registry through exactly four surfaces. Everything else about
+The DEX touches a registry through a small, fixed set of surfaces. Everything else about
 your asset — issuance policy, precision, lifecycle, credential rules — stays
 behind that line, and the DEX never reaches across it.
 
@@ -26,6 +26,8 @@ flowchart LR
   end
   W -->|"AllocationFactory_Allocate<br/>locks holdings into an Allocation"| AF
   OB -->|"SettlementFactory_SettleBatch<br/>atomic net settlement"| SF
+  OB -->|"Allocation_Cancel<br/>operator cancels a locked allocation"| H
+  W -->|"Allocation_Withdraw<br/>holder withdraws its own allocation"| H
   W -.->|"observe / select"| H
   AF --> H
   SF --> H
@@ -34,7 +36,13 @@ flowchart LR
 ```
 
 Solid arrows are on-ledger interface choices; dashed arrows are off-ledger
-reads. The two choices are the whole on-ledger contract the DEX depends on:
+reads. These two factory choices are the core settlement contract the DEX
+depends on. Two further on-ledger choices act on an existing allocation with
+different authority: the operator cancels one via `Allocation_Cancel` (executor
+authority), while a holder withdraws its own uncommitted or expired allocation
+via `Allocation_Withdraw` (authorizer authority) — distinct choices, not one.
+The holding read and the per-allocation cancel/withdraw context lookups complete
+the set above:
 
 ```daml
 -- AllocationInstructionV2.daml -- the trader locks funds under their own authority
@@ -64,8 +72,11 @@ lock holdings into a `V2.Allocation`; the operator exercises
 `SettlementFactory_SettleBatch` to move the net amounts atomically. `extraArgs`
 on both choices is where the registry's [choice context](choice-context.md) —
 disclosed config and credential contracts — rides along. The DEX only ever
-*reads* a holding through the `V2.Holding` interface (`account`, `instrumentId`,
-`amount`, `lock`); the registry alone mints, locks, splits, and merges it. For
+*reads* holdings, never mints, locks, splits, or merges them — the registry
+alone does that. The reference backend reads them off the concrete
+`CantonDex.Registry.V2:Holding` template (`account`, `instrumentId`, `amount`,
+`lock`); a wallet-side reader may instead select through the `V2.Holding`
+interface. For
 the exact allocation-surface fields the DEX sets and reads on these choices, see
 [Allocation Surface](../reference/allocation-surface.md).
 
@@ -127,13 +138,15 @@ paths, bodies, and response shape.
 
 The configured reference self-registry is a deliberate adapter, not a second
 HTTP protocol. `FixedRegistryClient` resolves deployed factory CIDs per admin
-and returns empty context. This is also the only backend adapter currently able
-to drive atomic add/remove liquidity: those Daml choices create temporary
-allocations and settle them in the same transaction, so their future CIDs
-cannot appear in an exact HTTP preflight request. Generic HTTP discovery fails
-with `RegistryError("unsupported", ...)` before submission for that workflow.
-Swaps, matched trades, order matches, allocation creation, and cancellation use
-the canonical operation-specific discovery path.
+and returns empty context. It is one adapter among the standard-shaped ones:
+swaps, matched trades, order matches, allocation creation, cancellation, and
+add/remove liquidity all use the canonical operation-specific discovery path.
+Add/remove liquidity is no longer an exception. The backend stages the
+temporary allocations those Daml choices consume, exercises a non-value-moving
+preview to obtain the exact per-admin `SettleBatch` arguments, discovers each
+admin's settlement factory and context from those arguments, and settles the
+whole thing in one atomic transaction — staged, but atomic, over any standard
+registry.
 
 The DEX's own flows are exercised against a standard-shaped registry, not only
 its reference one. `testMatchedTradeViaTokenStandardRegistry` in
@@ -145,9 +158,9 @@ in [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistr
 settle add-liquidity and swap DvPs against a genuinely context-requiring
 registry, and `testRealRegistryDvpRejectsMissingContext` proves the settle
 aborts when that registry's disclosed context is dropped. These are Daml
-composition proofs: the tests already possess the context contracts. They do
-not remove the off-ledger future-CID limitation for the backend's atomic
-liquidity HTTP preflight.
+composition proofs: the tests already possess the context contracts, mirroring
+the context the backend's staged preview discovers over HTTP before it settles
+add liquidity.
 
 ## Mint / Burn / Transfer prerequisites
 
@@ -230,10 +243,12 @@ The DEX's `registry-client` takes the exact operation arguments, calls the
 matching standard endpoint, validates the wire response, and returns the
 factory CID, context, and disclosures as one value. Settlement arguments come
 from non-value-moving Daml previews for swaps and matched trades, and from an
-ephemeral create-and-exercise preview for order matches. Cancel/withdraw
-context is looked up per allocation ID, not once per admin. See
-[Choice context](choice-context.md) for the complete choreography and the
-atomic-liquidity exception.
+ephemeral create-and-exercise preview for order matches. Add and remove
+liquidity stage their temporary allocations first, then take the exact
+per-admin settlement arguments from a Daml preview, so they settle atomically
+over the same path. Cancel/withdraw context is looked up per allocation ID, not
+once per admin. See [Choice context](choice-context.md) for the complete
+choreography.
 
 ## Registry-specific lifecycle changes
 
@@ -249,31 +264,24 @@ relist market objects when the registry says their instrument version is no
 longer tradable. Any automatic upgrade-on-use or issuer-driven migration is a
 custom registry feature outside this reference.
 
-## Known limitation: one registry admin per pair
+## Per-instrument registry admins
 
-Both instruments of a pair share a single registry `admin`. `DexPair`,
-`Order`, `Pool` and `MatchedTrade` each declare one `admin : Party`, and
-`baseInstrumentId` / `quoteInstrumentId` are bare `Text` interpreted under it.
+Each instrument of a pair carries its full `InstrumentId {admin, id}`. `DexPair`,
+`Order`, `Pool`, and `MatchedTrade` name base and quote by `InstrumentId`, so the
+two assets may be administered by different registries — Canton Coin quoted
+against a third-party stablecoin, for instance.
 
-This follows the standard: `TransferLeg.instrumentId` is `Text`, so a leg
-carries no admin of its own and one cannot be recovered from a settled trade.
-`MatchedTrade_RequestAllocations` emits one `AllocationSpecification` per
-authorizer under that one admin.
+The standard's `TransferLeg.instrumentId` is bare `Text`, so a leg carries no
+admin of its own; each leg's admin travels alongside it in the app-layer records
+(`MatchedTrade` holds `[TradeLeg]`, each `TradeLeg = { admin, leg }`). Settlement
+partitions the trade's legs by admin and issues one
+`SettlementFactory_SettleBatch` per admin, all inside one Daml choice so the
+trade commits atomically or not at all. `MatchedTrade_RequestAllocations` emits
+one `AllocationSpecification` per `(authorizer, admin)`. A single-admin pair is
+the degenerate case: one admin, one batch. [Cross-admin
+settlement](../concepts/cross-admin.md) is authoritative.
 
-`MatchedTrade_Settle` does take `batchesByAdmin : Map Party SettlementBatchV2`
-and is shaped for multiple admins, inherited from the upstream batching
-utility. Each `SettlementBatchV2` carries its own `transferLegs`: the standard
-requires a batch's allocations to cover exactly the legs the batch is handed,
-so the caller partitions the trade's legs by the instrument admin of each leg
-(`groupLegsByAdmin` in the operator backend). `splitLegsByAuthorizer`
-splits by authorizer, not by admin, so the request path still emits one
-specification per authorizer under the trade's single admin.
-
-Pairing instruments from two different registries needs a second admin field
-on those four templates and one specification per `(authorizer, admin)`. That
-is a schema change, not a configuration option.
-
-The per-admin batching this describes is load-bearing and tested:
+The per-admin batching is load-bearing and tested:
 `testMatchedTradeSettlesPerAdminLegSubsets` in
 [`RealRegistryDvpTests.daml`](../../trading-tests/CantonDex/Tests/RealRegistryDvpTests.daml)
 settles a trade's legs across two real registries in one transaction when they
@@ -283,12 +291,12 @@ legs — is rejected rather than settled.
 ## What the DEX does not assume
 
 - It does not require the reference registry for base or quote assets in the
-  allocation, swap, order, or matched-trade flows. An alternative must
-  implement the V2 holding, allocation, and settlement APIs and the canonical
-  operation-specific discovery endpoints. Atomic add/remove liquidity is the
-  documented exception: the current backend requires the configured
-  empty-context self-registry adapter until that workflow is redesigned. The
-  included LP path also uses the concrete `LPTokenPolicy` component.
+  allocation, swap, order, matched-trade, or add/remove-liquidity flows. An
+  alternative must implement the V2 holding, allocation, and settlement APIs and
+  the canonical operation-specific discovery endpoints. Add/remove liquidity
+  stages its temporary allocations and settles them atomically over that same
+  path, so it no longer requires the empty-context self-registry adapter. The
+  included LP path still uses the concrete `LPTokenPolicy` component.
 - It does not assume holding precision is uniform. Each registry may expose its
   own display scale or amount constraints; the DEX treats amounts as `Decimal`
   and lets the registry enforce its own limits.

@@ -43,7 +43,7 @@ bash scripts/run-dpm-sandbox-proof.sh
 
 The script performs these visible phases:
 
-1. Installs SDK 3.5.2 idempotently and builds `canton-dex-trading`.
+1. Installs SDK 3.5.2 idempotently and builds `canton-dex-trading-v2`.
 2. Reserves all six Canton ports, releases them together, and starts the SDK's
    `dpm sandbox` immediately on those concrete loopback ports.
 3. Waits for `/v2/state/ledger-end`; readiness is proven, not assumed.

@@ -30,7 +30,7 @@ export function PoolsPage() {
   // Hoisted above early returns: hooks must run in the same order on
   // every render. `symbols` is empty when `pools` is undefined; the
   // fiat-price hook handles that case as a no-op.
-  const symbols = (pools ?? []).flatMap((p) => [p.baseInstrumentId, p.quoteInstrumentId]);
+  const symbols = (pools ?? []).flatMap((p) => [p.baseInstrumentId.id, p.quoteInstrumentId.id]);
   const { prices: priceUsd } = useAssetPricesUsd(symbols);
 
   if (isLoading) {
@@ -75,8 +75,8 @@ export function PoolsPage() {
   // call earlier in the function).
   let priceableCount = 0;
   const tvl = pools.reduce((s, p) => {
-    const bp = priceUsd[p.baseInstrumentId];
-    const qp = priceUsd[p.quoteInstrumentId];
+    const bp = priceUsd[p.baseInstrumentId.id];
+    const qp = priceUsd[p.quoteInstrumentId.id];
     if (bp == null || qp == null) return s;
     priceableCount += 1;
     return s + p.reserves.baseAmount * bp + p.reserves.quoteAmount * qp;

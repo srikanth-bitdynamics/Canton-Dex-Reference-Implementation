@@ -12,18 +12,28 @@ import type {
 
 import { MatchedTradeService } from "../src/matched-trade/index.js";
 import type { SettlementBatchV2 } from "../src/matched-trade/index.js";
-import { groupLegsByAdmin } from "../src/settlement/index.js";
-import type { V2TransferLeg } from "../src/types.js";
 import type {
+  V2AllocationSpecification,
+  V2SettlementInfo,
+} from "../src/types.js";
+import type {
+  CreatedEventRef,
   LedgerEvent,
   LedgerSubmitter,
   SubmitRequest,
   SubscriptionFilter,
 } from "../src/ledger/index.js";
 
+const ALLOCATION_TEMPLATE = "pkg:CantonDex.Registry.V2:Allocation";
+
 class CapturingLedger implements LedgerSubmitter {
   lastSubmit: SubmitRequest | null = null;
   readonly submissions: SubmitRequest[] = [];
+  // Configurable query results keyed by templateId, and tree recovery keyed by
+  // updateId, so a test can supply the trade and its created allocations.
+  queryResults: Record<string, unknown[]> = {};
+  treeEvents: Record<string, CreatedEventRef[]> = {};
+  requestAllocationsResult: string[] = [];
 
   async submit<R>(req: SubmitRequest): Promise<R> {
     this.lastSubmit = req;
@@ -31,17 +41,16 @@ class CapturingLedger implements LedgerSubmitter {
     const command = req.command as {
       choice?: string;
       argument?: {
-        plansByAdmin?: Array<[
-          Party,
-          {
-            transferLegs: V2TransferLeg[];
-            allocations: unknown[];
-          },
-        ]>;
+        allocationsByAdmin?: Array<[Party, unknown[]]>;
       };
     };
+    if (command.choice === "MatchedTrade_RequestAllocations") {
+      return this.requestAllocationsResult as R;
+    }
     if (command.choice === "MatchedTrade_PreviewSettlement") {
-      return (command.argument?.plansByAdmin ?? []).map(([admin, plan]) => [
+      // The trade derives its own legs on-ledger; the preview echoes each
+      // admin's finalized allocations back as that admin's settlement args.
+      return (command.argument?.allocationsByAdmin ?? []).map(([admin, allocations]) => [
         admin,
         {
           settlement: {
@@ -50,8 +59,8 @@ class CapturingLedger implements LedgerSubmitter {
             cid: null,
             meta: { values: {} },
           },
-          transferLegs: plan.transferLegs,
-          allocations: plan.allocations,
+          transferLegs: [],
+          allocations,
           actors: ["operator"],
           extraArgs: {
             context: { values: {} },
@@ -67,8 +76,12 @@ class CapturingLedger implements LedgerSubmitter {
     // no streaming in this stub
   }
 
-  async query<T>(_filter: SubscriptionFilter): Promise<T[]> {
-    return [];
+  async query<T>(filter: SubscriptionFilter): Promise<T[]> {
+    return (this.queryResults[filter.templateId ?? ""] ?? []) as T[];
+  }
+
+  async treeCreatedEvents(updateId: string, _party: Party): Promise<CreatedEventRef[]> {
+    return this.treeEvents[updateId] ?? [];
   }
 }
 
@@ -118,33 +131,94 @@ class ContextRegistry extends RegistryClient {
   }
 }
 
-function leg(id: string, instrumentId: string): V2TransferLeg {
+const meta = { values: {} } as unknown as Record<string, string>;
+
+function spec(admin: Party, instrumentId: string, side: "SenderSide" | "ReceiverSide"): V2AllocationSpecification {
   return {
-    transferLegId: id,
-    sender: { owner: "alice" as Party, provider: null, id: "" },
-    receiver: { owner: "bob" as Party, provider: null, id: "" },
-    amount: "1.0",
-    instrumentId,
+    admin,
+    authorizer: { owner: "alice" as Party, provider: null, id: "" },
+    transferLegSides: [
+      {
+        transferLegId: `leg-${admin}`,
+        side,
+        otherside: { owner: "dealer" as Party, provider: null, id: "" },
+        amount: "1.0",
+        instrumentId,
+        meta: {},
+      },
+    ],
+    settlementDeadline: null,
+    nextIterationFunding: null,
+    committed: false,
     meta: {},
   };
 }
 
+function settlementInfo(): V2SettlementInfo {
+  return { executors: ["operator" as Party], id: "MatchedTrade", cid: "#trade:0", meta };
+}
+
+// A trade contract spanning two registries: one leg per admin.
+function crossAdminTrade(): unknown {
+  const leg = (id: string, instrumentId: string) => ({
+    transferLegId: id,
+    sender: { owner: "alice" as Party, provider: null, id: "" },
+    receiver: { owner: "dealer" as Party, provider: null, id: "" },
+    amount: "1.0",
+    instrumentId,
+    meta: {},
+  });
+  return {
+    contractId: "#trade:0",
+    venue: "operator" as Party,
+    tradeLegs: [
+      { admin: "adminA" as Party, leg: leg("leg-a", "BTC") },
+      { admin: "adminB" as Party, leg: leg("leg-b", "LP") },
+    ],
+  };
+}
+
 describe("MatchedTradeService", () => {
-  it("settle threads per-admin choice context and legs into each SettlementBatchV2", async () => {
+  it("requestAllocations returns each request's on-ledger view", async () => {
     const ledger = new CapturingLedger();
     const registry = new ContextRegistry();
-    const svc = new MatchedTradeService(
-      ledger,
-      registry,
-      "operator" as Party,
-    );
+    const svc = new MatchedTradeService(ledger, registry, "operator" as Party);
 
-    // A trade spanning two registries: one leg per admin.
-    const legA = leg("leg-a", "BTC");
-    const legB = leg("leg-b", "LP");
-    const legsByAdmin = groupLegsByAdmin([legA, legB], (l) =>
-      (l.instrumentId === "BTC" ? "adminA" : "adminB") as Party,
-    );
+    ledger.requestAllocationsResult = ["#req:0", "#req:1"];
+    ledger.queryResults["CantonDex.Dex.MatchedTrade:TradeAllocationRequest"] = [
+      {
+        contractId: "#req:1",
+        settlement: settlementInfo(),
+        settleAt: null,
+        requestedAt: "2026-05-19T12:00:00.000Z",
+        allocations: [spec("adminB" as Party, "LP", "ReceiverSide")],
+      },
+      {
+        contractId: "#req:0",
+        settlement: settlementInfo(),
+        settleAt: null,
+        requestedAt: "2026-05-19T12:00:00.000Z",
+        allocations: [spec("adminA" as Party, "BTC", "SenderSide")],
+      },
+    ];
+
+    const result = await svc.requestAllocations({
+      tradeCid: "#trade:0" as ContractId<"MatchedTrade">,
+    });
+
+    // One enriched entry per created request, in the order the choice returned
+    // the cids (not the ACS query order).
+    assert.deepEqual(result.map((r) => r.requestCid), ["#req:0", "#req:1"]);
+    assert.equal(result[0]!.allocations[0]!.admin, "adminA");
+    assert.equal(result[1]!.allocations[0]!.admin, "adminB");
+    assert.deepEqual(result[0]!.settlement, settlementInfo());
+    assert.equal(result[0]!.requestedAt, "2026-05-19T12:00:00.000Z");
+  });
+
+  it("settle derives legs on-ledger and threads per-admin allocation cids + context", async () => {
+    const ledger = new CapturingLedger();
+    const registry = new ContextRegistry();
+    const svc = new MatchedTradeService(ledger, registry, "operator" as Party);
 
     await svc.settle({
       tradeCid: "#trade:0" as ContractId<"MatchedTrade">,
@@ -152,31 +226,46 @@ describe("MatchedTradeService", () => {
       // binds to the resulting allocations, so there are no live request cids.
       allocationRequestCids: [],
       batchesByAdmin: new Map<Party, SettlementBatchV2>([
-        [
-          "adminA" as Party,
-          {
-            allocationCids: ["#a:0" as ContractId<"Allocation">],
-            transferLegs: legsByAdmin.get("adminA" as Party)!,
-          },
-        ],
-        [
-          "adminB" as Party,
-          {
-            allocationCids: ["#b:0" as ContractId<"Allocation">],
-            transferLegs: legsByAdmin.get("adminB" as Party)!,
-          },
-        ],
+        ["adminA" as Party, { allocationCids: ["#a:0" as ContractId<"Allocation">] }],
+        ["adminB" as Party, { allocationCids: ["#b:0" as ContractId<"Allocation">] }],
       ]),
     });
 
-    assert.ok(ledger.lastSubmit, "settle submitted a command");
+    // The preview carries only the finalized allocations per admin; transfer
+    // legs are NOT sent -- the trade derives them on-ledger.
+    const preview = ledger.submissions.find(
+      (s) => (s.command as { choice?: string }).choice === "MatchedTrade_PreviewSettlement",
+    );
+    assert.ok(preview, "settlement runs the on-ledger preview first");
+    const previewArg = (
+      preview!.command as {
+        argument: { allocationsByAdmin: Array<[string, unknown[]]> };
+      }
+    ).argument;
+    assert.ok(
+      Array.isArray(previewArg.allocationsByAdmin),
+      "allocationsByAdmin is a GenMap, encoded as an array of pairs",
+    );
+    const previewByAdmin = new Map(previewArg.allocationsByAdmin);
+    assert.deepEqual(previewByAdmin.get("adminA"), [
+      { allocationCid: "#a:0", extraTransferLegSides: [], nextIterationFunding: null },
+    ]);
+    assert.deepEqual(previewByAdmin.get("adminB"), [
+      { allocationCid: "#b:0", extraTransferLegSides: [], nextIterationFunding: null },
+    ]);
+    for (const [, value] of previewArg.allocationsByAdmin) {
+      assert.ok(
+        !(value as unknown as { transferLegs?: unknown }).transferLegs,
+        "the preview does not send caller transfer legs",
+      );
+    }
+
+    // The final settle binds those cids into each admin's SettlementBatchV2.
     const submit = ledger.lastSubmit!;
     const cmd = submit.command as {
       choice: string;
       argument: {
-        // GenMap: an ARRAY of [key, value] pairs, not an object.
         batchesByAdmin: Array<[string, {
-          transferLegs: V2TransferLeg[];
           allocations: Array<{
             allocationCid: string;
             extraTransferLegSides: unknown[];
@@ -184,13 +273,13 @@ describe("MatchedTradeService", () => {
           }>;
           factoryCid: string;
           extraArgs: { context: { values: Record<string, unknown> } };
+          transferLegs?: unknown;
         }]>;
         allocationRequests: string[];
         dexPairCid: string | null;
       };
     };
     assert.equal(cmd.choice, "MatchedTrade_Settle");
-
     assert.ok(
       Array.isArray(cmd.argument.batchesByAdmin),
       "batchesByAdmin is a GenMap, encoded as an array of pairs",
@@ -200,40 +289,24 @@ describe("MatchedTradeService", () => {
     const adminBBatch = byAdmin.get("adminB");
     assert.ok(adminABatch, "adminA batch is present");
     assert.ok(adminBBatch, "adminB batch is present");
-
-    // SettlementBatchV2 is a plain record of FinalizedAllocation, not the
-    // vendored upstream variant: no `tag`, and `allocations`, not
-    // `allocationCids`.
-    assert.equal(
-      (adminABatch as unknown as { tag?: string }).tag,
-      undefined,
-      "no variant tag -- SettlementBatchV2 is a record",
-    );
+    // SettlementBatchV2 is a plain record of FinalizedAllocation: no variant
+    // tag, no legs (the trade owns them), and `allocations`, not `allocationCids`.
+    assert.equal((adminABatch as unknown as { tag?: string }).tag, undefined);
+    assert.equal(adminABatch!.transferLegs, undefined, "the batch carries no legs");
     assert.deepEqual(adminABatch!.allocations, [
-      {
-        allocationCid: "#a:0",
-        extraTransferLegSides: [],
-        nextIterationFunding: null,
-      },
+      { allocationCid: "#a:0", extraTransferLegSides: [], nextIterationFunding: null },
     ]);
-
-    // Each batch carries only its own admin's legs. Handing a batch the whole
-    // trade makes its allocations short of the other admin's legs, and the
-    // registry rejects the settle on the coverage check.
-    assert.deepEqual(adminABatch!.transferLegs, [legA]);
-    assert.deepEqual(adminBBatch!.transferLegs, [legB]);
-
+    assert.deepEqual(adminBBatch!.allocations, [
+      { allocationCid: "#b:0", extraTransferLegSides: [], nextIterationFunding: null },
+    ]);
     // Required field on the choice; omitting it is a decode failure.
     assert.equal(cmd.argument.dexPairCid, null);
     assert.deepEqual(cmd.argument.allocationRequests, []);
-
     assert.deepEqual(adminABatch!.extraArgs.context.values, { "ctx.adminA": true });
     assert.deepEqual(adminBBatch!.extraArgs.context.values, { "ctx.adminB": true });
 
-    const preview = ledger.submissions.find(
-      (s) => (s.command as { choice?: string }).choice === "MatchedTrade_PreviewSettlement",
-    );
-    assert.ok(preview, "settlement runs the on-ledger preview first");
+    // One settlement factory per admin, from the exact preview result, and no
+    // readAs on any external instrument admin.
     assert.deepEqual(
       registry.settlementLookups.map(({ admin }) => admin),
       ["adminA", "adminB"],
@@ -242,9 +315,10 @@ describe("MatchedTradeService", () => {
       assert.equal(
         (choiceArguments.settlement as { id: string }).id,
         `matched-trade:${admin}`,
-        "the exact preview result is sent to that admin's settlement endpoint",
       );
     }
+    assert.equal(submit.readAs, undefined, "settle grants no readAs");
+    assert.equal(preview!.readAs, undefined, "preview grants no readAs");
     const disclosureBlobs = submit.disclosure!.map((d) => d.createdEventBlob);
     assert.deepEqual(new Set(disclosureBlobs), new Set([
       "factory-adminA",
@@ -253,6 +327,53 @@ describe("MatchedTradeService", () => {
       "context-adminB",
     ]));
     assert.equal(disclosureBlobs.length, new Set(disclosureBlobs).size);
+  });
+
+  it("settle recovers the connected party's allocations from the tree and groups them by the trade's admins", async () => {
+    const ledger = new CapturingLedger();
+    const registry = new ContextRegistry();
+    const svc = new MatchedTradeService(ledger, registry, "operator" as Party);
+
+    ledger.queryResults["CantonDex.Dex.MatchedTrade:MatchedTrade"] = [crossAdminTrade()];
+    // Created in the trade's admin order (adminA then adminB), matching the
+    // order the wallet authored the connected party's per-admin allocations.
+    ledger.treeEvents["update-x"] = [
+      { contractId: "#a:0", templateId: ALLOCATION_TEMPLATE },
+      { contractId: "#b:0", templateId: ALLOCATION_TEMPLATE },
+    ];
+
+    await svc.settle({
+      tradeCid: "#trade:0" as ContractId<"MatchedTrade">,
+      updateId: "update-x",
+      allocationRequestCids: [],
+    });
+
+    const submit = ledger.lastSubmit!;
+    const cmd = submit.command as {
+      choice: string;
+      argument: {
+        batchesByAdmin: Array<[string, {
+          allocations: Array<{ allocationCid: string }>;
+        }]>;
+      };
+    };
+    assert.equal(cmd.choice, "MatchedTrade_Settle");
+    const byAdmin = new Map(cmd.argument.batchesByAdmin);
+    // Recovered cids are grouped one-per-admin, in the trade's admin order.
+    assert.deepEqual(byAdmin.get("adminA")!.allocations.map((a) => a.allocationCid), ["#a:0"]);
+    assert.deepEqual(byAdmin.get("adminB")!.allocations.map((a) => a.allocationCid), ["#b:0"]);
+
+    // Same derive-and-verify preview, merged disclosures, and no external readAs.
+    const preview = ledger.submissions.find(
+      (s) => (s.command as { choice?: string }).choice === "MatchedTrade_PreviewSettlement",
+    );
+    assert.ok(preview, "the updateId path still previews on-ledger");
+    assert.equal(preview!.readAs, undefined);
+    assert.equal(submit.readAs, undefined);
+    assert.deepEqual(
+      new Set(submit.disclosure!.map((d) => d.createdEventBlob)),
+      new Set(["factory-adminA", "context-adminA", "factory-adminB", "context-adminB"]),
+    );
   });
 
   it("cancel threads the matching admin context for each allocation group", async () => {

@@ -45,6 +45,7 @@ const HOSTED_RFQ_WRITES_ENABLED =
 
 type Tab = 'active' | 'accepted' | 'expired';
 type SortMode = 'policy' | 'price' | 'earliest' | 'trusted';
+type SettleStatus = { status: 'settling' | 'settled' | 'error'; message?: string };
 
 export function RfqPage() {
   const party = useCurrentParty();
@@ -69,6 +70,31 @@ export function RfqPage() {
   const [accepted, setAccepted] = useState<AcceptedTrade[]>([]);
   const [expired, setExpired] = useState<ExpiredRfq[]>([]);
   const [acceptError, setAcceptError] = useState<string | null>(null);
+  // Per-MatchedTrade settlement progress, keyed by trade cid.
+  const [settlements, setSettlements] = useState<Record<string, SettleStatus>>({});
+
+  // Fund the trader's side of the MatchedTrade and settle it. Runs after an
+  // accept produces the trade; failures (e.g. the counterparty has not funded)
+  // surface per-row rather than blocking the accept.
+  const driveSettlement = useCallback(
+    async (tradeCid: string) => {
+      if (!party) return;
+      setSettlements((s) => ({ ...s, [tradeCid]: { status: 'settling' } }));
+      try {
+        await ledger.settleMatchedTrade({ tradeCid, trader: party });
+        setSettlements((s) => ({ ...s, [tradeCid]: { status: 'settled' } }));
+      } catch (err) {
+        setSettlements((s) => ({
+          ...s,
+          [tradeCid]: {
+            status: 'error',
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }));
+      }
+    },
+    [party],
+  );
 
   // Reconcile the live snapshot into local state. Local state holds
   // optimistic transitions (Accepting/Accepted flashes) that the server
@@ -160,10 +186,6 @@ export function RfqPage() {
 
   const acceptQuote = useCallback(
     async (rfq: Rfq, quote: RfqQuote) => {
-      if (!context) {
-        console.error('rfq.accept blocked: dApp context not loaded');
-        return;
-      }
       const ranked = rankQuotes(rfq.side, rfq.quotes, 'policy');
       const rank = ranked.findIndex((x) => x.dealer === quote.dealer) + 1;
       setRfqs((cur) =>
@@ -185,7 +207,6 @@ export function RfqPage() {
           rfqCid: rfq.contractId,
           acceptedQuoteCid: quote.contractId,
           consideredQuoteCids: rfq.quotes.map((q) => q.contractId),
-          admin: context.admin,
           now: new Date().toISOString(),
         });
         const acceptedTrade: AcceptedTrade = {
@@ -217,6 +238,9 @@ export function RfqPage() {
           setAccepted((cx) => [acceptedTrade, ...cx]);
           live.refetch();
         }, 700);
+        // Drive the fresh MatchedTrade to settlement: fund the trader's side and
+        // settle. Runs concurrently; status shows in the Accepted tab.
+        void driveSettlement(result.tradeCid);
       } catch (err) {
         // Restore the active row and surface the rejected command.
         setAcceptError(err instanceof Error ? err.message : String(err));
@@ -237,7 +261,7 @@ export function RfqPage() {
         );
       }
     },
-    [context, live],
+    [live, driveSettlement],
   );
 
   const cancelRfq = useCallback(
@@ -265,7 +289,8 @@ export function RfqPage() {
           // The connected wallet party is the RFQ trader.
           trader: party,
           rfqId: rfq.rfqId,
-          pair: rfq.pair,
+          baseInstrumentId: rfq.baseInstrumentId,
+          quoteInstrumentId: rfq.quoteInstrumentId,
           side: rfq.side,
           size: rfq.size.toString(),
           expiresAt,
@@ -453,6 +478,7 @@ export function RfqPage() {
         {tab === 'accepted' && (
           <AcceptedTab
             accepted={accepted}
+            settlements={settlements}
             onReceiptOpen={(id) => setReceiptOpenFor(id)}
           />
         )}
@@ -976,10 +1002,22 @@ function RfqRow({
 
 interface AcceptedTabProps {
   accepted: AcceptedTrade[];
+  settlements: Record<string, SettleStatus>;
   onReceiptOpen: (id: string) => void;
 }
 
-function AcceptedTab({ accepted, onReceiptOpen }: AcceptedTabProps) {
+function SettlementBadge({ state }: { state?: SettleStatus }) {
+  if (!state) return <span style={{ fontSize: 11, color: 'var(--text-2)' }}>—</span>;
+  if (state.status === 'settling') return <span className="badge blue tiny">Settling…</span>;
+  if (state.status === 'settled') return <span className="badge green tiny">Settled</span>;
+  return (
+    <span className="badge red tiny" title={state.message}>
+      Failed
+    </span>
+  );
+}
+
+function AcceptedTab({ accepted, settlements, onReceiptOpen }: AcceptedTabProps) {
   const { data: dealers } = useDealers();
   if (accepted.length === 0) {
     return (
@@ -1007,6 +1045,7 @@ function AcceptedTab({ accepted, onReceiptOpen }: AcceptedTabProps) {
           <th className="text-right py-2 px-3">Notional</th>
           <th className="text-left py-2 px-3">Counterparty</th>
           <th className="text-right py-2 px-3">Trade CID</th>
+          <th className="text-center py-2 px-3">Settlement</th>
           <th className="text-right py-2 px-3">Policy receipt</th>
         </tr>
       </thead>
@@ -1050,6 +1089,9 @@ function AcceptedTab({ accepted, onReceiptOpen }: AcceptedTabProps) {
             </td>
             <td className="text-right py-2 px-3">
               <span className="alloc-pill mono">{t.tradeCid}</span>
+            </td>
+            <td className="text-center py-2 px-3">
+              <SettlementBadge state={settlements[t.tradeCid]} />
             </td>
             <td className="text-right py-2 px-3">
               <button
@@ -1160,23 +1202,37 @@ interface ComposeProps {
 
 function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) {
   const { data: dealers } = useDealers();
-  // Rfq_Accept splits this text literally into the two leg instrument ids, so
+  // Each leg carries its registry admin, resolved from the listed venue pair;
   // an unlisted pair mints a MatchedTrade that can never be allocated.
   const { data: venuePairs } = useQuery({
     queryKey: ['pairs'],
     queryFn: ledger.getPairs,
   });
+  // Options are keyed by the pair's contract id, not its `base/quote` symbol
+  // label: two active pairs can share a symbol under different registry admins,
+  // and only the contract id resolves to the exact venue pair (and its admins).
   const pairOptions = useMemo(
     () =>
       (venuePairs ?? [])
         .filter((p) => p.active)
-        .map((p) => `${p.baseInstrumentId}/${p.quoteInstrumentId}`),
+        .map((p) => ({
+          value: p.contractId,
+          label: `${p.baseInstrumentId.id}/${p.quoteInstrumentId.id}`,
+        })),
     [venuePairs],
   );
   const [pair, setPair] = useState('');
   useEffect(() => {
-    if (!pair && pairOptions.length) setPair(pairOptions[0]!);
+    if (!pair && pairOptions.length) setPair(pairOptions[0]!.value);
   }, [pair, pairOptions]);
+  const venuePair = useMemo(
+    () => (venuePairs ?? []).find((p) => p.contractId === pair),
+    [venuePairs, pair],
+  );
+  const pairLabel = venuePair
+    ? `${venuePair.baseInstrumentId.id}/${venuePair.quoteInstrumentId.id}`
+    : '';
+  const baseSymbol = venuePair ? venuePair.baseInstrumentId.id : '';
   const [side, setSide] = useState<RfqSide>('RFQ_Buy');
   const [size, setSize] = useState('');
   const [expiry, setExpiry] = useState(60);
@@ -1196,13 +1252,17 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
   //   2. zero if no source has the pair
   // No hardcoded fallbacks — if the backend can't price it, the notional
   // shows "—" rather than misleading the user.
+  const priceKeys = useMemo(
+    () => [...new Set(pairOptions.map((o) => o.label))],
+    [pairOptions],
+  );
   const { data: pricesByPair } = useQuery({
-    queryKey: ['prices', pairOptions.join(',')],
-    enabled: pairOptions.length > 0,
+    queryKey: ['prices', priceKeys.join(',')],
+    enabled: priceKeys.length > 0,
     queryFn: async () => {
       const api = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
       const res = await fetch(
-        `${api}/v1/prices?pairs=${encodeURIComponent(pairOptions.join(','))}`,
+        `${api}/v1/prices?pairs=${encodeURIComponent(priceKeys.join(','))}`,
       );
       if (!res.ok) return {} as Record<string, number>;
       const body = (await res.json()) as {
@@ -1222,13 +1282,17 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
     );
 
   const sz = parseFloat(size) || 0;
-  const refMid = pricesByPair?.[pair] ?? null;
+  const refMid = pairLabel ? (pricesByPair?.[pairLabel] ?? null) : null;
   const notional = refMid != null ? sz * refMid : null;
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const submit = async () => {
     if (!sz || !whitelist.length) return;
+    if (!venuePair) {
+      setSubmitError('Selected pair is not a listed venue pair');
+      return;
+    }
     setSubmitting(true);
     setSubmitError(null);
     // Local id is a placeholder; the backend assigns the real contract id
@@ -1240,7 +1304,9 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
         trader,
         operator,
         rfqId: placeholderId,
-        pair,
+        pair: pairLabel,
+        baseInstrumentId: venuePair.baseInstrumentId,
+        quoteInstrumentId: venuePair.quoteInstrumentId,
         side,
         size: sz,
         expiresIn: expiry * 60,
@@ -1273,9 +1339,9 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
                 onChange={(e) => setPair(e.target.value)}
                 disabled={pairOptions.length === 0}
               >
-                {pairOptions.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
+                {pairOptions.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
                   </option>
                 ))}
               </select>
@@ -1303,7 +1369,7 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
             <label>
               Size{' '}
               <span style={{ color: 'var(--text-2)', fontSize: 11 }}>
-                {pair.split('/')[0]}
+                {baseSymbol}
               </span>
             </label>
             <input
@@ -1497,7 +1563,7 @@ function ComposeRfqSheet({ trader, operator, onClose, onSubmit }: ComposeProps) 
               Sending{' '}
               <span className="mono" style={{ color: 'var(--text)' }}>
                 {side === 'RFQ_Buy' ? 'BUY' : 'SELL'} {fmt(sz, 4)}{' '}
-                {pair.split('/')[0]}
+                {baseSymbol}
               </span>{' '}
               to{' '}
               <span style={{ color: 'var(--text)' }}>{whitelist.length}</span>{' '}

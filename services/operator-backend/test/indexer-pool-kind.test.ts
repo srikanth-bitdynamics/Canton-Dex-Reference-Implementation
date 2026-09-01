@@ -44,8 +44,8 @@ class StubLedger implements LedgerSubmitter {
         {
           contractId: "#pool:0",
           poolId: POOL_ID,
-          baseInstrumentId: "dBTC",
-          quoteInstrumentId: "dUSD",
+          baseInstrumentId: { admin: "admin::1220ab", id: "dBTC" },
+          quoteInstrumentId: { admin: "admin::1220ab", id: "dUSD" },
         },
       ] as unknown as T[];
     }

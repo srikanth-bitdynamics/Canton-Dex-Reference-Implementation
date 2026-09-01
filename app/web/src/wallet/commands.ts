@@ -11,41 +11,6 @@ import type {
   WalletIntent,
 } from "./types";
 
-// AllocationFactory is a Token-Standard interface in the splice
-// allocation-instruction-v2 package (NOT our app package), so the
-// AllocationFactory_Allocate exercise targets the interface id directly.
-const ALLOCATION_FACTORY_IID =
-  "#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory";
-
-// One AllocationFactory_Allocate exercise: the wallet authors the given
-// spec under `factoryCid`, locking `inputHoldingCids`. Created Allocation
-// cids are read back from the submit result in command order.
-function allocateCmd(
-  factoryCid: ContractId<"AllocationFactory">,
-  settlement: V2SettlementInfo,
-  spec: V2AllocationSpecification,
-  inputHoldingCids: ContractId<"Holding">[],
-  party: Party,
-  requestedAt: string,
-  extraArgs: V2ExtraArgs,
-): DamlCommand {
-  return {
-    ExerciseCommand: {
-      templateId: ALLOCATION_FACTORY_IID,
-      contractId: factoryCid,
-      choice: "AllocationFactory_Allocate",
-      choiceArgument: {
-        settlement,
-        allocation: spec,
-        requestedAt,
-        inputHoldingCids,
-        actors: [party],
-        extraArgs,
-      },
-    },
-  };
-}
-
 export type DamlCommand =
   | { CreateCommand: CreateCommand }
   | { ExerciseCommand: ExerciseCommand }
@@ -98,30 +63,30 @@ export function composeCommands(
     case "merge-holdings":             return composeMergeHoldings(intent, ctx);
     case "add-liquidity":              return composeAddLiquidity(intent, ctx);
     case "remove-liquidity":           return composeRemoveLiquidity(intent, ctx);
+    case "fund-matched-trade":         return composeFundMatchedTrade(intent, ctx);
   }
 }
 
+// Order funding: accept the OrderAllocationRequest and author its
+// specifications in one BatchingUtilityV2 command — the lock-admin funding spec
+// plus, for a cross-admin pair, the counter-admin receipt. The input holdings
+// fund the lock spec; the receipt locks nothing. `Order_Fund` derives the
+// expected specs from the order itself, so the request is accepted the same
+// standard way liquidity and swap use.
 function composeFundOrder(
   intent: Extract<WalletIntent, { kind: "fund-order" }>,
   ctx: ComposeContext,
 ): ComposedCommands {
-  assertFactoryReady(intent.factoryCid, "fund-order");
-  return {
-    commandId: `order-fund-${intent.settlement.id}-${ctx.now().getTime()}`,
-    actAs: [ctx.party],
-    commands: [
-      allocateCmd(
-        intent.factoryCid,
-        intent.settlement,
-        intent.allocationSpec,
-        intent.inputHoldingCids,
-        ctx.party,
-        intent.requestedAt,
-        intent.allocationFactoryExtraArgs,
-      ),
-    ],
-    disclosedContracts: dedupeDisclosure(intent.disclosure),
-  };
+  intent.factoryCids.forEach((cid) => assertFactoryReady(cid, "fund-order"));
+  return batchingUtilityCommand(
+    intent,
+    ctx,
+    intent.allocations.map((spec) =>
+      specFundsHoldings(spec) ? intent.inputHoldingCids : [],
+    ),
+    "order-fund-batch",
+    true,
+  );
 }
 
 function composePlaceOrder(
@@ -129,7 +94,7 @@ function composePlaceOrder(
   ctx: ComposeContext,
 ): ComposedCommands {
   return {
-    commandId: `order-${intent.pair.base}-${intent.pair.quote}-${ctx.now().getTime()}`,
+    commandId: `order-${intent.pair.base.id}-${intent.pair.quote.id}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [{
       CreateCommand: {
@@ -137,7 +102,6 @@ function composePlaceOrder(
         createArguments: {
           trader: ctx.party,
           operator: intent.operator,
-          admin: intent.admin,
           baseInstrumentId: intent.pair.base,
           quoteInstrumentId: intent.pair.quote,
           side: intent.side,
@@ -150,31 +114,47 @@ function composePlaceOrder(
   };
 }
 
-// Swap (DvP): author the terminal allocation that contains the exact input and
-// output sides returned by PoolRules_RequestSwap, locking the trader's input.
-// The created Allocation cid is read back from the submit result (like LP DvP)
-// and fed to the operator settle (PoolRules_Swap). No intermediate request contract.
+// Matched-trade funding: accept the TradeAllocationRequest and author its
+// per-admin specifications in one BatchingUtilityV2 command — the sender-leg
+// spec (funded from input holdings) plus, for a cross-admin trade, the
+// counter-admin receiver spec (locks nothing). Created cids drive the operator
+// MatchedTrade_Settle.
+function composeFundMatchedTrade(
+  intent: Extract<WalletIntent, { kind: "fund-matched-trade" }>,
+  ctx: ComposeContext,
+): ComposedCommands {
+  intent.factoryCids.forEach((cid) => assertFactoryReady(cid, "fund-matched-trade"));
+  return batchingUtilityCommand(
+    intent,
+    ctx,
+    intent.allocations.map((spec) =>
+      specFundsHoldings(spec) ? intent.inputHoldingCids : [],
+    ),
+    "trade-fund-batch",
+    true,
+  );
+}
+
+// Swap (DvP): accept the SwapAllocationRequest and author its per-admin
+// specifications in one BatchingUtilityV2 command — the swap-in leg under the
+// input admin and the swap-out receipt under the output admin (one combined
+// spec for a single-admin swap). The input holdings fund the swap-in spec; the
+// output receipt locks nothing. The created cids (input admin first) feed the
+// operator settle (PoolRules_Swap).
 function composeRequestSwap(
   intent: Extract<WalletIntent, { kind: "request-swap" }>,
   ctx: ComposeContext,
 ): ComposedCommands {
-  assertFactoryReady(intent.factoryCid, "request-swap");
-  return {
-    commandId: `swap-${shortCid(intent.poolId)}-${ctx.now().getTime()}`,
-    actAs: [ctx.party],
-    commands: [
-      allocateCmd(
-        intent.factoryCid,
-        intent.settlement,
-        intent.allocationSpec,
-        intent.inputHoldingCids,
-        ctx.party,
-        intent.requestedAt,
-        intent.allocationFactoryExtraArgs,
-      ),
-    ],
-    disclosedContracts: dedupeDisclosure(intent.disclosure),
-  };
+  intent.factoryCids.forEach((cid) => assertFactoryReady(cid, "request-swap"));
+  return batchingUtilityCommand(
+    intent,
+    ctx,
+    intent.allocations.map((spec) =>
+      specFundsHoldings(spec) ? intent.inputHoldingCids : [],
+    ),
+    "swap-batch",
+    true,
+  );
 }
 
 // Holding_Split / Holding_Merge are `controller admin, owner` in the registry
@@ -247,7 +227,7 @@ function composeAddLiquidity(
     intent.baseHoldingCids,
     intent.quoteHoldingCids,
     [],
-  ]);
+  ], "lp-batch", true);
 }
 
 // The token standard's wallet-side batching utility (Splice 0.6.11). Vendored
@@ -256,17 +236,41 @@ function composeAddLiquidity(
 const BATCHING_UTILITY_TID =
   "#splice-util-token-standard-wallet:Splice.Util.Token.Wallet.BatchingUtilityV2:BatchingUtility";
 
-// Build the single CreateAndExercise of the standard BatchingUtilityV2 shared
-// by add (deposits) and remove (receipts + burn): one top-level command creates
-// the utility, accepts the request, and
-// authors every allocation the request names. Holdings are threaded through
-// the utility's holding map — keyed by (admin, authorizer account), then
-// instrument id — and the registry locks only what each allocation needs,
-// returning the rest as change for the next call in the batch.
-// `holdingsBySpec` is PARALLEL to the request's [base, quote, LP] allocations.
+// The instrument a spec draws its input holdings from: a sender leg's
+// instrument (LP deposits, the swap-in leg) or, for a prefunded lock allocation
+// with no sender leg (order funding), its single next-iteration funding key. A
+// receiver-only or zero-funding receipt spec draws nothing.
+function fundingInstrumentId(spec: V2AllocationSpecification): string | undefined {
+  const senderSide = spec.transferLegSides.find((s) => s.side === "SenderSide");
+  if (senderSide) return senderSide.instrumentId;
+  const funding = spec.nextIterationFunding;
+  if (funding) {
+    const ids = Object.keys(funding);
+    if (ids.length === 1) return ids[0];
+  }
+  return undefined;
+}
+
+/** Whether a spec locks input holdings when authored (vs. a bare receipt). */
+export function specFundsHoldings(spec: V2AllocationSpecification): boolean {
+  return fundingInstrumentId(spec) !== undefined;
+}
+
+// Build the single CreateAndExercise of the standard BatchingUtilityV2 shared by
+// every allocation-authoring flow (LP add/remove, swap, order funding): one
+// top-level command creates the utility, accepts the request, and authors every
+// allocation the request names. Holdings are threaded through the utility's
+// holding map — keyed by (admin, authorizer account), then instrument id — and
+// the registry locks only what each allocation needs, returning the rest as
+// change for the next call in the batch. `holdingsBySpec` is PARALLEL to the
+// request's allocations.
 function batchingUtilityCommand(
   intent: {
-    requestCid: ContractId<"LiquidityAllocationRequest">;
+    requestCid:
+      | ContractId<"LiquidityAllocationRequest">
+      | ContractId<"SwapAllocationRequest">
+      | ContractId<"OrderAllocationRequest">
+      | ContractId<"TradeAllocationRequest">;
     settlement: V2SettlementInfo;
     allocations: V2AllocationSpecification[];
     requestedAt: string;
@@ -277,6 +281,12 @@ function batchingUtilityCommand(
   },
   ctx: ComposeContext,
   holdingsBySpec: string[][],
+  commandLabel: string,
+  // Whether the batch also accepts (and archives) the request. Every DvP flow
+  // accepts the standard way: the LP settle binds the acceptance receipt, and
+  // swap, order funding, and matched-trade settlement rely on the request being
+  // consumed while the created allocations drive the operator's settle.
+  acceptRequest: boolean,
 ): ComposedCommands {
   const requestedAt = intent.requestedAt;
   const factoryCids = intent.factoryCids;
@@ -293,16 +303,16 @@ function batchingUtilityCommand(
   intent.allocations.forEach((spec, i) => {
     const cids = holdingsBySpec[i] ?? [];
     if (cids.length === 0) return;
-    const senderSide = spec.transferLegSides.find((s) => s.side === "SenderSide");
-    if (!senderSide) {
-      throw new Error("batching: holdings supplied for a receiver-only allocation");
+    const instrumentId = fundingInstrumentId(spec);
+    if (!instrumentId) {
+      throw new Error("batching: holdings supplied for an allocation that funds nothing");
     }
     const mapKey = JSON.stringify([spec.admin, spec.authorizer]);
     const bucket =
       buckets.get(mapKey) ??
       { key: { admin: spec.admin, account: spec.authorizer }, byInstrument: {} };
-    bucket.byInstrument[senderSide.instrumentId] = [
-      ...(bucket.byInstrument[senderSide.instrumentId] ?? []),
+    bucket.byInstrument[instrumentId] = [
+      ...(bucket.byInstrument[instrumentId] ?? []),
       ...cids,
     ];
     buckets.set(mapKey, bucket);
@@ -310,14 +320,19 @@ function batchingUtilityCommand(
   const inputHoldingMap = {
     byAdminAndAccount: [...buckets.values()].map((b) => [b.key, b.byInstrument]),
   };
+  const acceptActions = acceptRequest
+    ? [
+        {
+          tag: "TSA_AllocationRequest_AcceptV2",
+          value: {
+            cid: intent.requestCid,
+            arg: { actors: [ctx.party], extraArgs: intent.allocationRequestExtraArgs },
+          },
+        },
+      ]
+    : [];
   const actions = [
-    {
-      tag: "TSA_AllocationRequest_AcceptV2",
-      value: {
-        cid: intent.requestCid,
-        arg: { actors: [ctx.party], extraArgs: intent.allocationRequestExtraArgs },
-      },
-    },
+    ...acceptActions,
     ...intent.allocations.map((spec, i) => ({
       tag: "TSA_AllocationFactory_AllocateV2",
       value: {
@@ -335,7 +350,7 @@ function batchingUtilityCommand(
     })),
   ];
   return {
-    commandId: `lp-batch-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
+    commandId: `${commandLabel}-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
     commands: [
       {
@@ -373,7 +388,7 @@ function composeRemoveLiquidity(
     [],
     [],
     intent.lpHoldingCids,
-  ]);
+  ], "lp-batch", true);
 }
 
 /** Intents whose follow-up step needs the wallet-authored allocation cid. */
@@ -382,7 +397,8 @@ export function isAllocationAuthoringIntent(intent: WalletIntent): boolean {
     intent.kind === "fund-order" ||
     intent.kind === "add-liquidity" ||
     intent.kind === "remove-liquidity" ||
-    intent.kind === "request-swap"
+    intent.kind === "request-swap" ||
+    intent.kind === "fund-matched-trade"
   );
 }
 
@@ -391,17 +407,18 @@ const ALLOCATION_TEMPLATE_SUFFIX = "CantonDex.Registry.V2:Allocation";
 const LIQUIDITY_ACCEPTANCE_SUFFIX =
   "CantonDex.Dex.LiquidityAllocationRequest:LiquidityAllocationAcceptance";
 
-// How many V2.Allocation contracts each intent authors. Drives the extraction
-// count check independently of how many total commands the submission carries
-// (the accept pairing adds a command but no extra Allocation).
+// How many V2.Allocation contracts each intent authors — one per spec the
+// request names (one for a single-admin trade, two for a cross-admin one).
+// Drives the extraction count check independently of how many total commands
+// the submission carries (the accept pairing adds a command but no Allocation).
 function expectedAllocationCount(intent: WalletIntent): number {
   switch (intent.kind) {
     case "add-liquidity":
     case "remove-liquidity":
-      return 3;
     case "request-swap":
     case "fund-order":
-      return 1;
+    case "fund-matched-trade":
+      return intent.allocations.length;
     default:
       return 0;
   }

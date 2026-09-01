@@ -50,7 +50,7 @@ describe('preview boundary', () => {
   it('does not show the preview warning for a live network status', async () => {
     renderLayout('canton:testnet');
 
-    expect(await screen.findByText('Synced · slot 42')).toBeInTheDocument();
+    expect(await screen.findByText('Synced · round 42')).toBeInTheDocument();
     expect(screen.queryByText(/In-memory preview/)).not.toBeInTheDocument();
   });
 });

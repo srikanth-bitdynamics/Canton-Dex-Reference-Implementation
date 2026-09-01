@@ -33,7 +33,7 @@ participant.
 |---|---|---|
 | **Holding** | Spendable units of one token owned by an account. | BTC, quote assets, and LP shares are registry-managed V2 holdings. |
 | **Market object** | A DEX contract that records terms or accounting, but does not contain token balances. | `Order`, `MatchedTrade`, `PoolState`, and `Rfq` describe what may happen. |
-| **Allocation** | Holdings locked by their owner for a named future settlement. It is narrower than an open-ended token allowance. | A wallet authors the allocation that funds an order, swap, or liquidity action. |
+| **Allocation** | Holdings locked by their owner for a named future settlement. It is narrower than an open-ended token allowance. | A wallet authors the allocations that fund an order, swap, or liquidity action. |
 | **DvP batch** | Delivery versus payment: every required transfer succeeds in one transaction, or none does. | `SettlementFactory_SettleBatch` moves the trader and pool/counterparty legs together. |
 | **Iterated settlement** | A settlement can create a successor allocation carrying the remaining locked funds. | Pool slices and partially filled orders continue without asking the owner to re-fund every step. |
 
@@ -43,19 +43,28 @@ lock, and settle the actual value.
 
 ## One swap in plain language
 
-Suppose a trader wants to sell `0.1 BTC` into a BTC/USDC pool:
+Suppose a trader wants to sell `0.1 BTC` into a BTC/USDC pool (an illustrative
+pair — the DEX lists any Token Standard V2 assets; a real deployment lists real
+instruments — say Canton Coin against a USDC representation — by registering their
+external registries on the operator backend (`DEX_AMULET_SCAN_URL`,
+`DEX_EXTERNAL_REGISTRIES`), not through the `DEPLOY_BASE`/`DEPLOY_QUOTE` symbols,
+which only name the seeded pair under the operator's own admin):
 
 1. `PoolState` records the aggregate BTC and USDC reserves. Separate
    `PoolSlice` contracts reference the committed allocations that actually back
    those reserves.
 2. The backend reads `PoolState` to show an estimated USDC output.
    `PoolRules_RequestSwap` validates a named state and ordered slice snapshot,
-   calculates the exact output from that snapshot, and returns the complete
-   input-and-output allocation specification the wallet must authorize.
-3. The trader's wallet locks `0.1 BTC` in a V2 allocation. The operator cannot
-   create this allocation on the trader's behalf in the self-custodial flow.
-4. The backend submits `PoolRules_Swap` with that allocation and the reserve
-   slices bound into the request.
+   calculates the exact output from that snapshot, and returns the
+   input-and-output allocation specifications the wallet must authorize — one per
+   instrument admin (one for a same-admin pair, two across registries).
+3. The trader's wallet authors those specifications in one command, locking
+   `0.1 BTC` on the swap-in leg. A cross-admin swap also authors the swap-out
+   receipt under the output admin — a second allocation that locks nothing — so
+   the trader signs one allocation per instrument admin. The operator cannot
+   author these allocations on the trader's behalf in the self-custodial flow.
+4. The backend submits `PoolRules_Swap` with those allocations (input admin
+   first) and the reserve slices bound into the request.
 5. The choice re-derives the same output from the bound state, checks the
    minimum, bound contract IDs, exact signed legs, and allocations, then calls
    `SettlementFactory_SettleBatch`.
@@ -89,7 +98,7 @@ operator backend submits listing, matching, and settlement commands. The
 operator-mediated RFQ example also submits trader-authority commands, so its
 ledger user must have act-as rights for the configured trader; that exception is
 not a self-custodial wallet model or a public relay service. Both paths submit
-into `canton-dex-trading`, whose trading
+into `canton-dex-trading-v2`, whose trading
 surfaces settle through a Token Standard V2 registry.
 
 ```mermaid
@@ -98,7 +107,7 @@ flowchart TB
   Wallet["Wallet<br/>CIP-0103 (external)"]
   Operator["Operator backend<br/>services/operator-backend<br/>HTTP API · matcher · indexer"]
 
-  subgraph Ledger["Canton ledger — canton-dex-trading package"]
+  subgraph Ledger["Canton ledger — canton-dex-trading-v2 package"]
     direction TB
     Surfaces["Four trading surfaces<br/>AMM pools · Order book · RFQ · OTC"]
     Registry["Token Standard V2 registry<br/>Holding · Allocation · SettlementFactory"]
@@ -116,7 +125,7 @@ flowchart TB
 - **Operator backend** (`services/operator-backend/`) — HTTP API, JSON Ledger
   API driver, the reference matcher, indexer, idempotency, and recovery. Ships an
   in-memory dev ledger so the stack runs without Canton.
-- **`canton-dex-trading` package** (`trading/`) — the DEX templates, the LP-token
+- **`canton-dex-trading-v2` package** (`trading/`) — the DEX templates, the LP-token
   component, and a reference V2 registry.
 - **Registry** — external by contract. The reference ships one, but V2 does not
   require this exact registry; the DEX integrates against `InstrumentId` and
@@ -132,7 +141,7 @@ that party without their wallet or delegated authority.
 |---|---|---|
 | Trader / liquidity provider | create market intent; lock their holdings in allocations; authorize an RFQ acceptance | settle or redirect pool inventory |
 | Dealer | create an RFQ quote; lock their side of an accepted trade | select the winning quote or settle the trade |
-| DEX operator | list markets; propose matches; invoke validated settle and recovery choices | lock a self-custodial user's holdings or fill outside signed terms |
+| DEX operator | list markets; propose matches; invoke validated settle and recovery choices | lock a self-custodial user's holdings; on swaps and liquidity the trader authors every leg, so it cannot fill outside those signed terms |
 | Asset registry admin | token holding, allocation, and settlement behavior for its instruments | change DEX market rules |
 | LP registrar | authorize LP mint and burn accounting | move base or quote reserves by itself |
 
@@ -180,7 +189,7 @@ settlement rather than a call into a router.
 | Uniswap / EVM | Canton DEX / Token Standard V2 | Key difference |
 |---|---|---|
 | `IERC20.approve(router, amount)` | `AllocationFactory_Allocate` | Locks specific holding contracts for one named settlement, not an open-ended balance allowance. |
-| Router `swapExactTokensForTokens` | `PoolRules_Swap` + `SettlementFactory_SettleBatch` | The swap settles as one atomic multi-party batch: the input holding and the pool's reserve slice move in a single transaction. |
+| Router `swapExactTokensForTokens` | `PoolRules_Swap` + `SettlementFactory_SettleBatch` | The swap settles atomically — one `SettleBatch` per instrument admin (one or two), all in one transaction: the input holding and the pool's reserve slice move together. |
 | LP balance in the pair contract | `LPTokenPolicy` + fungible LP `Holding`s | LP tokens are first-class V2 holdings in the provider's wallet, minted and burned by DvP, not a mapping entry. |
 | `reserve0` / `reserve1` in the pair | `PoolState` (pricing) + `PoolSlice`s (custody) | Reserves are a `Decimal` accounting figure; committed slices bound the state and input size, while `PoolState` remains the serialization point for one pool. |
 | Public mempool + global state | Per-party projection | Contract visibility follows Canton stakeholders. The operator custodies pool allocations, while trader allocations remain under the trader's authority in self-custodial flows. |

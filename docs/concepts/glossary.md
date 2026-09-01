@@ -168,10 +168,12 @@ Implemented in [`Registry.V2`](../../trading/CantonDex/Registry/V2.daml).
 
 ### AllocationRequest
 A V2 contract that publishes the allocation specifications a settlement needs
-and the actions available to the target party. Liquidity funding composes
-request acceptance with `AllocationFactory_Allocate`; order funding uses the
-request as a correlation record and consumes it when the resulting allocation
-is bound. The DEX's variants are
+and the actions available to the target party. The target's wallet accepts a
+request with `AllocationRequest_Accept`, which archives it and authors the
+allocation; for liquidity funding the accept composes with
+`AllocationFactory_Allocate`. The accept leaves acceptance evidence the later
+settlement relies on, so settlement does not consume a still-live request. The
+DEX's variants are
 [`OrderAllocationRequest`](../../trading/CantonDex/Dex/Order.daml),
 [`LiquidityAllocationRequest`](../../trading/CantonDex/Dex/LiquidityAllocationRequest.daml),
 and [`TradeAllocationRequest`](../../trading/CantonDex/Dex/MatchedTrade.daml).
@@ -222,8 +224,10 @@ Template [`DexPair`](../../trading/CantonDex/Dex/DexPair.daml).
 
 ### DvP (delivery-versus-payment)
 An atomic exchange where both legs settle together or not at all. Swaps, LP
-add/remove, and matched trades all settle as DvP through
-`SettlementFactory_SettleBatch`. See [Liquidity & Custody](liquidity-and-custody.md);
+add/remove, order fills, and matched trades all settle as DvP through
+`SettlementFactory_SettleBatch`, with legs grouped per instrument admin — a swap
+under one or two admins, add/remove liquidity under one to three, an order fill
+under one or two. See [Liquidity & Custody](liquidity-and-custody.md);
 proven in
 [`PoolLiquidityRulesTests`](../../trading-tests/CantonDex/Tests/PoolLiquidityRulesTests.daml)
 (an add funds base+quote and mints LP tokens in one flow).
@@ -247,9 +251,12 @@ same `id` but a different `admin` are different instruments. The DEX stores the
 
 ### Iterated settlement
 Settling in steps, where each step rolls the remaining backing forward to the
-next iteration via `nextIterationFunding`. Pool reserve slices and partial order
-fills use it so one allocation can back many settlements; the trader's swap
-allocation is terminal and signs its exact input and output sides. Iteration is
+next iteration via `nextIterationFunding`. Pool reserve slices and resting orders
+use it so one allocation can back many settlements: a resting order is prefunded
+with no legs at placement — `nextIterationFunding` covers the lock — and the
+operator supplies the concrete legs at match time. The trader's swap allocations
+— one per instrument admin — are terminal and sign the exact input and output
+sides. Iteration is
 independent of whether an allocation is committed. Enforced in
 [`Registry.V2`](../../trading/CantonDex/Registry/V2.daml); proven in
 [`RegistryConservationTests`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml)
@@ -341,7 +348,11 @@ The bilateral block-trade flow: a trader posts an `Rfq`, whitelisted dealers pos
 ### `SettlementFactory` / `SettlementFactory_SettleBatch`
 The registry factory that atomically settles a batch of
 [allocations](#allocation), enforcing per-instrument conservation (total sent
-equals total received) across the batch. Implemented in
+equals total received) across the batch. Each flow groups its legs by instrument
+admin and exercises one `SettlementFactory_SettleBatch` per admin inside a single
+Daml choice; swaps and liquidity reach it through a request-then-settle path,
+where the request records the on-ledger allocation specs and one settle choice
+batches them. Implemented in
 [`Registry.V2`](../../trading/CantonDex/Registry/V2.daml); conservation proven in
 [`RegistryConservationTests`](../../trading-tests/CantonDex/Tests/RegistryConservationTests.daml).
 

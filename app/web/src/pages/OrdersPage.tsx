@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { OrderBook } from '@/components/OrderBook';
 import { ledger } from '@/services/ledger';
+import { instrumentLabel } from '@/primitives/assets';
 import { useCurrentParty } from '@/wallet/hooks';
 import { useToast } from '@/primitives/ToastProvider';
 import { EmptyState } from '@/primitives/EmptyState';
@@ -58,7 +59,7 @@ export function OrdersPage() {
   const placeMutation = useMutation({
     mutationFn: async (params: Parameters<typeof ledger.placeOrder>[0]) => {
       const id = toast.push(
-        `${params.side === 'Bid' ? 'BUY' : 'SELL'} ${params.quantity} ${params.pairBase} @ ${params.limitPrice}`,
+        `${params.side === 'Bid' ? 'BUY' : 'SELL'} ${params.quantity} ${instrumentLabel(params.pairBase.id)} @ ${params.limitPrice}`,
         'placeOrder',
         () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
       );
@@ -114,7 +115,12 @@ export function OrdersPage() {
   }, [activePair, context, side, limitPrice, quantity, placeMutation]);
 
   const pairOrders = orders?.filter(
-    o => activePair && o.baseInstrumentId === activePair.baseInstrumentId && o.quoteInstrumentId === activePair.quoteInstrumentId
+    (o) =>
+      activePair &&
+      o.baseInstrumentId.admin === activePair.baseInstrumentId.admin &&
+      o.baseInstrumentId.id === activePair.baseInstrumentId.id &&
+      o.quoteInstrumentId.admin === activePair.quoteInstrumentId.admin &&
+      o.quoteInstrumentId.id === activePair.quoteInstrumentId.id,
   ) ?? [];
 
   return (
@@ -135,7 +141,10 @@ export function OrdersPage() {
         )}
         {activePair ? (
           <OrderBook
-            pair={{ base: activePair.baseInstrumentId, quote: activePair.quoteInstrumentId }}
+            pair={{
+              base: instrumentLabel(activePair.baseInstrumentId.id),
+              quote: instrumentLabel(activePair.quoteInstrumentId.id),
+            }}
             orders={pairOrders}
             onCancelOrder={id => {
               setCancelError(null);
@@ -191,7 +200,7 @@ export function OrdersPage() {
           </div>
           <div>
             <label className="text-text-secondary text-sm font-sans block mb-1">
-              Amount ({activePair?.baseInstrumentId ?? 'BASE'})
+              Amount ({activePair ? instrumentLabel(activePair.baseInstrumentId.id) : 'BASE'})
             </label>
             <input
               type="number"
@@ -205,7 +214,7 @@ export function OrdersPage() {
             <div className="flex justify-between text-sm text-text-secondary font-sans">
               <span>Total</span>
               <span className="font-mono">
-                {(parseFloat(limitPrice) * parseFloat(quantity)).toFixed(2)} {activePair?.quoteInstrumentId ?? 'QUOTE'}
+                {(parseFloat(limitPrice) * parseFloat(quantity)).toFixed(2)} {activePair ? instrumentLabel(activePair.quoteInstrumentId.id) : 'QUOTE'}
               </span>
             </div>
           )}

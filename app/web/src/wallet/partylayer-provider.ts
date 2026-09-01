@@ -15,6 +15,10 @@
 // can complete them.
 
 import { composeCommands } from "./commands";
+import {
+  discoverHoldingsAcrossRegistries,
+  parseHoldingsAcsResponse,
+} from "./holdings";
 import type { Holding } from "@/types/contracts";
 import type {
   DetectedWallet,
@@ -99,165 +103,9 @@ export interface PartyLayerClient {
   listWallets?(): Promise<PartyLayerWalletInfo[]>;
 }
 
-const HOLDING_V2_INTERFACE_ID =
-  "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding";
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-}
-
-function firstString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return null;
-}
-
-function extractContractEvents(value: unknown): unknown[] {
-  const root = asRecord(value);
-  if (!root) return [];
-  const candidates = [
-    root.activeContracts,
-    root.active_contracts,
-    root.contracts,
-    root.result,
-  ];
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) return candidate;
-  }
-  return Array.isArray(value) ? value : [];
-}
-
-function unwrapCreatedEvent(value: unknown): Record<string, unknown> | null {
-  const root = asRecord(value);
-  if (!root) return null;
-  const wrappers = [
-    root.CreatedEvent,
-    root.createdEvent,
-    asRecord(root.contractEntry)?.JsActiveContract &&
-      asRecord(asRecord(root.contractEntry)?.JsActiveContract)?.createdEvent,
-  ];
-  for (const wrapper of wrappers) {
-    const event = asRecord(wrapper);
-    if (event) return event;
-  }
-  return root;
-}
-
-function contractPayload(event: Record<string, unknown>): Record<string, unknown> | null {
-  const interfaceViews =
-    asRecord(event.interfaceViews) ?? asRecord(event.interface_views);
-  const interfaceView = interfaceViews
-    ? Object.values(interfaceViews)
-        .map(asRecord)
-        .find((view) => !!view)
-    : null;
-  const interfacePayload =
-    asRecord(interfaceView?.viewValue) ??
-    asRecord(interfaceView?.view_value) ??
-    asRecord(interfaceView?.view);
-
-  return (
-    asRecord(event.createArgument) ??
-    asRecord(event.createArguments) ??
-    asRecord(event.create_argument) ??
-    asRecord(event.create_arguments) ??
-    asRecord(event.payload) ??
-    asRecord(event.view) ??
-    interfacePayload ??
-    (event.instrumentId || event.instrument_id || event.account ? event : null) ??
-    null
-  );
-}
-
-function contractIdOf(event: Record<string, unknown>): string | null {
-  const value = event.contractId ?? event.contract_id ?? event.cid ?? event.id;
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function parseAmount(value: unknown): number {
-  if (typeof value === "number") return value;
-  const parsed = parseFloat(String(value ?? 0));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function parseHoldingPayload(
-  contractId: string,
-  owner: Party,
-  payload: Record<string, unknown>,
-): Holding | null {
-  const instrument =
-    payload.instrumentId ?? payload.instrument_id ?? payload.instrument;
-  const instrumentRecord = asRecord(instrument);
-  const account = asRecord(payload.account);
-  const payloadOwner =
-    payload.owner ?? payload.accountOwner ?? payload.account_owner ?? account?.owner;
-  if (typeof payloadOwner === "string" && payloadOwner !== owner) return null;
-
-  const instrumentId =
-    typeof instrument === "string"
-      ? instrument
-      : firstString(
-          instrumentRecord?.id,
-          instrumentRecord?.instrumentId,
-          instrumentRecord?.instrument_id,
-          payload.instrumentIdText,
-          payload.instrument_id_text,
-        );
-  const admin = firstString(
-    payload.admin,
-    payload.instrumentAdmin,
-    payload.instrument_admin,
-    instrumentRecord?.admin,
-    instrumentRecord?.instrumentAdmin,
-    instrumentRecord?.instrument_admin,
-  );
-  const resolvedOwner =
-    typeof payloadOwner === "string"
-      ? payloadOwner
-      : typeof account?.owner === "string"
-        ? account.owner
-        : owner;
-
-  if (!instrumentId || !admin) return null;
-
-  const locked =
-    typeof payload.locked === "boolean"
-      ? payload.locked
-      : payload.lock !== undefined && payload.lock !== null;
-
-  return {
-    contractId,
-    owner: resolvedOwner,
-    admin,
-    instrumentId,
-    amount: parseAmount(payload.amount),
-    // Preserve the exact wire string for precise funding-cid selection.
-    ...(typeof payload.amount === 'string'
-      ? { amountRaw: payload.amount }
-      : {}),
-    locked,
-  };
-}
-
-function dedupeHoldings(holdings: Holding[]): Holding[] {
-  const byCid = new Map<string, Holding>();
-  for (const holding of holdings) byCid.set(holding.contractId, holding);
-  return [...byCid.values()];
-}
-
+/** Retained export: PartyLayer's `ledgerApi` returns a JSON string envelope. */
 export function parsePartyLayerHoldings(response: string, owner: Party): Holding[] {
-  const parsed = JSON.parse(response) as unknown;
-  return extractContractEvents(parsed)
-    .map(unwrapCreatedEvent)
-    .filter((event): event is Record<string, unknown> => !!event)
-    .map((event) => {
-      const contractId = contractIdOf(event);
-      const payload = contractPayload(event);
-      if (!contractId || !payload) return null;
-      return parseHoldingPayload(contractId, owner, payload);
-    })
-    .filter((holding): holding is Holding => !!holding);
+  return parseHoldingsAcsResponse(response, owner);
 }
 
 export class PartyLayerProvider implements WalletProvider {
@@ -396,31 +244,14 @@ export class PartyLayerProvider implements WalletProvider {
     if (this.status.account.party !== owner) {
       throw new Error("partylayer-provider: can only read holdings for the connected party");
     }
-    const templateId = `${this.packagePrefix}:CantonDex.Registry.V2:Holding`;
-    const filters = [
-      { interfaceId: HOLDING_V2_INTERFACE_ID },
-      { templateId },
-    ];
-    const holdings: Holding[] = [];
-    let successfulReads = 0;
-    let lastError: unknown = null;
-
-    for (const filter of filters) {
-      try {
-        const result = await this.client.ledgerApi({
-          requestMethod: "POST",
-          resource: "/v2/state/acs",
-          body: JSON.stringify(filter),
-        });
-        successfulReads += 1;
-        holdings.push(...parsePartyLayerHoldings(result.response, owner));
-      } catch (err) {
-        lastError = err;
-      }
-    }
-
-    if (successfulReads === 0 && lastError) throw lastError;
-    return dedupeHoldings(holdings);
+    const client = this.client;
+    return discoverHoldingsAcrossRegistries(owner, this.packagePrefix, (req) =>
+      client.ledgerApi({
+        requestMethod: req.method,
+        resource: req.resource,
+        ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
+      }),
+    );
   }
 
   private setStatus(s: WalletConnectionStatus): void {

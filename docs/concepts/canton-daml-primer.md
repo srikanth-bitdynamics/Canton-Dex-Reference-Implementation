@@ -8,9 +8,9 @@ but have not built a Canton application.
 This primer teaches the ledger concepts used by this repository. It is not a
 complete Daml language course. Before editing Daml, complete Digital Asset's
 official
-[Get started with Daml](https://archived.docs.digitalasset.com/build/3.5/tutorials/get-started/index.html)
+[Get started with Daml](https://docs.canton.network/sdks-tools/sdks/daml-sdk)
 tutorial and
-[basic contracts lesson](https://archived.docs.digitalasset.com/build/3.5/tutorials/smart-contracts/contracts.html).
+[basic contracts lesson](https://docs.canton.network/appdev/modules/m3-contract-templates).
 Installation comes later in Step 3,
 [Getting started](../getting-started.md#prerequisites).
 
@@ -64,13 +64,13 @@ shortened excerpt of
 ```daml
 template DexPair with
     operator : Party
-    admin : Party
-    baseInstrumentId : Text
-    quoteInstrumentId : Text
+    baseInstrumentId : V2.InstrumentId  -- full identity { admin, id }
+    quoteInstrumentId : V2.InstrumentId -- admin may differ from the base's
+    publicReaders : Optional [Party]
     active : Bool
   where
-    signatory operator       -- authorizes creation; always sees the contract
-    observer admin           -- sees the contract; need not authorize creation
+    signatory operator                          -- authorizes creation; always sees the contract
+    observer optional [] identity publicReaders -- listed readers; need not authorize creation
 
     choice DexPair_SetActive : ContractId DexPair
       with newActive : Bool
@@ -82,7 +82,7 @@ Read it from top to bottom:
 
 1. `DexPair` is the schema for one market listing.
 2. A created instance gets a contract ID, often called a `cid` in this repo.
-3. The `operator` is the signatory; `admin` is an observer.
+3. The `operator` is the signatory; the listed `publicReaders` are observers.
 4. `DexPair_SetActive` is a consuming choice by default. Exercising it archives
    the old pair contract and creates a successor with the new flag.
 
@@ -94,7 +94,7 @@ updates. Do not look for a database-style in-place mutation.
 | Role | Question it answers | In the excerpt |
 |---|---|---|
 | Signatory | Who authorizes contract creation and is a stakeholder? | `operator` |
-| Observer | Which additional stakeholder sees the contract? | `admin` |
+| Observer | Which additional stakeholder sees the contract? | `publicReaders` |
 | Controller | Who authorizes this choice exercise? | `operator` |
 
 Visibility is deliberate. A contract that is visible to the operator is not
@@ -162,7 +162,7 @@ This repository separates three representations:
 trading/**/*.daml
     │ dpm build
     ▼
-trading/.daml/dist/canton-dex-trading-0.1.4.dar
+trading/.daml/dist/canton-dex-trading-v2-1.0.0.dar
     │ upload / vet for the target network
     ▼
 Canton participant
@@ -223,13 +223,14 @@ the repository.
 | Permission to use exact funds for a trade | trader-authored `Allocation` tied to settlement terms |
 | Pool reserves used for pricing | `PoolState.reserves` |
 | Pool inventory that backs those reserves | committed allocation slices represented by `PoolSlice` |
-| Atomic input-for-output exchange | `SettlementFactory_SettleBatch` inside the pool swap transaction |
+| Atomic input-for-output exchange | one `SettlementFactory_SettleBatch` per instrument admin (one or two) inside the pool swap transaction |
 | LP share | a Token Standard V2 LP instrument held in ordinary `Holding` contracts |
 
 An allocation is intentionally narrower than an ERC-20 router allowance. It
 locks identified backing for a particular settlement specification and names
-the authorized settlement context. The operator can execute a valid settle; it
-cannot silently rewrite the trader's signed legs.
+the authorized settlement context. In a swap or liquidity operation the trader
+authors every leg up front, so the operator can execute a valid settle but
+cannot add to or rewrite those signed legs.
 
 ## One swap, in Canton terms
 
@@ -242,14 +243,14 @@ sequenceDiagram
   participant O as Operator
   participant W as Wallet
   participant L as Canton / Daml
-  D->>O: Request quote and Daml-built allocation specification
+  D->>O: Request quote and Daml-built allocation specs (one per admin)
   O->>L: Exercise PoolRules_RequestSwap
   L-->>O: Exact input/output legs bound to a pool snapshot
   O-->>D: Wallet intent + disclosed context
-  D->>W: Ask trader to authorize allocation
+  D->>W: Ask trader to authorize the allocations
   W->>L: AllocationFactory_Allocate as trader
-  L-->>D: Trader allocation contract / correlated update
-  D->>O: Settle using that allocation
+  L-->>D: Trader allocation contracts / correlated update
+  D->>O: Settle using those allocations
   O->>L: PoolRules_Swap as operator
   L->>L: Validate quote, settle batch, update state and slices atomically
   L-->>T: Updated visible holdings

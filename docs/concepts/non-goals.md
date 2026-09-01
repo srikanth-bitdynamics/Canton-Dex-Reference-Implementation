@@ -15,8 +15,7 @@ and points at the guide or contract where the excluded work would live.
 
 | Excluded | Why it is out of scope | Where it belongs |
 |---|---|---|
-| A generic settlement engine | The templates encode one DEX's rules — constant-product pricing, price-time order priority, RFQ ranking — not a parameterisable framework | A fork that reuses the allocate-then-`SettleBatch` pattern for its own flows |
-| Cross-registry pairs (two admins) | App-layer templates key each pair on a single `admin : Party`; the settlement spine already allows more | A scoped schema change — [registry integration](../guides/registry-integration.md#known-limitation-one-registry-admin-per-pair) |
+| A generic settlement engine | The reference encodes one DEX's rules — constant-product pricing, price-time order priority, RFQ ranking — not a parameterisable framework | A fork that reuses the allocate-then-`SettleBatch` pattern for its own flows |
 | A production matching engine | The batch matcher shows only the Canton-specific part: a fill re-checked and settled atomically on-ledger | A fork's off-ledger matcher (pro-rata, iceberg, continuous auction) |
 | Fair ordering and MEV resistance | The operator privately observes orders and chooses match timing and submission order | A production sequencing, auction, or independently attested matching design |
 | A rich instrument lifecycle | Token Standard V2 standardizes the holding, not lifecycle; the DEX needs only a holding | The registry that administers the `InstrumentId` — [add an instrument](../guides/add-lp-or-instrument.md) |
@@ -32,36 +31,10 @@ The Daml models a DEX — pools, orders, RFQ. It is not a configurable settlemen
 framework that a caller parameterises into arbitrary flows. The settlement
 pattern — allocate, then settle a batch atomically through the registry's
 `SettlementFactory_SettleBatch` — is meant to be read and reused, but the
-templates encode the DEX's own rules: constant-product pricing, price-time order
-priority, and deterministic RFQ eligibility ranking. Lifting that pattern into a general engine
+reference encodes the DEX's own rules: constant-product pricing in the templates,
+with best-price-then-time order matching and deterministic RFQ eligibility ranking
+in the off-ledger services. Lifting that pattern into a general engine
 is a fork's job, not a configuration flag. See [architecture.md](architecture.md).
-
-## One registry admin per pair
-
-A trading pair carries a single `admin : Party` covering both its base and quote
-instruments (`trading/CantonDex/Dex/Order.daml`, `Pool.daml`):
-
-```daml
-template Order with
-    ...
-    admin : Party
-      -- ^ Registry admin for the base + quote instruments.
-    baseInstrumentId : Text
-      -- ^ `id` component of the base instrument, under `admin`.
-    quoteInstrumentId : Text
-      -- ^ `id` component of the quote instrument, under `admin`.
-```
-
-Under Token Standard V2 an instrument is identified by `(admin, id)`, so this
-reference cannot list a pair whose two assets come from different registries —
-Canton Coin quoted against a third-party stablecoin, for instance. The limitation
-is app-layer, not settlement-layer: a single Daml transaction can settle one batch
-per admin, and the LP path already does exactly that, calling
-`SettlementFactory_SettleBatch` once for the base/quote admin and once for the LP
-registrar. Lifting it is a scoped schema change — a second-admin field on the four
-pair-keyed templates and one allocation specification per `(authorizer, admin)`,
-written up in
-[registry-integration.md](../guides/registry-integration.md#known-limitation-one-registry-admin-per-pair).
 
 ## Not a production matching engine
 
@@ -77,8 +50,11 @@ continuous auction; a production venue would layer those on off-ledger.
 What the reference does show is the part specific to Canton: a match settles
 atomically against both traders' funding allocations, and
 `OrderMatchExecution_Execute` re-checks the fill against both orders' own limit
-prices, quantities, instruments, and bound allocations — so a buggy or malicious
-off-ledger matcher cannot settle a fill the traders never agreed to. Proven by
+prices, quantities, instruments, and bound allocations — so a fill settled through
+that choice cannot fall outside either order's own terms. These are DEX-side
+checks: the registry itself cannot prove the operator settled through
+`OrderMatchExecution_Execute` rather than another path, so they constrain the
+fill, not the operator's choice of route. Proven by
 [TradeWorkflowTests.daml](../../trading-tests/CantonDex/Tests/TradeWorkflowTests.daml)
 proves that two trader allocations settle in one operator batch.
 [OrderWorkflowTests.daml](../../trading-tests/CantonDex/Tests/OrderWorkflowTests.daml)

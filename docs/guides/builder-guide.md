@@ -31,7 +31,8 @@ flowchart TB
 
 - **DEX contracts own market structure**: orders, pools, LP issuance, RFQ, trades.
 - **Token Standard contracts own reservation and settlement**: a trade is a set of
-  holder-authored allocations settled by one `SettlementFactory_SettleBatch`.
+  holder-authored allocations settled by `SettlementFactory_SettleBatch`, one batch
+  per registry admin.
 - **Registry contracts own asset semantics**: what a holding is, who may hold it,
   and the choice context a settlement needs.
 
@@ -87,7 +88,7 @@ Register a tradable pair, and for pool mode its instruments.
 - Source and focused checks: [Daml proof map — Pair listing metadata](../reference/daml-proof-map.md#pair-listing-metadata).
 
 ### B. OTC and RFQ settlement
-A bilateral block trade settles as one atomic batch.
+A bilateral block trade settles atomically, one batch per registry admin.
 
 - `Dex/MatchedTrade.daml` — `MatchedTrade_RequestAllocations` (one request per
   authorizer), `MatchedTrade_Settle` (groups legs by registry admin, calls
@@ -103,7 +104,9 @@ A limit order rests in the book, funded by the trader's own locked allocation.
 - `Dex/OrderFundingRequest.daml` — the trader-signed intent.
 - `Dex/Order.daml` — the operator-bound `Order` and its `OrderAllocationRequest`. The
   trader authors the allocation with `AllocationFactory_Allocate`, so their own
-  authority locks the holding; the operator cannot move it.
+  authority locks the holding; the operator is named as its settlement executor and
+  can move it only by settling the allocation it is locked into, and that settle is
+  constrained by `OrderMatchExecution` when it is the choice used.
 - Expiring orders commit funding until their deadline. GTC funding remains
   uncommitted, allowing the trader to withdraw through the standard allocation
   interface if the venue is unavailable; a later match then fails safely.
@@ -127,31 +130,32 @@ An AMM whose reserves are committed allocations.
 
 ## The off-ledger matcher: where a fork does most of its work
 
-The on-ledger `OrderMatchExecution` template settles two opposing allocations
+The on-ledger `OrderMatchExecution` template settles two opposing orders' allocations
 atomically. Everything above it — finding opposing orders and choosing the fill
 quantity and price — is operator code, so a fork can rewrite matching without
 touching a Daml template.
 
 The operator scans active `Order`s (`/v1/orders`), pairs compatible ones (same pair,
 opposite side, `bid.limitPrice >= ask.limitPrice`), sets the fill quantity to
-`min(remaining)` and a policy fill price, then creates and exercises the match in one
-submission:
+`min(remaining)` and a policy fill price, then runs a read-only settlement preview and
+creates and exercises the value-moving match in one submission:
 
 ```daml
 choice OrderMatchExecution_Execute : OrderMatch_ExecuteResult
   with
-    factoryCid : ContractId V2.SettlementFactory
-    extraArgs : ExtraArgs        -- registry choice context for the batch
+    batchesByAdmin : Map Party RegistryBatchInput
+      -- one settlement factory + choice context per instrument admin;
+      -- a single-admin pair supplies one entry
   controller operator
   do
     ...  -- finalize both allocations with the concrete match legs,
-         -- SettleBatch, roll each order onto its next-iteration
-         -- allocation, and write a SettledTrade
+         -- SettleBatch per admin, roll each order onto its
+         -- next-iteration allocation, and write a SettledTrade
 ```
 
 Using one `createAndExercise` keeps funds and orders moving together: the settle
-archives both allocations, so an order left pointing at a spent one could neither be
-filled nor cancelled. The split is deliberate — matchers change often, settlement
+archives both orders' allocations, so an order left pointing at a spent one could
+neither be filled nor cancelled. The split is deliberate — matchers change often, settlement
 primitives do not.
 
 ## Wallet integration
@@ -167,9 +171,11 @@ co-submission path. The included RFQ page demonstrates the last option with
 configured parties; it is not part of the wallet-intent surface or a public
 relay service.
 
-Read endpoints (`/v1/pools`, `/v1/trades`, …) are operator-observed and served from
-the backend's indexer cache. Keep self-custodial allocation writes on the wallet
-path; any relay path must name and enforce the parties the backend may act for.
+Read endpoints are operator-observed: active-state reads (`/v1/pools`, `/v1/orders`)
+query the ledger ACS as the operator, while history and stats (`/v1/trades`,
+`/v1/stats/24h`) are served from the SQLite indexer. Keep self-custodial allocation
+writes on the wallet path; any relay path must name and enforce the parties the
+backend may act for.
 
 CIP-0103 does not impose a one-command limit, but supported wallet gateways may.
 The DEX therefore composes one top-level command per wallet approval. Where a
@@ -187,7 +193,7 @@ named allocation in one transaction. Deploy that DAR alongside the DEX DAR.
 | Issue a new LP token or lifecycle-rich instrument (vested, dividend-bearing) | See [Add an LP or instrument](add-lp-or-instrument.md). |
 | Use a different registry | Keep the DEX services behind `registry-client`, then configure discovery, choice context, disclosures, and metadata for the target registry. `CantonDex.Testing.MockRegistry` appears only in Daml test fixtures and is not the deployed backend. See [Registry integration](registry-integration.md). |
 | Add a pricing curve (StableSwap, weighted) | Add curve-specific configuration and rules, then reuse the V2 allocation and settlement pattern. No generic curve interface is defined by this package. |
-| Change the executable pool fee | Update `Pool.feeBps` and the `constantProductOut` quote math. Mirror the value into `DexPair.feeModel` only where off-ledger listing consumers need it; that record does not gate or price `PoolRules_Swap`. |
+| Change the executable pool fee | The swap fee is `Pool.feeBps`, read by `constantProductOut` in `PoolRules_Swap`. `Pool` config is immutable and has no update choice, so re-create the pool with the new `feeBps`. `DexPair.feeModel` is separate off-ledger listing policy, changed through `DexPair_UpdateFeeModel`; it does not gate or price `PoolRules_Swap`. |
 | Add an RFQ policy (oracle-weighted, multi-tier) | `Rfq.policyCmp` defines the ordering used by `applyPolicyPairs`; bump `policyVersion`/`policyHash` and mirror it in `app/web/src/services/rfq-policy.ts`. |
 | Point at a different participant | Set `CANTON_LEDGER_URL`, `CANTON_LEDGER_TOKEN`, `CANTON_SYNCHRONIZER`. See [Run on a testnet](run-on-testnet.md). |
 
@@ -252,7 +258,7 @@ LPTokenPolicy               LP instrument supply ledger, record-mint/burn policy
 LiquidityAllocationRequest  operator-issued; carries the add/remove DvP allocation request
 Order                       resting limit order backed by a V2 allocation
 OrderAllocationRequest      trader-observed allocation request (V2 interface)
-OrderMatchExecution         operator-driven match of two opposing allocations
+OrderMatchExecution         operator-driven match of two opposing orders' allocations
 MatchedTrade                bilateral block-trade carrier, optional PolicyReceipt
 TradeAllocationRequest      per-authorizer allocation request for a matched trade
 Rfq / RfqQuote              trader's request for quotes; dealer's quote
@@ -260,7 +266,7 @@ PolicyReceipt               on-ledger record of the operator ranking policy at a
 Registry.V2.*               reference registry implementing Token Standard V2 interfaces
 ```
 
-The Daml package is `canton-dex-trading` (current version `v0.1.4`).
+The Daml package is `canton-dex-trading-v2` (current version `1.0.0`).
 
 ### Reference: off-ledger layout
 

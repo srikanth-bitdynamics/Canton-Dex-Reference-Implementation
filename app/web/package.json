@@ -14,11 +14,12 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "patch-package"
   },
   "dependencies": {
-    "@canton-network/dapp-sdk": "^1.1.0",
-    "@partylayer/sdk": "^0.4.1",
+    "@canton-network/dapp-sdk": "^1.5.1",
+    "@partylayer/sdk": "^0.18.2",
     "@reown/appkit": "^1.8.19",
     "@reown/appkit-common": "^1.8.19",
     "@reown/appkit-universal-connector": "^1.8.19",
@@ -47,6 +48,7 @@
     "@vitest/ui": "^4.1.11",
     "autoprefixer": "^10.4.19",
     "jsdom": "^29.1.1",
+    "patch-package": "^8.0.0",
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.6",
     "typescript": "^5.5.3",

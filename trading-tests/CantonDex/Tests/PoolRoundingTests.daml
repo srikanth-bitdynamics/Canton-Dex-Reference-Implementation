@@ -10,9 +10,12 @@
 module CantonDex.Tests.PoolRoundingTests where
 
 import DA.Assert
+import DA.List (head)
+import DA.Map qualified as Map
 import DA.Optional (fromSome)
 import Daml.Script
 
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Testing.Utils (emptyExtraArgs)
 
 import CantonDex.Dex.Pool (PoolReserves(..))
@@ -21,6 +24,7 @@ import CantonDex.Dex.PoolRules qualified as PRules
 import CantonDex.Dex.PoolState qualified as PS
 import CantonDex.Tests.PoolLiquidityRulesTests qualified as PLT
 import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.AdminBatch qualified as AB
 
 -- Division rounds DOWN: `floorDiv` never returns more than the true quotient
 -- (plain `/` can round the last digit up), yet leaves exact quotients as-is.
@@ -121,7 +125,8 @@ testSwapOutputRoundsDownToKeepConstantProduct = do
   -- Operator opens a swap request for bob: 7 USDC in.
   reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid = fx.poolCid; swapper = bob
-    inputInstrumentId = "USDC"; inputAmount = 7.0
+    inputInstrumentId = (HoldingV2.InstrumentId with admin = fx.registry; id = "USDC"); inputAmount = 7.0
+    requestedAt = now; settleAt = None
     quoteBinding = Some (PRules.SwapQuoteBinding with
       expectedPoolId = fx.poolId
       poolStateCid = addRes.poolStateCid
@@ -131,7 +136,7 @@ testSwapOutputRoundsDownToKeepConstantProduct = do
   -- Allocation plumbing: give bob the 7 USDC and lock it into the settlement
   -- the request named, the way a real trade would fund its input.
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 7.0
-  swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
+  swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement (head reqRes.allocationSpecs)
     [toInterfaceContractId usdcHold] now
   -- Execute the swap (operator acts, reading the registry's holdings): 7 USDC
   -- in, BTC out, no minimum-out floor enforced.
@@ -140,12 +145,12 @@ testSwapOutputRoundsDownToKeepConstantProduct = do
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid
       swapperAccount = Utils.basicAccount bob
-      inputInstrumentId = "USDC"; inputAmount = 7.0; minOutputAmount = 0.0
-      swapperAllocationCid = swapAlloc
+      inputInstrumentId = (HoldingV2.InstrumentId with admin = fx.registry; id = "USDC"); inputAmount = 7.0; minOutputAmount = 0.0
+      swapperAllocationCidsByAdmin = Map.fromList [(fx.registry, swapAlloc)]
       inputSliceCid = addRes.quoteSliceCid
       outputSliceCids = [addRes.baseSliceCid]
-      factoryCid = fx.settleCid
-      extraArgs = emptyExtraArgs
+      batchesByAdmin = Map.fromList [(fx.registry, AB.RegistryBatchInput fx.settleCid emptyExtraArgs)]
+      swapAllocationRequestCids = [reqRes.swapRequestCid]
       quoteBinding = reqRes.quoteBinding
 
   -- Read back the pool the swap left behind.

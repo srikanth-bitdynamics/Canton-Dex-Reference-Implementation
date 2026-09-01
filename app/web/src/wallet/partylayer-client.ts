@@ -41,6 +41,28 @@ function normalizeNetwork(network: string): NetworkId {
   }
 }
 
+// A Loop pairing that never completes leaves `loop_connect` carrying a stale
+// ticketId but no authToken. The SDK's autoConnect then reuses that dead ticket
+// instead of minting a fresh one, and the connect page loads an expired ticket
+// ("Failed to Load Connection"). Drop an unauthorized pairing before each
+// connect so every attempt starts from a fresh ticket; a completed session
+// (with an authToken) is left intact for reconnect.
+function clearIncompleteLoopSession(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem("loop_connect");
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as { authToken?: unknown };
+    if (!parsed.authToken) window.localStorage.removeItem("loop_connect");
+  } catch {
+    try {
+      window.localStorage.removeItem("loop_connect");
+    } catch {
+      /* storage unavailable */
+    }
+  }
+}
+
 function buildAdapters(): WalletAdapter[] {
   return [
     new ConsoleAdapter(),
@@ -98,6 +120,7 @@ export function createDexPartyLayerClient(
 
   return {
     async connect(connectOptions) {
+      clearIncompleteLoopSession();
       // The combined picker passes the chosen wallet id — connect straight to it
       // rather than probing the configured list in order.
       if (connectOptions?.walletId) {

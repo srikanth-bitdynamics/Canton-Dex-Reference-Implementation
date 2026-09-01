@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ledger } from '@/services/ledger';
+import { instrumentLabel } from '@/primitives/assets';
 import { OperatorApi } from '@/services/operator-api';
 import {
   clearApiSessionCredentials,
@@ -133,7 +134,8 @@ export function AdminPage() {
                 className="border-b border-[var(--border-subtle)] hover:bg-surface-hover"
               >
                 <td className="py-2 font-mono text-text-primary">
-                  {pair.baseInstrumentId}/{pair.quoteInstrumentId}
+                  {instrumentLabel(pair.baseInstrumentId.id)}/
+                  {instrumentLabel(pair.quoteInstrumentId.id)}
                 </td>
                 <td className="py-2 text-text-secondary font-sans">
                   {pair.tradingMode}
@@ -306,7 +308,8 @@ export function AdminPage() {
                 className="border-b border-[var(--border-subtle)] hover:bg-surface-hover"
               >
                 <td className="py-2 font-mono text-text-primary">
-                  {pool.baseInstrumentId}/{pool.quoteInstrumentId}
+                  {instrumentLabel(pool.baseInstrumentId.id)}/
+                  {instrumentLabel(pool.quoteInstrumentId.id)}
                 </td>
                 <td className="py-2 text-center">
                   <span
@@ -455,9 +458,8 @@ function ApiCredentialsPanel({
 interface CreatePairProps {
   onClose: () => void;
   onSubmit: (input: {
-    admin: string;
-    baseInstrumentId: string;
-    quoteInstrumentId: string;
+    baseInstrumentId: { admin: string; id: string };
+    quoteInstrumentId: { admin: string; id: string };
     tradingMode: TradingMode;
     feeModel: { makerFeeBps: number; takerFeeBps: number; poolFeeBps: number };
   }) => void;
@@ -465,9 +467,12 @@ interface CreatePairProps {
 }
 
 function CreatePairForm({ onClose, onSubmit, pending }: CreatePairProps) {
-  const [base, setBase] = useState('BTC');
-  const [quote, setQuote] = useState('USDC');
-  const [admin, setAdmin] = useState('');
+  const [base, setBase] = useState('Amulet');
+  const [quote, setQuote] = useState('USDCx');
+  // Base and quote each carry their own registry admin so a cross-admin pair
+  // (e.g. CC@DSO / USDCx@registrar) keeps both identities distinct.
+  const [baseAdmin, setBaseAdmin] = useState('');
+  const [quoteAdmin, setQuoteAdmin] = useState('');
   const [mode, setMode] = useState<TradingMode>('TM_Both');
   const [maker, setMaker] = useState(10);
   const [taker, setTaker] = useState(20);
@@ -475,14 +480,6 @@ function CreatePairForm({ onClose, onSubmit, pending }: CreatePairProps) {
 
   return (
     <FormShell title="Add Trading Pair" onClose={onClose}>
-      <Field label="Admin party">
-        <input
-          className="input"
-          value={admin}
-          onChange={(e) => setAdmin(e.target.value)}
-          placeholder="admin::pkg-id"
-        />
-      </Field>
       <div className="grid grid-cols-2 gap-3">
         <Field label="Base instrument">
           <input
@@ -491,11 +488,27 @@ function CreatePairForm({ onClose, onSubmit, pending }: CreatePairProps) {
             onChange={(e) => setBase(e.target.value)}
           />
         </Field>
+        <Field label="Base admin party">
+          <input
+            className="input"
+            value={baseAdmin}
+            onChange={(e) => setBaseAdmin(e.target.value)}
+            placeholder="admin::pkg-id"
+          />
+        </Field>
         <Field label="Quote instrument">
           <input
             className="input"
             value={quote}
             onChange={(e) => setQuote(e.target.value)}
+          />
+        </Field>
+        <Field label="Quote admin party">
+          <input
+            className="input"
+            value={quoteAdmin}
+            onChange={(e) => setQuoteAdmin(e.target.value)}
+            placeholder="admin::pkg-id"
           />
         </Field>
       </div>
@@ -539,12 +552,11 @@ function CreatePairForm({ onClose, onSubmit, pending }: CreatePairProps) {
       <FormActions onClose={onClose}>
         <button
           className="btn primary"
-          disabled={pending || !admin || !base || !quote}
+          disabled={pending || !baseAdmin || !quoteAdmin || !base || !quote}
           onClick={() =>
             onSubmit({
-              admin,
-              baseInstrumentId: base,
-              quoteInstrumentId: quote,
+              baseInstrumentId: { admin: baseAdmin, id: base },
+              quoteInstrumentId: { admin: quoteAdmin, id: quote },
               tradingMode: mode,
               feeModel: {
                 makerFeeBps: maker,
@@ -565,9 +577,8 @@ interface CreatePoolProps {
   onClose: () => void;
   onSubmit: (input: {
     lpRegistrar: string;
-    admin: string;
-    baseInstrumentId: string;
-    quoteInstrumentId: string;
+    baseInstrumentId: { admin: string; id: string };
+    quoteInstrumentId: { admin: string; id: string };
     lpInstrumentId: string;
     feeBps: number;
   }) => void;
@@ -575,22 +586,18 @@ interface CreatePoolProps {
 }
 
 function CreatePoolForm({ onClose, onSubmit, pending }: CreatePoolProps) {
-  const [base, setBase] = useState('BTC');
-  const [quote, setQuote] = useState('USDC');
-  const [lp, setLp] = useState('BTC-USDC-LP');
-  const [admin, setAdmin] = useState('');
+  const [base, setBase] = useState('Amulet');
+  const [quote, setQuote] = useState('USDCx');
+  const [lp, setLp] = useState('Amulet-USDCx-LP');
+  // Base and quote each carry their own registry admin; the LP token's admin is
+  // the LP registrar below.
+  const [baseAdmin, setBaseAdmin] = useState('');
+  const [quoteAdmin, setQuoteAdmin] = useState('');
   const [lpRegistrar, setLpRegistrar] = useState('');
   const [feeBps, setFeeBps] = useState(30);
 
   return (
     <FormShell title="Create Pool" onClose={onClose}>
-      <Field label="Admin party">
-        <input
-          className="input"
-          value={admin}
-          onChange={(e) => setAdmin(e.target.value)}
-        />
-      </Field>
       <Field label="LP registrar party">
         <input
           className="input"
@@ -606,11 +613,27 @@ function CreatePoolForm({ onClose, onSubmit, pending }: CreatePoolProps) {
             onChange={(e) => setBase(e.target.value)}
           />
         </Field>
+        <Field label="Base admin party">
+          <input
+            className="input"
+            value={baseAdmin}
+            onChange={(e) => setBaseAdmin(e.target.value)}
+            placeholder="admin::pkg-id"
+          />
+        </Field>
         <Field label="Quote instrument">
           <input
             className="input"
             value={quote}
             onChange={(e) => setQuote(e.target.value)}
+          />
+        </Field>
+        <Field label="Quote admin party">
+          <input
+            className="input"
+            value={quoteAdmin}
+            onChange={(e) => setQuoteAdmin(e.target.value)}
+            placeholder="admin::pkg-id"
           />
         </Field>
       </div>
@@ -632,13 +655,12 @@ function CreatePoolForm({ onClose, onSubmit, pending }: CreatePoolProps) {
       <FormActions onClose={onClose}>
         <button
           className="btn primary"
-          disabled={pending || !admin || !lpRegistrar}
+          disabled={pending || !baseAdmin || !quoteAdmin || !lpRegistrar}
           onClick={() =>
             onSubmit({
-              admin,
               lpRegistrar,
-              baseInstrumentId: base,
-              quoteInstrumentId: quote,
+              baseInstrumentId: { admin: baseAdmin, id: base },
+              quoteInstrumentId: { admin: quoteAdmin, id: quote },
               lpInstrumentId: lp,
               feeBps,
             })

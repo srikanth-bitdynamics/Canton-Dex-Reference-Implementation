@@ -87,8 +87,9 @@ export CANTON_LP_SETTLE_FACTORY_CID="<lpRegistryCid>"
 ```
 
 The included server maps the configured asset admin and LP registrar
-separately. A venue that lists additional third-party admins should replace
-this two-admin configuration with discovery from each admin's registry API, as
+separately. A venue that lists additional third-party admins extends this
+two-admin configuration with per-admin registry discovery via
+`DEX_EXTERNAL_REGISTRIES` — the base and quote admins stay configured — as
 described in [Registry integration](registry-integration.md).
 
 ## 2. Start the operator backend
@@ -114,13 +115,17 @@ npm run testnet
 | `OPERATOR_ADMIN_TOKEN` | yes in full mode | Separate bearer token for `/v1/admin/*` writes. |
 | `DEX_READ_ONLY` | optional | Set `1` to start without API tokens and reject every state-changing route. |
 | `CANTON_SYNCHRONIZER` | recommended | Synchronizer id, e.g. `global-domain::1220...`. `submit-and-wait` requires it on a shared synchronizer. |
-| `CANTON_DEX_PACKAGE_ID` | yes | Template-id prefix. Use the vetted concrete package hash, or `#canton-dex-trading` only where package-name resolution is acceptable. |
+| `CANTON_DEX_PACKAGE_ID` | yes | Template-id prefix. Use the vetted concrete package hash, or `#canton-dex-trading-v2` only where package-name resolution is acceptable. |
 | `CANTON_NETWORK` | optional | Display label surfaced by `/v1/status` (default `canton:devnet`). |
 | `CANTON_ALLOC_FACTORY_CID`, `CANTON_SETTLE_FACTORY_CID` | yes in full mode | Asset-admin Registry cid, repeated because it implements both interfaces. |
 | `CANTON_LP_ALLOC_FACTORY_CID`, `CANTON_LP_SETTLE_FACTORY_CID` | yes in full mode when LP registrar differs | LP registrar's Registry cid, again repeated for both interfaces. |
 | `ALLOWED_ORIGINS` | yes for cross-origin browser access | Exact comma-separated web origins. Unset is default-deny. |
 | `DEX_CALLER_JWT_SECRET`, `DEX_CALLER_JWT_AUDIENCE` | optional | Bind private reads and trader-subject writes to `X-Caller-Token.sub` in a multi-user deployment. |
 | `DEX_HOSTED_RFQ_RELAY` | optional, default `0` | Custodial RFQ create/cancel/accept under hosted trader authority; enabling it requires caller binding and participant rights for those traders. |
+| `DEX_EXTERNAL_REGISTRIES` | optional | JSON map of third-party instrument-admin party id to that admin's CIP-112 registry base URL. Unset keeps every instrument on the bootstrap-configured registrars. |
+| `DEX_EXTERNAL_REGISTRY_TOKEN` | optional | Bearer token sent to the external registry HTTP APIs. |
+| `DEX_AMULET_SCAN_URL` | optional | Trusted Scan node URL. Registers the live DSO party as an external registry for the Amulet (CC) leg, and switches `/v1/status`'s slot to the latest open Amulet mining round. |
+| `DEX_AMULET_REGISTRY_BASE` | optional | Overrides the Amulet registry mount (default `<DEX_AMULET_SCAN_URL>/api/scan`). |
 
 The exact variable contract is the header of
 [`testnet-server.ts`](../../services/operator-backend/src/testnet-server.ts);
@@ -199,8 +204,12 @@ curl -s http://localhost:8080/v1/pools   | python3 -m json.tool
 
 Expected:
 
-- `/v1/status` returns the configured network and a live slot.
-- `/v1/context` returns operator/admin/LP registrar parties and factory CIDs.
+- `/v1/status` returns the configured network and a live slot (the participant
+  ledger-end offset, or the latest open Amulet mining round when
+  `DEX_AMULET_SCAN_URL` is set).
+- `/v1/context` returns exactly the operator, LP registrar, and asset-admin
+  parties plus the network label. It carries no factory CIDs; those are
+  discovered per operation via `POST /v1/registry/allocation-factory`.
 - `/v1/pairs` and `/v1/pools` return the on-ledger contracts visible to the
   operator party.
 
@@ -222,8 +231,13 @@ bash scripts/deploy-testnet.sh
 ```
 
 This phase first requires `/v1/status` to succeed. It queries existing pairs and
-pools, creates only missing BTC/USDC metadata, and stops on any HTTP failure. It
-creates an **unfunded** pool; it does not fabricate reserves or LP holdings.
+pools, creates the pair/pool metadata only if missing, and stops on any HTTP
+failure. The base/quote symbols default to the placeholders `BTC`/`USDC` (both on
+`CANTON_ADMIN`); override them with `DEPLOY_BASE`, `DEPLOY_QUOTE`, and
+`DEPLOY_LP_INSTRUMENT` to seed a differently named pair — still under
+`CANTON_ADMIN`, since real external assets are wired through the registry settings
+(`DEX_AMULET_SCAN_URL`, `DEX_EXTERNAL_REGISTRIES`), not these symbols. It creates
+an **unfunded** pool; it does not fabricate reserves or LP holdings.
 
 Expected checkpoint:
 

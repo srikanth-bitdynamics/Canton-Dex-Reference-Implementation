@@ -12,30 +12,37 @@ export interface AssetMeta {
   sym: string;
   name: string;
   decimals: number;
-  glyph: 'btc' | 'eth' | 'usdc' | 'cc';
+  glyph: 'eth' | 'usd' | 'cc';
 }
 
 export const ASSETS: Record<string, AssetMeta> = {
-  BTC: { sym: 'BTC', name: 'Bitcoin', decimals: 6, glyph: 'btc' },
-  CBTC: { sym: 'CBTC', name: 'Canton Bitcoin', decimals: 6, glyph: 'btc' },
+  Amulet: { sym: 'CC', name: 'Canton Coin', decimals: 4, glyph: 'cc' },
+  USDCx: { sym: 'USDCx', name: 'USDCx', decimals: 2, glyph: 'usd' },
   ETH: { sym: 'ETH', name: 'Ether', decimals: 6, glyph: 'eth' },
-  USDC: { sym: 'USDC', name: 'USD Coin', decimals: 2, glyph: 'usdc' },
   CC: { sym: 'CC', name: 'Canton Coin', decimals: 4, glyph: 'cc' },
-  // DEX-* are demo instruments seeded by scripts/bootstrap-registry.ts
-  // for live testnet validation. Treat them as their underlying assets
-  // for glyph + decimals purposes.
-  'DEX-BTC': { sym: 'DEX-BTC', name: 'Demo Bitcoin', decimals: 6, glyph: 'btc' },
-  'DEX-ETH': { sym: 'DEX-ETH', name: 'Demo Ether', decimals: 6, glyph: 'eth' },
-  'DEX-USDC': { sym: 'DEX-USDC', name: 'Demo USD Coin', decimals: 2, glyph: 'usdc' },
 };
 
 export const GLYPH_LABEL: Record<string, string> = {
-  BTC: '₿',
-  CBTC: '₿',
+  Amulet: 'C',
+  USDCx: '$',
   ETH: 'Ξ',
-  USDC: '$',
   CC: 'C',
-  'DEX-BTC': '₿',
-  'DEX-ETH': 'Ξ',
-  'DEX-USDC': '$',
 };
+
+// Friendly display symbol for an instrument id. Identity stays the id;
+// this maps ids to user-facing labels, defaulting to the id when unmapped.
+const INSTRUMENT_LABELS: Record<string, string> = {
+  Amulet: 'CC',
+  USDCx: 'USDCx',
+};
+
+export function instrumentLabel(id: string): string {
+  return INSTRUMENT_LABELS[id] ?? id;
+}
+
+// Full-identity key for an instrument. Two registries may both issue an asset
+// called `USDC`, so balances, price maps, and any per-instrument lookup must
+// key by {admin, id} rather than the display symbol alone.
+export function instrumentKey(instrument: { admin: string; id: string }): string {
+  return `${instrument.admin}::${instrument.id}`;
+}

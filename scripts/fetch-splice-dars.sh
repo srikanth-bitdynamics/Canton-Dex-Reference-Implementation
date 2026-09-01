@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Refresh vendor/splice/dars/ with the canonical Splice Token Standard release
-# DARs. These carry the exact package ids the network vets, so canton-dex-trading
+# DARs. These carry the exact package ids the network vets, so canton-dex-trading-v2
 # built against them deploys to and interoperates on a real participant.
 #
 # Usage: scripts/fetch-splice-dars.sh [SPLICE_VERSION]   (default: 0.6.12)

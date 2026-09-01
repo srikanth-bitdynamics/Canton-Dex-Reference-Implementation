@@ -2,11 +2,15 @@
 
 How to deploy, observe, and recover the off-ledger operator services that run
 the reference DEX. The through-line for every recovery decision below: **the
-ledger is the source of truth.** Every fact an operator needs to explain a
-trade or rebuild a service lives on-ledger, replicated by the synchronizer;
-the operator backend's own SQLite is a projection over it. That single
-property is why most recovery here is "rebuild a cache", not "restore a
-database".
+ledger is the source of truth.** Nearly every fact an operator needs to explain
+a trade or rebuild a service lives on-ledger, replicated by the synchronizer;
+the operator backend's own SQLite is mostly a projection over it. The
+exceptions are off-ledger runtime records the ACS cannot rebuild — the
+`operator_kv` runtime knobs, the `dealers` registry (which carries the dealer
+whitelist), the local idempotency cache, and the accumulated polling history
+(archived trades, the swap / pool-transition feed, RFQ lifecycle history) the
+indexer wrote tick by tick. That property is why most recovery here is "rebuild
+a cache", not "restore a database".
 
 Specific cluster topology (cantond / participants / synchronizer config) is a
 Canton operational concern, not a DEX one — see [Out of scope](#out-of-scope-for-this-document).
@@ -77,8 +81,8 @@ self-contained live AMM round trip for value movement.
 
 Iterated allocations put settlement authority in the executor's hands, so the
 DEX application layer must constrain every permitted use. The choices below are
-app-owned cleanup hooks on the ledger; an operator service drives them on a
-schedule. None of them fabricate state — each is a real contract choice, so
+app-owned cleanup hooks on the ledger that an operator service can drive. None
+of them fabricate state — each is a real contract choice, so
 the cleanup surface is auditable in one place.
 
 ### Stale or expired orders
@@ -86,11 +90,12 @@ the cleanup surface is auditable in one place.
 - `Order_Cancel` (operator-driven,
   [`Order.daml`](../../trading/CantonDex/Dex/Order.daml)): cancels the bound
   allocation via `Allocation_Cancel`, releasing the trader's locked holdings
-  back to their authorizer account. The operator's sweep uses it both for
-  orders past `expiry` (checked off-ledger when scheduling the cancel) and for
-  operator-initiated takedowns (compliance, fat-finger cancels, pair
-  de-listing).
-- This sweep is not the trader's only custody exit. GTC order allocations are
+  back to their authorizer account. It is an operator-invocable choice with no
+  automatic trigger, not a wired schedule: an operator service can drive it both
+  for orders past `expiry` (checked off-ledger before invoking the cancel) and
+  for operator-initiated takedowns (compliance, fat-finger cancels, pair
+  de-listing), but nothing runs it automatically.
+- This cancel is not the trader's only custody exit. GTC order allocations are
   uncommitted and authorizer-withdrawable at any time; expiring order
   allocations become authorizer-withdrawable after their deadline. A withdraw
   may leave stale order state for the operator to clean, but settlement against
@@ -106,9 +111,14 @@ the cleanup surface is auditable in one place.
 
 - An RFQ past `expiresAt` is inert:
   [`Rfq_Accept`](../../trading/CantonDex/Dex/Rfq.daml) asserts
-  `currentTime < expiresAt`, so nothing can settle against it. Quote
-  contracts stay until their own `expiresAt`; the operator sweep exercises
-  `RfqQuote_Withdraw` (dealer-driven) or lets quotes age out.
+  `currentTime < expiresAt`, so nothing can settle against it. The operator can
+  archive an expired RFQ with `Rfq_Expire` (operator-controlled, asserts
+  `currentTime >= expiresAt`) — an operator-invocable choice with no automatic
+  trigger, not a wired schedule.
+- Quote contracts stay until their own `expiresAt`, which is a validity bound
+  and does not archive them. Only the dealer can retract its own quote, via
+  `RfqQuote_Withdraw` (dealer-controlled); the operator does not withdraw dealer
+  quotes.
 - `Rfq_Cancel` (trader-driven): the trader retracts before any quote
   acceptance.
 
@@ -140,9 +150,13 @@ the cleanup surface is auditable in one place.
 ### LP supply reconciliation
 
 - `PoolState_RecordLPSupply` (lpRegistrar,
-  [`PoolState.daml`](../../trading/CantonDex/Dex/PoolState.daml)): pushes the
-  registrar-owned LP supply ledger back into the pool's pricing state. Run
-  after each mint/burn accept so add-liquidity quoting stays accurate.
+  [`PoolState.daml`](../../trading/CantonDex/Dex/PoolState.daml)): an
+  unconstrained setter for the pool's recorded LP supply (it asserts only
+  `newSupply >= 0`). Do **not** call it as part of a normal mint or burn — the
+  liquidity settle choices already update `totalLpSupply` atomically and assert
+  it stays in lock-step with `LPTokenPolicy.totalSupply`, so a manual call after
+  a settle can de-sync the two and block the next settle. Use it only as a
+  drift-repair valve, with `newSupply = policy.totalSupply`.
 
 ## Observability
 
@@ -153,7 +167,7 @@ operators do not need a parallel database to explain a trade.
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Why did this RFQ accept go to this dealer?            | `MatchedTrade.policyReceipt`, also folded into `SettlementInfo.meta` via `dex.policy.*` keys           |
 | What pool fee was executed?                           | The immutable `Pool.feeBps` used by `PoolRules`; `DexPair.feeModel` is listing metadata and is not consumed by that choice |
-| Where did this pool's reserves come from?             | Each `PoolSlice` is an `Allocation` CID, each carrying its admin, authorizer, and committed funding    |
+| Where did this pool's reserves come from?             | Each `PoolSlice` holds an `Allocation` CID (via `allocationCid`), carrying that allocation's admin, authorizer, and committed funding |
 | What's the current head slice / boundary candidate?   | each active `PoolSlice` for the pool (query the ACS by `poolId`); the aggregate is `PoolState.reserves.baseAmount`/`quoteAmount`                                            |
 | Did this trader's funding accept?                     | The `OrderAllocationRequest` archive event plus the corresponding `Allocation` create event           |
 | Why is this `PoolRules_Swap` failing slippage?        | Call the quote endpoint before swap; the on-ledger choice re-validates against current reserves and `minOutputAmount` |
@@ -231,17 +245,23 @@ CREATE TABLE IF NOT EXISTS command_submissions (
   submittedAt INTEGER NOT NULL,
   completedAt INTEGER,
   status TEXT NOT NULL,         -- 'pending' | 'ok' | 'error'
-  resultJson TEXT
+  resultJson TEXT,
+  argsHash TEXT                 -- v5: replay-detection hash of the request args
 );
 ```
 
 A retry with the same `commandId` returns the cached result if `status='ok'`,
 rejects if it is still `pending` and younger than `PENDING_STALE_MS` (60s), and
-overwrites if the row is stale-pending or `error`. A same-`commandId` submit
-carrying *different* args is a replay conflict and is rejected rather than
-served a stale result — proven in
+overwrites if the row is stale-pending or `error`. Replay detection compares the
+stored `argsHash`: a same-`commandId` submit carrying *different* args is a
+conflict and is rejected rather than served a stale result — proven in
 [`idempotency.test.ts`](../../services/operator-backend/test/idempotency.test.ts)
-("rejects a replay: same commandId, different args"). The cache survives
+("rejects a replay: same commandId, different args"). Not every changed-arg
+retry conflicts, though: an errored `error` row for an `exercise` is
+deliberately allowed changed args, because its `commandId` derives from the
+contract acted on and refusing the retry would strand that contract (a legacy
+row predating the column carries `argsHash = null` and is treated as unknown, so
+it proceeds). The cache survives
 operator restarts and is the recommended defence against double-fire across
 crash/replay boundaries. `testnet-server` sweeps rows past the 24h TTL once an
 hour.
@@ -250,10 +270,16 @@ hour.
 
 Recovery starts from one distinction: what is authoritative versus what is a
 rebuildable projection. The on-ledger ACS is authoritative and replicated by
-the synchronizer. The operator backend's `operator.db` holds only projections
-of it — with one exception, `operator_kv`, which carries runtime knobs (dealer
-whitelist, RFQ policy) that were never written on-ledger and therefore cannot
-be rebuilt from it.
+the synchronizer. The operator backend's `operator.db` holds mostly projections
+of it, with three off-ledger exceptions the ACS cannot rebuild: `operator_kv`,
+a generic operator-set key-value store (fee-bps overrides, feature flags) that
+is settable through the admin API but is not currently read by any runtime code
+and is never written on-ledger, the `dealers` registry (RFQ counterparties and the
+`whitelisted` flag, managed via `/v1/admin/dealers`), which is not an ACS
+projection, and the `command_submissions` idempotency cache, whose dedup records
+are local-only and lost if the file is deleted. (The RFQ policy version is a code
+constant — `POLICY_VERSION = "v2.0"` — not a stored record, so it is not among
+these.)
 
 ```mermaid
 flowchart LR
@@ -261,12 +287,14 @@ flowchart LR
   subgraph db["operator.db · local SQLite (WAL)"]
     PROJ["projections:<br/>trades · swaps<br/>rfq_history · pool_states"]
     IDEM["command_submissions<br/>(idempotency cache)"]
-    KV["operator_kv<br/>dealer whitelist · RFQ policy"]
+    KV["operator_kv<br/>generic runtime knobs"]
+    DEALERS["dealers<br/>RFQ counterparties · whitelist"]
   end
   ACS -->|"indexer reconciles<br/>every tick"| PROJ
-  PROJ -.->|"rebuildable on delete"| ACS
-  IDEM -.->|"rebuildable"| ACS
-  KV ==>|"off-ledger only —<br/>the one thing to back up"| BK[["operator backup"]]
+  PROJ -.->|"current ACS rebuilds,<br/>accumulated history lost on delete"| ACS
+  IDEM -.->|"off-ledger only —<br/>not in the ACS, lost on delete"| LOST[["dedup record lost"]]
+  KV ==>|"off-ledger only,<br/>lost on delete"| BK[["back up operator.db"]]
+  DEALERS ==>|"off-ledger only,<br/>lost on delete"| BK
 ```
 
 Ledger errors are classified once, in the JSON-API driver's `errorFor`
@@ -309,10 +337,10 @@ rejections a trader or LP hits, see [Contract-level rejections](#contract-level-
 | Indexer endpoints stall; logs show `[indexer] tick failed` | Participant / JSON LAPI unreachable | Transient: the tick retries next interval — no corruption. Persistent: check the participant and `CANTON_LEDGER_URL` / token. |
 | Operator writes fail with a `transport` `LedgerError` | Participant or synchronizer outage | The idempotency row is marked `error`; retry from the dApp once the participant recovers. |
 | A write fails with a `contention` error after retrying | Two commands raced the same input UTXO and the five backoff attempts were exhausted | Resubmit; the on-ledger choice is safe to re-run once the contending commit lands. |
-| `operator.db` corrupted / unreadable | Disk fault or partial write | Delete it and restart; the next tick rebuilds projections from the ACS. See [Reference](#reference-multi-step-procedures) — this also drops `operator_kv`. |
+| `operator.db` corrupted / unreadable | Disk fault or partial write | Delete it and restart; the next tick rebuilds the current-ACS projections only. Deletion permanently loses everything that lived only in the DB — accumulated trade/swap history, pool-transition and RFQ history — plus the off-ledger records (`operator_kv` runtime knobs, the `dealers` registry with its whitelist, and the `command_submissions` dedup cache). Restore from backup. See [Reference](#reference-multi-step-procedures). |
 | `NOT_VALID_UPGRADE_PACKAGE` on DAR upload | Smart-upgrade lineage broken | Revert the incompatible change or rename the package. See [Reference](#reference-multi-step-procedures). |
 | A liquidity settle aborts on its supply-sync guard | `LPTokenPolicy.totalSupply` drifted from `PoolState.totalLpSupply` | Re-run `PoolState_RecordLPSupply` with `newSupply = policy.totalSupply`. See [Reference](#reference-multi-step-procedures). |
-| Trader reports a missing holding | V2 holding not visible to the party's query | Replay the registry's `Registry_RegisterInstrument` / `Registry_Mint` events for that party via the `EventLog` interface. |
+| Trader reports a missing holding | Query-scope / observer issue — the holding exists on-ledger but is not in the party's read set | Widen the query party set or observer scope; do **not** re-mint. `Registry_Mint` is value-creating and non-idempotent (it bumps `circulatingSupply` and creates a new `Holding`), so replaying it double-mints, and the `EventLog` instance is a no-op stub with no mint-event stream to replay. |
 
 ### Reference: multi-step procedures
 
@@ -322,11 +350,16 @@ two. These three need more.
 **`operator.db` corruption — rebuild from the ledger.** SQLite runs in WAL mode
 ([`db.ts`](../../services/operator-backend/src/indexer/db.ts)), so an ordinary
 crash leaves the file intact and nothing is needed. If the file is genuinely
-corrupt, delete it and restart: the indexer reconciles projections from the
-live ACS on the next tick. Two things do *not* come back — trade history older
-than the ACS-archive cutoff (it lived only in the indexer DB) and, because it
-lives in the same file, `operator_kv`. Restore `operator_kv` from backup after
-the rebuild (see [Backup](#backup)). Schema migrations are append-only and
+corrupt, delete it and restart: the indexer reconciles the current-ACS
+projections from the live ACS on the next tick. What does *not* come back is
+everything that lived only in the DB. The indexer is polling-based and writes
+history tick by tick as contracts pass through the ACS; the ACS holds only the
+current contracts, not the sequence that produced them, so the accumulated
+history is gone — archived trades past the ACS-archive cutoff, the swap /
+pool-transition feed, and RFQ lifecycle history. Gone with them are the
+off-ledger records in the same file: `operator_kv`, the `dealers` registry, and
+the `command_submissions` dedup cache. Restore `operator.db` from backup after the rebuild (see
+[Backup](#backup)). Schema migrations are append-only and
 tolerant of a hand-repaired database, proven in
 [`indexer-migrations.test.ts`](../../services/operator-backend/test/indexer-migrations.test.ts)
 ("a hand-repaired database can still advance").
@@ -336,7 +369,7 @@ upload. Either:
 
 - Revert the offending change — add removed choices back as deprecated stubs,
   make new fields `Optional`, move new fields to the end of the record.
-- Rename the package (e.g. `canton-dex-trading` → `canton-dex`). All existing
+- Rename the package (e.g. `canton-dex-trading-v2` → `canton-dex`). All existing
   contracts from the old name remain queryable but cannot be upgraded.
 
 See [Upgrade discipline](builder-guide.md#upgrade-discipline) for the lineage
@@ -352,12 +385,16 @@ rather than corrupting reserves. Recovery: query the policy supply and re-run
 ## Backup
 
 The on-ledger state is the source of truth and is replicated by the
-synchronizer. `operator.db` is rebuildable from the ledger and does not need to
-be backed up for correctness; back it up only if you care about historical
-query performance during a rebuild. The one thing worth backing up is the
-`operator_kv` table — it carries the dealer whitelist, RFQ policy parameters,
-and similar runtime knobs that are not encoded on-ledger and cannot be
-reconstructed from the ACS.
+synchronizer. Only the *current-ACS* projections in `operator.db` rebuild from
+the ledger; the accumulated history the polling indexer wrote tick by tick
+(archived trades, the swap / pool-transition feed, RFQ lifecycle history) and
+the off-ledger records (`operator_kv` runtime knobs, the `dealers` registry of
+RFQ counterparties with its `whitelisted` flag, plus the `command_submissions`
+dedup cache) do not. Back up `operator.db` if you need any of that history or
+those records to survive a delete-and-rebuild. At a minimum back up the
+`operator_kv` and `dealers` tables, whose runtime records are not encoded
+on-ledger and cannot be reconstructed from the ACS. (The RFQ policy version is a
+code constant, `POLICY_VERSION = "v2.0"`, not a backed-up record.)
 
 ## Contract-level rejections
 

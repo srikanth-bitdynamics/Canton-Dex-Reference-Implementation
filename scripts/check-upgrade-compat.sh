@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Fails when canton-dex-trading is not a valid smart upgrade of the version
+# Fails when canton-dex-trading-v2 is not a valid smart upgrade of the version
 # already deployed. `dpm upgrade-check --both` runs the compiler check and the
 # participant's own PackageUpgradeValidator, so a package that passes here
 # uploads.
@@ -17,8 +17,14 @@ BASELINE_DIR="$ROOT_DIR/trading/upgrade-baseline"
 shopt -s nullglob
 baselines=("$BASELINE_DIR"/*.dar)
 shopt -u nullglob
+if [ "${#baselines[@]}" -eq 0 ]; then
+  echo "No baseline DAR in $BASELINE_DIR: this is the first deploy of a new package"
+  echo "lineage, which has no deployed predecessor to upgrade. Commit the deployed"
+  echo "DAR here once canton-dex-trading-v2 is live to re-arm the gate."
+  exit 0
+fi
 if [ "${#baselines[@]}" -ne 1 ]; then
-  echo "Expected exactly one baseline DAR in $BASELINE_DIR, found ${#baselines[@]}." >&2
+  echo "Expected at most one baseline DAR in $BASELINE_DIR, found ${#baselines[@]}." >&2
   exit 1
 fi
 baseline="${baselines[0]}"
@@ -26,7 +32,7 @@ baseline="${baselines[0]}"
 bash "$ROOT_DIR/scripts/build-trading-surface.sh"
 
 version="$(sed -n 's/^version: *//p' "$ROOT_DIR/trading/daml.yaml")"
-current="$ROOT_DIR/trading/.daml/dist/canton-dex-trading-$version.dar"
+current="$ROOT_DIR/trading/.daml/dist/canton-dex-trading-v2-$version.dar"
 if [ ! -f "$current" ]; then
   echo "No built DAR at $current." >&2
   exit 1
@@ -34,13 +40,13 @@ fi
 
 echo "==> Upgrade check: $(basename "$current") over $(basename "$baseline")"
 if dpm upgrade-check --both "$baseline" "$current"; then
-  echo "canton-dex-trading $version upgrades $(basename "$baseline") cleanly."
+  echo "canton-dex-trading-v2 $version upgrades $(basename "$baseline") cleanly."
   exit 0
 fi
 
 cat >&2 <<EOF
 
-==> canton-dex-trading $version cannot upgrade the deployed
+==> canton-dex-trading-v2 $version cannot upgrade the deployed
     $(basename "$baseline"). Uploading it would be rejected with
     NOT_VALID_UPGRADE_PACKAGE.
 

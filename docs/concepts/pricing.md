@@ -30,15 +30,18 @@ Two things about this implementation matter more than the curve itself:
 
 - **The fee is retained in the pool.** It is charged on the input
   (`Δin · (1 − fee)` drives the curve) while the full `Δin` still lands in the
-  reserve, so `k` is strictly non-decreasing across a swap. That surplus is what
-  accrues to liquidity providers.
+  reserve, so `k` is non-decreasing across a swap — and output floor rounding can
+  nudge it up even when `feeBps` is 0. The retained fee is what accrues to
+  liquidity providers.
 - **The trader signs the exact output authority.** `PoolRules_RequestSwap`
   computes `Δout`, binds the current `PoolState` and selected slices, and returns
-  a specification containing both the trader's input sender side and every
-  output receiver side. The dApp verifies the binding and minimum, then the
-  wallet signs the exact legs. `PoolRules_Swap` re-derives `Δout` on-ledger and
-  accepts the allocation only if the snapshot and exact legs still match, so
-  the operator cannot quote one number and settle another. The dApp's quote
+  one allocation specification per instrument admin — the trader's input sender
+  side and the output receiver side (a single-admin pair collapses these into one
+  combined spec; a cross-admin pair keeps them as two). The dApp verifies the
+  binding and minimum, then the wallet signs the exact legs. `PoolRules_Swap`
+  re-derives `Δout` on-ledger and accepts the allocations only if the snapshot and
+  exact legs still match, so the operator cannot quote one number and settle
+  another. The dApp's quote
   endpoint runs the same function off-ledger, so preview and settlement agree
   to the last digit.
 

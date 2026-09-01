@@ -23,8 +23,8 @@ is not self-custody and requires per-caller binding. See the
 
 For UI work. `npm run dev` boots the backend on an
 [`InMemoryLedger`](../../services/operator-backend/src/ledger/in-memory.ts) and
-seeds a BTC/USDC pair, a funded pool, and a demo trader — no participant, no
-token.
+seeds an Amulet/USDCx pair under a demo admin, a funded pool, and a
+demo trader — no participant, no token.
 
 ```bash
 # backend
@@ -243,8 +243,14 @@ separate `CANTON_LP_ALLOC_FACTORY_CID` /
 reference `Registry.V2`, the same registry cid implements both interfaces, so
 the two values within each pair are equal. Full/write mode refuses to start if
 a required mapping is absent; explicit `DEX_READ_ONLY=1` may use display-only
-`PENDING_*` placeholders. A venue listing arbitrary third-party admins should
-replace this two-admin map with registry API discovery.
+`PENDING_*` placeholders. Setting `DEX_AMULET_SCAN_URL` adds one more registry —
+a live Amulet leg whose admin is the DSO party resolved from the Scan node's
+`/v0/dso-party-id`, served under the Scan token-standard mount (overridable via
+`DEX_AMULET_REGISTRY_BASE`). Third-party instrument admins beyond these are
+routed by `DEX_EXTERNAL_REGISTRIES`, a JSON map of instrument-admin party to
+CIP-112 registry base URL; the backend discovers each admin's factories and
+choice contexts from that registry API at runtime, using
+`DEX_EXTERNAL_REGISTRY_TOKEN` as the optional bearer for those calls.
 
 ## Environment variables
 
@@ -290,7 +296,11 @@ any is missing:
 | `DEX_READ_ONLY` | `0` | Set `1` to start intentionally without write tokens or factory cids; state-changing routes return 401 while read-only `POST /v1/swaps/quote` remains available. |
 | `DEX_CALLER_JWT_SECRET` / `DEX_CALLER_JWT_AUDIENCE` | — | Optional party binding for private reads and trader-subject writes using `X-Caller-Token`. |
 | `DEX_HOSTED_RFQ_RELAY` | `0` | Custodial opt-in for RFQ create/cancel/accept under hosted trader authority; requires caller JWT binding and participant rights for those traders. |
-| `ALLOWED_ORIGINS` | — | Exact CSV CORS allowlist; unset is default-deny (no allow-origin header). |
+| `ALLOWED_ORIGINS` | — (`http://localhost` under Compose) | Exact CSV CORS allowlist; the backend default-denies when unset (no allow-origin header), but `docker-compose.yml` supplies a `http://localhost` default. |
+| `DEX_AMULET_SCAN_URL` | — | Splice Scan base URL. When set, registers the live Amulet registry (admin resolved from `/v0/dso-party-id`, mount overridable via `DEX_AMULET_REGISTRY_BASE`) and makes `/v1/status` report `slot` as the latest open Amulet mining round instead of the participant ledger-end offset. |
+| `DEX_AMULET_REGISTRY_BASE` | `<scan>/api/scan` | Overrides the token-standard mount used for the Amulet registry when `DEX_AMULET_SCAN_URL` is set. |
+| `DEX_EXTERNAL_REGISTRIES` | — | JSON map of instrument-admin party to CIP-112 registry base URL. Extends routing with these additional admins, each served from its external registry HTTP API; the base two-admin (base/quote) configuration is not replaced. Unset routes every instrument through the bootstrap-configured registrars. |
+| `DEX_EXTERNAL_REGISTRY_TOKEN` | — | Optional bearer token sent with calls to the `DEX_EXTERNAL_REGISTRIES` (and Amulet) registry APIs. |
 
 **Frontend build args** are public and baked into the static assets. Compose
 declares the complete supported set under its `frontend.build.args`, including
@@ -303,18 +313,20 @@ API bearer token is an accepted production build argument.
 
 - [ ] Separate strong `OPERATOR_ADMIN_TOKEN` and `DEX_OPERATOR_API_TOKEN` values set
 - [ ] Tokens delivered through a trusted session/BFF or short-lived validator tab—not compiled as `VITE_*`
-- [ ] `ALLOWED_ORIGINS` contains only the exact dApp host (unset denies all cross-origin browsers)
+- [ ] `ALLOWED_ORIGINS` contains only the exact dApp host — the backend denies all cross-origin browsers when it is unset, but `docker-compose.yml` supplies a `http://localhost` default, so set it explicitly under Compose
 - [ ] Multi-user deployments enable caller binding so account/history reads and trader-subject writes are party-scoped
 - [ ] `CANTON_DEX_PACKAGE_ID` and `CANTON_SYNCHRONIZER` pinned to the vetted values
 - [ ] Asset factory pair set to the live asset registry cid; LP factory pair also set when the registrar differs
-- [ ] `/v1/status` reports `synced: true` after a genuine participant ledger-end probe (not merely HTTP 200)
+- [ ] `/v1/status` reports `synced: true` from a genuine probe — a participant ledger-end probe, or, when `DEX_AMULET_SCAN_URL` is set, a successful Amulet mining-round poll (which sets `synced` before the participant probe runs), not merely HTTP 200
 - [ ] Exactly one tested production wallet path enabled; no DEV-only provider or relay relied upon
 - [ ] Hosted RFQ is either off on both tiers, or deliberately enabled with both `DEX_HOSTED_RFQ_RELAY=1` and `VITE_ENABLE_HOSTED_RFQ=1`, mandatory caller binding, and scoped trader rights
 - [ ] Backend is private behind ingress and runs as the image's non-root `node` user
 - [ ] Indexer DB on a persistent volume (`backend-data` under Compose; `DB_PATH=/var/lib/dex/operator.db` bare)
 - [ ] Process supervisor restarts on crash (systemd / pm2 / `restart: unless-stopped`)
 - [ ] TLS terminated at your ingress in front of `:80` (Compose) or `:8080` (bare)
-- [ ] Backups for the indexer DB (it carries trade history and idempotency keys)
+- [ ] Backups for the indexer DB (it holds accumulated trade/swap/pool/RFQ
+      history, the `dealers` whitelist, the `operator_kv` admin store, and the
+      idempotency keys — none of it rebuildable from the ledger)
 - [ ] Registry bootstrap run once per ledger
 - [ ] Monitoring: scrape stdout/stderr; alert on `level: error` lines
 

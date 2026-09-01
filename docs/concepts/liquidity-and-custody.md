@@ -23,6 +23,9 @@ template PoolSlice with
     operator : Party
     side : Side
       -- ^ Which pool leg (base or quote) this slice funds.
+    instrumentId : HoldingV2.InstrumentId
+      -- ^ Full identity `{ admin, id }` of the instrument this slice holds;
+      --   settlement validates the allocation view against it.
     allocationCid : ContractId V2.Allocation
       -- ^ The committed allocation holding this slice's funds.
     amount : Decimal
@@ -99,16 +102,18 @@ flowchart TB
 ## Every flow moves holdings and reserves together
 
 Because the assets are real committed allocations, moving them is settlement,
-not bookkeeping. Add, remove, and swap each run as a delivery-versus-payment
-`SettlementFactory_SettleBatch` and rewrite `PoolState` once, inside one Daml
-transaction — so holdings and reserves change co-atomically, or nothing changes.
+not bookkeeping. Add, remove, and swap each run as delivery-versus-payment
+settlement — one `SettlementFactory_SettleBatch` per instrument admin (one to
+three) — and rewrite `PoolState` once, inside one Daml transaction, so holdings
+and reserves change co-atomically, or nothing changes.
 
 - **Add.** The LP's base and quote deposits settle into operator-authored
   receiver allocations, which roll forward (via `nextIterationFunding`) into the
   two new slices; the registrar mints LP tokens to the LP; `PoolState` is
-  rewritten once with the new reserves and supply. Base/quote settle under
-  `pool.admin` and the LP mint under `pool.lpRegistrar`, so this is two
-  per-admin batches in the same transaction.
+  rewritten once with the new reserves and supply. Settlement groups by
+  instrument admin — the base admin, the quote admin, and the LP registrar —
+  so this is one to three per-admin batches in the same transaction (they
+  collapse when admins coincide).
 - **Remove** is symmetric to swap: the sourced slices deliver base and quote to
   the holder (exactly as `PoolRules_Swap` delivers to the swapper), each fully
   drawn slice drains, the boundary slice re-wraps its leftover, the holder's LP
@@ -141,11 +146,20 @@ a 30 bps fee (`feeBps = 30`); every figure is what the on-ledger `Decimal` math
    the curve: `Δout = floor(0.997 · 200,000 / (10 + 0.997)) = 18,132.2178776029
    USDC`. The full `1.0 BTC`, fee included, stays in the pool.
 3. **Reserves after the swap:** `11.0 BTC` / `181,867.7821223971 USDC`. The
-   product `x · y` has grown, and that growth is the fee — now owned by the LPs.
+   product `x · y` is higher than before the swap. Charging the fee on the input
+   is what lifts it — at zero fee `k` would be unchanged apart from floor rounding
+   — and the retained value now backs every LP's share.
 4. **Alice redeems.** She is the only LP, so burning all `1,414.2135623730` LP
    returns the entire current reserves: `11.0 BTC` + `181,867.7821223971 USDC`.
-   She deposited `10 BTC + 200,000 USDC` and withdrew `11 BTC + 181,867.78 USDC`;
-   the difference is Bob's fee.
+   She deposited `10 BTC + 200,000 USDC` and withdrew `11 BTC + 181,867.78 USDC`
+   — more BTC, less USDC, because Bob's swap shifted the pool's mix toward the
+   side he paid in, so the per-side change tracks swap direction. Bob's fee is
+   what drives `x · y` upward — it stays in the reserves instead of being paid
+   out, so it accrues to the LPs — but the growth in `k` is not itself the fee
+   expressed in any one token: floor rounding lifts `k` a hair further even at
+   zero fee, and measured against an external numeraire the outcome also reflects
+   the price move (impermanent loss), so the "extra" Alice withdraws is not purely
+   the fee.
 
 [`PoolRoundingTests.daml`](../../trading-tests/CantonDex/Tests/PoolRoundingTests.daml)
 guarantees the pool never pays out more than the exact floored amount, so these

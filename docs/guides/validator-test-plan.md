@@ -47,6 +47,13 @@ or auth path is not a pass merely because a raw JSON API script succeeds.
   Docker Compose if Phase 8 is in scope.
 - A submit-capable CIP-0103/PartyLayer/WalletConnect wallet supported by the
   deployment. The development mock wallet does not prove live submission.
+  WalletConnect explicitly rejects add- and remove-liquidity in this reference
+  (it throws `LiquidityAllocationUnsupportedError`, because `canton_prepareExecute`
+  does not surface the created allocation cids the LP settle needs). Swap and
+  order funding are attempted through `canton_prepareExecute` and rely on the
+  operator recovering the created cids from the result. Run the Phase 5
+  add/remove-liquidity scenarios with a CIP-0103 (dApp SDK) or PartyLayer wallet,
+  or mark them **Blocked**/**N/A** when only WalletConnect is available.
 
 The backend does **not** load `services/operator-backend/.env` automatically.
 Export variables into the process environment (or use your deployment's secret
@@ -104,7 +111,7 @@ Expected:
 Follow [Run on a Testnet](run-on-testnet.md) for build, upload, party, and
 registry bootstrap. Then capture independent evidence:
 
-- [ ] `canton-dex-trading` resolves to the expected package id.
+- [ ] `canton-dex-trading-v2` resolves to the expected package id.
 - [ ] The Token Standard V2 allocation request/instruction packages required by
       the live probes resolve to the expected ids.
 - [ ] Operator, admin, LP registrar, test traders, LP, swapper, and dealers are
@@ -141,8 +148,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
 
 - [ ] Startup logs identify the expected ledger URL, parties, network, DB, and
       `mode:"full"`.
-- [ ] Status reports `synced:true`; context contains the expected parties and
-      factory CIDs.
+- [ ] Status reports `synced:true`; context contains the expected parties
+      (operator, LP registrar, admin) and network. It does not carry factory
+      CIDs; those are discovered per operation from the relevant V2 registry.
 - [ ] The unauthenticated admin write returns 401.
 - [ ] A request with a wrong admin token returns 401.
 - [ ] A request with a wrong operator token to a non-admin write returns 401.
@@ -246,8 +254,10 @@ ledger update/contract ids, and the refreshed UI state. Use small test amounts.
 - [ ] The request route creates one `LiquidityAllocationRequest`.
 - [ ] The wallet authors base-deposit, quote-deposit, and LP-receipt
       allocations.
-- [ ] The settle route consumes the request/allocations atomically; reserves and
-      LP supply increase by the expected values and the LP holding is visible.
+- [ ] The settle route consumes the allocations atomically, against either the
+      live request or the acceptance receipt left when the wallet accepts and
+      archives the request first; reserves and LP supply increase by the expected
+      values and the LP holding is visible.
 
 ### Remove liquidity
 

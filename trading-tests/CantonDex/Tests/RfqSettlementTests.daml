@@ -39,6 +39,7 @@ import Daml.Script
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.MetadataV1
 import Splice.Testing.Utils (emptyExtraArgs)
 
@@ -54,9 +55,6 @@ base = "BTC"
 
 quote : Text
 quote = "USDC"
-
-pairText : Text
-pairText = "BTC/USDC"
 
 -- Everything a scenario needs to share: the five parties involved and the one
 -- registry contract they all transact against.
@@ -150,7 +148,9 @@ compose fx side size expiresAt = do
   let rfqId = "rfq-1"
   rfq <- submit fx.trader $ createCmd Rfq with
     trader = fx.trader; operator = fx.operator; rfqId
-    pair = pairText; side; size; expiresAt
+    baseInstrumentId = HoldingV2.InstrumentId with admin = fx.admin; id = base
+    quoteInstrumentId = HoldingV2.InstrumentId with admin = fx.admin; id = quote
+    side; size; expiresAt
     whitelist = [fx.trusted, fx.whitelisted]
     createdAt = now
   -- The trusted dealer quotes tighter, and the sign follows the side: the
@@ -178,21 +178,18 @@ allocateFor
 allocateFor fx reqCid = do
   req <- fromSome <$> queryContractId fx.operator reqCid
   now <- getTime
-  let party = fromSome req.authorizer.owner
-      sides = Utils.legsToSides req.authorizer req.transferLegs
+  -- The request now carries the built AllocationSpecification; this single-admin
+  -- flow has exactly one, taken straight from the request.
+  spec <- case req.allocations of
+    (s :: _) -> pure s
+    [] -> abort "TradeAllocationRequest carried no allocation specification"
+  let party = fromSome spec.authorizer.owner
+      sides = spec.transferLegSides
       -- A receiver locks nothing; only a sender has to fund.
       senders = [ s | s <- sides, s.side == V2.SenderSide ]
   funding <- case senders of
     [] -> pure []
     (s :: _) -> fundingFor party s.instrumentId s.amount
-  let spec = V2.AllocationSpecification with
-        admin = req.admin
-        authorizer = req.authorizer
-        transferLegSides = sides
-        settlementDeadline = req.settlementDeadline
-        nextIterationFunding = None
-        committed = False
-        meta = emptyMetadata
   res <- submit party $ exerciseCmd (toInterfaceContractId @V2.AllocationFactory fx.regCid)
     V2.AllocationFactory_Allocate with
       settlement = req.settlement
@@ -219,7 +216,6 @@ settleTrade fx tradeCid legs allocationCids reqs =
   exerciseCmd tradeCid MT.MatchedTrade_Settle with
     batchesByAdmin = Map.fromList
       [ (fx.admin, MT.SettlementBatchV2 with
-          transferLegs = Some legs
           allocations =
             [ V2.FinalizedAllocation with
                 allocationCid; extraTransferLegSides = []; nextIterationFunding = None
@@ -239,7 +235,6 @@ acceptAndSettle fx rfq accepted considered = do
   res <- submit (actAs [fx.trader, fx.operator]) $ exerciseCmd rfq Rfq_Accept with
     acceptedQuoteCid = accepted
     consideredQuoteCids = considered
-    admin = fx.admin
     currentTime = now
     signature = "0xtest"
   reqs <- submit fx.operator $
@@ -248,7 +243,7 @@ acceptAndSettle fx rfq accepted considered = do
   trade <- fromSome <$> queryContractId fx.operator res.tradeCid
   -- readAs admin, for the reason spelled out on settleTrade.
   settled <- submit (actAs [fx.operator] <> readAs [fx.admin]) $
-    settleTrade fx res.tradeCid trade.transferLegs allocs reqs
+    settleTrade fx res.tradeCid (MT.tradeTransferLegs trade.tradeLegs) allocs reqs
   pure (settled, res)
 
 -- | Proves an accepted buy RFQ exchanges real base and quote holdings atomically.
@@ -349,7 +344,6 @@ testExpiryBetweenAcceptAndSettleBlocksTheSettle = do
   res <- submit (actAs [fx.trader, fx.operator]) $ exerciseCmd rfq Rfq_Accept with
     acceptedQuoteCid = qTight
     consideredQuoteCids = [qTight, qWide]
-    admin = fx.admin
     currentTime = now
     signature = "0xtest"
   reqs <- submit fx.operator $
@@ -360,7 +354,7 @@ testExpiryBetweenAcceptAndSettleBlocksTheSettle = do
   -- Past the RFQ's expiry, which the trade inherited as its deadline.
   setTime (addRelTime expiresAt (minutes 1))
   submitMustFail (actAs [fx.operator] <> readAs [fx.admin]) $
-    settleTrade fx res.tradeCid trade.transferLegs allocs reqs
+    settleTrade fx res.tradeCid (MT.tradeTransferLegs trade.tradeLegs) allocs reqs
 
   -- The rejected settlement leaves both funding allocations locked.
   traderLocks <- lockedCount fx.trader
@@ -382,7 +376,9 @@ testOneLapsedQuoteAbortsTheAccept = do
       rfqExpiry = addRelTime now (hours 1)
   rfq <- submit fx.trader $ createCmd Rfq with
     trader = fx.trader; operator = fx.operator; rfqId
-    pair = pairText; side = RFQ_Buy; size = 0.01; expiresAt = rfqExpiry
+    baseInstrumentId = HoldingV2.InstrumentId with admin = fx.admin; id = base
+    quoteInstrumentId = HoldingV2.InstrumentId with admin = fx.admin; id = quote
+    side = RFQ_Buy; size = 0.01; expiresAt = rfqExpiry
     whitelist = [fx.trusted, fx.whitelisted]; createdAt = now
   live <- submit fx.trusted $ createCmd RfqQuote with
     dealer = fx.trusted; trader = fx.trader; operator = fx.operator; rfqId
@@ -398,7 +394,6 @@ testOneLapsedQuoteAbortsTheAccept = do
   submitMustFail (actAs [fx.trader, fx.operator]) $ exerciseCmd rfq Rfq_Accept with
     acceptedQuoteCid = live
     consideredQuoteCids = [live, stale]
-    admin = fx.admin
     currentTime = later
     signature = "0xtest"
 
@@ -407,7 +402,6 @@ testOneLapsedQuoteAbortsTheAccept = do
   res <- submit (actAs [fx.trader, fx.operator]) $ exerciseCmd rfq Rfq_Accept with
     acceptedQuoteCid = live
     consideredQuoteCids = [live]
-    admin = fx.admin
     currentTime = later
     signature = "0xtest"
   res.receipt.consideredCount === 1

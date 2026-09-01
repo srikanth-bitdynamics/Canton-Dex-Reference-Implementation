@@ -48,19 +48,25 @@ class CapturingLedger extends InMemoryLedger {
     this.captured.push(req.command);
     if (req.command.kind === "createAndExercise") {
       if (req.command.choice === "OrderMatchExecution_PreviewSettlement") {
-        return {
-          settlement: {
-            executors: ["op"], id: "preview-match", cid: null, meta: { values: {} },
-          },
-          transferLegs: [],
-          allocations: [],
-          actors: ["op"],
-          extraArgs: { context: { values: {} }, meta: { values: {} } },
-        } as R;
+        // Map Party SettleBatch: one admin key (single-admin pair).
+        return [
+          [
+            "ad",
+            {
+              settlement: {
+                executors: ["op"], id: "preview-match", cid: null, meta: { values: {} },
+              },
+              transferLegs: [],
+              allocations: [],
+              actors: ["op"],
+              extraArgs: { context: { values: {} }, meta: { values: {} } },
+            },
+          ],
+        ] as R;
       }
       return {
-        buyerNextAllocationCid: null,
-        sellerNextAllocationCid: null,
+        buyerNextAllocationCidsByAdmin: [],
+        sellerNextAllocationCidsByAdmin: [],
         buyRemainderCid: null,
         sellRemainderCid: null,
       } as R;
@@ -72,10 +78,11 @@ class CapturingLedger extends InMemoryLedger {
       const mk = (id: string, side: string, price: string): Order =>
         ({
           contractId: id, operator: "op", trader: side === "Bid" ? "alice" : "bob",
-          admin: "ad", baseInstrumentId: "dBTC", quoteInstrumentId: "dUSD",
+          baseInstrumentId: { admin: "ad", id: "dBTC" },
+          quoteInstrumentId: { admin: "ad", id: "dUSD" },
           side, limitPrice: price, quantity: "1.0000000000",
           remainingQty: "1.0000000000", status: "Funded",
-          allocationCid: side === "Bid" ? "#alloc:bid" : "#alloc:ask",
+          allocationCidsByAdmin: [["ad", side === "Bid" ? "#alloc:bid" : "#alloc:ask"]],
         }) as unknown as Order;
       return [mk("#o:b", "Bid", "100.0000000000"), mk("#o:a", "Ask", "100.0000000000")] as T[];
     }
@@ -89,7 +96,9 @@ describe("match execution argument", () => {
     const registry = new StubRegistry();
     const svc = new OrderService(ledger, registry, "op" as never);
     await svc.runMatching({
-      baseInstrumentId: "dBTC", quoteInstrumentId: "dUSD", admin: "ad" as never,
+      baseInstrumentId: { admin: "ad" as never, id: "dBTC" },
+      quoteInstrumentId: { admin: "ad" as never, id: "dUSD" },
+      admin: "ad" as never,
     });
     const previewIndex = ledger.captured.findIndex(
       (c) => c?.choice === "OrderMatchExecution_PreviewSettlement",
@@ -102,7 +111,11 @@ describe("match execution argument", () => {
     assert.ok(previewIndex >= 0, "the exact settlement argument was not previewed");
     assert.ok(previewIndex < executeIndex, "registry discovery must happen before execution");
     assert.equal(exec.choice, "OrderMatchExecution_Execute");
-    assert.equal(exec.choiceArgument.factoryCid, "#settle:0");
+    // batchesByAdmin is a GenMap (array of [admin, RegistryBatchInput] pairs);
+    // the single-admin pair has one entry carrying the discovered factory.
+    assert.deepEqual(exec.choiceArgument.batchesByAdmin, [
+      ["ad", { factoryCid: "#settle:0", extraArgs: { context: { values: {} }, meta: { values: {} } } }],
+    ]);
     assert.equal(
       (registry.settlementArguments?.settlement as { id?: string })?.id,
       "preview-match",
@@ -129,8 +142,8 @@ describe("match execution argument", () => {
     assert.equal(match.fillPrice, "100.0000000000");
 
     // The orders' own allocations, so the choice's binding check passes.
-    assert.equal(exec.argument.buyerAllocationCid, "#alloc:bid");
-    assert.equal(exec.argument.sellerAllocationCid, "#alloc:ask");
+    assert.deepEqual(exec.argument.buyerAllocationCidsByAdmin, [["ad", "#alloc:bid"]]);
+    assert.deepEqual(exec.argument.sellerAllocationCidsByAdmin, [["ad", "#alloc:ask"]]);
   });
 
   it("agrees with the field list the Daml declares", () => {

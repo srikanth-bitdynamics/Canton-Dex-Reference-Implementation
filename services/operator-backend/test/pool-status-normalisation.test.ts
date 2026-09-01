@@ -28,10 +28,9 @@ function ledgerServing(status: string): LedgerSubmitter {
             poolId: "BTC-USDC",
             operator: OPERATOR,
             lpRegistrar: "lp::test",
-            admin: "admin::test",
-            baseInstrumentId: "BTC",
-            quoteInstrumentId: "USDC",
-            lpInstrumentId: "BTC-USDC-LP",
+            baseInstrumentId: { admin: "admin::test", id: "BTC" },
+            quoteInstrumentId: { admin: "admin::test", id: "USDC" },
+            lpInstrumentId: { admin: "lp::test", id: "BTC-USDC-LP" },
             feeBps: 30,
           },
         ] as unknown as T[];

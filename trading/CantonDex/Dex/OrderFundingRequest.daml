@@ -1,22 +1,24 @@
 -- | Trader-initiated order placement. The trader signs intent; the operator's
 -- `OrderFundingRequest_Bind` creates the pending `Order` and an
--- `OrderAllocationRequest` the trader
--- uses to author the funding allocation. Order_Fund validates and binds that
--- allocation, then the order is Funded and live.
+-- `OrderAllocationRequest` the trader uses to author the funding allocations.
+-- Order_Fund validates and binds those allocations, then the order is Funded
+-- and live.
 --
 -- Design guide: `docs/concepts/design-tour.md#prefunded-orders`.
 module CantonDex.Dex.OrderFundingRequest where
 
+import DA.Map qualified as Map
+
 import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 
 import CantonDex.Dex.Order qualified as Order
 
 template OrderFundingRequest with
     operator : Party
     trader : Party
-    admin : Party
-    baseInstrumentId : Text
-    quoteInstrumentId : Text
+    baseInstrumentId : HoldingV2.InstrumentId
+    quoteInstrumentId : HoldingV2.InstrumentId
     side : Order.Side
     limitPrice : Decimal
     quantity : Decimal
@@ -26,8 +28,8 @@ template OrderFundingRequest with
     observer operator
 
     ensure
-      baseInstrumentId /= ""
-        && quoteInstrumentId /= ""
+      baseInstrumentId.id /= ""
+        && quoteInstrumentId.id /= ""
         && baseInstrumentId /= quoteInstrumentId
         && quantity > 0.0
         && limitPrice > 0.0
@@ -44,7 +46,7 @@ template OrderFundingRequest with
         debug $ "OrderFundingRequest rejected: " <> reason
         pure ()
 
-    -- Create the pending Order and its funding specification.
+    -- Create the pending Order and its funding specifications.
     choice OrderFundingRequest_Bind : OrderFundingRequest_BindResult
       with
         settlementRef : Text
@@ -54,17 +56,16 @@ template OrderFundingRequest with
         now <- getTime
         let orderRef = Order.makeOrderRefFromText settlementRef
             allocationSettlement = Order.orderBookSettlement
-              operator admin baseInstrumentId quoteInstrumentId
-            lockInstrumentId = case side of
-              Order.Bid -> quoteInstrumentId
-              Order.Ask -> baseInstrumentId
-            lockAmount = case side of
-              Order.Bid -> quantity * limitPrice
-              Order.Ask -> quantity
+              operator baseInstrumentId quoteInstrumentId
+            -- The order locks the instrument it must deliver and holds a receipt
+            -- authorization for the instrument it receives; a single-admin pair
+            -- collapses to one allocation. Order_Fund reproduces these same terms
+            -- from the order, so funding never depends on this request.
+            (lockInstrumentId, lockAmount, receiptAdmin) =
+              Order.orderLockTerms baseInstrumentId quoteInstrumentId side quantity limitPrice
         orderCid <- create Order.Order with
           operator
           trader
-          admin
           baseInstrumentId
           quoteInstrumentId
           side
@@ -72,15 +73,15 @@ template OrderFundingRequest with
           remainingQty = quantity
           expiry
           status = Order.OS_Pending
-          allocationCid = None
+          allocationCidsByAdmin = Map.empty
           settlementRef = orderRef
         allocReqCid <- create Order.OrderAllocationRequest with
           operator
           trader
-          admin
           orderRef
           lockInstrumentId
           lockAmount
+          receiptAdmin
           expiry
           requestedAt = now
           allocationSettlement = Some allocationSettlement
@@ -88,12 +89,12 @@ template OrderFundingRequest with
           orderCid
           allocationRequestCid = allocReqCid
           settlement = Some allocationSettlement
-          allocationSpec = Some (Order.orderFundingSpecification
-            admin trader lockInstrumentId lockAmount expiry)
+          allocationSpecs = Order.orderAllocationSpecs
+            lockInstrumentId lockAmount receiptAdmin trader expiry
 
 data OrderFundingRequest_BindResult = OrderFundingRequest_BindResult with
     orderCid : ContractId Order.Order
     allocationRequestCid : ContractId Order.OrderAllocationRequest
     settlement : Optional V2.SettlementInfo
-    allocationSpec : Optional V2.AllocationSpecification
+    allocationSpecs : [V2.AllocationSpecification]
   deriving (Eq, Show)

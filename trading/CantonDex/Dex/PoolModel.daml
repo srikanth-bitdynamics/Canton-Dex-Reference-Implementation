@@ -6,6 +6,7 @@ module CantonDex.Dex.PoolModel where
 
 import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.MetadataV1
 
 import CantonDex.Dex.Pool
@@ -139,6 +140,17 @@ poolSettlement poolCid operator = V2.SettlementInfo with
   id = "DexPool"
   cid = Some (coerceContractId poolCid)
   meta = emptyMetadata
+
+-- A slice records a side's instrument; the allocation backing it is under that
+-- instrument's registry. Assert the allocation view agrees before wrapping it
+-- into a slice, so a cross-admin roll-forward cannot be filed under the wrong
+-- side's admin.
+validateSliceAllocation : ContractId V2.Allocation -> HoldingV2.InstrumentId -> Update ()
+validateSliceAllocation allocationCid instrumentId = do
+  v <- view <$> fetch allocationCid
+  assertMsg
+    ("slice allocation admin does not match slice instrument " <> instrumentId.id)
+    (v.allocation.admin == instrumentId.admin)
 
 -- Fetch config + state and assert they are the expected, mutually consistent
 -- pool (the expectedPoolId contract-swap guard).

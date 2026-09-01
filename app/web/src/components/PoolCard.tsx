@@ -1,3 +1,4 @@
+import { instrumentLabel } from '@/primitives/assets';
 import type { Pool } from '@/types/contracts';
 
 interface PoolCardProps {
@@ -11,13 +12,15 @@ export function PoolCard({ pool, userLpBalance, onAddLiquidity, onRemoveLiquidit
   const userShare = pool.totalLpSupply > 0 ? (userLpBalance / pool.totalLpSupply) * 100 : 0;
   const userBaseValue = pool.reserves.baseAmount * (userShare / 100);
   const userQuoteValue = pool.reserves.quoteAmount * (userShare / 100);
+  const baseLabel = instrumentLabel(pool.baseInstrumentId.id);
+  const quoteLabel = instrumentLabel(pool.quoteInstrumentId.id);
 
   return (
     <div className="card p-5">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="text-text-primary font-sans font-semibold text-base">
-            {pool.baseInstrumentId} / {pool.quoteInstrumentId}
+            {baseLabel} / {quoteLabel}
           </h3>
           <span className={`text-xs font-sans px-2 py-0.5 rounded ${
             pool.status === 'Active'
@@ -37,11 +40,11 @@ export function PoolCard({ pool, userLpBalance, onAddLiquidity, onRemoveLiquidit
 
       <div className="grid grid-cols-2 gap-3 mb-4">
         <div>
-          <div className="text-text-muted text-xs font-sans">{pool.baseInstrumentId}</div>
+          <div className="text-text-muted text-xs font-sans">{baseLabel}</div>
           <div className="text-text-primary font-mono text-sm">{pool.reserves.baseAmount.toLocaleString()}</div>
         </div>
         <div>
-          <div className="text-text-muted text-xs font-sans">{pool.quoteInstrumentId}</div>
+          <div className="text-text-muted text-xs font-sans">{quoteLabel}</div>
           <div className="text-text-primary font-mono text-sm">{pool.reserves.quoteAmount.toLocaleString()}</div>
         </div>
       </div>
@@ -54,7 +57,7 @@ export function PoolCard({ pool, userLpBalance, onAddLiquidity, onRemoveLiquidit
             <span className="text-text-secondary font-mono">{userShare.toFixed(2)}%</span>
           </div>
           <div className="text-text-muted text-xs font-mono mt-1">
-            {userBaseValue.toFixed(4)} {pool.baseInstrumentId} / {userQuoteValue.toFixed(2)} {pool.quoteInstrumentId}
+            {userBaseValue.toFixed(4)} {baseLabel} / {userQuoteValue.toFixed(2)} {quoteLabel}
           </div>
         </div>
       )}

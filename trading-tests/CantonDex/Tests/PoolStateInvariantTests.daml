@@ -19,10 +19,12 @@ module CantonDex.Tests.PoolStateInvariantTests where
 
 import DA.Assert
 import DA.List (head)
+import DA.Map qualified as Map
 import DA.Optional (fromSome)
 import Daml.Script
 
 import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
 import Splice.Api.Token.MetadataV1
 import Splice.Testing.Utils (emptyExtraArgs)
 
@@ -34,8 +36,10 @@ import CantonDex.Dex.PoolModel qualified as PM
 import CantonDex.Dex.PoolLiquidityRules qualified as Dvp
 import CantonDex.Lp.Instrument qualified as Lp
 import CantonDex.Registry.V2 qualified as RegV2
+import CantonDex.Testing.MockRegistry qualified as Mock
 import CantonDex.Tests.PoolLiquidityRulesTests qualified as PLT
 import CantonDex.Trading.Utils qualified as Utils
+import CantonDex.Trading.AdminBatch qualified as AB
 
 -- Setup helper: creates the PoolRules contract (the operator's on-ledger audit
 -- rules) that every test below runs its reconcile check through.
@@ -83,7 +87,9 @@ testReconcileAfterAddSwapRemove = do
   -- into an allocation the pool is allowed to draw from during the swap.
   reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid = fx.poolCid; swapper = bob
-    inputInstrumentId = "USDC"; inputAmount = 100.0
+    inputInstrumentId = HoldingV2.InstrumentId with admin = fx.registry; id = "USDC"
+    inputAmount = 100.0
+    requestedAt = now; settleAt = None
     quoteBinding = Some (PRules.SwapQuoteBinding with
       expectedPoolId = fx.poolId
       poolStateCid = addRes.poolStateCid
@@ -91,7 +97,7 @@ testReconcileAfterAddSwapRemove = do
       outputSliceCids = [addRes.baseSliceCid]
       minOutputAmount = 0.0)
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 100.0
-  swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
+  swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement (head reqRes.allocationSpecs)
     [toInterfaceContractId usdcHold] now
   -- readAs registry: the settle fetches the swapper's locked holding
   -- (admin+owner stakeholders); on a real ledger the wallet discloses it
@@ -100,12 +106,12 @@ testReconcileAfterAddSwapRemove = do
     expectedPoolId = fx.poolId; poolCid = fx.poolCid
     poolStateCid = addRes.poolStateCid
     swapperAccount = Utils.basicAccount bob
-    inputInstrumentId = "USDC"; inputAmount = 100.0; minOutputAmount = 0.0
-    swapperAllocationCid = swapAlloc
+    inputInstrumentId = (HoldingV2.InstrumentId with admin = fx.registry; id = "USDC"); inputAmount = 100.0; minOutputAmount = 0.0
+    swapperAllocationCidsByAdmin = Map.fromList [(fx.registry, swapAlloc)]
     inputSliceCid = addRes.quoteSliceCid
     outputSliceCids = [addRes.baseSliceCid]
-    factoryCid = fx.settleCid
-    extraArgs = emptyExtraArgs
+    batchesByAdmin = Map.fromList [(fx.registry, AB.RegistryBatchInput fx.settleCid emptyExtraArgs)]
+    swapAllocationRequestCids = [reqRes.swapRequestCid]
     quoteBinding = reqRes.quoteBinding
   let newBaseSliceCid = fromSome swapRes.boundaryOutputSliceCid
   rec2 <- submit fx.operator $
@@ -211,6 +217,7 @@ testReconcileRejectsForeignSlice = do
     poolId = "SOME-OTHER-POOL"
     operator = fx.operator
     side = BaseSide
+    instrumentId = HoldingV2.InstrumentId with admin = fx.registry; id = "BTC"
     allocationCid = coerceContractId addRes.baseSliceCid  -- never fetched
     amount = 1.0
   submitMustFail fx.operator $
@@ -236,7 +243,9 @@ testSwapRejectsOperatorAsSwapper = do
   -- A valid swap allocation authored by bob — only swapperAccount is wrong.
   reqRes <- submit fx.operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
     poolCid = fx.poolCid; swapper = bob
-    inputInstrumentId = "USDC"; inputAmount = 100.0
+    inputInstrumentId = HoldingV2.InstrumentId with admin = fx.registry; id = "USDC"
+    inputAmount = 100.0
+    requestedAt = now; settleAt = None
     quoteBinding = Some (PRules.SwapQuoteBinding with
       expectedPoolId = fx.poolId
       poolStateCid = addRes.poolStateCid
@@ -244,17 +253,105 @@ testSwapRejectsOperatorAsSwapper = do
       outputSliceCids = [addRes.baseSliceCid]
       minOutputAmount = 0.0)
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 100.0
-  swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement reqRes.allocationSpec
+  swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement (head reqRes.allocationSpecs)
     [toInterfaceContractId usdcHold] now
   submitMustFail (actAs [fx.operator] <> readAs [fx.registry]) $
     exerciseCmd rulesCid PRules.PoolRules_Swap with
       expectedPoolId = fx.poolId; poolCid = fx.poolCid
       poolStateCid = addRes.poolStateCid
       swapperAccount = Utils.basicAccount fx.operator  -- == pool/operator account
-      inputInstrumentId = "USDC"; inputAmount = 100.0; minOutputAmount = 0.0
-      swapperAllocationCid = swapAlloc
+      inputInstrumentId = (HoldingV2.InstrumentId with admin = fx.registry; id = "USDC"); inputAmount = 100.0; minOutputAmount = 0.0
+      swapperAllocationCidsByAdmin = Map.fromList [(fx.registry, swapAlloc)]
       inputSliceCid = addRes.quoteSliceCid
       outputSliceCids = [addRes.baseSliceCid]
-      factoryCid = fx.settleCid
-      extraArgs = emptyExtraArgs
+      batchesByAdmin = Map.fromList [(fx.registry, AB.RegistryBatchInput fx.settleCid emptyExtraArgs)]
+      swapAllocationRequestCids = [reqRes.swapRequestCid]
       quoteBinding = reqRes.quoteBinding
+
+-- Same-symbol cross-admin routing --------------------------------------
+--
+-- Two registries can both issue an asset called "USD". A pool whose base is
+-- {adminA,"USD"} and quote {adminB,"USD"} shares a text id across sides, so the
+-- swap side must be decided by FULL instrument identity. This proves each
+-- direction routes correctly and a same-symbol input under a foreign admin is
+-- rejected rather than mis-routed as base.
+-- | Proves swap routing keys on full instrument identity, not the bare id.
+testSameSymbolCrossAdminSwapRoutesByIdentity : Script ()
+testSameSymbolCrossAdminSwapRoutesByIdentity = do
+  operator <- allocateParty "op-samesym"
+  adminA <- allocateParty "adminA-samesym"
+  adminB <- allocateParty "adminB-samesym"
+  lpReg <- allocateParty "lpreg-samesym"
+  bob <- allocateParty "bob-samesym"
+  now <- getTime
+
+  let baseId = HoldingV2.InstrumentId with admin = adminA; id = "USD"
+      quoteId = HoldingV2.InstrumentId with admin = adminB; id = "USD"
+      lpInstrumentId = HoldingV2.InstrumentId with admin = lpReg; id = "USD-LP"
+      poolId = "USD-USD"
+
+  poolCid <- submit operator $ createCmd Pool with
+    poolId; operator; lpRegistrar = lpReg
+    baseInstrumentId = baseId; quoteInstrumentId = quoteId
+    lpInstrumentId; feeBps = 30
+  stateCid <- submit operator $ createCmd PS.PoolState with
+    poolId; operator; lpRegistrar = lpReg
+    status = PS_Active
+    reserves = PoolReserves with baseAmount = 1000.0; quoteAmount = 1000.0
+    totalLpSupply = 1000.0; publicReaders = []
+  rulesCid <- submit operator $ createCmd PRules.PoolRules with operator
+
+  -- A mock allocation cid to back each slice; the routing decision never
+  -- fetches it, so one shared cid suffices.
+  let sliceSettlement = V2.SettlementInfo with
+        executors = [operator]; id = "slice-mock"; cid = None; meta = emptyMetadata
+      sliceSpec = Utils.mkIteratedAllocationSpecification
+        adminA (Utils.basicAccount operator) None [] None False
+  mockAllocRaw <- submit adminA $ createCmd Mock.MockAllocation with
+    admin = adminA; settlement = sliceSettlement; spec = sliceSpec
+    createdAt = now; numIterations = 0
+  let mockAlloc : ContractId V2.Allocation = toInterfaceContractId mockAllocRaw
+
+  baseSliceCid <- submit operator $ createCmd PSlice.PoolSlice with
+    poolId; operator; side = BaseSide; instrumentId = baseId
+    allocationCid = mockAlloc; amount = 1000.0
+  quoteSliceCid <- submit operator $ createCmd PSlice.PoolSlice with
+    poolId; operator; side = QuoteSide; instrumentId = quoteId
+    allocationCid = mockAlloc; amount = 1000.0
+
+  -- The admin whose spec carries the "swap-in" sender leg is the input admin.
+  let swapInAdmin specs = head
+        [ s.admin | s <- specs
+        , any (\l -> l.transferLegId == "swap-in" && l.side == V2.SenderSide)
+            s.transferLegSides ]
+      requestSwap inputId inSliceCid outSliceCids =
+        submit operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+          poolCid; swapper = bob; inputInstrumentId = inputId; inputAmount = 100.0
+          requestedAt = now; settleAt = None
+          quoteBinding = Some (PRules.SwapQuoteBinding with
+            expectedPoolId = poolId; poolStateCid = stateCid
+            inputSliceCid = inSliceCid; outputSliceCids = outSliceCids
+            minOutputAmount = 0.0)
+
+  -- Input = base identity {adminA,"USD"}: routes as base, swap-in under adminA.
+  baseReq <- requestSwap baseId baseSliceCid [quoteSliceCid]
+  length baseReq.allocationSpecs === 2
+  swapInAdmin baseReq.allocationSpecs === adminA
+
+  -- Input = quote identity {adminB,"USD"}: routes as quote, swap-in under adminB.
+  quoteReq <- requestSwap quoteId quoteSliceCid [baseSliceCid]
+  length quoteReq.allocationSpecs === 2
+  swapInAdmin quoteReq.allocationSpecs === adminB
+
+  -- A same-symbol "USD" under a foreign admin is not a pool instrument and is
+  -- rejected, not silently mis-routed as base.
+  adminC <- allocateParty "adminC-samesym"
+  let foreignId = HoldingV2.InstrumentId with admin = adminC; id = "USD"
+  submitMustFail operator $ exerciseCmd rulesCid PRules.PoolRules_RequestSwap with
+    poolCid; swapper = bob; inputInstrumentId = foreignId; inputAmount = 100.0
+    requestedAt = now; settleAt = None
+    quoteBinding = Some (PRules.SwapQuoteBinding with
+      expectedPoolId = poolId; poolStateCid = stateCid
+      inputSliceCid = baseSliceCid; outputSliceCids = [quoteSliceCid]
+      minOutputAmount = 0.0)
+  pure ()

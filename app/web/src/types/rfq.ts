@@ -18,7 +18,10 @@ export interface Rfq {
   trader: string;
   operator: string;
   rfqId: string;
+  /** Display label `base/quote`, derived from the two instrument ids. */
   pair: string;
+  baseInstrumentId: { admin: string; id: string };
+  quoteInstrumentId: { admin: string; id: string };
   side: RfqSide;
   size: number;
   /** Seconds until expiry; the RFQ page sweeps this at 1Hz. */

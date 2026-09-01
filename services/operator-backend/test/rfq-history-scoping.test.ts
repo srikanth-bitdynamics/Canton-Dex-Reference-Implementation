@@ -88,7 +88,6 @@ describe("v8 backfill", () => {
     // trader and the terminal row must inherit it.
     const p = join(dir, "old.db");
     const seed = openDb(p);
-    const version = seed.pragma("user_version", { simple: true }) as number;
     const put = (ts: number, status: string, trader: string | null) =>
       seed
         .prepare(
@@ -99,7 +98,10 @@ describe("v8 backfill", () => {
         .run(RFQ, ts, status, trader, trader ? "dBTC/dUSD" : null);
     put(1, "open", TRADER);
     put(2, "accepted", null);
-    seed.exec(`PRAGMA user_version = ${version - 1}`);
+    // Rewind to 0 and let every step replay, rather than to `length - 1`, which
+    // silently retargets away from the v8 backfill whenever a later migration
+    // is appended.
+    seed.exec("PRAGMA user_version = 0");
     seed.close();
 
     const db2 = openDb(p);

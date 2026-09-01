@@ -7,13 +7,14 @@ import type { ContractId } from "@canton-dex/registry-client";
 import type { RegistryDiscovery } from "@canton-dex/registry-client";
 
 import { asChoiceContext } from "../ledger/choice-context.js";
-import { mergeDisclosures } from "../ledger/disclosure.js";
 import { LedgerSubmitter } from "../ledger/index.js";
 import { recoverCreatedAllocations } from "../ledger/recover.js";
+import { discoverBatchesByAdmin } from "../settlement/index.js";
 import { retryOnContention } from "../ledger/submit-with-retry.js";
 import * as dec from "./decimal.js";
 import type {
   Decimal,
+  InstrumentId,
   LiquidityAllocationRequestContract,
   LiquidityAllocationAcceptanceContract,
   PoolLiquidityRulesContract,
@@ -33,6 +34,13 @@ import type {
 
 type ChoiceArguments = Record<string, unknown>;
 
+// Full-identity instrument equality. Two instruments can share a text id under
+// different admins (USD@A vs USD@B), so the swap side is decided on both admin
+// and id, never on the text id alone.
+function sameInstrument(a: InstrumentId, b: InstrumentId): boolean {
+  return a.admin === b.admin && a.id === b.id;
+}
+
 interface AllocationInstructionResult {
   output?: {
     tag?: string;
@@ -46,19 +54,13 @@ interface AddLiquidityAllocationPlan {
   lpMintSender: ChoiceArguments;
 }
 
-interface AddLiquiditySettlementPlan {
-  baseQuoteBatch: ChoiceArguments;
-  lpBatch: ChoiceArguments;
-}
-
 interface RemoveLiquidityAllocationPlan {
   lpBurnReceiver: ChoiceArguments;
 }
 
-interface RemoveLiquiditySettlementPlan {
-  baseQuoteBatch: ChoiceArguments;
-  lpBatch: ChoiceArguments;
-}
+// A settlement-preview choice returns a Daml `Map Party SettleBatch`, whose
+// JSON encoding is an array of [admin, choiceArgs] pairs.
+type SettlementPreview = Array<[Party, ChoiceArguments]>;
 
 function completedAllocationCid(
   result: AllocationInstructionResult,
@@ -82,16 +84,27 @@ function completedAllocationCid(
 export interface PoolSwapInput {
   poolCid: ContractId<"Pool">;
   swapperAccount: V2Account;
-  inputInstrumentId: string;
+  // The input instrument's full identity {admin,id}. The side is decided by
+  // full-identity equality against the pool's base/quote so USD@A and USD@B
+  // route to the correct reserve.
+  inputInstrumentId: InstrumentId;
   inputAmount: Decimal;
   minOutputAmount: Decimal;
   quoteBinding: PoolSwapQuoteBinding;
-  // Explicit created cid (dApp-return path). Omitted on the operator-discovery
-  // path, where `updateId` is supplied and the operator recovers it.
+  // The swapper's authored allocations in canonical order: the input
+  // instrument's admin first, then the output instrument's. A single-admin swap
+  // supplies one combined allocation. Omitted on the operator-discovery path,
+  // where `updateId` is supplied and the operator recovers them.
+  swapperAllocationCids?: ContractId<"Allocation">[];
+  // Legacy single-admin alias for `swapperAllocationCids`.
   swapperAllocationCid?: ContractId<"Allocation">;
   // Operator-discovery path (updateId-only wallet, e.g. PartyLayer): the
-  // swapper's signed two-sided allocation is recovered from the tree.
+  // swapper's signed allocations are recovered from the tree, one per admin.
   updateId?: string | null;
+  // On-ledger SwapAllocationRequest(s) from /request to archive at settle.
+  // Normally empty: a wallet accept consumes the request when it authors the
+  // allocations. Pass only cids provably still active.
+  swapAllocationRequestCids?: ContractId<"SwapAllocationRequest">[];
   // Optional client-supplied idempotency key. When present the swap
   // commandId is derived from it; otherwise the commandId is derived
   // deterministically from the request content.
@@ -165,9 +178,13 @@ function contentHash(parts: unknown): string {
 export interface PoolRequestSwapInput {
   poolCid: ContractId<"Pool">;
   swapper: Party;
-  inputInstrumentId: string;
+  // The input instrument's full identity {admin,id}; see PoolSwapInput.
+  inputInstrumentId: InstrumentId;
   inputAmount: Decimal;
   minOutputAmount: Decimal;
+  // Stamped onto the SwapAllocationRequest; defaults to now.
+  requestedAt?: Time;
+  settleAt?: Time | null;
 }
 
 export interface PoolSwapQuoteBinding {
@@ -179,8 +196,14 @@ export interface PoolSwapQuoteBinding {
 }
 
 export interface PoolRequestSwapResult {
-  // The on-ledger spec the wallet authors via AllocationFactory_Allocate.
-  allocationSpec: V2AllocationSpecification;
+  // The on-ledger specs the wallet authors via AllocationFactory_Allocate: one
+  // per (swapper, admin). A single-admin swap has one; a cross-admin swap has
+  // the swap-in spec under the input admin and the swap-out spec under the
+  // output admin.
+  allocationSpecs: V2AllocationSpecification[];
+  // The on-ledger request carrying those specs; passed back to /swap so the
+  // settle can archive it when the wallet did not consume it via accept.
+  swapRequestCid: ContractId<"SwapAllocationRequest">;
   settlement: V2SettlementInfo;
   quoteBinding: PoolSwapQuoteBinding;
 }
@@ -413,7 +436,6 @@ export class PoolService {
         poolLiquidityRulesCid: liquidityRulesCidFor(cfg.lpRegistrar),
         operator: cfg.operator,
         lpRegistrar: cfg.lpRegistrar,
-        admin: cfg.admin,
         baseInstrumentId: cfg.baseInstrumentId,
         quoteInstrumentId: cfg.quoteInstrumentId,
         lpInstrumentId: cfg.lpInstrumentId,
@@ -437,11 +459,11 @@ export class PoolService {
    */
   computeQuote(
     pool: Pool,
-    inputInstrumentId: string,
+    inputInstrumentId: InstrumentId,
     inputAmount: Decimal,
   ): Decimal {
     const [reserveIn, reserveOut] =
-      inputInstrumentId === pool.baseInstrumentId
+      sameInstrument(inputInstrumentId, pool.baseInstrumentId)
         ? [pool.reserves.baseAmount, pool.reserves.quoteAmount]
         : [pool.reserves.quoteAmount, pool.reserves.baseAmount];
     const rIn = dec.parseDecimal(reserveIn);
@@ -465,7 +487,7 @@ export class PoolService {
    */
   computeQuoteDetailed(
     pool: Pool,
-    inputInstrumentId: string,
+    inputInstrumentId: InstrumentId,
     inputAmount: Decimal,
   ): {
     outputAmount: Decimal;
@@ -480,10 +502,10 @@ export class PoolService {
     poolCid: string;
     poolId: string;
   } {
-    const isBaseIn = inputInstrumentId === pool.baseInstrumentId;
+    const isBaseIn = sameInstrument(inputInstrumentId, pool.baseInstrumentId);
     const outputInstrumentId = isBaseIn
-      ? pool.quoteInstrumentId
-      : pool.baseInstrumentId;
+      ? pool.quoteInstrumentId.id
+      : pool.baseInstrumentId.id;
     const [reserveIn, reserveOut] = isBaseIn
       ? [pool.reserves.baseAmount, pool.reserves.quoteAmount]
       : [pool.reserves.quoteAmount, pool.reserves.baseAmount];
@@ -509,7 +531,8 @@ export class PoolService {
     return {
       outputAmount,
       inputAmount,
-      inputInstrumentId,
+      // Echoed as the display text ids the client sent/expects.
+      inputInstrumentId: inputInstrumentId.id,
       outputInstrumentId,
       feeBps: pool.feeBps,
       feeAmount: dec.formatDecimal(feeAmount),
@@ -540,23 +563,41 @@ export class PoolService {
     if (dec.parseDecimal(binding.minOutputAmount) !== dec.parseDecimal(input.minOutputAmount)) {
       throw new LedgerError("validation", "swap: slippage minimum differs from quote", false);
     }
-    // Operator-discovery: recover the signed swap allocation from the tree
-    // when the wallet returned only an updateId.
-    let swapperAllocationCid = input.swapperAllocationCid;
+    const inputIsBase = sameInstrument(input.inputInstrumentId, pool.baseInstrumentId);
+    const inputAdmin = inputIsBase
+      ? pool.baseInstrumentId.admin
+      : pool.quoteInstrumentId.admin;
+    const outputAdmin = inputIsBase
+      ? pool.quoteInstrumentId.admin
+      : pool.baseInstrumentId.admin;
+    // Canonical admin order the swapper authored specs in (see
+    // PoolRules.swapperAllocationSpecs); a single-admin swap collapses to one.
+    const swapAdmins = inputAdmin === outputAdmin ? [inputAdmin] : [inputAdmin, outputAdmin];
+
+    // Resolve the swapper's per-admin allocations: an explicit list, the legacy
+    // single cid, or recovered from the tree (one per admin) on the
+    // operator-discovery path.
+    let swapperAllocationCids =
+      input.swapperAllocationCids ??
+      (input.swapperAllocationCid ? [input.swapperAllocationCid] : undefined);
     if (input.updateId) {
       const { allocationCids } = await recoverCreatedAllocations(
-        this.ledger, this.operatorParty, input.updateId, 1,
+        this.ledger, this.operatorParty, input.updateId, swapAdmins.length,
       );
-      swapperAllocationCid = allocationCids[0] as ContractId<"Allocation">;
+      swapperAllocationCids = allocationCids as ContractId<"Allocation">[];
     }
-    if (!swapperAllocationCid) {
+    if (!swapperAllocationCids || swapperAllocationCids.length !== swapAdmins.length) {
       throw new LedgerError(
         "validation",
-        "swap: supply swapperAllocationCid or an updateId to recover it",
+        `swap: supply ${swapAdmins.length} swapper allocation cid(s) (one per admin) ` +
+          "or an updateId to recover them",
         false,
       );
     }
-    const inputIsBase = input.inputInstrumentId === pool.baseInstrumentId;
+    const swapperCids = swapperAllocationCids;
+    const swapperAllocationCidsByAdmin = swapAdmins.map(
+      (admin, i) => [admin, swapperCids[i]!] as [Party, ContractId<"Allocation">],
+    );
     const inputSlices = inputIsBase ? pool.baseSlices : pool.quoteSlices;
     const outputSlices = inputIsBase ? pool.quoteSlices : pool.baseSlices;
     if (!inputSlices.some((slice) => slice.contractId === binding.inputSliceCid)) {
@@ -580,7 +621,7 @@ export class PoolService {
         inputAmount: input.inputAmount,
         minOutputAmount: input.minOutputAmount,
         quoteBinding: binding,
-        swapperAllocationCid,
+        swapperAllocationCidsByAdmin,
         updateId: input.updateId ?? null,
       });
     const commandId = `pool-swap:${input.poolCid}:${swapKey}`;
@@ -592,15 +633,20 @@ export class PoolService {
       inputInstrumentId: input.inputInstrumentId,
       inputAmount: input.inputAmount,
       minOutputAmount: input.minOutputAmount,
-      swapperAllocationCid,
+      // GenMap: array of [admin, cid] pairs.
+      swapperAllocationCidsByAdmin,
       inputSliceCid: binding.inputSliceCid,
       outputSliceCids: binding.outputSliceCids,
       quoteBinding: binding,
     };
-    const settlementArguments = await retryOnContention(() =>
-      this.ledger.submit<Record<string, unknown>>({
+    // No readAs on the swapper (a self-custody trader will not grant the
+    // operator that right) nor on any instrument admin: the operator is the
+    // settlement executor named on the swapper's allocations, so it already
+    // sees them, and the registry-returned settlement-factory disclosures cover
+    // each admin.
+    const preview = await retryOnContention(() =>
+      this.ledger.submit<SettlementPreview>({
         actAs: [this.operatorParty],
-        readAs: input.swapperAccount.owner ? [input.swapperAccount.owner] : [],
         commandId: `${commandId}:preview`,
         command: {
           kind: "exercise",
@@ -611,17 +657,17 @@ export class PoolService {
         },
       }),
     );
-    const settlementFactory = await this.registry.getSettlementFactory(
-      pool.admin,
-      settlementArguments,
+    // One settlement factory per admin: swap-in under the input admin, swap-out
+    // under the output admin (both under one for a single-admin swap).
+    const { batchesByAdmin, disclosure } = await discoverBatchesByAdmin(
+      this.registry,
+      preview,
     );
-    const settlementContext = asChoiceContext(settlementFactory);
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty],
-        readAs: input.swapperAccount.owner ? [input.swapperAccount.owner] : [],
         commandId,
-        disclosure: settlementContext.disclosure,
+        disclosure,
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolRules:PoolRules",
@@ -629,8 +675,8 @@ export class PoolService {
           choice: "PoolRules_Swap",
           argument: {
             ...swapArgument,
-            factoryCid: settlementFactory.factoryCid,
-            extraArgs: settlementContext.extraArgs,
+            batchesByAdmin,
+            swapAllocationRequestCids: input.swapAllocationRequestCids ?? [],
           },
         },
       }),
@@ -642,12 +688,12 @@ export class PoolService {
   async requestSwap(input: PoolRequestSwapInput): Promise<PoolRequestSwapResult> {
     const pool = await this.fetchPool(input.poolCid);
     if (
-      input.inputInstrumentId !== pool.baseInstrumentId &&
-      input.inputInstrumentId !== pool.quoteInstrumentId
+      !sameInstrument(input.inputInstrumentId, pool.baseInstrumentId) &&
+      !sameInstrument(input.inputInstrumentId, pool.quoteInstrumentId)
     ) {
       throw new LedgerError("validation", "swap: input instrument is not in the pool", false);
     }
-    const inputIsBase = input.inputInstrumentId === pool.baseInstrumentId;
+    const inputIsBase = sameInstrument(input.inputInstrumentId, pool.baseInstrumentId);
     const inputSlices = inputIsBase ? pool.baseSlices : pool.quoteSlices;
     const outputSlices = inputIsBase ? pool.quoteSlices : pool.baseSlices;
     const inputSlice = inputSlices[0];
@@ -670,7 +716,8 @@ export class PoolService {
     };
     const result = await this.ledger.submit<{
       settlement: V2SettlementInfo;
-      allocationSpec: V2AllocationSpecification;
+      allocationSpecs: V2AllocationSpecification[];
+      swapRequestCid: ContractId<"SwapAllocationRequest">;
       quoteBinding: PoolSwapQuoteBinding | null;
     }>({
       actAs: [this.operatorParty],
@@ -691,6 +738,8 @@ export class PoolService {
           swapper: input.swapper,
           inputInstrumentId: input.inputInstrumentId,
           inputAmount: input.inputAmount,
+          requestedAt: input.requestedAt ?? new Date().toISOString(),
+          settleAt: input.settleAt ?? null,
           quoteBinding,
         },
       },
@@ -699,7 +748,8 @@ export class PoolService {
       throw new LedgerError("validation", "swap: on-ledger request omitted quote binding", false);
     }
     return {
-      allocationSpec: result.allocationSpec,
+      allocationSpecs: result.allocationSpecs,
+      swapRequestCid: result.swapRequestCid,
       settlement: result.settlement,
       quoteBinding: result.quoteBinding,
     };
@@ -968,13 +1018,13 @@ export class PoolService {
     const [operatorBaseReceiver, operatorQuoteReceiver, registrarMint] =
       await Promise.all([
         this.createRegistryAllocation(
-          pool.admin,
+          pool.baseInstrumentId.admin,
           allocationPlan.baseReceiver,
           `lp-add-base-receiver:${flowKey}`,
           [this.operatorParty],
         ),
         this.createRegistryAllocation(
-          pool.admin,
+          pool.quoteInstrumentId.admin,
           allocationPlan.quoteReceiver,
           `lp-add-quote-receiver:${flowKey}`,
           [this.operatorParty],
@@ -986,8 +1036,8 @@ export class PoolService {
           [pool.lpRegistrar],
         ),
       ]);
-    const settlementPlan = await retryOnContention(() =>
-      this.ledger.submit<AddLiquiditySettlementPlan>({
+    const settlementPreview = await retryOnContention(() =>
+      this.ledger.submit<SettlementPreview>({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-add-preview-settlement:${flowKey}`,
         command: {
@@ -1004,21 +1054,18 @@ export class PoolService {
         },
       }),
     );
-    const [poolSettlementFactory, lpSettlementFactory] = await Promise.all([
-      this.registry.getSettlementFactory(pool.admin, settlementPlan.baseQuoteBatch),
-      this.registry.getSettlementFactory(pool.lpRegistrar, settlementPlan.lpBatch),
-    ]);
-    const poolSettlementContext = asChoiceContext(poolSettlementFactory);
-    const lpSettlementContext = asChoiceContext(lpSettlementFactory);
+    // One settlement factory per admin: base and quote under their instrument
+    // admins (collapsed to one for a single-admin pool), LP under the registrar.
+    const { batchesByAdmin, disclosure } = await discoverBatchesByAdmin(
+      this.registry,
+      settlementPreview,
+    );
 
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-add-settle:${flowKey}`,
-        disclosure: mergeDisclosures(
-          poolSettlementContext.disclosure,
-          lpSettlementContext.disclosure,
-        ),
+        disclosure,
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
@@ -1026,14 +1073,14 @@ export class PoolService {
           choice: "PoolLiquidityRules_SettleAddLiquidity",
           argument: {
             ...preparation,
+            // Allocation factories for the pre-created receiver/mint cids;
+            // retained shape, unused while the staging cids below are present.
             baseFactoryCid: operatorBaseReceiver.factoryCid,
             quoteFactoryCid: operatorQuoteReceiver.factoryCid,
             lpFactoryCid: registrarMint.factoryCid,
-            baseQuoteSettleCid: poolSettlementFactory.factoryCid,
-            lpSettleCid: lpSettlementFactory.factoryCid,
             requestedAt: input.requestedAt,
-            poolAdminExtraArgs: poolSettlementContext.extraArgs,
-            lpRegistrarExtraArgs: lpSettlementContext.extraArgs,
+            batchesByAdmin,
+            allocationContextByAdmin: [],
             operatorBaseReceiverCid: operatorBaseReceiver.allocationCid,
             operatorQuoteReceiverCid: operatorQuoteReceiver.allocationCid,
             registrarMintCid: registrarMint.allocationCid,
@@ -1181,8 +1228,8 @@ export class PoolService {
       `lp-remove-burn-receiver:${flowKey}`,
       [pool.lpRegistrar],
     );
-    const settlementPlan = await retryOnContention(() =>
-      this.ledger.submit<RemoveLiquiditySettlementPlan>({
+    const settlementPreview = await retryOnContention(() =>
+      this.ledger.submit<SettlementPreview>({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-remove-preview-settlement:${flowKey}`,
         command: {
@@ -1197,21 +1244,19 @@ export class PoolService {
         },
       }),
     );
-    const [poolSettlementFactory, lpSettlementFactory] = await Promise.all([
-      this.registry.getSettlementFactory(pool.admin, settlementPlan.baseQuoteBatch),
-      this.registry.getSettlementFactory(pool.lpRegistrar, settlementPlan.lpBatch),
-    ]);
-    const poolSettlementContext = asChoiceContext(poolSettlementFactory);
-    const lpSettlementContext = asChoiceContext(lpSettlementFactory);
+    // One settlement factory per admin: base and quote deliveries under their
+    // instrument admins (collapsed for a single-admin pool), LP burn under the
+    // registrar.
+    const { batchesByAdmin, disclosure } = await discoverBatchesByAdmin(
+      this.registry,
+      settlementPreview,
+    );
 
     return retryOnContention(() =>
       this.ledger.submit({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-remove-settle:${flowKey}`,
-        disclosure: mergeDisclosures(
-          poolSettlementContext.disclosure,
-          lpSettlementContext.disclosure,
-        ),
+        disclosure,
         command: {
           kind: "exercise",
           templateId: "CantonDex.Dex.PoolLiquidityRules:PoolLiquidityRules",
@@ -1219,16 +1264,14 @@ export class PoolService {
           choice: "PoolLiquidityRules_SettleRemoveLiquidity",
           argument: {
             ...preparation,
-            // These two fields are retained for the deployed choice shape.
-            // Remove-liquidity does not create base/quote allocations here.
-            baseFactoryCid: registrarBurnReceiver.factoryCid,
-            quoteFactoryCid: registrarBurnReceiver.factoryCid,
+            // Allocation factory for the pre-created burn-receiver; retained
+            // shape, unused while `registrarBurnReceiverCid` is present.
             lpFactoryCid: registrarBurnReceiver.factoryCid,
-            baseQuoteSettleCid: poolSettlementFactory.factoryCid,
-            lpSettleCid: lpSettlementFactory.factoryCid,
             requestedAt: input.requestedAt,
-            poolAdminExtraArgs: poolSettlementContext.extraArgs,
-            lpRegistrarExtraArgs: lpSettlementContext.extraArgs,
+            batchesByAdmin,
+            // Staged allocation cids are supplied, so the fallback authoring
+            // context is unused; pass an empty GenMap.
+            allocationContextByAdmin: [],
             registrarBurnReceiverCid: registrarBurnReceiver.allocationCid,
           },
         },

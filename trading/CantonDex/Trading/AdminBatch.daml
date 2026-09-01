@@ -1,0 +1,126 @@
+-- | Admin-keyed settlement grouping shared by every DEX flow.
+--
+-- A `V2.TransferLeg` names its instrument by text id only; the registry admin
+-- lives on the settlement factory and allocations, not the leg. Grouping the
+-- legs and allocations of a trade by instrument admin, then settling one
+-- `SettlementFactory_SettleBatch` per admin inside one choice, is what makes a
+-- trade whose instruments span two registries commit atomically. A single-admin
+-- trade is the degenerate case: one key, one batch.
+--
+-- Design guide: `docs/concepts/cross-admin.md`.
+module CantonDex.Trading.AdminBatch where
+
+import DA.Foldable (forA_)
+import DA.Map qualified as Map
+
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.MetadataV1 (ExtraArgs)
+
+import CantonDex.Trading.Utils qualified as Utils
+
+-- | The transfer legs and finalized allocations that settle under one
+-- instrument admin.
+data AdminFragment = AdminFragment with
+    transferLegs : [V2.TransferLeg]
+    allocations : [V2.FinalizedAllocation]
+  deriving (Eq, Show)
+
+-- | The settlement factory and choice context that settle one admin's fragment.
+-- The fragment itself is derived on-ledger, so the caller supplies only the
+-- factory and its registry-specific context.
+data RegistryBatchInput = RegistryBatchInput with
+    factoryCid : ContractId V2.SettlementFactory
+    extraArgs : ExtraArgs
+  deriving (Eq, Show)
+
+-- | Merge per-admin fragments in list order, concatenating the legs and
+-- allocations of fragments that share an admin. A single-admin input collapses
+-- to one key.
+groupByAdmin : [(Party, AdminFragment)] -> Map.Map Party AdminFragment
+groupByAdmin = Map.fromListWithR combine
+  where
+    combine a b = AdminFragment with
+      transferLegs = a.transferLegs <> b.transferLegs
+      allocations = a.allocations <> b.allocations
+
+-- | The exact `SettleBatch` argument for each admin, with an empty context the
+-- registry response replaces. Used by the read-only preview choices.
+previewByAdmin
+  : V2.SettlementInfo
+  -> [Party]
+  -> Map.Map Party AdminFragment
+  -> Map.Map Party V2.SettlementFactory_SettleBatch
+previewByAdmin settlement actors = fmap toBatch
+  where
+    toBatch frag = V2.SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = frag.transferLegs
+      allocations = frag.allocations
+      actors
+      extraArgs = Utils.emptyExtraArgs
+
+-- | Settle every admin's fragment through the caller's factory and context.
+-- The expected admins are derived from the grouped fragments: a caller batch
+-- for an admin the fragments do not include is rejected, and a missing one
+-- aborts. One batch is exercised per admin under the shared, admin-independent
+-- settlement, so the whole trade commits atomically or not at all.
+settleByAdmin
+  : V2.SettlementInfo
+  -> [Party]
+  -> Map.Map Party AdminFragment
+  -> Map.Map Party RegistryBatchInput
+  -> Update (Map.Map Party V2.SettlementFactory_SettleBatchResult)
+settleByAdmin settlement actors grouped callers = do
+  let expectedAdmins = Map.keys grouped
+  forA_ (Map.keys callers) $ \admin ->
+    assertMsg
+      ("settleByAdmin: unexpected settlement batch for admin " <> show admin)
+      (admin `elem` expectedAdmins)
+  results <- forA (Map.toList grouped) $ \(admin, frag) -> do
+    input <- case Map.lookup admin callers of
+      Some i -> pure i
+      None -> abort ("settleByAdmin: missing settlement batch for admin " <> show admin)
+    result <- exercise input.factoryCid V2.SettlementFactory_SettleBatch with
+      settlement
+      transferLegs = frag.transferLegs
+      allocations = frag.allocations
+      actors
+      extraArgs = input.extraArgs
+    pure (admin, result)
+  pure (Map.fromList results)
+
+-- | The next-iteration allocation produced for one finalized allocation,
+-- located by its input allocation cid inside the admin's merged fragment and
+-- read from the matching position of that admin's settle result. Results are
+-- bound to their allocation by cid, never by raw position across a merge.
+nextIterationFor
+  : Map.Map Party AdminFragment
+  -> Map.Map Party V2.SettlementFactory_SettleBatchResult
+  -> Party
+  -> ContractId V2.Allocation
+  -> Update (Optional (ContractId V2.Allocation))
+nextIterationFor grouped results admin allocationCid = do
+  frag <- case Map.lookup admin grouped of
+    Some f -> pure f
+    None -> abort ("nextIterationFor: no fragment for admin " <> show admin)
+  result <- case Map.lookup admin results of
+    Some r -> pure r
+    None -> abort ("nextIterationFor: no settle result for admin " <> show admin)
+  let paired =
+        zip (map (.allocationCid) frag.allocations) (Utils.nextIterationAllocationCids result)
+  case find (\(cid, _) -> cid == allocationCid) paired of
+    Some (_, nextOpt) -> pure nextOpt
+    None -> abort ("nextIterationFor: allocation not settled under admin " <> show admin)
+
+-- | Like `nextIterationFor`, but the allocation MUST have rolled forward.
+requiredNextIteration
+  : Map.Map Party AdminFragment
+  -> Map.Map Party V2.SettlementFactory_SettleBatchResult
+  -> Party
+  -> ContractId V2.Allocation
+  -> Update (ContractId V2.Allocation)
+requiredNextIteration grouped results admin allocationCid = do
+  next <- nextIterationFor grouped results admin allocationCid
+  case next of
+    Some cid -> pure cid
+    None -> abort ("requiredNextIteration: allocation did not roll forward under admin " <> show admin)

@@ -51,17 +51,21 @@ Three bands, top to bottom:
 
 The trust boundary is the pair of dashed edges crossing into the ledger. For
 self-custodial flows the operator drives DEX choices under its own authority,
-but it can neither fund a trade nor bypass the validation those choices perform
-on-ledger. [The executor-control constraint](#the-executor-control-constraint)
-makes that boundary precise. The operator-mediated RFQ path instead requires trader
+but it cannot fund a self-custodial trade, and it cannot alter the checks a
+DEX choice performs when it is used. What those checks do not settle is the
+operator's route: a resting order names the operator as settlement executor, so
+the registry cannot prove the operator entered through the DEX choice rather
+than another settlement. [The executor-control constraint](#the-executor-control-constraint)
+makes that residual operator-executor trust precise. The operator-mediated RFQ path instead requires trader
 act-as rights and must not be mistaken for the self-custodial path.
 
 ## What settles value: the Token Standard V2 spine
 
 Every value movement in the DEX reduces to two things: a set of **allocations**
 (funds locked by their owner, pinned to a settlement) and one
-**`SettlementFactory_SettleBatch`** that atomically executes the transfer legs
-those allocations authorize.
+**`SettlementFactory_SettleBatch`** per instrument admin — one to three of them —
+grouped into a single atomic Daml choice that executes the transfer legs those
+allocations authorize.
 
 Two properties of the V2 allocation surface are load-bearing here:
 
@@ -78,8 +82,10 @@ Two properties of the V2 allocation surface are load-bearing here:
 `Registry.V2` is the reference registry implementing these interfaces for the
 in-script tests, the testnet harness, and the live DEX. It is not privileged:
 any registry that implements the same V2 holding/allocation/settlement APIs can
-back a traded instrument. A listed base/quote pair currently keeps both ids under
-one registry admin; the LP registrar may differ. The DEX treats `InstrumentId`
+back a traded instrument. A listed base/quote pair names each instrument by its
+full `InstrumentId {admin, id}`; base, quote, and the LP token may each be
+administered by a different registry, and settlement groups the legs by admin
+(see [Cross-admin settlement](cross-admin.md)). The DEX treats `InstrumentId`
 and registry-supplied choice context as the stable integration boundary, not
 this template. The
 guarantees the DEX relies on are enforced inside `SettlementFactory_SettleBatch`:
@@ -175,12 +181,11 @@ adding another public execution surface.
 template Pool with
     poolId : PoolId
     operator : Party
-    lpRegistrar : Party      -- owns the LP instrument; separate from operator
-    admin : Party            -- asset registrar for base + quote
-    baseInstrumentId : Text  -- id under `admin`; full identity is { admin, id }
-    quoteInstrumentId : Text
-    lpInstrumentId : V2.InstrumentId
-    feeBps : Int             -- swap fee in bps; accrues entirely to LPs
+    lpRegistrar : Party                 -- owns the LP instrument; separate from operator
+    baseInstrumentId : V2.InstrumentId  -- full identity { admin, id }
+    quoteInstrumentId : V2.InstrumentId -- admin may differ from the base's
+    lpInstrumentId : V2.InstrumentId    -- admin = lpRegistrar
+    feeBps : Int                        -- swap fee in bps; accrues entirely to LPs
   where
     signatory operator
     observer lpRegistrar
@@ -206,19 +211,22 @@ locks the funding as `nextIterationFunding` with no legs; a match carries the
 concrete legs through `SettleBatch` and rolls the residual budget forward;
 cancel releases the allocation.
 
-`OrderMatchExecution_Execute` is where a resting order is defended. It fetches
-both orders and refuses any fill outside their own limit prices, remaining
-quantities, instruments, or bound allocations, so a buggy or malicious
-off-ledger matcher cannot fill an order on terms its owner never agreed to. The
-fill, the roll-forward of both remainders, and the trade record all happen in
-one transaction — the settle archives the very allocations the orders are bound
-to, so a partly-completed match could otherwise strand an order pointing at a
-consumed allocation.
+`OrderMatchExecution_Execute` is where a resting order is defended. It re-runs
+the match against live state and constrains any fill to both orders' own limit
+prices, remaining quantities, instruments, and bound allocations. These are
+DEX-side checks on what a fill through this choice may do: a resting order is
+backed by a prefunded iterated allocation naming the operator as settlement
+executor, and the operator supplies the concrete legs at match time, so the
+registry itself cannot prove the operator entered through this choice rather than
+another. That is the operator trust the order book already relies on — AMM swaps
+and liquidity differ, because the trader or LP authors every leg side up front,
+so settlement cannot add or alter their authority. The fill, the roll-forward of
+both remainders, and the trade record all happen in one transaction — the settle
+archives the very allocations the orders are bound to, so a partly-completed
+match could otherwise strand an order pointing at a consumed allocation.
 
-`Order_Adjust` and `Order_RecordPartialFill` are retired compatibility choices:
-deployed Daml package lineage prevents removing them, so both reject every
-exercise. They are not workflow APIs. Matching and partial-fill roll-forward
-belong exclusively to `OrderMatchExecution_Execute`.
+Matching and partial-fill roll-forward belong exclusively to
+`OrderMatchExecution_Execute`.
 
 ### RFQ and OTC block trades
 
@@ -235,8 +243,9 @@ authorizer, group settlement by admin, and settle with
 Pool shares are their own Token Standard instrument (`Lp.LPTokenPolicy`), minted
 and burned under DEX rules by the `lpRegistrar` — a party deliberately separate
 from the operator — and holdable like any other V2 instrument. Add- and
-remove-liquidity are delivery-versus-payment: the deposit legs and the LP
-mint/burn settle atomically, each batch under its own registry admin.
+remove-liquidity are staged and atomic: a request stages the intent, then a
+single settle choice settles the funding allocations and the LP mint or burn
+together as delivery-versus-payment, one batch per registry admin.
 
 ## The executor-control constraint
 
@@ -347,9 +356,10 @@ Three concrete upstream inputs shaped the architecture:
 
 Two further principles run through the design: it is **workflow-first** (the
 shape of choices and state transitions matters more than AMM feature parity —
-see [Workflows](workflows.md)), and it trades **arbitrary base/quote ids under
-one registry admin**, not hardcoded "cash vs asset" families. Pairing two asset
-admins is an explicit [app-layer limitation](non-goals.md#one-registry-admin-per-pair).
+see [Workflows](workflows.md)), and it trades **arbitrary base/quote instruments
+by full `InstrumentId`**, not hardcoded "cash vs asset" families. Base and quote
+may be administered by different registries; [Cross-admin
+settlement](cross-admin.md) covers how settlement groups legs by admin.
 
 ### Reference: reserves integrity in full
 
@@ -371,15 +381,16 @@ three levels:
   reconcile is only as trustworthy as the operator's listing. Production
   hardening would co-sign state updates with an admin-signed `Pool`.
 
-### Reference: one registry admin per pair
+### Reference: per-instrument admin identity
 
-Both legs of a pair currently share one registry `admin`: `DexPair`, `Order`,
-`Pool`, and `MatchedTrade` each carry a single `admin : Party`, and the
-standard's `TransferLeg.instrumentId` is bare `Text`, so a leg cannot name its
-own admin — the constraint lives in the app-layer templates, not the settlement
-spine. [Non-goals](non-goals.md#one-registry-admin-per-pair) frames it as a
-deliberate limitation; [Registry Integration](../guides/registry-integration.md#what-the-dex-does-not-assume)
-sets out what lifting it would take.
+`DexPair`, `Order`, `Pool`, and `MatchedTrade` each name their instruments by
+full `InstrumentId {admin, id}`, so base and quote may be administered by
+different registries. The standard's `TransferLeg.instrumentId` is bare `Text`,
+so each leg's admin travels alongside it in the app-layer records, and
+settlement groups the legs by admin into one `SettlementFactory_SettleBatch` per
+admin. [Cross-admin settlement](cross-admin.md) is authoritative;
+[Registry Integration](../guides/registry-integration.md#what-the-dex-does-not-assume)
+sets out what each registry must provide.
 
 ### Reference: instrument lifecycle stays outside the DEX
 

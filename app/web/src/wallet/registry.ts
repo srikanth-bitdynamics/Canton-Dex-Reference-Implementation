@@ -72,6 +72,23 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   const projectId = (import.meta.env.VITE_WC_PROJECT_ID ?? "") as string;
   const networkId = (import.meta.env.VITE_CANTON_NETWORK_ID ??
     "canton:devnet") as string;
+  // Loop (`loop_connect`) and PartyLayer (`active_session`) persist a connection
+  // without recording its network. A session restored after the deployment
+  // network changes still carries a ticket minted against the old network, so
+  // connect fails with "ticket invalid or expired". Drop those sessions whenever
+  // the configured network differs from the last one this browser saw.
+  if (typeof window !== "undefined") {
+    try {
+      const seenKey = "canton-dex:wallet-network";
+      if (window.localStorage.getItem(seenKey) !== networkId) {
+        window.localStorage.removeItem("loop_connect");
+        window.localStorage.removeItem("active_session");
+        window.localStorage.setItem(seenKey, networkId);
+      }
+    } catch {
+      // Storage may be unavailable; the adapters still load.
+    }
+  }
   const apiBase =
     (import.meta.env.VITE_API_BASE ?? "http://localhost:8080") as string;
   const enableSdk =
@@ -79,7 +96,7 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   const enablePartyLayer =
     (import.meta.env.VITE_ENABLE_PARTYLAYER ?? "") === "1";
   const packagePrefix = (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID ??
-    "#canton-dex-trading") as string;
+    "#canton-dex-trading-v2") as string;
 
   const map = new Map<WalletProviderId, WalletProvider>();
 
@@ -111,7 +128,7 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   if (import.meta.env.DEV) {
     map.set("token-standard", new TokenStandardProvider(apiBase));
   }
-  if (projectId) map.set("walletconnect", new WalletConnectProvider(projectId, networkId));
+  if (projectId) map.set("walletconnect", new WalletConnectProvider(projectId, networkId, packagePrefix));
   // Direct Canton is intentionally not registered. A participant accepts
   // concrete Ledger API commands, not DEX wallet intents, and a browser should
   // never retain its bearer credential. See canton-direct-provider.ts.

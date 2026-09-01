@@ -1,7 +1,7 @@
 # Canton DEX Architecture
 
 This is Step 6 of the
-[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+[newcomer learning path](../README.md#newcomer-learning-path).
 Complete the [15-minute design tour](design-tour.md) first.
 
 Canton DEX keeps market logic—orders, pools, and RFQs—in its Daml contracts.
@@ -162,7 +162,7 @@ readable:
   stable identifier everything else hangs off.
 - `PoolState` — the hot singleton: aggregate `reserves`, LP supply, status. A
   swap must read global reserves to price `x*y=k`, so this is the one
-  irreducible serialization point, kept as small as possible.
+  unavoidable serialization point, kept as small as possible.
 - `PoolSlice` — one committed allocation backing one side. Funds are *sharded*
   across many slices, so swap and remove need only the slices that cover their
   transfer rather than a list of every allocation in the pool state.
@@ -199,7 +199,7 @@ source of truth for funds; `PoolRules_Swap` adjusts only the input slice and the
 output-side covering prefix, with the operator's indexer supplying the ordered
 slice contract ids. Every reserve-changing operation still consumes and
 recreates `PoolState`, so operations on one pool serialize there; the slice split
-reduces state size and settlement input, not that irreducible contention.
+reduces state size and settlement input, not that unavoidable contention.
 Keeping the accounting and allocation views consistent is what
 [the executor-control constraint](#the-executor-control-constraint) guards.
 
@@ -470,6 +470,6 @@ canton-dex/
 
 ---
 
-**Next canonical step:** [Workflow design](workflows.md). Use
+**Next step:** [Workflow design](workflows.md). Use
 [Pricing](pricing.md), [Liquidity and custody](liquidity-and-custody.md), and
 the [Glossary](glossary.md) as topic references.

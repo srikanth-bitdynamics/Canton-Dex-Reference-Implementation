@@ -369,7 +369,7 @@ not connect to Canton or prove any live path.
   backend HTTP, and live Canton.
 - A live external-registry HTTP round trip. The live RFQ integration test uses
   a `FixedRegistryClient` whose methods are never called because RFQ acceptance
-  does not allocate or settle tokens. Offline tests prove the canonical
+  does not allocate or settle tokens. Offline tests prove the standard
   operation-specific request bodies and response validation; a live swap test
   still needs a deployed registry endpoint, credentials, and factory contracts.
 

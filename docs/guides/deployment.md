@@ -255,7 +255,7 @@ choice contexts from that registry API at runtime, using
 ## Environment variables
 
 [`services/operator-backend/.env.example`](../../services/operator-backend/.env.example)
-and [`app/web/.env.example`](../../app/web/.env.example) are the canonical lists
+and [`app/web/.env.example`](../../app/web/.env.example) are the complete lists
 (including the wallet-provider flags). The backend variables that matter for a
 real deployment:
 
@@ -305,7 +305,7 @@ any is missing:
 **Frontend build args** are public and baked into the static assets. Compose
 declares the complete supported set under its `frontend.build.args`, including
 API/docs/network metadata plus WalletConnect, dApp SDK, gateway, and PartyLayer
-configuration. The canonical descriptions and safe defaults are in
+configuration. The complete descriptions and safe defaults are in
 [`app/web/.env.example`](../../app/web/.env.example); no participant or HTTP
 API bearer token is an accepted production build argument.
 

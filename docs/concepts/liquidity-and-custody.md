@@ -105,7 +105,7 @@ Because the assets are real committed allocations, moving them is settlement,
 not bookkeeping. Add, remove, and swap each run as delivery-versus-payment
 settlement — one `SettlementFactory_SettleBatch` per instrument admin (one to
 three) — and rewrite `PoolState` once, inside one Daml transaction, so holdings
-and reserves change co-atomically, or nothing changes.
+and reserves change together in one atomic step, or nothing changes.
 
 - **Add.** The LP's base and quote deposits settle into operator-authored
   receiver allocations, which roll forward (via `nextIterationFunding`) into the
@@ -157,7 +157,7 @@ a 30 bps fee (`feeBps = 30`); every figure is what the on-ledger `Decimal` math
    what drives `x · y` upward — it stays in the reserves instead of being paid
    out, so it accrues to the LPs — but the growth in `k` is not itself the fee
    expressed in any one token: floor rounding lifts `k` a hair further even at
-   zero fee, and measured against an external numeraire the outcome also reflects
+   zero fee, and measured against an external reference asset the outcome also reflects
    the price move (impermanent loss), so the "extra" Alice withdraws is not purely
    the fee.
 
@@ -192,7 +192,7 @@ renewal problem. See [Non-goals](non-goals.md#lp-redemption-has-an-explicit-live
 
 ### Reference / details
 
-- **Residual trust boundary.** `PoolState`, `PoolSlice`, and the reserve
+- **Remaining trust boundary.** `PoolState`, `PoolSlice`, and the reserve
   allocation account are operator-controlled. A malicious operator could
   fabricate a parallel state or cancel reserve allocations; an unavailable
   operator can block LP redemption. `PoolRules_ReconcileState` detects

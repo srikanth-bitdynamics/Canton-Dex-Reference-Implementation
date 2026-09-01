@@ -17,13 +17,13 @@ leg. Cross-admin settlement therefore:
 3. Exercises every per-admin batch inside **one** Daml choice, so the whole
    trade commits atomically or not at all.
 
-A single-admin trade is the degenerate case: one admin key, one batch, the
+A single-admin trade is the simplest case: one admin key, one batch, the
 pre-cross-admin behavior unchanged.
 
 The registry enforces the shape (`splice-token-standard-utils`
 `fetchAndValidateAllocations`): every batch's allocations must carry
 `admin == factory.admin`, and must authorize both the sender and the receiver
-side of every leg in the batch, with no missing or superfluous authorizations.
+side of every leg in the batch, with no missing or extra authorizations.
 
 ## Instrument identity
 

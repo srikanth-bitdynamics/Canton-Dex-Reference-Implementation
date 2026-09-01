@@ -2,16 +2,11 @@
 
 A full-stack code reference for a **Token Standard V2 (CIP-0112)** DEX on the
 Canton Network: Daml contracts, an operator backend, a React dApp with a
-CIP-0103 wallet boundary, tests, and operator runbooks. It covers RFQs,
+CIP-0103 wallet boundary, tests, and operator runbooks. It covers request-for-quote (RFQ) flows,
 prefunded orders, constant-product pools, swaps, and LP tokens.
 
-**Rendered site:**
-[srikanth-bitdynamics.github.io/Canton-Dex-Reference-Implementation](https://srikanth-bitdynamics.github.io/Canton-Dex-Reference-Implementation/).
-The site is published from `main`; changes on a branch become public after they
-are merged and the GitHub Pages workflow finishes.
-
-New to Canton and Daml, but familiar with AMMs? Follow the canonical path below.
-It is the only ordered newcomer curriculum in this documentation.
+New to Canton and Daml, but familiar with AMMs? Follow the newcomer path below.
+It is the only ordered newcomer path in this documentation.
 
 > **Three run modes.** The local browser preview uses a TypeScript in-memory
 > ledger and Mock Wallet; it does not settle value. Daml Script tests execute
@@ -30,7 +25,7 @@ It is the only ordered newcomer curriculum in this documentation.
 
 ---
 
-## Canonical newcomer learning path
+## Newcomer learning path
 
 Follow these steps in order. The glossary is a companion, not another step.
 
@@ -56,13 +51,13 @@ you to edit source.
 
 | I want to… | Read, in order |
 |---|---|
-| **Learn Canton/Daml from an AMM mental model** | Follow the [canonical newcomer learning path](#canonical-newcomer-learning-path) without skipping proof boundaries. |
+| **Learn Canton/Daml from an AMM mental model** | Follow the [newcomer learning path](#newcomer-learning-path) without skipping proof boundaries. |
 | **Preview the UI locally** | [Getting started — Mode 1](getting-started.md#mode-1-run-the-browser-preview) |
 | **Prove the Daml contracts locally** | [Getting started — Mode 2](getting-started.md#mode-2-run-the-daml-engine-proofs) → [Testing](reference/testing.md) |
 | **Prove value movement on real Canton** | [Getting started — Mode 3](getting-started.md#mode-3-run-the-default-live-canton-proof) → [Local Canton from a clean clone](guides/localnet.md) |
 | **Integrate a persistent/testnet environment** | [Local Canton](guides/localnet.md) → [Run on a testnet](guides/run-on-testnet.md) → [Validator test plan](guides/validator-test-plan.md) |
 | **Understand the design** | [Overview](concepts/overview.md) → [15-minute Design Tour](concepts/design-tour.md) → [Architecture](concepts/architecture.md) → [Workflows](concepts/workflows.md) |
-| **Build on / extend it** | Complete the [canonical newcomer learning path](#canonical-newcomer-learning-path), then use the [HTTP API](reference/http-api.md) as a lookup reference. |
+| **Build on / extend it** | Complete the [newcomer learning path](#newcomer-learning-path), then use the [HTTP API](reference/http-api.md) as a lookup reference. |
 | **Operate a venue** | [Deployment](guides/deployment.md) → [Operator Guide](guides/operator-guide.md) → [Operator Runbook](guides/operator-runbook.md) |
 | **Integrate a registry** | [Registry Integration](guides/registry-integration.md) → [Choice Context](guides/choice-context.md) → [Allocation Surface](reference/allocation-surface.md) |
 | **Trade in the dApp** | [Using the dApp](guides/using-the-dapp.md) |

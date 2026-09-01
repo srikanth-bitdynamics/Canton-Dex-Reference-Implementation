@@ -79,7 +79,7 @@ export function asChoiceContext(ctx: ChoiceContextRef) {
 Discovery remains at each call site. That makes it difficult to accidentally
 ask for context without the operation's exact arguments.
 
-## 3. Canonical V2 HTTP endpoints
+## 3. Standard V2 HTTP endpoints
 
 The client is
 [`services/registry-client/src/index.ts`](../../services/registry-client/src/index.ts).
@@ -118,7 +118,7 @@ or current registry state. Two calls with the same admin are not evidence that
 the second operation can reuse the first response. The HTTP client performs a
 fresh lookup for every operation.
 
-There is also no 404-to-empty fallback. A missing canonical endpoint is an
+There is also no 404-to-empty fallback. A missing expected endpoint is an
 integration error; silently inserting empty context could turn a registry
 policy failure into a confusing ledger rejection.
 
@@ -316,7 +316,7 @@ The client raises a typed `RegistryError` and fails closed:
 
 | Kind | Meaning | Expected response |
 |---|---|---|
-| `not-found` | A canonical endpoint returned 404 | Fix registry routing/deployment; do not submit empty context. |
+| `not-found` | An expected endpoint returned 404 | Fix registry routing/deployment; do not submit empty context. |
 | `auth` | Registry returned 401 or 403 | Refresh or correct registry credentials. |
 | `transport` | Other non-success HTTP response | Retry only according to operator policy; the error is marked retryable. |
 | `malformed` | JSON or response shape is invalid | Treat the registry response as untrusted and stop. |

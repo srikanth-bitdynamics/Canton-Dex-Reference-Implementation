@@ -97,7 +97,7 @@ describe("test taxonomy boundaries", () => {
     assert.match(ci, /name: Container build \+ backend runtime smoke/);
   });
 
-  it("keeps one canonical newcomer curriculum in both entry points", () => {
+  it("keeps one newcomer learning path in both entry points", () => {
     const expected = [
       "concepts/canton-daml-primer.md",
       "concepts/overview.md",
@@ -112,7 +112,7 @@ describe("test taxonomy boundaries", () => {
 
     const index = readFileSync(join(ROOT, "docs/README.md"), "utf8");
     const indexSection = index
-      .split("## Canonical newcomer learning path", 2)[1]!
+      .split("## Newcomer learning path", 2)[1]!
       .split("\n## ", 1)[0]!;
     const indexPaths = [...indexSection.matchAll(/^\|\s*\d+\s*\|\s*\[[^\]]+\]\(([^)]+)\)/gm)]
       .map((match) => match[1]!);

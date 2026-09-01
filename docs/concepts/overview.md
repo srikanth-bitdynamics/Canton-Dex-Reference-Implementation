@@ -1,7 +1,7 @@
 # Overview
 
 This is Step 2 of the
-[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+[newcomer learning path](../README.md#newcomer-learning-path).
 Complete the [Canton and Daml primer](canton-daml-primer.md) first. This page
 shows what the DEX does, where authority sits, and how its main pieces connect.
 
@@ -133,7 +133,7 @@ flowchart TB
 
 ### Actors and authority
 
-The contract topology is easiest to understand by asking who may authorize each
+The contract structure is easiest to understand by asking who may authorize each
 step. A service can prepare a command for another party, but it cannot submit as
 that party without their wallet or delegated authority.
 
@@ -206,7 +206,7 @@ therefore needs both ledger authorities. [Architecture](architecture.md) draws t
 
 ## Reference map
 
-The canonical learning order lives in the [documentation index](../README.md#canonical-newcomer-learning-path).
+The recommended learning order lives in the [documentation index](../README.md#newcomer-learning-path).
 Use this table only to look up a topic while reading:
 
 | Doc | What you'll learn |
@@ -251,5 +251,5 @@ the exact Splice release is recorded in
 [Allocation Surface](../reference/allocation-surface.md) reference records the
 committed-allocation and iterated-settlement semantics the pool depends on.
 
-**Next canonical step:** [Getting started](../getting-started.md).
+**Next step:** [Getting started](../getting-started.md).
 Keep the [Glossary](glossary.md) open as a companion reference.

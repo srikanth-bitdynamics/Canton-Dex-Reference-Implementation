@@ -1,7 +1,7 @@
 # Getting started: choose what you want to prove
 
 This is Step 3 of the
-[canonical newcomer learning path](README.md#canonical-newcomer-learning-path).
+[newcomer learning path](README.md#newcomer-learning-path).
 Steps 1–2 establish the Canton/Daml vocabulary and system boundary. This page
 installs the tools and turns that model into three increasingly realistic
 local proofs.
@@ -220,7 +220,7 @@ ALLOWED_ORIGINS=http://localhost:5173 DEX_DEV_OPEN=1 npm run dev
 This bypass opens the non-admin operator-write gate and permits the seeded
 short party names. Administrative `/v1/admin/*` routes still require
 `OPERATOR_ADMIN_TOKEN`. The bypass does not create wallet signatures or V2
-allocations. Canonical swap, order-funding, and liquidity paths can reach an
+allocations. The standard swap, order-funding, and liquidity paths can reach an
 unimplemented multi-step Daml choice and return HTTP `501` with:
 
 ```json
@@ -410,6 +410,6 @@ the DPM sandbox proof installs them itself when its `tsx` runner is absent.
 | The DPM sandbox proof fails | Use the preserved log directory printed by the script; check Java 17, local memory, and port-binding errors. |
 | Native npm dependency fails to install | Confirm Node 24 is active, remove only that component's `node_modules`, and rerun `npm ci` in the same component. |
 
-**Next canonical step:** [AMM-first walkthrough](tutorials/amm-first-walkthrough.md).
+**Next step:** [AMM-first walkthrough](tutorials/amm-first-walkthrough.md).
 Use the [testing reference](reference/testing.md) when you need the complete
 proof matrix, or return to [all documentation](README.md).

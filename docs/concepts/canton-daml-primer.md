@@ -1,7 +1,7 @@
 # Canton and Daml primer for DEX builders
 
 This is Step 1 of the
-[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+[newcomer learning path](../README.md#newcomer-learning-path).
 It assumes you understand AMM reserves, `x*y=k`, swaps, fees, and LP shares,
 but have not built a Canton application.
 
@@ -187,7 +187,7 @@ bash scripts/run-dpm-sandbox-proof.sh
 ```
 
 It starts the Canton sandbox bundled with the pinned SDK, uploads the package
-closure, and runs a live holdings/allocation/DvP driver. It is intentionally
+closure, and runs a live holdings/allocation/delivery-versus-payment (DvP) driver. It is intentionally
 throwaway. Its operator, asset admin, and LP registrar share the bootstrap
 party, while the LP/trader and swapper are separately allocated so real value
 moves between counterparties. Read
@@ -330,5 +330,5 @@ You can explain these statements in your own words:
 - Daml Script can prove contract behavior without proving the HTTP/live-network
   integration.
 
-**Next canonical step:** [Overview](overview.md). Keep the
+**Next step:** [Overview](overview.md). Keep the
 [Glossary](glossary.md) open as a companion reference.

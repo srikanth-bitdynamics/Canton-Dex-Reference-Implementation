@@ -15,7 +15,7 @@ Daml contracts, an operator backend, a React frontend, wallet handoff, tests,
 and runbooks for RFQs, prefunded orders, pools, swaps, and LP tokens.
 
 > **New to Canton but comfortable with AMMs?** Follow the single
-> [newcomer learning path](docs/README.md#canonical-newcomer-learning-path). It
+> [newcomer learning path](docs/README.md#newcomer-learning-path). It
 > starts with the Canton/Daml mental model, runs each proof mode, traces one
 > swap, and ends with a tested first code change.
 
@@ -165,8 +165,8 @@ steps before it:
 9. [Builder guide](docs/guides/builder-guide.md)
 
 Keep the [Glossary](docs/concepts/glossary.md) open as a companion. The same
-canonical path, including the outcome of every step, is maintained in the
-[documentation index](docs/README.md#canonical-newcomer-learning-path).
+ordered path, including the outcome of every step, is maintained in the
+[documentation index](docs/README.md#newcomer-learning-path).
 
 ## Quick Start
 
@@ -463,9 +463,7 @@ intend to run.
 ## Documentation
 
 Read the rendered **[documentation site](https://srikanth-bitdynamics.github.io/Canton-Dex-Reference-Implementation/)**
-or the repository index at **[`docs/README.md`](docs/README.md)**. The site is
-published from `main`; documentation on an unmerged branch appears only after
-that branch is merged and the Pages workflow completes. Good entry points:
+or the repository index at **[`docs/README.md`](docs/README.md)**. Good entry points:
 
 - **[Getting Started](docs/getting-started.md)** — choose browser preview,
   Daml-engine proof, or live integration and see the boundary of each.

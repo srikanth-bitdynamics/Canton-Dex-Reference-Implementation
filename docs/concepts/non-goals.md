@@ -15,7 +15,7 @@ and points at the guide or contract where the excluded work would live.
 
 | Excluded | Why it is out of scope | Where it belongs |
 |---|---|---|
-| A generic settlement engine | The reference encodes one DEX's rules — constant-product pricing, price-time order priority, RFQ ranking — not a parameterisable framework | A fork that reuses the allocate-then-`SettleBatch` pattern for its own flows |
+| A generic settlement engine | The reference encodes one DEX's rules — constant-product pricing, price-time order priority, RFQ ranking — not a configurable framework | A fork that reuses the allocate-then-`SettleBatch` pattern for its own flows |
 | A production matching engine | The batch matcher shows only the Canton-specific part: a fill re-checked and settled atomically on-ledger | A fork's off-ledger matcher (pro-rata, iceberg, continuous auction) |
 | Fair ordering and MEV resistance | The operator privately observes orders and chooses match timing and submission order | A production sequencing, auction, or independently attested matching design |
 | A rich instrument lifecycle | Token Standard V2 standardizes the holding, not lifecycle; the DEX needs only a holding | The registry that administers the `InstrumentId` — [add an instrument](../guides/add-lp-or-instrument.md) |

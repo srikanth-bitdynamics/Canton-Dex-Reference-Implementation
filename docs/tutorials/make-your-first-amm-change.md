@@ -1,7 +1,7 @@
 # Tutorial: make your first AMM code change
 
 This is Step 8 of the
-[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+[newcomer learning path](../README.md#newcomer-learning-path).
 Complete the workflow-design step first. Here you will make one small,
 behavior-preserving Daml refactor: give the swap-fee calculation a name, prove
 the new helper with a focused test, and then check every layer that could be

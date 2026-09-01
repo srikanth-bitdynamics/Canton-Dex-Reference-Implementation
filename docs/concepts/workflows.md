@@ -1,7 +1,7 @@
 # Canton DEX workflow design
 
 This is Step 7 of the
-[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+[newcomer learning path](../README.md#newcomer-learning-path).
 Complete [Architecture](architecture.md) first.
 
 Each state transition has a named app choice. A value-moving choice validates
@@ -192,7 +192,7 @@ sequenceDiagram
     L-->>O: funds in pool, LP tokens minted, PoolState rewritten
 ```
 
-The previews are read-only Daml choices. They return the exact canonical V2
+The previews are read-only Daml choices. They return the exact V2
 choice arguments, which the backend sends to each registry's operation-specific
 off-ledger discovery endpoint before exercising the real allocate or settle
 choice. This avoids guessing a factory contract or reusing context from a
@@ -430,7 +430,7 @@ The mock lifecycle, real first-funding, and complete-redemption checks are in
 2. Allocations represent funds, not abstract approvals.
 3. Settlement is explicit — the app creates matched trade/swap state before
    calling settlement.
-4. Cancellation is a first-class workflow, with no hidden cleanup.
+4. Cancellation is an explicit workflow, with no hidden cleanup.
 5. Registry lifecycle stays outside market logic — the DEX trades
    `InstrumentId`; the registry explains what it means through V2 views.
 6. Executor-controlled funds are usage-constrained on-ledger. Because the
@@ -462,7 +462,7 @@ interfaces and no separate `DexRules` governance contract.
 
 ---
 
-**Next canonical step:** [Make your first AMM code change](../tutorials/make-your-first-amm-change.md).
+**Next step:** [Make your first AMM code change](../tutorials/make-your-first-amm-change.md).
 Use [Liquidity and custody](liquidity-and-custody.md),
 [Pricing](pricing.md), [Non-goals](non-goals.md), and the
 [Allocation Surface](../reference/allocation-surface.md) as topic references.

@@ -1,7 +1,7 @@
 # Operator Runbook
 
 How to deploy, observe, and recover the off-ledger operator services that run
-the reference DEX. The through-line for every recovery decision below: **the
+the reference DEX. The common thread for every recovery decision below: **the
 ledger is the source of truth.** Nearly every fact an operator needs to explain
 a trade or rebuild a service lives on-ledger, replicated by the synchronizer;
 the operator backend's own SQLite is mostly a projection over it. The
@@ -19,7 +19,7 @@ Canton operational concern, not a DEX one — see [Out of scope](#out-of-scope-f
 
 The reference uses four logical roles and can involve many trader, LP, and
 asset-admin parties. Keeping control roles separate is the recommended
-production posture; a local learning instance may intentionally share a party
+production setup; a local learning instance may intentionally share a party
 where the setup guide says so.
 
 | Party         | Owns                                                                          | Signs                                                               |

@@ -91,7 +91,7 @@ an input to settlement.
 
 ### Reference: where an oracle would attach
 
-Pricing is endogenous by design, so a compromised feed cannot move funds. If a
+Pricing is set inside the system by design, so a compromised feed cannot move funds. If a
 later version added an oracle, the attachment points would be a slippage band on
 `PoolRules_Swap` (a signed price + timestamp from a separate `oracleAuthority`), a
 `PoolPriceObservation` template for TWAP reporting, or an edge-side price API for

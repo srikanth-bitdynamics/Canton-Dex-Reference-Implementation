@@ -174,7 +174,7 @@ pools.
 
 ## D. Vested LP (custom lifecycle)
 
-Token Standard V2 has no first-class vesting. A production design must decide
+Token Standard V2 has no built-in vesting. A production design must decide
 whether vesting is enforced by the asset registry's transfer/allocation rules or
 by a separate application contract that controls when a holder may request a
 standard transfer. In either design, specify the authority that can release the

@@ -1,7 +1,7 @@
 # Builder guide
 
 This is Step 9, the final step in the
-[canonical newcomer learning path](../README.md#canonical-newcomer-learning-path).
+[newcomer learning path](../README.md#newcomer-learning-path).
 Complete [Make your first AMM code change](../tutorials/make-your-first-amm-change.md)
 first. This guide helps you plan a behavior-changing extension without
 crossing the DEX, Token Standard, registry, backend, or wallet boundaries by
@@ -62,7 +62,7 @@ deployment-specific services, not the shared templates. See
 
 ## Before extending the AMM
 
-Do not start a second learning route here. Follow the canonical path through
+Do not start a second learning route here. Follow the newcomer path through
 the tested first-change tutorial, then use the
 [Daml proof map — AMM pool](../reference/daml-proof-map.md#amm-pool) to locate
 the exact source choice and smallest proof for the behavior you plan to alter.
@@ -72,7 +72,7 @@ for the Token Standard contracts beneath those choices.
 ## The four workflow families
 
 The Daml test suite exercises four families. Treat the sections below as a
-builder's lookup map; the newcomer curriculum remains the canonical path in the
+builder's lookup map; the newcomer learning path remains the primary route in the
 documentation index.
 
 ### A. Pair and instrument listing
@@ -288,7 +288,7 @@ app/web/
 
 ## Where to read next
 
-You have completed the canonical newcomer path. Choose the task that matches
+You have completed the newcomer path. Choose the task that matches
 your extension:
 
 - **Reference:** [HTTP API](../reference/http-api.md) · [Allocation surface](../reference/allocation-surface.md) · [Daml proof map](../reference/daml-proof-map.md)

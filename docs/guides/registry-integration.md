@@ -129,18 +129,18 @@ TTL; that does not imply another registry will accept the same lifetime.
 Token Standard V2 registries are expected to expose both the Daml interfaces
 and the standard OpenAPI endpoints. The specs used here are committed beside
 the vendored packages under [`vendor/splice/token-standard`](../../vendor/splice/token-standard/).
-The backend client uses the canonical operation-specific POST endpoints for
+The backend client uses the standard operation-specific POST endpoints for
 allocation-factory discovery, settlement-factory discovery, and per-allocation
 cancel/withdraw context. Every factory request includes the concrete Daml JSON
 `choiceArguments`; responses are runtime-validated and are not cached. See
-[Choice context](choice-context.md#3-canonical-v2-http-endpoints) for the exact
+[Choice context](choice-context.md#3-standard-v2-http-endpoints) for the exact
 paths, bodies, and response shape.
 
 The configured reference self-registry is a deliberate adapter, not a second
 HTTP protocol. `FixedRegistryClient` resolves deployed factory CIDs per admin
 and returns empty context. It is one adapter among the standard-shaped ones:
 swaps, matched trades, order matches, allocation creation, cancellation, and
-add/remove liquidity all use the canonical operation-specific discovery path.
+add/remove liquidity all use the standard operation-specific discovery path.
 Add/remove liquidity is no longer an exception. The backend stages the
 temporary allocations those Daml choices consume, exercises a non-value-moving
 preview to obtain the exact per-admin `SettleBatch` arguments, discovers each
@@ -278,7 +278,7 @@ partitions the trade's legs by admin and issues one
 `SettlementFactory_SettleBatch` per admin, all inside one Daml choice so the
 trade commits atomically or not at all. `MatchedTrade_RequestAllocations` emits
 one `AllocationSpecification` per `(authorizer, admin)`. A single-admin pair is
-the degenerate case: one admin, one batch. [Cross-admin
+the simplest case: one admin, one batch. [Cross-admin
 settlement](../concepts/cross-admin.md) is authoritative.
 
 The per-admin batching is load-bearing and tested:
@@ -293,7 +293,7 @@ legs — is rejected rather than settled.
 - It does not require the reference registry for base or quote assets in the
   allocation, swap, order, matched-trade, or add/remove-liquidity flows. An
   alternative must implement the V2 holding, allocation, and settlement APIs and
-  the canonical operation-specific discovery endpoints. Add/remove liquidity
+  the standard operation-specific discovery endpoints. Add/remove liquidity
   stages its temporary allocations and settles them atomically over that same
   path, so it no longer requires the empty-context self-registry adapter. The
   included LP path still uses the concrete `LPTokenPolicy` component.

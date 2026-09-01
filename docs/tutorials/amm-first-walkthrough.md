@@ -358,6 +358,6 @@ You have completed this tutorial when you can point to:
 - the reason passing the Daml and sandbox proofs is not yet a live browser and
   external-wallet dApp.
 
-**Next canonical step:** [15-minute design tour](../concepts/design-tour.md).
+**Next step:** [15-minute design tour](../concepts/design-tour.md).
 Use [Liquidity and custody](../concepts/liquidity-and-custody.md) and
 [Local Canton from a clean clone](../guides/localnet.md) as topic references.

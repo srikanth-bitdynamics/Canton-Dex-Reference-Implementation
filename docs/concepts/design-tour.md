@@ -253,5 +253,5 @@ partial-fill roll-forward belong to `OrderMatchExecution_Execute`.
 | What tests prove | [Testing](../reference/testing.md) |
 | Deliberate limitations | [Non-goals](non-goals.md) |
 
-**Next canonical step:** [Architecture](architecture.md). Use the other rows
+**Next step:** [Architecture](architecture.md). Use the other rows
 above as topic references when you need their detail.

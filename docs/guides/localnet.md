@@ -74,7 +74,7 @@ a credential.
 ### Party and credential model
 
 The proof needs real counterparties: the LP/trader, swapper, and operator are
-three distinct Canton parties. This prevents a deposit or swap from degenerating
+three distinct Canton parties. This prevents a deposit or swap from collapsing
 into a transfer from a party to itself. The operator party also acts as asset
 admin and LP registrar for this self-contained fixture, however, and the single
 sandbox user has `CanExecuteAsAnyParty`, `CanReadAsAnyParty`, and

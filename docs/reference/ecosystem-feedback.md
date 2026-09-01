@@ -8,7 +8,7 @@ single summary of that loop.
 > separately operated deployment during a historical feedback round. This
 > repository does **not** provision a public hostname, public party faucet, or
 > `/v1/testnet/*` API, and it does not promise that the old deployment remains
-> available. Treat the linked reports as provenance for the feedback—not as
+> available. Treat the linked reports as the origin of the feedback—not as
 > current setup instructions. The API implemented in this tree is listed in
 > [HTTP API](http-api.md); run it against a participant you control by following
 > the [local live-ledger guide](../guides/localnet.md).

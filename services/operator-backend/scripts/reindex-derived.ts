@@ -10,7 +10,7 @@
 // Idempotent.
 
 import { openDb } from "../src/indexer/db.js";
-import { deriveTradeParties } from "../src/indexer/trade-parties.js";
+import { reindexTradeParties } from "../src/indexer/reindex-trade-parties.js";
 import * as dec from "../src/pool/decimal.js";
 import { rootLogger } from "../src/lib/logger.js";
 
@@ -95,52 +95,19 @@ for (const s of swaps) {
   if (!dryRun) updateSwap.run(baseDelta, quoteDelta, priceAfter, s.id);
 }
 
-let tradesChecked = 0;
-let tradesFixed = 0;
-
-const trades = db
-  .prepare("SELECT tradeCid, trader, dealer, counterparty, payload FROM trades")
-  .all() as Array<{
-    tradeCid: string;
-    trader: string | null;
-    dealer: string | null;
-    counterparty: string | null;
-    payload: string;
-  }>;
-
-const updateTrade = db.prepare(
-  "UPDATE trades SET trader = ?, dealer = ?, counterparty = ? WHERE tradeCid = ?",
-);
-
-for (const t of trades) {
-  tradesChecked += 1;
-  let payload: unknown;
-  try {
-    payload = JSON.parse(t.payload);
-  } catch {
-    continue;
-  }
-  // Same derivation as the indexer, shared via `deriveTradeParties`.
-  const { trader, dealer, counterparty } = deriveTradeParties(payload);
-  // No identifiable leg parties (empty, legacy-empty, or malformed payload):
-  // leave the stored row untouched rather than overwriting it with null.
-  if (trader === null && counterparty === null) continue;
-
-  if (trader === t.trader && dealer === t.dealer && counterparty === t.counterparty) {
-    continue;
-  }
+// Trades: recompute derived party columns from each row's retained payload.
+const tradeResult = reindexTradeParties(db, dryRun);
+for (const c of tradeResult.changes) {
   log.info("trade row differs", {
-    tradeCid: t.tradeCid,
-    trader: { was: t.trader, now: trader },
-    dealer: { was: t.dealer, now: dealer },
-    counterparty: { was: t.counterparty, now: counterparty },
+    tradeCid: c.tradeCid,
+    trader: { was: c.before.trader, now: c.after.trader },
+    dealer: { was: c.before.dealer, now: c.after.dealer },
+    counterparty: { was: c.before.counterparty, now: c.after.counterparty },
   });
-  tradesFixed += 1;
-  if (!dryRun) updateTrade.run(trader, dealer, counterparty, t.tradeCid);
 }
 
 log.info("reindex complete", {
   dryRun,
   swaps: { checked: swapsChecked, changed: swapsFixed },
-  trades: { checked: tradesChecked, changed: tradesFixed },
+  trades: { checked: tradeResult.checked, changed: tradeResult.fixed },
 });

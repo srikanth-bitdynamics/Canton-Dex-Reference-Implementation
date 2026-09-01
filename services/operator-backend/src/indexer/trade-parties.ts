@@ -26,32 +26,43 @@ export interface TradeParties {
 }
 
 export function deriveTradeParties(payload: unknown): TradeParties {
-  const p =
-    payload && typeof payload === "object"
-      ? (payload as {
-          tradeLegs?: Array<{ leg?: TransferLeg } | null> | null;
-          transferLegs?: Array<TransferLeg | null> | null;
-          policyReceipt?: { acceptedDealer?: string | null } | null;
-        })
-      : {};
-  const rawLegs =
-    p.tradeLegs && p.tradeLegs.length
-      ? p.tradeLegs.map((tl) => tl?.leg)
-      : p.transferLegs;
-  const legs: TransferLeg[] = (rawLegs ?? []).filter(
+  const empty: TradeParties = { trader: null, dealer: null, counterparty: null };
+  if (!payload || typeof payload !== "object") return empty;
+  const p = payload as {
+    tradeLegs?: unknown;
+    transferLegs?: unknown;
+    policyReceipt?: { acceptedDealer?: string | null } | null;
+  };
+  // Read whichever leg shape this row carries, guarding against a non-array
+  // `tradeLegs`/`transferLegs` field and non-object leg entries.
+  const wrapped = Array.isArray(p.tradeLegs) ? p.tradeLegs : null;
+  const flat = Array.isArray(p.transferLegs) ? p.transferLegs : null;
+  const rawLegs: unknown[] =
+    wrapped && wrapped.length
+      ? wrapped.map((tl) =>
+          tl && typeof tl === "object" ? (tl as { leg?: unknown }).leg : undefined,
+        )
+      : (flat ?? []);
+  const legs: TransferLeg[] = rawLegs.filter(
     (l): l is TransferLeg => !!l && typeof l === "object",
   );
+  // Every derived party must be a non-empty string: a JSON payload can carry an
+  // object or non-string `owner`/`acceptedDealer`, and binding one of those to
+  // SQLite would throw. Anything else collapses to null.
+  const isParty = (x: unknown): x is string => typeof x === "string" && x.length > 0;
   const legParties = [
     ...new Set(
-      legs.flatMap((l) => [l.sender?.owner, l.receiver?.owner]).filter(Boolean),
+      legs.flatMap((l) => [l.sender?.owner, l.receiver?.owner]).filter(isParty),
     ),
-  ] as string[];
+  ];
 
-  const acceptedDealer = p.policyReceipt?.acceptedDealer ?? null;
-  const dealer = acceptedDealer;
-  const trader = acceptedDealer
-    ? (legParties.find((x) => x !== acceptedDealer) ?? null)
-    : (legs[0]?.sender?.owner ?? null);
+  const dealer = isParty(p.policyReceipt?.acceptedDealer)
+    ? p.policyReceipt.acceptedDealer
+    : null;
+  const firstSender = legs[0]?.sender?.owner;
+  const trader = dealer
+    ? (legParties.find((x) => x !== dealer) ?? null)
+    : (isParty(firstSender) ? firstSender : null);
   const counterparty = legParties.find((x) => x !== trader) ?? null;
   return { trader, dealer, counterparty };
 }

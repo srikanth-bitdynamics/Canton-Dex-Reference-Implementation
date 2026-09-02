@@ -75,7 +75,15 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     }
     return out;
   };
-  const ratio = pool.reserves.quoteAmount / pool.reserves.baseAmount;
+  // An Unfunded pool has no reserves and therefore no ratio to match: the first
+  // deposit sets the opening price, so both amounts stay independent inputs.
+  const isFirstDeposit =
+    pool.reserves.baseAmount <= 0 ||
+    pool.reserves.quoteAmount <= 0 ||
+    pool.totalLpSupply <= 0;
+  const ratio = isFirstDeposit
+    ? null
+    : pool.reserves.quoteAmount / pool.reserves.baseAmount;
 
   const [baseAmt, setBaseAmt] = useState('');
   const [quoteAmt, setQuoteAmt] = useState('');
@@ -99,13 +107,19 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
 
   const newLpTokens = useMemo(() => {
     const b = parseFloat(baseAmt) || 0;
+    const q = parseFloat(quoteAmt) || 0;
+    // First deposit mints sqrt(base*quote) LP (the on-ledger initial-LP formula);
+    // later deposits mint pro-rata against existing reserves.
+    if (isFirstDeposit) return b > 0 && q > 0 ? Math.sqrt(b * q) : 0;
     if (!b || pool.reserves.baseAmount === 0) return 0;
     return (b / pool.reserves.baseAmount) * pool.totalLpSupply;
-  }, [baseAmt, pool]);
+  }, [baseAmt, quoteAmt, pool, isFirstDeposit]);
 
   const onBaseChange = (v: string) => {
     const cleaned = v.replace(/[^0-9.]/g, '');
     setBaseAmt(cleaned);
+    // First deposit: leave the other side free so the LP sets the ratio.
+    if (ratio === null) return;
     const num = parseFloat(cleaned);
     if (num > 0) {
       const decimals = ASSETS[quoteId]?.decimals ?? 2;
@@ -115,6 +129,7 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   const onQuoteChange = (v: string) => {
     const cleaned = v.replace(/[^0-9.]/g, '');
     setQuoteAmt(cleaned);
+    if (ratio === null) return;
     const num = parseFloat(cleaned);
     if (num > 0) {
       const decimals = ASSETS[baseId]?.decimals ?? 4;
@@ -137,9 +152,19 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     !!party &&
     !!context &&
     parseFloat(baseAmt) > 0 &&
+    parseFloat(quoteAmt) > 0 &&
     parseFloat(baseAmt) <= balanceOf(baseId) &&
     parseFloat(quoteAmt) <= balanceOf(quoteId);
   const canRemove = !!party && lpHeld > 0;
+
+  // The price the panel shows: the live pool ratio, or the one the LP is setting
+  // on a first deposit.
+  const shownRatio =
+    ratio !== null
+      ? ratio
+      : parseFloat(baseAmt) > 0
+        ? parseFloat(quoteAmt) / parseFloat(baseAmt)
+        : 0;
 
   // Slippage-adjusted minimums applied to the on-chain choice. The pool's
   // ratio can shift between quote and execute; the wallet rejects the swap
@@ -294,7 +319,11 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
           <div className="card">
             <div className="card-head">
               <h3 className="card-title">Add liquidity</h3>
-              <span className="card-sub">Match the pool ratio</span>
+              <span className="card-sub">
+                {isFirstDeposit
+                  ? 'First deposit — you set the price'
+                  : 'Match the pool ratio'}
+              </span>
             </div>
             <div className="card-body">
               <div className="field">
@@ -353,10 +382,12 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
                     }}
                   >
                     <div className="kv">
-                      <span className="k">Pool ratio</span>
+                      <span className="k">
+                        {isFirstDeposit ? 'Opening price' : 'Pool ratio'}
+                      </span>
                       <span className="v">
                         1 {baseLabel} ={' '}
-                        <span className="num">{fmt(ratio, 2)}</span>{' '}
+                        <span className="num">{fmt(shownRatio, 2)}</span>{' '}
                         {quoteLabel}
                       </span>
                     </div>

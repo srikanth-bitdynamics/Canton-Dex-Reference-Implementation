@@ -42,6 +42,7 @@ const ROUTE_CLASS: Record<string, keyof typeof RATE_LIMITS> = {
   "POST /v1/pools/swap/request": "request",
   "POST /v1/pools/add-liquidity/request": "request",
   "POST /v1/pools/remove-liquidity/request": "request",
+  "POST /v1/pools/recover-dvp-allocations": "allocation-factory",
   "POST /v1/registry/allocation-factory": "allocation-factory",
 };
 

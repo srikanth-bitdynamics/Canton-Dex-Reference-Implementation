@@ -63,6 +63,14 @@ describe("wallet capabilities", () => {
     }
   });
 
+  it("no provider claims multi-command transaction support (default false)", () => {
+    // Every wallet's transaction UI is assumed to authorize one command atom per
+    // request until proven otherwise, so each allocation is submitted separately.
+    for (const id of ALL_IDS) {
+      expect(capabilityFor(id).supportsMultiCommandTransaction, id).toBe(false);
+    }
+  });
+
   it("dvpBadge maps readiness → tone", () => {
     expect(dvpBadge("ready").tone).toBe("ok");
     expect(dvpBadge("unproven").tone).toBe("warn");

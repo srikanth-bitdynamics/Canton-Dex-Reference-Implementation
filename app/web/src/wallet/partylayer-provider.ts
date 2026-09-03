@@ -6,15 +6,20 @@
 // — the wallet only ever sees Daml command trees, never our intents.
 //
 // PartyLayer's submit result is `TxReceipt { updateId? }` — it does NOT expose
-// the transaction tree or created-contract ids. So this provider deliberately
-// returns only `primaryCid = updateId` and does NOT populate
-// `createdAllocationCids`; settle, swap, and order-fund calls forward
-// `{ updateId }`, and the operator recovers the created `Allocation` cids (and,
-// for LP, the `LiquidityAllocationAcceptance` cid) from that update's tree.
-// All DvP flows support this operator-discovery path, so an updateId-only wallet
-// can complete them.
+// the transaction tree or created-contract ids. So each submitTransaction is
+// updateId-only, and the operator recovers the created `Allocation` cid from
+// that update's tree.
+//
+// PartyLayer's transaction UI also refuses a request carrying more than one
+// command atom, so (capability `supportsMultiCommandTransaction` false) this
+// provider submits each composed AllocationFactory_Allocate as its own
+// single-command request via the shared `submitComposedCommands`, recovers the
+// one allocation each creates, and aggregates the cids in canonical order —
+// giving the settle orchestration the created cids exactly as before.
 
 import { composeCommands } from "./commands";
+import { capabilityFor } from "./capabilities";
+import { submitComposedCommands, type PreparedSubmission } from "./sequential-submit";
 import {
   discoverHoldingsAcrossRegistries,
   parseHoldingsAcsResponse,
@@ -131,6 +136,32 @@ export function parsePartyLayerHoldings(response: string, owner: Party): Holding
   return parseHoldingsAcsResponse(response, owner);
 }
 
+// Submit one prepared request and resolve to its updateId. PartyLayer's receipt
+// is updateId-only; a receipt without one cannot drive operator-discovery.
+async function submitOne(
+  client: PartyLayerClient,
+  submission: PreparedSubmission,
+): Promise<string> {
+  const signedTx: PartyLayerCommandSubmission = {
+    commandId: submission.commandId,
+    actAs: submission.actAs,
+    commands: submission.commands as unknown[],
+    ...(submission.disclosedContracts
+      ? { disclosedContracts: submission.disclosedContracts }
+      : {}),
+  };
+  const receipt = await client.submitTransaction({ signedTx });
+  if (!receipt.updateId) {
+    const hashSuffix = receipt.transactionHash
+      ? ` (transactionHash=${receipt.transactionHash})`
+      : "";
+    throw new Error(
+      `partylayer-provider: submit returned no updateId${hashSuffix}; operator-discovery requires an updateId`,
+    );
+  }
+  return receipt.updateId;
+}
+
 export class PartyLayerProvider implements WalletProvider {
   readonly id = "partylayer" as const;
   readonly label = "PartyLayer";
@@ -224,40 +255,25 @@ export class PartyLayerProvider implements WalletProvider {
     if (this.status.kind !== "connected" || !this.client) {
       throw new Error("partylayer-provider: wallet not connected");
     }
+    const client = this.client;
     const party = this.status.account.party;
     const composed = composeCommands(intent, {
       party,
       packagePrefix: this.packagePrefix,
       now: () => new Date(),
     });
-    const signedTx: PartyLayerCommandSubmission = {
-      commandId: composed.commandId,
-      actAs: composed.actAs,
-      commands: composed.commands as unknown[],
-      ...(composed.disclosedContracts
-        ? { disclosedContracts: composed.disclosedContracts }
-        : {}),
-    };
-    const receipt = await this.client.submitTransaction({
-      signedTx,
+    // Until a PartyLayer wallet is proven to accept a multi-atom commands[] in
+    // its transaction UI, each AllocationFactory_Allocate is submitted as its own
+    // single-command request; the created cid per request is recovered from its
+    // updateId and aggregated. Each submitTransaction is still updateId-only.
+    return submitComposedCommands({
+      intent,
+      composed,
+      party,
+      supportsMultiCommandTransaction:
+        capabilityFor(this.id).supportsMultiCommandTransaction,
+      submit: (submission) => submitOne(client, submission),
     });
-    const updateId = receipt.updateId;
-    if (!updateId) {
-      const hashSuffix = receipt.transactionHash
-        ? ` (transactionHash=${receipt.transactionHash})`
-        : "";
-      throw new Error(
-        `partylayer-provider: submit returned no updateId${hashSuffix}; operator-discovery requires an updateId`,
-      );
-    }
-    // updateId-only by design. createdAllocationCids is intentionally
-    // omitted: the operator recovers the created cids from the updateId for all
-    // DvP flows (LP add/remove, swap, order funding) via operator-discovery.
-    return {
-      submittedBy: party,
-      primaryCid: updateId,
-      auxiliaryCids: { updateId },
-    };
   }
 
   async signMessage(params: {

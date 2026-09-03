@@ -64,6 +64,19 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
 
 const operator = new OperatorApi(API_BASE);
 
+// Liveness escape for wallet-authored allocations: the swap / LP request stamps
+// this deadline onto the settlement so that a partially-authored or unsettled
+// set of locked allocations auto-releases the trader's funds instead of staging
+// indefinitely. Sized to comfortably cover the (now per-command) wallet prompts
+// plus the operator settle. Computed per call from the request time, never at
+// module top level.
+const ALLOCATION_SETTLE_DEADLINE_MS = 5 * 60_000;
+
+/** ISO settlement deadline ~5 min after `from`. */
+function settleDeadlineFrom(from: Date): string {
+  return new Date(from.getTime() + ALLOCATION_SETTLE_DEADLINE_MS).toISOString();
+}
+
 /** Bootstrap-token field for trade request/settle bodies (omitted when unset). */
 function bootstrapField(): { bootstrapToken?: string } {
   const bootstrapToken = getBootstrapToken();
@@ -875,6 +888,9 @@ export const ledger = {
       inputInstrumentId: params.inputInstrumentId,
       inputAmount: formatDecimal10(params.inputAmount),
       minOutputAmount: formatDecimal10(params.minOutputAmount),
+      // Deadline for the locked swap allocations to auto-release if the wallet
+      // prompts or the operator settle do not complete.
+      settleAt: settleDeadlineFrom(new Date()),
     });
     const specs = req.allocationSpecs as V2AllocationSpecification[];
 
@@ -1262,7 +1278,8 @@ export const ledger = {
     quoteHoldingCids?: string[];
   }) => {
     const recipient = connectedParty();
-    const requestedAt = new Date().toISOString();
+    const requestedAtDate = new Date();
+    const requestedAt = requestedAtDate.toISOString();
     const req = await fetchJson<RequestAddResult>('/v1/pools/add-liquidity/request', {
       method: 'POST',
       body: JSON.stringify({
@@ -1271,6 +1288,9 @@ export const ledger = {
         baseAmount: formatDecimal10(params.baseAmount),
         quoteAmount: formatDecimal10(params.quoteAmount),
         requestedAt,
+        // Deadline for the locked allocations to auto-release if the wallet
+        // prompts or the operator settle do not complete.
+        settleAt: settleDeadlineFrom(requestedAtDate),
         ...bootstrapField(),
       }),
     });
@@ -1382,7 +1402,8 @@ export const ledger = {
         `remove-liquidity: insufficient unlocked ${params.lpInstrumentId} balance to cover ${lpTokensToRedeem}`,
       );
     }
-    const requestedAt = new Date().toISOString();
+    const requestedAtDate = new Date();
+    const requestedAt = requestedAtDate.toISOString();
     const req = await fetchJson<RequestRemoveResult>('/v1/pools/remove-liquidity/request', {
       method: 'POST',
       body: JSON.stringify({
@@ -1390,6 +1411,9 @@ export const ledger = {
         holder: params.holder,
         lpTokensToRedeem,
         requestedAt,
+        // Deadline for the locked allocations to auto-release if the wallet
+        // prompts or the operator settle do not complete.
+        settleAt: settleDeadlineFrom(requestedAtDate),
         ...bootstrapField(),
       }),
     });

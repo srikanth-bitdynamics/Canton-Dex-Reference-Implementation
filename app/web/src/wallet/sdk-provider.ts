@@ -18,6 +18,8 @@ import {
 } from "@canton-network/dapp-sdk";
 
 import { composeCommands } from "./commands";
+import { capabilityFor } from "./capabilities";
+import { submitComposedCommands, type PreparedSubmission } from "./sequential-submit";
 import { discoverHoldingsAcrossRegistries } from "./holdings";
 import type { Holding } from "@/types/contracts";
 import type {
@@ -370,45 +372,53 @@ export class SdkProvider implements WalletProvider {
       packagePrefix: this.packagePrefix,
       now: () => new Date(),
     });
+    // Until a CIP-0103 wallet is proven to accept a multi-atom commands[] in its
+    // transaction UI, each AllocationFactory_Allocate is submitted as its own
+    // single-command request; the created cid per request is recovered from its
+    // updateId and aggregated. Each prepareExecuteAndWait is still updateId-only.
+    return submitComposedCommands({
+      intent,
+      composed,
+      party,
+      supportsMultiCommandTransaction:
+        capabilityFor(this.id).supportsMultiCommandTransaction,
+      submit: (submission) => this.submitOne(submission),
+    });
+  }
+
+  // Submit one prepared request through the wallet and resolve to its updateId.
+  // prepareExecuteAndWait resolves to { tx: { payload: { updateId } } } and
+  // carries NO created events, so this is an updateId-only transport.
+  private async submitOne(submission: PreparedSubmission): Promise<string> {
     let result: Awaited<ReturnType<DappSDK["prepareExecuteAndWait"]>>;
     try {
       result = await this.sdk.prepareExecuteAndWait({
-        commandId: composed.commandId,
+        commandId: submission.commandId,
         // The SDK deliberately types each Ledger API command payload as opaque;
         // our composer supplies the same tagged command union with stricter
         // inner fields.
-        commands: composed.commands as unknown as Parameters<
+        commands: submission.commands as unknown as Parameters<
           DappSDK["prepareExecuteAndWait"]
         >[0]["commands"],
-        actAs: composed.actAs,
+        actAs: submission.actAs,
         // Off-participant factory/request contracts (AllocationFactory, the
         // AllocationRequest) the trader's participant does not host must be
         // disclosed, or the exercise fails with CONTRACT_NOT_FOUND.
-        ...(composed.disclosedContracts && composed.disclosedContracts.length > 0
-          ? { disclosedContracts: composed.disclosedContracts }
+        ...(submission.disclosedContracts && submission.disclosedContracts.length > 0
+          ? { disclosedContracts: submission.disclosedContracts }
           : {}),
       });
     } catch (e) {
       // Surface the wallet or gateway's normalized error.
       throw new Error(`wallet submission failed: ${describeWalletError(e)}`);
     }
-    // prepareExecuteAndWait resolves to { tx: { status, commandId, payload:
-    // { updateId, completionOffset } } } — it carries NO created events. So this
-    // is an updateId-only provider: the operator recovers the created Allocation
-    // cids (and the LP acceptance receipt) from the updateId tree for every DvP
-    // flow (swap, LP add/remove, order funding), exactly like the PartyLayer
-    // provider. Do NOT try to parse created cids from the result — there are none.
     const updateId = result.tx.payload.updateId;
     if (!updateId) {
       throw new Error(
         "sdk-provider: wallet returned no updateId; operator-discovery requires an updateId",
       );
     }
-    return {
-      submittedBy: party,
-      primaryCid: updateId,
-      auxiliaryCids: { updateId },
-    };
+    return updateId;
   }
 
   // Off-ledger message signing via the dapp-sdk CIP-0103 signMessage RPC, which

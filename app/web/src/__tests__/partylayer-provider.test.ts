@@ -1,4 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// The provider submits each allocation command as its own single-command request
+// (supportsMultiCommandTransaction is false) and recovers the one created cid per
+// request from its updateId. Mock the recovery so tests stay backend-free; a
+// counter yields distinct cids in submission order.
+vi.mock("@/services/recover-allocations", () => ({
+  recoverCreatedAllocationCid: vi.fn(),
+}));
 
 import {
   DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
@@ -6,7 +14,10 @@ import {
   parsePartyLayerHoldings,
   type PartyLayerClient,
 } from "@/wallet/partylayer-provider";
-import type { RequestSwapIntent } from "@/wallet/types";
+import { recoverCreatedAllocationCid } from "@/services/recover-allocations";
+import type { AddLiquidityIntent, RequestSwapIntent } from "@/wallet/types";
+
+const recoverMock = vi.mocked(recoverCreatedAllocationCid);
 
 // A fake @partylayer/sdk client: records the submitted command tree and returns
 // an updateId-only receipt, matching the provider contract.
@@ -156,9 +167,50 @@ const crossAdminSwapIntent: RequestSwapIntent = {
   disclosure: [],
 };
 
+// DvP add: three allocations (base deposit, quote deposit, LP receipt) authored
+// as three separate single-command requests.
+const lpBaseLeg = { ...swapInLeg, transferLegId: "lp-base", instrumentId: "Amulet" };
+const lpQuoteLeg = { ...swapInLeg, transferLegId: "lp-quote", instrumentId: "USDCx" };
+const lpReceiptLeg = {
+  ...swapOutLeg, transferLegId: "lp-mint", side: "ReceiverSide" as const, instrumentId: "AMM-LP",
+};
+const addLiquidityIntent: AddLiquidityIntent = {
+  kind: "add-liquidity",
+  requestCid: "lpReqABCDEFGH",
+  settlement: { executors: ["op"], id: "lp-s", cid: null, meta: { values: {} } },
+  allocations: [
+    {
+      admin: "dep-admin", authorizer: alice, transferLegSides: [lpBaseLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: true, meta: { values: {} },
+    },
+    {
+      admin: "dep-admin", authorizer: alice, transferLegSides: [lpQuoteLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: true, meta: { values: {} },
+    },
+    {
+      admin: "lp-admin", authorizer: alice, transferLegSides: [lpReceiptLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: false, meta: { values: {} },
+    },
+  ],
+  requestedAt: "2026-05-19T12:00:00.000Z",
+  factoryCids: ["depF", "depF", "lpF"],
+  allocationFactoryExtraArgs: [emptyArgs, emptyArgs, emptyArgs],
+  allocationRequestExtraArgs: emptyArgs,
+  disclosure: [],
+  baseHoldingCids: ["b1"],
+  quoteHoldingCids: ["q1"],
+};
+
 describe("PartyLayerProvider", () => {
   const ctx = () => new PartyLayerProvider("#canton-dex-trading-v2", async () => fake.client);
   let fake: ReturnType<typeof fakeClient>;
+
+  beforeEach(() => {
+    // Distinct recovered cids per submission, in call order.
+    let n = 0;
+    recoverMock.mockReset();
+    recoverMock.mockImplementation(async () => `alloc-${++n}`);
+  });
 
   it("connects and exposes the wallet party", async () => {
     fake = fakeClient({ updateId: "u-1" });
@@ -191,19 +243,17 @@ describe("PartyLayerProvider", () => {
     });
   });
 
-  it("submit returns updateId as primaryCid and does NOT set createdAllocationCids", async () => {
+  it("single-admin swap: one command → one updateId-only request (no split, no recover)", async () => {
     fake = fakeClient({ updateId: "update-xyz" });
     const p = ctx();
     await p.connect();
     const res = await p.submit(swapIntent);
     expect(res.primaryCid).toBe("update-xyz");
     expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
-    // updateId-only by design — the operator recovers the created cids from the
-    // updateId for all DvP flows (LP add/remove, swap, order funding).
+    // One command: nothing to split, so the updateId-only shape is kept and the
+    // operator recovers the single cid at settle (operator-discovery).
     expect(res.createdAllocationCids).toBeUndefined();
-    // The composed command tree was handed to the wallet to sign: a single-admin
-    // swap authors its one combined spec as one direct AllocationFactory_Allocate
-    // exercise.
+    expect(recoverMock).not.toHaveBeenCalled();
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0].signedTx.actAs).toEqual(["alice::1220a"]);
     expect(fake.calls[0].signedTx.commandId).toMatch(/^swap-batch-/);
@@ -214,26 +264,59 @@ describe("PartyLayerProvider", () => {
     );
   });
 
-  it("submits a cross-admin swap as two direct exercises in one updateId-only submission", async () => {
+  it("cross-admin swap: two separate single-command requests, cids aggregated in order", async () => {
     fake = fakeClient({ updateId: "update-xyz" });
     const p = ctx();
     await p.connect();
     const res = await p.submit(crossAdminSwapIntent);
-    expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
-    // The provider forwards the whole commands array and the operator recovers
-    // BOTH created cids from the updateId.
-    expect(res.createdAllocationCids).toBeUndefined();
-    expect(fake.calls).toHaveLength(1);
-    const cmds = fake.calls[0].signedTx.commands as Array<{
-      ExerciseCommand: { choice: string; templateId: string };
-    }>;
-    // One direct AllocationFactory_Allocate per admin (two here); no accept, no
-    // batching utility.
-    expect(cmds).toHaveLength(2);
-    expect(cmds.map((c) => c.ExerciseCommand.choice)).toEqual([
-      "AllocationFactory_Allocate",
-      "AllocationFactory_Allocate",
-    ]);
+    // Two separate wallet requests, each carrying exactly one Allocate.
+    expect(fake.calls).toHaveLength(2);
+    for (const call of fake.calls) {
+      const cmds = call.signedTx.commands as Array<{ ExerciseCommand: { choice: string } }>;
+      expect(cmds).toHaveLength(1);
+      expect(cmds[0].ExerciseCommand.choice).toBe("AllocationFactory_Allocate");
+    }
+    // Distinct command ids per request (dedup on the ledger).
+    expect(fake.calls[0].signedTx.commandId).not.toBe(fake.calls[1].signedTx.commandId);
+    // The two recovered cids, in canonical order, are what the settle consumes.
+    expect(recoverMock).toHaveBeenCalledTimes(2);
+    expect(recoverMock.mock.calls.map((c) => c[1])).toEqual(["alice::1220a", "alice::1220a"]);
+    expect(res.createdAllocationCids).toEqual(["alloc-1", "alloc-2"]);
+    expect(res.primaryCid).toBe("alloc-1");
+  });
+
+  it("add-liquidity: three separate single-command requests, three cids aggregated", async () => {
+    fake = fakeClient({ updateId: "update-xyz" });
+    const p = ctx();
+    await p.connect();
+    const res = await p.submit(addLiquidityIntent);
+    // Three separate wallet requests, one Allocate each, in canonical order
+    // [base deposit, quote deposit, LP receipt].
+    expect(fake.calls).toHaveLength(3);
+    for (const call of fake.calls) {
+      const cmds = call.signedTx.commands as Array<{ ExerciseCommand: { choice: string } }>;
+      expect(cmds).toHaveLength(1);
+      expect(cmds[0].ExerciseCommand.choice).toBe("AllocationFactory_Allocate");
+    }
+    expect(new Set(fake.calls.map((c) => c.signedTx.commandId)).size).toBe(3);
+    expect(recoverMock).toHaveBeenCalledTimes(3);
+    expect(res.createdAllocationCids).toEqual(["alloc-1", "alloc-2", "alloc-3"]);
+  });
+
+  it("surfaces which allocation failed mid-sequence", async () => {
+    fake = fakeClient({ updateId: "update-xyz" });
+    // Fail the second submission only.
+    let n = 0;
+    fake.client.submitTransaction = async () => {
+      n += 1;
+      if (n === 2) throw new Error("package not vetted");
+      return { updateId: "update-xyz" };
+    };
+    const p = ctx();
+    await p.connect();
+    await expect(p.submit(addLiquidityIntent)).rejects.toThrow(
+      /add-liquidity: wallet request for allocation 2 of 3 failed .*package not vetted/,
+    );
   });
 
   it("rejects submit when the wallet receipt has no updateId", async () => {

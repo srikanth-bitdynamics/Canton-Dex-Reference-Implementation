@@ -153,6 +153,9 @@ export class OperatorApi {
     inputInstrumentId: InstrumentId;
     inputAmount: Decimal;
     minOutputAmount: Decimal;
+    // Optional settlement deadline stamped onto the SwapAllocationRequest so the
+    // locked allocations auto-release if the swap is not settled in time.
+    settleAt?: string;
   }): Promise<{
     // One spec per (swapper, admin): input admin first, then output admin; one
     // combined spec for a single-admin swap.

@@ -81,7 +81,10 @@ const OPERATOR_WRITE_EXACT = new Set<string>([
   // phase: authority is proven on-ledger, not by the operator token. They are
   // instead protected by the in-memory rate limiter (see rate-limit.ts).
   // Orders / matched-trades / rfq (below) stay operator-only.
-  "/v1/pools/recover-dvp-allocations",
+  // (recover-dvp-allocations is public: the sequential single-command wallet
+  // flow recovers each created allocation cid by updateId before the settle;
+  // it is operator-side ledger discovery, rate-limited, and the settle still
+  // validates the allocation binding.)
   "/v1/orders/bind",
   "/v1/orders/fund",
   "/v1/orders/match",

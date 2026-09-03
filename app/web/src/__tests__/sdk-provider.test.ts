@@ -60,7 +60,18 @@ vi.mock("@canton-network/dapp-sdk", () => ({
   },
 }));
 
+// The provider submits each allocation command as its own single-command request
+// (supportsMultiCommandTransaction is false) and recovers the created cid per
+// request from its updateId. Mock the recovery so tests stay backend-free.
+vi.mock("@/services/recover-allocations", () => ({
+  recoverCreatedAllocationCid: vi.fn(),
+}));
+
 import { SdkProvider } from "@/wallet/sdk-provider";
+import { recoverCreatedAllocationCid } from "@/services/recover-allocations";
+import type { AddLiquidityIntent } from "@/wallet/types";
+
+const recoverMock = vi.mocked(recoverCreatedAllocationCid);
 
 const emptyArgs = { context: { values: {} }, meta: { values: {} } };
 const swapSettlement = {
@@ -125,8 +136,46 @@ const crossAdminSwapIntent: RequestSwapIntent = {
   inputHoldingCids: ["h1"],
 };
 
+// DvP add: three allocations authored as three separate single-command requests.
+const lpBaseLeg = { ...swapInLeg, transferLegId: "lp-base", instrumentId: "Amulet" };
+const lpQuoteLeg = { ...swapInLeg, transferLegId: "lp-quote", instrumentId: "USDCx" };
+const lpReceiptLeg = {
+  ...swapOutLeg, transferLegId: "lp-mint", side: "ReceiverSide" as const, instrumentId: "AMM-LP",
+};
+const addLiquidityIntent: AddLiquidityIntent = {
+  kind: "add-liquidity",
+  requestCid: "lpReqABCDEFGH",
+  settlement: swapSettlement,
+  allocations: [
+    {
+      admin: "dep-admin", authorizer: alice, transferLegSides: [lpBaseLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: true, meta: { values: {} },
+    },
+    {
+      admin: "dep-admin", authorizer: alice, transferLegSides: [lpQuoteLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: true, meta: { values: {} },
+    },
+    {
+      admin: "lp-admin", authorizer: alice, transferLegSides: [lpReceiptLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: false, meta: { values: {} },
+    },
+  ],
+  requestedAt: "2026-05-19T12:00:00.000Z",
+  factoryCids: ["depF", "depF", "lpF"],
+  allocationFactoryExtraArgs: [emptyArgs, emptyArgs, emptyArgs],
+  allocationRequestExtraArgs: emptyArgs,
+  disclosure: [
+    { contractId: "#ctx:0", templateId: "Registry:Context", createdEventBlob: "blob" },
+  ],
+  baseHoldingCids: ["b1"],
+  quoteHoldingCids: ["q1"],
+};
+
 describe("SdkProvider", () => {
   beforeEach(() => {
+    let n = 0;
+    recoverMock.mockReset();
+    recoverMock.mockImplementation(async () => `alloc-${++n}`);
     sdk.statusListeners.length = 0;
     sdk.accountsListeners.length = 0;
     sdk.init.mockClear();
@@ -144,7 +193,7 @@ describe("SdkProvider", () => {
     sdk.pickerEntries = undefined;
   });
 
-  it("submit() returns an updateId-only result (no client-side cid extraction)", async () => {
+  it("single-admin swap: one command → one updateId-only request (no split, no recover)", async () => {
     const provider = new SdkProvider("#canton-dex-trading-v2");
     await provider.connect();
     const res = await provider.submit(swapIntent);
@@ -153,27 +202,48 @@ describe("SdkProvider", () => {
       primaryCid: "update-xyz",
       auxiliaryCids: { updateId: "update-xyz" },
     });
-    // prepareExecuteAndWait carries no created events, so the provider must not
-    // try to parse created allocation cids client-side.
+    // One command: nothing to split, kept as updateId-only (operator-discovery).
     expect(res.createdAllocationCids).toBeUndefined();
+    expect(recoverMock).not.toHaveBeenCalled();
+    expect(sdk.prepareExecuteAndWait).toHaveBeenCalledTimes(1);
   });
 
-  it("submits a cross-admin swap as two direct exercises in one updateId-only submission", async () => {
+  it("cross-admin swap: two separate single-command requests, cids aggregated in order", async () => {
     const provider = new SdkProvider("#canton-dex-trading-v2");
     await provider.connect();
     const res = await provider.submit(crossAdminSwapIntent);
-    // updateId-only: the operator recovers BOTH created allocation cids from it.
-    expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
-    expect(res.createdAllocationCids).toBeUndefined();
-    const params = sdk.prepareExecuteAndWait.mock.calls[0]![0] as { commands: unknown[] };
-    // A cross-admin swap = two direct AllocationFactory_Allocate exercises,
-    // forwarded together as one atomic submission.
-    expect(params.commands).toHaveLength(2);
-    const cmds = params.commands as Array<{ ExerciseCommand: { choice: string } }>;
-    expect(cmds.map((c) => c.ExerciseCommand.choice)).toEqual([
-      "AllocationFactory_Allocate",
-      "AllocationFactory_Allocate",
-    ]);
+    // Two separate prepareExecuteAndWait calls, each carrying exactly one Allocate.
+    expect(sdk.prepareExecuteAndWait).toHaveBeenCalledTimes(2);
+    for (const call of sdk.prepareExecuteAndWait.mock.calls) {
+      const params = call[0] as { commands: unknown[] };
+      const cmds = params.commands as Array<{ ExerciseCommand: { choice: string } }>;
+      expect(cmds).toHaveLength(1);
+      expect(cmds[0].ExerciseCommand.choice).toBe("AllocationFactory_Allocate");
+    }
+    // Distinct command ids per request (ledger dedup).
+    const commandIds = sdk.prepareExecuteAndWait.mock.calls.map(
+      (c) => (c[0] as { commandId: string }).commandId,
+    );
+    expect(new Set(commandIds).size).toBe(2);
+    // The two recovered cids in canonical order drive the operator settle.
+    expect(recoverMock).toHaveBeenCalledTimes(2);
+    expect(res.createdAllocationCids).toEqual(["alloc-1", "alloc-2"]);
+    expect(res.primaryCid).toBe("alloc-1");
+  });
+
+  it("add-liquidity: three separate single-command requests, three cids aggregated", async () => {
+    const provider = new SdkProvider("#canton-dex-trading-v2");
+    await provider.connect();
+    const res = await provider.submit(addLiquidityIntent);
+    expect(sdk.prepareExecuteAndWait).toHaveBeenCalledTimes(3);
+    for (const call of sdk.prepareExecuteAndWait.mock.calls) {
+      const params = call[0] as { commands: unknown[]; disclosedContracts?: unknown[] };
+      expect((params.commands as unknown[])).toHaveLength(1);
+      // Each split request still carries the disclosure the Allocate needs.
+      expect(params.disclosedContracts).toEqual(addLiquidityIntent.disclosure);
+    }
+    expect(recoverMock).toHaveBeenCalledTimes(3);
+    expect(res.createdAllocationCids).toEqual(["alloc-1", "alloc-2", "alloc-3"]);
   });
 
   it("submit() forwards disclosedContracts to prepareExecuteAndWait", async () => {

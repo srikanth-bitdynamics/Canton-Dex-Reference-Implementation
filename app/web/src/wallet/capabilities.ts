@@ -43,6 +43,16 @@ export interface WalletCapability {
   supportsSignMessage: boolean;
   supportsPrepareExecute: boolean;
   supportsTokenStandardV2: boolean;
+  /**
+   * Whether the wallet's transaction UI accepts a multi-atom `commands[]` in a
+   * single request. Stays FALSE until a wallet is proven to authorize a
+   * multi-command allocation transaction in its own UI: Loop / PartyLayer's
+   * adapter today refuses a request carrying more than one command atom. When
+   * false, each composed AllocationFactory_Allocate is submitted as its own
+   * single-command wallet request (see wallet/sequential-submit.ts); the
+   * operator settle remains the single atomic point.
+   */
+  supportsMultiCommandTransaction: boolean;
 }
 
 export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
@@ -56,6 +66,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     supportsSignMessage: true,
     supportsPrepareExecute: false,
     supportsTokenStandardV2: true,
+    supportsMultiCommandTransaction: false,
   },
   sdk: {
     dvp: "ready",
@@ -64,6 +75,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     supportsSignMessage: true,
     supportsPrepareExecute: true,
     supportsTokenStandardV2: true,
+    supportsMultiCommandTransaction: false,
   },
   mock: {
     dvp: "dev-only",
@@ -72,6 +84,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     supportsSignMessage: false,
     supportsPrepareExecute: false,
     supportsTokenStandardV2: false,
+    supportsMultiCommandTransaction: false,
   },
   partylayer: {
     dvp: "unproven",
@@ -80,6 +93,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     supportsSignMessage: true,
     supportsPrepareExecute: true,
     supportsTokenStandardV2: true,
+    supportsMultiCommandTransaction: false,
   },
   walletconnect: {
     dvp: "unsupported",
@@ -88,6 +102,7 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     supportsSignMessage: false,
     supportsPrepareExecute: false,
     supportsTokenStandardV2: false,
+    supportsMultiCommandTransaction: false,
   },
 };
 
@@ -109,6 +124,7 @@ export function capabilityFor(id: WalletProviderId): WalletCapability {
       supportsSignMessage: false,
       supportsPrepareExecute: false,
       supportsTokenStandardV2: false,
+      supportsMultiCommandTransaction: false,
     }
   );
 }

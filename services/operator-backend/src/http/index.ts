@@ -52,9 +52,11 @@ import {
   checkCallerBinding,
   checkCallerRead,
   callerPartyFromRequest,
+  routeBindsCaller,
   type CallerAuthConfig,
 } from "./caller-auth.js";
 import { validateWriteBody, ValidationError } from "./validate.js";
+import { SessionService, SessionError } from "../session/index.js";
 import { RfqAuthError } from "../rfq/index.js";
 import { OrderAuthError } from "../order/index.js";
 import { rootLogger } from "../lib/logger.js";
@@ -346,6 +348,17 @@ export function startHttpServer(
   if (typeof slotTimer.unref === "function") slotTimer.unref();
 
   const allowedOrigins = parseAllowedOrigins();
+  // Session service (BFF): available only when the per-caller JWT secret is
+  // configured. It mints the scoped caller tokens that let public users drive
+  // their own trader-flow writes. Constructed once so its challenge-nonce store
+  // persists across requests.
+  const session = cfg.callerJwtSecret
+    ? new SessionService(cfg.backend.ledger, {
+        callerJwtSecret: cfg.callerJwtSecret,
+        callerJwtAudience: cfg.callerJwtAudience,
+        verifier: cfg.backend.operatorParty,
+      })
+    : null;
   const server = createServer(async (req, res) => {
     const requestId = (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
     res.setHeader("X-Request-Id", requestId);
@@ -359,6 +372,7 @@ export function startHttpServer(
         () => lastPollSucceeded,
         cfg.db,
         allowedOrigins,
+        session,
         req,
         res,
       );
@@ -438,6 +452,7 @@ async function routeRequest(
   getSynced: () => boolean,
   db: Db | undefined,
   allowedOrigins: string[],
+  session: SessionService | null,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -479,15 +494,78 @@ async function routeRequest(
     return;
   }
 
-  // Operator auth gate: all other state-changing routes require
-  // the operator bearer token (fail-closed unless DEX_DEV_OPEN).
-  const opAuth = checkOperatorAuth(
-    req,
-    { operatorToken: cfg.operatorToken, devOpen: cfg.devOpen ?? false },
-    path,
-  );
-  if (!opAuth.ok) {
-    respondJson(res, opAuth.status, { error: opAuth.message, code: opAuth.code });
+  // Operator auth gate: state-changing routes require the operator bearer token
+  // (fail-closed unless DEX_DEV_OPEN) -- UNLESS the route acts on behalf of a
+  // trader and the request carries a valid per-caller JWT. Then the scoped caller
+  // token authorizes the write instead of the venue's operator secret, and
+  // checkCallerBinding (in readValidatedJson, with the body) still enforces that
+  // the subject party is the caller's own. This is what lets a public user drive
+  // their own swap/liquidity/rfq through a session-service token, never holding
+  // the operator secret. The backend still submits the operator/lpRegistrar
+  // ledger steps with its own server-side credential.
+  const routeKey = `${method} ${path}`;
+  const callerAuthorizes =
+    routeBindsCaller(routeKey) && callerPartyFromRequest(req, callerAuth) !== null;
+  if (!callerAuthorizes) {
+    const opAuth = checkOperatorAuth(
+      req,
+      { operatorToken: cfg.operatorToken, devOpen: cfg.devOpen ?? false },
+      path,
+    );
+    if (!opAuth.ok) {
+      respondJson(res, opAuth.status, { error: opAuth.message, code: opAuth.code });
+      return;
+    }
+  }
+
+  // === session service (BFF) ============================================
+  // Public: turn a wallet's on-ledger proof-of-control into a scoped caller
+  // token. No operator secret involved; enabled only when the caller-JWT secret
+  // is configured.
+  if (method === "POST" && path === "/v1/session/challenge") {
+    if (!session) {
+      respondJson(res, 501, {
+        error: "session service disabled (set DEX_CALLER_JWT_SECRET)",
+        code: "not_supported",
+      });
+      return;
+    }
+    const body = await readJson<{ party?: unknown }>(req);
+    const party = typeof body?.party === "string" ? body.party : "";
+    if (!party) {
+      respondJson(res, 400, { error: "party is required", code: "bad_request" });
+      return;
+    }
+    respondJson(res, 200, session.challenge(party as Party));
+    return;
+  }
+  if (method === "POST" && path === "/v1/session/verify") {
+    if (!session) {
+      respondJson(res, 501, {
+        error: "session service disabled (set DEX_CALLER_JWT_SECRET)",
+        code: "not_supported",
+      });
+      return;
+    }
+    const body = await readJson<{ party?: unknown; nonce?: unknown }>(req);
+    const party = typeof body?.party === "string" ? body.party : "";
+    const nonce = typeof body?.nonce === "string" ? body.nonce : "";
+    if (!party || !nonce) {
+      respondJson(res, 400, {
+        error: "party and nonce are required",
+        code: "bad_request",
+      });
+      return;
+    }
+    try {
+      respondJson(res, 200, await session.verify(party as Party, nonce));
+    } catch (e) {
+      if (e instanceof SessionError) {
+        respondJson(res, 401, { error: e.message, code: "unauthorized" });
+        return;
+      }
+      throw e;
+    }
     return;
   }
 

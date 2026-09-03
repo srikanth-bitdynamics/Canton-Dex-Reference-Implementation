@@ -1,0 +1,33 @@
+-- | Proof-of-control a party self-authors so the session service can mint it a
+-- scoped caller token.
+--
+-- The connected wallets (PartyLayer, dApp SDK) sign ledger transactions, not
+-- arbitrary messages, so a party proves it controls its key the Canton-native
+-- way: by self-authoring a contract only it can create. `party` is the sole
+-- signatory, so only that party's wallet (CIP-0103) can create this; `verifier`
+-- is an observer so the operator backend can read it as proof. The contract
+-- carries no value and is consumed as soon as the token is minted, so a given
+-- `nonce` is single-use.
+--
+-- Design guide: `docs/guides/session-service.md` -- the BFF/session flow that
+-- turns this proof into a scoped caller token for public multi-user writes.
+module CantonDex.Session.Attestation where
+
+template SessionAttestation with
+    party : Party
+      -- ^ The party proving control. Sole signatory: only its wallet can create this.
+    verifier : Party
+      -- ^ The operator backend party that reads the proof (observer only).
+    nonce : Text
+      -- ^ The challenge the session service issued for this party; single-use.
+    expiresAt : Time
+      -- ^ After this the backend rejects the proof as stale.
+  where
+    signatory party
+    observer verifier
+
+    -- The verifier consumes the attestation once it has minted the session
+    -- token, so the same proof can never be replayed.
+    choice SessionAttestation_Consume : ()
+      controller verifier
+      do pure ()

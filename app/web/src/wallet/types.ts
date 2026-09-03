@@ -244,6 +244,21 @@ export interface FundMatchedTradeIntent {
   inputHoldingCids: ContractId<"Holding">[];
 }
 
+/**
+ * Self-author a `SessionAttestation` so the session service (BFF) can mint the
+ * connected party a scoped caller token. Only the party's own wallet can create
+ * it (sole signatory) — that is the proof of control the backend reads.
+ */
+export interface AttestSessionIntent {
+  kind: "attest-session";
+  /** The operator/verifier party that observes the attestation. */
+  verifier: Party;
+  /** The single-use challenge the session service issued. */
+  nonce: string;
+  /** ISO-8601 UTC expiry the session service issued for this challenge. */
+  expiresAt: string;
+}
+
 export type WalletIntent =
   | FundOrderIntent
   | PlaceOrderIntent
@@ -252,7 +267,8 @@ export type WalletIntent =
   | MergeHoldingsIntent
   | AddLiquidityIntent
   | RemoveLiquidityIntent
-  | FundMatchedTradeIntent;
+  | FundMatchedTradeIntent
+  | AttestSessionIntent;
 
 // === provider result + status ============================================
 

@@ -67,6 +67,20 @@ export function setApiSessionCredentials(
   write(CALLER_TOKEN_KEY, credentials.callerToken);
 }
 
+/**
+ * Store just the per-caller session token (minted by the session service after
+ * the wallet proved control of its party). Leaves the operator/admin tokens
+ * untouched — an ordinary trader never sets those.
+ */
+export function setCallerToken(token: string): void {
+  write(CALLER_TOKEN_KEY, token);
+}
+
+/** Drop the per-caller session token (on disconnect or a new connect). */
+export function clearCallerToken(): void {
+  write(CALLER_TOKEN_KEY, "");
+}
+
 export function clearApiSessionCredentials(): void {
   const storage = session();
   try {

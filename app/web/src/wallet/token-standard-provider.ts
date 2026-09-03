@@ -211,6 +211,7 @@ export class TokenStandardProvider implements WalletProvider {
       case "add-liquidity":
       case "remove-liquidity":
       case "fund-matched-trade":
+      case "attest-session":
         // DvP swap + LP add/remove: compose the allocation command(s), ask the
         // operator backend to submit them, and recover their created cids.
         // The backend's /v1/wallet/submit now follows the transaction

@@ -64,7 +64,38 @@ export function composeCommands(
     case "add-liquidity":              return composeAddLiquidity(intent, ctx);
     case "remove-liquidity":           return composeRemoveLiquidity(intent, ctx);
     case "fund-matched-trade":         return composeFundMatchedTrade(intent, ctx);
+    case "attest-session":             return composeAttestSession(intent, ctx);
   }
+}
+
+// Session proof-of-control: the party self-authors a SessionAttestation the
+// operator (verifier) observes. Sole signatory is the party, so only its own
+// wallet can create it — that is the proof the session service reads before
+// minting a scoped caller token. Carries no value; the operator consumes it.
+function composeAttestSession(
+  intent: Extract<WalletIntent, { kind: "attest-session" }>,
+  ctx: ComposeContext,
+): ComposedCommands {
+  return {
+    commandId: `session-attest-${ctx.now().getTime()}`,
+    actAs: [ctx.party],
+    commands: [
+      {
+        CreateCommand: {
+          templateId: tid(
+            ctx.packagePrefix,
+            "CantonDex.Session.Attestation:SessionAttestation",
+          ),
+          createArguments: {
+            party: ctx.party,
+            verifier: intent.verifier,
+            nonce: intent.nonce,
+            expiresAt: intent.expiresAt,
+          },
+        },
+      },
+    ],
+  };
 }
 
 // Order funding: accept the OrderAllocationRequest and author its

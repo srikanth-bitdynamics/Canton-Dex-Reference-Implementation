@@ -10,6 +10,7 @@ import {
   getProviders,
   type WalletProviderId,
 } from "./registry";
+import { establishSession, endSession } from "../services/session";
 import type {
   WalletAccount,
   WalletConnectionStatus,
@@ -71,6 +72,13 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
       // PartyLayer's catalog) to the exact wallet the picker chose.
       const account = await provider.connect(walletId);
       set({ account, status: provider.getStatus() });
+      // Establish a scoped caller session so this party can drive its own
+      // trader-flow writes without the venue operator secret. Non-blocking and
+      // best-effort: a deployment with no session service is a no-op, and a
+      // failure here never fails the connection.
+      void establishSession(account.party).catch((e) => {
+        console.warn("[session] could not establish caller session:", e);
+      });
     } catch (e) {
       // Status was already set to `error` by the provider (which also fired the
       // subscription above, clearing it). Make sure it's gone and unwind the
@@ -84,6 +92,7 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
   async disconnect() {
     const id = get().activeProviderId;
     clearActiveSubscription();
+    endSession();
     if (!id) return;
     await getProvider(id).disconnect();
     set({ activeProviderId: null, status: { kind: "disconnected" }, account: null });

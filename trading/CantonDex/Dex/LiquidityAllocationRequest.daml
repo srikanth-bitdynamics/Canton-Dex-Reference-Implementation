@@ -20,7 +20,6 @@ template LiquidityAllocationRequest with
     settleAt : Optional Time
   where
     signatory operator
-    observer lp
 
     interface instance V2.AllocationRequest for LiquidityAllocationRequest where
       view = V2.AllocationRequestView with

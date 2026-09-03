@@ -7,6 +7,7 @@ import {
   NightlyAdapter,
   SendAdapter,
   createPartyLayer,
+  type CIP0103Account,
   type NetworkId,
   type WalletAdapter,
   type WalletId,
@@ -181,6 +182,22 @@ export function createDexPartyLayerClient(
     },
     async submitTransaction(params: { signedTx: PartyLayerCommandSubmission }) {
       return client.submitTransaction(params);
+    },
+    async signMessage(params: { message: string; nonce?: string; domain?: string }) {
+      return client.signMessage(params);
+    },
+    async getPrimaryAccount() {
+      // PartyLayerClient exposes no direct account method; its CIP-0103 provider
+      // bridge answers the mandatory `getPrimaryAccount` request.
+      const account = await client
+        .asProvider()
+        .request<CIP0103Account>({ method: "getPrimaryAccount" });
+      return {
+        partyId: String(account.partyId),
+        publicKey: String(account.publicKey),
+        namespace: account.namespace,
+        hint: account.hint,
+      };
     },
     async ledgerApi(params: PartyLayerLedgerApiParams) {
       return client.ledgerApi(params);

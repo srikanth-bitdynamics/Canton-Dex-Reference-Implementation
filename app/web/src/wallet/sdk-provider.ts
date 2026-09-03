@@ -411,6 +411,57 @@ export class SdkProvider implements WalletProvider {
     };
   }
 
+  // Off-ledger message signing via the dapp-sdk CIP-0103 signMessage RPC, which
+  // binds only `message` — nonce/domain are echoed back for the backend's
+  // structural check but are not forwarded to the wallet to be signed.
+  async signMessage(params: {
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }): Promise<{
+    signature: string;
+    partyId: string;
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }> {
+    if (this.status.kind !== "connected") {
+      throw new Error("sdk-provider: wallet not connected");
+    }
+    await this.ensureInit();
+    const { signature } = await this.sdk.signMessage({ message: params.message });
+    return {
+      signature,
+      partyId: this.status.account.party,
+      message: params.message,
+      nonce: params.nonce,
+      domain: params.domain,
+    };
+  }
+
+  // The connected party's primary account, carrying the public key the backend
+  // verifies a signMessage against. DappSDK surfaces accounts only via
+  // listAccounts(); pick the primary Wallet (same rule as the connect path).
+  async getPrimaryAccount(): Promise<{
+    partyId: string;
+    publicKey: string;
+    namespace?: string;
+    hint?: string;
+  }> {
+    await this.ensureInit();
+    const accounts: Wallet[] = await this.sdk.listAccounts();
+    const primary = accounts.find((w) => w.primary) ?? accounts[0];
+    if (!primary) {
+      throw new Error("sdk-provider: wallet returned no accounts");
+    }
+    return {
+      partyId: primary.partyId,
+      publicKey: primary.publicKey,
+      namespace: primary.namespace,
+      hint: primary.hint,
+    };
+  }
+
   // Discover the connected party's fundable holdings across every registry
   // through the wallet's CIP-0103 ledgerApi read, so an Amulet / USDCx holding
   // issued by a foreign registry is found alongside the DEX's own.

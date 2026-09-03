@@ -834,10 +834,10 @@ export const ledger = {
       : params.pool.quoteInstrumentId.admin;
     const inputId = params.inputInstrumentId.id;
     // Three-call DvP swap: (1) Daml builds the per-admin allocation specs +
-    // request for one pool snapshot; (2) the wallet accepts the request and
-    // authors every spec, locking only the input, returning the created
-    // Allocation cids (input admin first); (3) the operator settles via
-    // PoolRules_Swap with those cids. The promise resolves on the real settle
+    // request for one pool snapshot; (2) the wallet authors every spec, locking
+    // only the input, returning the created Allocation cids (input admin
+    // first); (3) the operator settles via PoolRules_Swap with those cids,
+    // archiving the still-live request. The promise resolves on the real settle
     // result — no optimistic success.
     let inputHoldingCids = params.inputHoldingCids;
     if (!inputHoldingCids || inputHoldingCids.length === 0) {
@@ -891,7 +891,7 @@ export const ledger = {
       ),
     );
 
-    // 2. Wallet accepts the request and authors every spec in one command.
+    // 2. Wallet authors every spec in one command.
     const walletResult = await handToWallet({
       kind: 'request-swap',
       poolId: params.pool.contractId,
@@ -926,6 +926,9 @@ export const ledger = {
       inputAmount: formatDecimal10(params.inputAmount),
       minOutputAmount: formatDecimal10(params.minOutputAmount),
       quoteBinding: req.quoteBinding,
+      // The wallet did not accept the request, so PoolRules_Swap archives the
+      // still-live SwapAllocationRequest at settle.
+      swapAllocationRequestCids: [req.swapRequestCid],
       ...(haveCids
         ? { swapperAllocationCids: swapperAllocationCids as ContractId<'Allocation'>[] }
         : { updateId }),
@@ -1021,7 +1024,7 @@ export const ledger = {
       ),
     );
 
-    // Wallet accepts the TradeAllocationRequest and authors every spec at once.
+    // Wallet authors every TradeAllocationRequest spec at once.
     const walletRes = await handToWallet({
       kind: 'fund-matched-trade',
       requestCid: traderRequest.requestCid as ContractId<'TradeAllocationRequest'>,
@@ -1069,8 +1072,8 @@ export const ledger = {
       );
     }
 
-    // Operator settles the cross-admin batches. The trader's request was
-    // archived by the wallet accept, so no request cid is consumed here.
+    // Operator settles the cross-admin batches from the trade itself; the
+    // wallet did not accept, so the TradeAllocationRequest is left live.
     return operator.settleMatchedTrade({
       tradeCid,
       ...(haveCids ? { allocationCidsByAdmin } : { updateId }),
@@ -1189,9 +1192,9 @@ export const ledger = {
 
       const fundRes = await operator.fundOrder({
         orderCid,
-        // The wallet accepted the OrderAllocationRequest in the funding batch,
-        // so it is already consumed; Order_Fund derives the expected specs from
-        // the order itself and binds the created allocations.
+        // The wallet did not accept the OrderAllocationRequest; Order_Fund
+        // derives the expected specs from the order itself and binds the created
+        // allocations, so the request is left live.
         ...(haveCids
           ? { allocationCids: allocationCids as ContractId<'Allocation'>[] }
           : { updateId }),
@@ -1316,9 +1319,11 @@ export const ledger = {
             requestedAt,
           }
         : {
-            // operator-discovery path: hand over the updateId only.
+            // operator-discovery path: hand over the updateId and the live
+            // request the operator binds when the tree carries no acceptance.
             poolCid: params.poolId,
             updateId,
+            requestCid: req.requestCid,
             recipient,
             baseAmount: req.baseAmount,
             quoteAmount: req.quoteAmount,
@@ -1422,7 +1427,7 @@ export const ledger = {
             holderQuoteReceiptCid: cids[1],
             holderBurnSenderCid: cids[2],
           }
-        : { ...common, updateId }; // operator-discovery path
+        : { ...common, updateId, requestCid: req.requestCid }; // operator-discovery path
     return fetchJson<{ result: unknown }>('/v1/pools/remove-liquidity/settle', {
       method: 'POST',
       body: JSON.stringify(settleBody),

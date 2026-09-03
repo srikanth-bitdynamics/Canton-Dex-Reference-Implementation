@@ -202,7 +202,7 @@ describe("PartyLayerProvider", () => {
     // updateId for all DvP flows (LP add/remove, swap, order funding).
     expect(res.createdAllocationCids).toBeUndefined();
     // The composed command tree was handed to the wallet to sign: one
-    // BatchingUtilityV2 command that accepts the request and authors the spec.
+    // BatchingUtilityV2 command that authors the spec.
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0].signedTx.actAs).toEqual(["alice::1220a"]);
     expect(fake.calls[0].signedTx.commandId).toMatch(/^swap-batch-/);
@@ -227,9 +227,8 @@ describe("PartyLayerProvider", () => {
       CreateAndExerciseCommand: { choice: string; choiceArgument: { actions: { tag: string }[] } };
     }).CreateAndExerciseCommand;
     expect(cmd.choice).toBe("BatchingUtility_ExecuteBatch");
-    // Accept the request, then one allocate per admin (two here).
+    // One allocate per admin (two here); no accept.
     expect(cmd.choiceArgument.actions.map((a) => a.tag)).toEqual([
-      "TSA_AllocationRequest_AcceptV2",
       "TSA_AllocationFactory_AllocateV2",
       "TSA_AllocationFactory_AllocateV2",
     ]);

@@ -974,8 +974,13 @@ export class PoolService {
     if (input.updateId) {
       const rec = await this.recoverDvpAllocations(input.updateId, this.operatorParty, 3);
       [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] = rec.allocationCids;
-      acceptanceCid = rec.acceptanceCid ?? input.acceptanceCid ?? null;
-      requestCid = null; // accept consumed the request on this path
+      if (rec.acceptanceCid) {
+        acceptanceCid = rec.acceptanceCid;
+        requestCid = null; // accept consumed the request on this path
+      } else {
+        acceptanceCid = input.acceptanceCid ?? null;
+        requestCid = requestCid ?? input.requestCid ?? null;
+      }
     }
     if (!lpBaseDepositCid || !lpQuoteDepositCid || !lpReceiptCid) {
       throw new Error(
@@ -1179,8 +1184,13 @@ export class PoolService {
     if (input.updateId) {
       const rec = await this.recoverDvpAllocations(input.updateId, this.operatorParty, 3);
       [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid] = rec.allocationCids;
-      acceptanceCid = rec.acceptanceCid ?? input.acceptanceCid ?? null;
-      requestCid = null;
+      if (rec.acceptanceCid) {
+        acceptanceCid = rec.acceptanceCid;
+        requestCid = null;
+      } else {
+        acceptanceCid = input.acceptanceCid ?? null;
+        requestCid = requestCid ?? input.requestCid ?? null;
+      }
     }
     if (!holderBaseReceiptCid || !holderQuoteReceiptCid || !holderBurnSenderCid) {
       throw new Error(

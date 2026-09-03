@@ -169,6 +169,9 @@ export class OperatorApi {
     // updateId for operator-discovery.
     swapperAllocationCids?: ContractId<"Allocation">[];
     updateId?: string;
+    // The still-live SwapAllocationRequest(s) for the settle to archive when the
+    // wallet did not consume the request via accept.
+    swapAllocationRequestCids?: ContractId<"SwapAllocationRequest">[];
   }): Promise<unknown> {
     return this.post("/v1/pools/swap", req);
   }

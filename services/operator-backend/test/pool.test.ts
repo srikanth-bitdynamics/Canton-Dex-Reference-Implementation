@@ -663,6 +663,38 @@ describe("PoolService DvP liquidity", () => {
     assert.equal(cmd.argument.requestCid, null, "request consumed on the discovery path");
   });
 
+  it("settleAddLiquidity (operator-discovery, no acceptance) binds the live request", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    // Direct-allocation wallet (acceptRequest=false): the tree carries the 3
+    // Allocation creates but no acceptance receipt.
+    ledger.treeEvents = [
+      { contractId: "#hold:0", templateId: "pkg:CantonDex.Registry.V2:Holding" },
+      { contractId: "#a:base", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#a:quote", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#a:receipt", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+    ];
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+
+    await svc.settleAddLiquidity({
+      poolCid: pool.contractId,
+      updateId: "update-7",
+      requestCid: "#req:0" as never,
+      recipient: "lp" as never,
+      baseAmount: "10.0",
+      quoteAmount: "200000.0",
+      minLpTokens: "0.0",
+      knownTotalLpSupply: "0.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
+    assert.equal(cmd.argument.lpBaseDepositCid, "#a:base", "recovered base deposit");
+    assert.equal(cmd.argument.lpReceiptCid, "#a:receipt", "recovered LP receipt");
+    assert.equal(cmd.argument.requestCid, "#req:0", "binds the live request");
+    assert.equal(cmd.argument.acceptanceCid, null, "no acceptance evidence on the direct path");
+  });
+
   it("swap (operator-discovery) recovers the signed allocation from updateId", async () => {
     const pool = mkSlicedPool();
     const ledger = new CapturingLedger(pool, mkLpPolicy());
@@ -829,6 +861,36 @@ describe("PoolService DvP liquidity", () => {
       "#factory:lp",
     ]));
     assert.equal(disclosureIds.length, new Set(disclosureIds).size);
+  });
+
+  it("settleRemoveLiquidity (operator-discovery, no acceptance) binds the live request", async () => {
+    const pool = mkSlicedPool();
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    // Direct-allocation wallet: 3 Allocation creates, no acceptance receipt.
+    ledger.treeEvents = [
+      { contractId: "#hold:0", templateId: "pkg:CantonDex.Registry.V2:Holding" },
+      { contractId: "#a:base", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#a:quote", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+      { contractId: "#a:burn", templateId: "pkg:CantonDex.Registry.V2:Allocation" },
+    ];
+    const svc = new PoolService(ledger, new PerAdminRegistry(), "op" as never);
+
+    await svc.settleRemoveLiquidity({
+      poolCid: pool.contractId,
+      updateId: "update-9",
+      requestCid: "#req:1" as never,
+      holder: "lp" as never,
+      lpTokensToRedeem: pool.totalLpSupply,
+      knownTotalLpSupply: pool.totalLpSupply,
+      minBaseOut: "0.0",
+      minQuoteOut: "0.0",
+      requestedAt,
+    });
+
+    const cmd = ledger.lastSubmit!.command as { argument: Record<string, unknown> };
+    assert.equal(cmd.argument.holderBurnSenderCid, "#a:burn", "recovered burn-sender");
+    assert.equal(cmd.argument.requestCid, "#req:1", "binds the live request");
+    assert.equal(cmd.argument.acceptanceCid, null, "no acceptance evidence on the direct path");
   });
 
   it("prefers the LP policy whose supply matches the pool state", async () => {

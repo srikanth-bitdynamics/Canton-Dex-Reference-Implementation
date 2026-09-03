@@ -1,29 +1,24 @@
 // Client half of the session-service (BFF) flow.
 //
-// On connect the dApp turns the connected party's on-ledger proof-of-control
-// into a scoped caller token, stored so `api-auth` attaches it as X-Caller-Token
-// on trader-flow writes. The venue operator secret never touches the browser.
-//
-// Flow: challenge -> the wallet self-authors a SessionAttestation (only that
-// party can) -> verify -> caller token. A deployment that runs no session
-// service (an operator-token deployment) returns a no-op.
+// On connect the dApp asks the connected wallet to sign a backend-issued
+// challenge (off-ledger CIP-0103 signMessage) and posts the SignedMessage back,
+// together with the wallet's primary-account public key, so the backend can
+// verify the signature and its party binding off-ledger and mint a scoped caller
+// token. This is deliberately best-effort — a failure here must never break the
+// wallet connection.
 
-import { handToWallet } from "../wallet/handoff";
-import type { AttestSessionIntent } from "../wallet/types";
-import { setCallerToken, clearCallerToken } from "./api-auth";
+import { getProvider } from "../wallet/registry";
+import { useWalletStore } from "../wallet/store";
+import { clearCallerToken, setCallerToken } from "./api-auth";
 
 const API_BASE =
   (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8080";
 
 interface Challenge {
+  message: string;
   nonce: string;
-  verifier: string;
   expiresAt: number;
-}
-interface SessionTokenResponse {
-  callerToken: string;
-  party: string;
-  expiresAt: number;
+  domain?: string;
 }
 
 async function postJson<T>(
@@ -46,37 +41,78 @@ async function postJson<T>(
 }
 
 /**
- * Establish a scoped caller session for `party`. Returns true when a token was
- * minted, false when the deployment runs no session service (a 501 — the
- * operator-token path still applies). Throws only on an unexpected failure the
- * caller may surface.
+ * Ask the connected wallet to sign the backend challenge so the backend can
+ * verify it and mint a caller token. Returns true when the backend captured the
+ * SignedMessage (whether or not a token was minted), false when the deployment
+ * runs no session service (a 501), the active wallet cannot sign, or anything
+ * went wrong. Never throws — the connection must not break because of the
+ * session.
  */
 export async function establishSession(party: string): Promise<boolean> {
   clearCallerToken(); // drop any token for a previous party
-  const ch = await postJson<Challenge>("/v1/session/challenge", { party });
-  if (ch.status === 501) return false; // no session service on this deployment
-  if (!ch.ok || !ch.data) {
-    throw new Error(`session challenge failed: ${ch.status} ${ch.text.slice(0, 200)}`);
-  }
+  try {
+    const ch = await postJson<Challenge>("/v1/session/challenge", { party });
+    if (ch.status === 501) return false; // no session service on this deployment
+    if (!ch.ok || !ch.data) {
+      console.warn("[session] challenge failed:", ch.status, ch.text.slice(0, 200));
+      return false;
+    }
 
-  // The wallet self-authors the on-ledger proof (only this party can create it).
-  const intent: AttestSessionIntent = {
-    kind: "attest-session",
-    verifier: ch.data.verifier,
-    nonce: ch.data.nonce,
-    expiresAt: new Date(ch.data.expiresAt).toISOString(),
-  };
-  await handToWallet(intent);
+    const providerId = useWalletStore.getState().activeProviderId;
+    const provider = providerId ? getProvider(providerId) : null;
+    if (!provider?.signMessage) {
+      console.warn(
+        "[session] active wallet does not support signMessage; skipping session (capture phase)",
+      );
+      return false;
+    }
 
-  const tok = await postJson<SessionTokenResponse>("/v1/session/verify", {
-    party,
-    nonce: ch.data.nonce,
-  });
-  if (!tok.ok || !tok.data) {
-    throw new Error(`session verify failed: ${tok.status} ${tok.text.slice(0, 200)}`);
+    const signedMessage = await provider.signMessage({
+      message: ch.data.message,
+      nonce: ch.data.nonce,
+      domain: ch.data.domain,
+    });
+
+    // Best-effort: the wallet's public key lets the backend verify off-ledger.
+    // Omit it when unavailable — the backend then only captures.
+    let account: { publicKey: string; namespace?: string } | undefined;
+    let accountDebug: unknown;
+    try {
+      const primary = await provider.getPrimaryAccount?.();
+      accountDebug = { hasMethod: !!provider.getPrimaryAccount, primary };
+      if (primary?.publicKey) {
+        account = {
+          publicKey: primary.publicKey,
+          ...(primary.namespace ? { namespace: primary.namespace } : {}),
+        };
+      }
+    } catch (e) {
+      accountDebug = { error: e instanceof Error ? `${e.name}: ${e.message}` : String(e) };
+      console.warn("[session] getPrimaryAccount failed (non-fatal):", e);
+    }
+
+    const res = await postJson<{ captured?: boolean; verified?: boolean; callerToken?: string }>(
+      "/v1/session/verify",
+      {
+        party,
+        nonce: ch.data.nonce,
+        signedMessage,
+        ...(account ? { account } : {}),
+        accountDebug,
+      },
+    );
+    if (!res.ok || !res.data) {
+      console.warn("[session] verify failed:", res.status, res.text.slice(0, 200));
+      return false;
+    }
+    if (typeof res.data.callerToken === "string" && res.data.callerToken) {
+      setCallerToken(res.data.callerToken); // enable trading for this party
+    }
+    return res.data.captured === true;
+  } catch (e) {
+    console.warn("[session] establishSession failed (non-fatal):", e);
+    return false;
   }
-  setCallerToken(tok.data.callerToken);
-  return true;
 }
 
 /** Drop the caller session (on disconnect). */

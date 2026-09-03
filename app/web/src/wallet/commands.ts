@@ -64,46 +64,15 @@ export function composeCommands(
     case "add-liquidity":              return composeAddLiquidity(intent, ctx);
     case "remove-liquidity":           return composeRemoveLiquidity(intent, ctx);
     case "fund-matched-trade":         return composeFundMatchedTrade(intent, ctx);
-    case "attest-session":             return composeAttestSession(intent, ctx);
   }
 }
 
-// Session proof-of-control: the party self-authors a SessionAttestation the
-// operator (verifier) observes. Sole signatory is the party, so only its own
-// wallet can create it — that is the proof the session service reads before
-// minting a scoped caller token. Carries no value; the operator consumes it.
-function composeAttestSession(
-  intent: Extract<WalletIntent, { kind: "attest-session" }>,
-  ctx: ComposeContext,
-): ComposedCommands {
-  return {
-    commandId: `session-attest-${ctx.now().getTime()}`,
-    actAs: [ctx.party],
-    commands: [
-      {
-        CreateCommand: {
-          templateId: tid(
-            ctx.packagePrefix,
-            "CantonDex.Session.Attestation:SessionAttestation",
-          ),
-          createArguments: {
-            party: ctx.party,
-            verifier: intent.verifier,
-            nonce: intent.nonce,
-            expiresAt: intent.expiresAt,
-          },
-        },
-      },
-    ],
-  };
-}
-
-// Order funding: accept the OrderAllocationRequest and author its
-// specifications in one BatchingUtilityV2 command — the lock-admin funding spec
-// plus, for a cross-admin pair, the counter-admin receipt. The input holdings
-// fund the lock spec; the receipt locks nothing. `Order_Fund` derives the
-// expected specs from the order itself, so the request is accepted the same
-// standard way liquidity and swap use.
+// Order funding: author the OrderAllocationRequest's specifications in one
+// BatchingUtilityV2 command — the lock-admin funding spec plus, for a
+// cross-admin pair, the counter-admin receipt. The input holdings fund the
+// lock spec; the receipt locks nothing. The wallet does not accept the
+// request; `Order_Fund` derives the expected specs from the order itself and
+// binds the created allocations.
 function composeFundOrder(
   intent: Extract<WalletIntent, { kind: "fund-order" }>,
   ctx: ComposeContext,
@@ -116,7 +85,7 @@ function composeFundOrder(
       specFundsHoldings(spec) ? intent.inputHoldingCids : [],
     ),
     "order-fund-batch",
-    true,
+    false,
   );
 }
 
@@ -145,11 +114,11 @@ function composePlaceOrder(
   };
 }
 
-// Matched-trade funding: accept the TradeAllocationRequest and author its
-// per-admin specifications in one BatchingUtilityV2 command — the sender-leg
-// spec (funded from input holdings) plus, for a cross-admin trade, the
-// counter-admin receiver spec (locks nothing). Created cids drive the operator
-// MatchedTrade_Settle.
+// Matched-trade funding: author the TradeAllocationRequest's per-admin
+// specifications in one BatchingUtilityV2 command — the sender-leg spec
+// (funded from input holdings) plus, for a cross-admin trade, the counter-admin
+// receiver spec (locks nothing). The wallet does not accept the request; the
+// created cids drive the operator MatchedTrade_Settle.
 function composeFundMatchedTrade(
   intent: Extract<WalletIntent, { kind: "fund-matched-trade" }>,
   ctx: ComposeContext,
@@ -162,16 +131,17 @@ function composeFundMatchedTrade(
       specFundsHoldings(spec) ? intent.inputHoldingCids : [],
     ),
     "trade-fund-batch",
-    true,
+    false,
   );
 }
 
-// Swap (DvP): accept the SwapAllocationRequest and author its per-admin
-// specifications in one BatchingUtilityV2 command — the swap-in leg under the
-// input admin and the swap-out receipt under the output admin (one combined
-// spec for a single-admin swap). The input holdings fund the swap-in spec; the
-// output receipt locks nothing. The created cids (input admin first) feed the
-// operator settle (PoolRules_Swap).
+// Swap (DvP): author the SwapAllocationRequest's per-admin specifications in
+// one BatchingUtilityV2 command — the swap-in leg under the input admin and the
+// swap-out receipt under the output admin (one combined spec for a single-admin
+// swap). The input holdings fund the swap-in spec; the output receipt locks
+// nothing. The wallet does not accept the request; the created cids (input
+// admin first) feed the operator settle (PoolRules_Swap), which archives the
+// still-live request.
 function composeRequestSwap(
   intent: Extract<WalletIntent, { kind: "request-swap" }>,
   ctx: ComposeContext,
@@ -184,7 +154,7 @@ function composeRequestSwap(
       specFundsHoldings(spec) ? intent.inputHoldingCids : [],
     ),
     "swap-batch",
-    true,
+    false,
   );
 }
 
@@ -249,16 +219,15 @@ function composeAddLiquidity(
   if (intent.allocations.length !== 3) {
     throw new Error(`add-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
   }
-  // One top-level command: the standard BatchingUtilityV2 accepts the request
-  // and authors all three
-  // allocations (base deposit, quote deposit, LP receipt) — leaving the same
-  // acceptance receipt the stock accept flow does — inside one Daml
-  // transaction. Holdings PARALLEL to the request's [base, quote, LP].
+  // One top-level BatchingUtilityV2 command authoring all three allocations
+  // (base deposit, quote deposit, LP receipt) in one Daml transaction. The
+  // wallet does not accept the request; the operator binds the still-live
+  // request at settle. Holdings PARALLEL to the request's [base, quote, LP].
   return batchingUtilityCommand(intent, ctx, [
     intent.baseHoldingCids,
     intent.quoteHoldingCids,
     [],
-  ], "lp-batch", true);
+  ], "lp-batch", false);
 }
 
 // The token standard's wallet-side batching utility (Splice 0.6.11). Vendored
@@ -313,10 +282,11 @@ function batchingUtilityCommand(
   ctx: ComposeContext,
   holdingsBySpec: string[][],
   commandLabel: string,
-  // Whether the batch also accepts (and archives) the request. Every DvP flow
-  // accepts the standard way: the LP settle binds the acceptance receipt, and
-  // swap, order funding, and matched-trade settlement rely on the request being
-  // consumed while the created allocations drive the operator's settle.
+  // Whether the batch also accepts (and archives) the request. Kept false so an
+  // external wallet never exercises AcceptV2 on our operator-signatory
+  // *AllocationRequest templates (canton-dex-trading-v2): the wallet authors
+  // only its own token-standard allocations, and the operator binds the
+  // still-live request at settle.
   acceptRequest: boolean,
 ): ComposedCommands {
   const requestedAt = intent.requestedAt;
@@ -411,15 +381,16 @@ function composeRemoveLiquidity(
     throw new Error(`remove-liquidity: expected 3 allocation specs, got ${intent.allocations.length}`);
   }
   // Single top-level command, mirroring add: the standard BatchingUtilityV2
-  // accepts the request and authors the base receipt, quote receipt, and LP
-  // burn-sender in one Daml transaction. Only the burn-sender funds from
-  // holdings (the LP holding); the two receipts are receiver-side and lock
-  // nothing. Parallel to the request's [base, quote, LP].
+  // authors the base receipt, quote receipt, and LP burn-sender in one Daml
+  // transaction. Only the burn-sender funds from holdings (the LP holding); the
+  // two receipts are receiver-side and lock nothing. The wallet does not accept
+  // the request; the operator binds the still-live request at settle. Parallel
+  // to the request's [base, quote, LP].
   return batchingUtilityCommand(intent, ctx, [
     [],
     [],
     intent.lpHoldingCids,
-  ], "lp-batch", true);
+  ], "lp-batch", false);
 }
 
 /** Intents whose follow-up step needs the wallet-authored allocation cid. */

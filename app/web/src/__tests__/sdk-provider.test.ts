@@ -172,9 +172,8 @@ describe("SdkProvider", () => {
       CreateAndExerciseCommand: { choice: string; choiceArgument: { actions: { tag: string }[] } };
     }).CreateAndExerciseCommand;
     expect(cmd.choice).toBe("BatchingUtility_ExecuteBatch");
-    // Accept the request, then one allocate per admin (two here).
+    // One allocate per admin (two here); no accept.
     expect(cmd.choiceArgument.actions.map((a) => a.tag)).toEqual([
-      "TSA_AllocationRequest_AcceptV2",
       "TSA_AllocationFactory_AllocateV2",
       "TSA_AllocationFactory_AllocateV2",
     ]);

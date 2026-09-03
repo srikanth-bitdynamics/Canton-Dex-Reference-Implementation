@@ -56,7 +56,12 @@ import {
   type CallerAuthConfig,
 } from "./caller-auth.js";
 import { validateWriteBody, ValidationError } from "./validate.js";
-import { SessionService, SessionError } from "../session/index.js";
+import {
+  SessionService,
+  SessionError,
+  type SignedMessage,
+  type SessionAccount,
+} from "../session/index.js";
 import { RfqAuthError } from "../rfq/index.js";
 import { OrderAuthError } from "../order/index.js";
 import { rootLogger } from "../lib/logger.js";
@@ -348,15 +353,17 @@ export function startHttpServer(
   if (typeof slotTimer.unref === "function") slotTimer.unref();
 
   const allowedOrigins = parseAllowedOrigins();
-  // Session service (BFF): available only when the per-caller JWT secret is
-  // configured. It mints the scoped caller tokens that let public users drive
-  // their own trader-flow writes. Constructed once so its challenge-nonce store
-  // persists across requests.
+  // Session service (BFF), capture phase: challenge the wallet to sign an
+  // off-ledger message and capture the result. Available only when the
+  // per-caller JWT secret is configured (kept for the verification phase, which
+  // will mint the scoped caller token). Constructed once so its challenge-nonce
+  // store persists across requests.
   const session = cfg.callerJwtSecret
-    ? new SessionService(cfg.backend.ledger, {
+    ? new SessionService({
         callerJwtSecret: cfg.callerJwtSecret,
         callerJwtAudience: cfg.callerJwtAudience,
-        verifier: cfg.backend.operatorParty,
+        domain: cfg.callerJwtAudience ?? allowedOrigins[0] ?? cfg.context.network,
+        networkId: cfg.context.network,
       })
     : null;
   const server = createServer(async (req, res) => {
@@ -519,9 +526,9 @@ async function routeRequest(
   }
 
   // === session service (BFF) ============================================
-  // Public: turn a wallet's on-ledger proof-of-control into a scoped caller
-  // token. No operator secret involved; enabled only when the caller-JWT secret
-  // is configured.
+  // Public, capture phase: challenge the wallet to sign an off-ledger message
+  // and capture the result. No operator secret involved, and no caller token is
+  // minted yet; enabled only when the caller-JWT secret is configured.
   if (method === "POST" && path === "/v1/session/challenge") {
     if (!session) {
       respondJson(res, 501, {
@@ -547,18 +554,60 @@ async function routeRequest(
       });
       return;
     }
-    const body = await readJson<{ party?: unknown; nonce?: unknown }>(req);
+    const body = await readJson<{
+      party?: unknown;
+      nonce?: unknown;
+      signedMessage?: unknown;
+      account?: unknown;
+      accountDebug?: unknown;
+    }>(req);
+    if (body?.accountDebug !== undefined) {
+      rootLogger.info("[session:account-debug]", { accountDebug: body.accountDebug });
+    }
     const party = typeof body?.party === "string" ? body.party : "";
     const nonce = typeof body?.nonce === "string" ? body.nonce : "";
-    if (!party || !nonce) {
+    const sm = body?.signedMessage as
+      | { partyId?: unknown; message?: unknown; signature?: unknown; nonce?: unknown; domain?: unknown }
+      | undefined;
+    // Loop returns `signature` as `{ signature: <hex> }`, not a bare string.
+    const rawSig = sm?.signature;
+    const signatureHex =
+      typeof rawSig === "string"
+        ? rawSig
+        : typeof (rawSig as { signature?: unknown })?.signature === "string"
+          ? (rawSig as { signature: string }).signature
+          : null;
+    if (
+      !party ||
+      !nonce ||
+      !sm ||
+      typeof sm.partyId !== "string" ||
+      typeof sm.message !== "string" ||
+      !signatureHex
+    ) {
       respondJson(res, 400, {
-        error: "party and nonce are required",
+        error: "party, nonce and signedMessage are required",
         code: "bad_request",
       });
       return;
     }
+    const signedMessage: SignedMessage = {
+      signature: signatureHex,
+      partyId: sm.partyId,
+      message: sm.message,
+      nonce: typeof sm.nonce === "string" ? sm.nonce : undefined,
+      domain: typeof sm.domain === "string" ? sm.domain : undefined,
+    };
+    const acct = body?.account as { publicKey?: unknown; namespace?: unknown } | undefined;
+    const account: SessionAccount | undefined =
+      acct && typeof acct === "object"
+        ? {
+            ...(typeof acct.publicKey === "string" ? { publicKey: acct.publicKey } : {}),
+            ...(typeof acct.namespace === "string" ? { namespace: acct.namespace } : {}),
+          }
+        : undefined;
     try {
-      respondJson(res, 200, await session.verify(party as Party, nonce));
+      respondJson(res, 200, session.verify(party as Party, nonce, signedMessage, account));
     } catch (e) {
       if (e instanceof SessionError) {
         respondJson(res, 401, { error: e.message, code: "unauthorized" });

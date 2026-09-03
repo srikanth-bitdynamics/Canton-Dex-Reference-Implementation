@@ -244,21 +244,6 @@ export interface FundMatchedTradeIntent {
   inputHoldingCids: ContractId<"Holding">[];
 }
 
-/**
- * Self-author a `SessionAttestation` so the session service (BFF) can mint the
- * connected party a scoped caller token. Only the party's own wallet can create
- * it (sole signatory) — that is the proof of control the backend reads.
- */
-export interface AttestSessionIntent {
-  kind: "attest-session";
-  /** The operator/verifier party that observes the attestation. */
-  verifier: Party;
-  /** The single-use challenge the session service issued. */
-  nonce: string;
-  /** ISO-8601 UTC expiry the session service issued for this challenge. */
-  expiresAt: string;
-}
-
 export type WalletIntent =
   | FundOrderIntent
   | PlaceOrderIntent
@@ -267,8 +252,7 @@ export type WalletIntent =
   | MergeHoldingsIntent
   | AddLiquidityIntent
   | RemoveLiquidityIntent
-  | FundMatchedTradeIntent
-  | AttestSessionIntent;
+  | FundMatchedTradeIntent;
 
 // === provider result + status ============================================
 
@@ -413,4 +397,33 @@ export interface WalletProvider {
    * callers fall back to the operator backend when this is absent or fails.
    */
   listHoldings?(owner: Party): Promise<Holding[]>;
+
+  /**
+   * Optional off-ledger message signing (CIP-0103 signMessage). Used to prove
+   * control of the connected party for a scoped session without an on-ledger
+   * write. Absent on providers whose wallet does not advertise the capability.
+   */
+  signMessage?(params: {
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }): Promise<{
+    signature: string;
+    partyId: string;
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }>;
+
+  /**
+   * Optional primary-account lookup (CIP-0103 getPrimaryAccount). Returns the
+   * connected party's public key so the backend can verify a signMessage
+   * signature and its party binding off-ledger. Absent when unsupported.
+   */
+  getPrimaryAccount?(): Promise<{
+    partyId: string;
+    publicKey: string;
+    namespace?: string;
+    hint?: string;
+  }>;
 }

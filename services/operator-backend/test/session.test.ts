@@ -1,123 +1,181 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync, sign as edSign, type KeyObject } from "node:crypto";
 
-import { SessionService, SessionError } from "../src/session/index.js";
+import { SessionService, SessionError, type SignedMessage } from "../src/session/index.js";
 import { verifyHs256 } from "../src/http/caller-auth.js";
-import type { LedgerSubmitter, SubscriptionFilter } from "../src/ledger/index.js";
 
 const SECRET = "test-caller-secret";
-const VERIFIER = "operator::1220ab";
+const AUDIENCE = "canton-dex";
+const DOMAIN = "https://dex.example";
+const NETWORK = "canton:devnet";
 const PARTY = "alice::1220cd";
 
-// A stub ledger: `query` returns whatever attestations we stage; `submit`
-// records the consume exercise. Only the two methods the session service uses
-// are implemented.
-function stubLedger(attestations: unknown[]): LedgerSubmitter & { submitted: unknown[] } {
-  const submitted: unknown[] = [];
-  return {
-    submitted,
-    async query<T>(_filter: SubscriptionFilter): Promise<T[]> {
-      return attestations as T[];
-    },
-    async submit<R>(req: unknown): Promise<R> {
-      submitted.push(req);
-      return {} as R;
-    },
-  } as LedgerSubmitter & { submitted: unknown[] };
+// The raw 32-byte Ed25519 public key behind a generated KeyObject.
+function rawPublicKey(publicKey: KeyObject): Buffer {
+  const der = publicKey.export({ format: "der", type: "spki" });
+  return der.subarray(der.length - 32);
 }
 
-function svc(ledger: LedgerSubmitter, now?: () => number): SessionService {
+// A party id whose namespace fingerprint is the `raw` candidate the service
+// derives: 1220 (sha2-256 multihash) + sha256(rawPublicKey).
+function partyForKey(hint: string, publicKey: KeyObject): string {
+  const digest = createHash("sha256").update(rawPublicKey(publicKey)).digest("hex");
+  return `${hint}::1220${digest}`;
+}
+
+function svc(now?: () => number): SessionService {
   return new SessionService(
-    ledger,
-    { callerJwtSecret: SECRET, callerJwtAudience: "canton-dex", verifier: VERIFIER },
+    { callerJwtSecret: SECRET, callerJwtAudience: AUDIENCE, domain: DOMAIN, networkId: NETWORK },
     now,
   );
 }
 
-function attestation(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
-  return {
-    contractId: "00att",
-    party: PARTY,
-    verifier: VERIFIER,
-    nonce: "PLACEHOLDER",
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    ...over,
-  };
+// The SignedMessage the wallet returns for a challenge, echoing the issued
+// message and nonce.
+function signedFor(
+  message: string,
+  nonce: string,
+  over: Partial<SignedMessage> = {},
+): SignedMessage {
+  return { signature: "sig-opaque", partyId: PARTY, message, nonce, domain: DOMAIN, ...over };
 }
 
-test("challenge issues a party-bound single-use nonce and the verifier", () => {
-  const s = svc(stubLedger([]));
+test("challenge issues a party-bound message, nonce, expiry, and domain", () => {
+  const s = svc();
   const c = s.challenge(PARTY);
-  assert.equal(c.verifier, VERIFIER);
+  assert.equal(typeof c.message, "string");
+  assert.ok(c.message.includes(PARTY), "message binds the party");
+  assert.ok(c.message.includes(NETWORK), "message binds the network");
+  assert.ok(c.message.includes("purpose: dex-session"));
   assert.ok(c.nonce.length > 10);
   assert.ok(c.expiresAt > Date.now());
+  assert.equal(c.domain, DOMAIN);
 });
 
-test("verify mints a party-scoped caller token from a matching on-ledger proof", async () => {
-  const ledger = stubLedger([]);
-  const s = svc(ledger);
+test("verify captures a well-formed signed message without minting a token", () => {
+  const s = svc();
   const c = s.challenge(PARTY);
-  // Stage the attestation the wallet would have self-authored for this nonce.
-  (ledger as { query: unknown }).query = async () => [attestation({ nonce: c.nonce })];
-
-  const tok = await s.verify(PARTY, c.nonce);
-  assert.equal(tok.party, PARTY);
-  const claims = verifyHs256(tok.callerToken, SECRET, { audience: "canton-dex" });
-  assert.ok(claims, "token verifies under the caller secret + audience");
-  assert.equal(claims!.sub, PARTY);
-  assert.equal(typeof claims!.exp, "number");
-  // The attestation is consumed (single-use).
-  assert.equal(ledger.submitted.length, 1);
+  const r = s.verify(PARTY, c.nonce, signedFor(c.message, c.nonce));
+  assert.equal(r.captured, true);
+  assert.equal(r.verified, false);
+  // No caller token is minted in the capture phase.
+  assert.ok(!("callerToken" in r));
 });
 
-test("verify rejects when no matching proof is on-ledger", async () => {
-  const ledger = stubLedger([]); // ACS empty
-  const s = svc(ledger);
+test("verify rejects a signed message whose party does not match", () => {
+  const s = svc();
   const c = s.challenge(PARTY);
-  await assert.rejects(() => s.verify(PARTY, c.nonce), SessionError);
+  assert.throws(
+    () => s.verify(PARTY, c.nonce, signedFor(c.message, c.nonce, { partyId: "mallory::1220ff" })),
+    SessionError,
+  );
 });
 
-test("verify rejects a proof whose party or verifier does not match", async () => {
-  const ledger = stubLedger([]);
-  const s = svc(ledger);
+test("verify rejects a signed message that does not match the issued challenge", () => {
+  const s = svc();
   const c = s.challenge(PARTY);
-  (ledger as { query: unknown }).query = async () => [
-    attestation({ nonce: c.nonce, party: "mallory::1220ff" }),
-  ];
-  await assert.rejects(() => s.verify(PARTY, c.nonce), SessionError);
+  assert.throws(
+    () => s.verify(PARTY, c.nonce, signedFor("tampered challenge", c.nonce)),
+    SessionError,
+  );
 });
 
-test("verify rejects an expired on-ledger proof", async () => {
-  const ledger = stubLedger([]);
-  const s = svc(ledger);
+test("verify rejects a nonce that does not echo the challenge nonce", () => {
+  const s = svc();
   const c = s.challenge(PARTY);
-  (ledger as { query: unknown }).query = async () => [
-    attestation({ nonce: c.nonce, expiresAt: new Date(Date.now() - 1000).toISOString() }),
-  ];
-  await assert.rejects(() => s.verify(PARTY, c.nonce), SessionError);
+  assert.throws(
+    () => s.verify(PARTY, c.nonce, signedFor(c.message, "some-other-nonce")),
+    SessionError,
+  );
 });
 
-test("an unknown nonce is rejected (challenge required first)", async () => {
-  const ledger = stubLedger([attestation({ nonce: "never-issued" })]);
-  const s = svc(ledger);
-  await assert.rejects(() => s.verify(PARTY, "never-issued"), SessionError);
+test("an unknown nonce is rejected (challenge required first)", () => {
+  const s = svc();
+  assert.throws(
+    () => s.verify(PARTY, "never-issued", signedFor("x", "never-issued")),
+    SessionError,
+  );
 });
 
-test("a nonce is single-use: the second verify is rejected", async () => {
-  const ledger = stubLedger([]);
-  const s = svc(ledger);
+test("a nonce is single-use: the second verify is rejected", () => {
+  const s = svc();
   const c = s.challenge(PARTY);
-  (ledger as { query: unknown }).query = async () => [attestation({ nonce: c.nonce })];
-  await s.verify(PARTY, c.nonce);
-  await assert.rejects(() => s.verify(PARTY, c.nonce), SessionError);
+  s.verify(PARTY, c.nonce, signedFor(c.message, c.nonce));
+  assert.throws(() => s.verify(PARTY, c.nonce, signedFor(c.message, c.nonce)), SessionError);
 });
 
-test("a challenge is rejected after its TTL lapses", async () => {
+test("a challenge is rejected after its TTL lapses", () => {
   let t = 1_000_000;
-  const ledger = stubLedger([]);
-  const s = svc(ledger, () => t);
+  const s = svc(() => t);
   const c = s.challenge(PARTY);
-  (ledger as { query: unknown }).query = async () => [attestation({ nonce: c.nonce })];
   t += 3 * 60 * 1000; // past the 2-minute challenge TTL
-  await assert.rejects(() => s.verify(PARTY, c.nonce), SessionError);
+  assert.throws(() => s.verify(PARTY, c.nonce, signedFor(c.message, c.nonce)), SessionError);
+});
+
+test("verify mints a caller token when the Ed25519 signature and party binding hold", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const party = partyForKey("alice", publicKey);
+  const s = svc();
+  const c = s.challenge(party);
+  const signature = edSign(null, Buffer.from(c.message, "utf8"), privateKey).toString("hex");
+  const sm: SignedMessage = {
+    signature,
+    partyId: party,
+    message: c.message,
+    nonce: c.nonce,
+    domain: DOMAIN,
+  };
+  const r = s.verify(party, c.nonce, sm, { publicKey: rawPublicKey(publicKey).toString("hex") });
+  assert.equal(r.verified, true);
+  assert.equal(r.captured, true);
+  assert.equal(r.party, party);
+  assert.ok(typeof r.callerToken === "string" && r.callerToken.length > 0);
+  assert.ok((r.expiresAt ?? 0) > Date.now());
+  const claims = verifyHs256(r.callerToken as string, SECRET, { audience: AUDIENCE });
+  assert.ok(claims, "minted token verifies against the caller secret");
+  assert.equal(claims?.sub, party);
+});
+
+test("verify accepts a base64-encoded public key", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const party = partyForKey("bob", publicKey);
+  const s = svc();
+  const c = s.challenge(party);
+  const signature = edSign(null, Buffer.from(c.message, "utf8"), privateKey).toString("hex");
+  const sm: SignedMessage = { signature, partyId: party, message: c.message, nonce: c.nonce };
+  const r = s.verify(party, c.nonce, sm, {
+    publicKey: rawPublicKey(publicKey).toString("base64"),
+  });
+  assert.equal(r.verified, true);
+  assert.ok(typeof r.callerToken === "string" && r.callerToken.length > 0);
+});
+
+test("verify mints nothing when the supplied public key is the wrong key", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const wrong = generateKeyPairSync("ed25519").publicKey;
+  const party = partyForKey("alice", publicKey);
+  const s = svc();
+  const c = s.challenge(party);
+  const signature = edSign(null, Buffer.from(c.message, "utf8"), privateKey).toString("hex");
+  const sm: SignedMessage = { signature, partyId: party, message: c.message, nonce: c.nonce };
+  // Signature was made by `privateKey`, but a different key is presented: both
+  // the Ed25519 check and the fingerprint binding fail.
+  const r = s.verify(party, c.nonce, sm, { publicKey: rawPublicKey(wrong).toString("hex") });
+  assert.equal(r.verified, false);
+  assert.equal(r.captured, true);
+  assert.ok(!("callerToken" in r) || r.callerToken === undefined);
+});
+
+test("verify mints nothing when the key is right but the party binding does not hold", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  // A party whose fingerprint does NOT derive from this key.
+  const party = "alice::1220" + "ab".repeat(32);
+  const s = svc();
+  const c = s.challenge(party);
+  const signature = edSign(null, Buffer.from(c.message, "utf8"), privateKey).toString("hex");
+  const sm: SignedMessage = { signature, partyId: party, message: c.message, nonce: c.nonce };
+  const r = s.verify(party, c.nonce, sm, { publicKey: rawPublicKey(publicKey).toString("hex") });
+  assert.equal(r.verified, false);
+  assert.ok(r.callerToken === undefined);
 });

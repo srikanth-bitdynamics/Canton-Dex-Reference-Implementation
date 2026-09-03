@@ -94,6 +94,29 @@ export interface PartyLayerClient {
   submitTransaction(params: {
     signedTx: PartyLayerCommandSubmission;
   }): Promise<PartyLayerTxReceipt>;
+  /** Optional so older/fake clients (tests) need not implement it. */
+  signMessage?(params: {
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }): Promise<{
+    signature: string;
+    partyId: string;
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }>;
+  /**
+   * The connected party's primary account (CIP-0103 getPrimaryAccount), carrying
+   * the public key the backend needs to verify a signMessage off-ledger.
+   * Optional so older/fake clients (tests) need not implement it.
+   */
+  getPrimaryAccount?(): Promise<{
+    partyId: string;
+    publicKey: string;
+    namespace?: string;
+    hint?: string;
+  }>;
   ledgerApi(params: PartyLayerLedgerApiParams): Promise<PartyLayerLedgerApiResult>;
   /**
    * Enumerate the configured wallet catalog with per-adapter install
@@ -235,6 +258,37 @@ export class PartyLayerProvider implements WalletProvider {
       primaryCid: updateId,
       auxiliaryCids: { updateId },
     };
+  }
+
+  async signMessage(params: {
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }): Promise<{
+    signature: string;
+    partyId: string;
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }> {
+    this.client ??= await this.clientFactory();
+    if (!this.client.signMessage) {
+      throw new Error("partylayer-provider: connected wallet does not support signMessage");
+    }
+    return this.client.signMessage(params);
+  }
+
+  async getPrimaryAccount(): Promise<{
+    partyId: string;
+    publicKey: string;
+    namespace?: string;
+    hint?: string;
+  }> {
+    this.client ??= await this.clientFactory();
+    if (!this.client.getPrimaryAccount) {
+      throw new Error("partylayer-provider: connected wallet does not expose getPrimaryAccount");
+    }
+    return this.client.getPrimaryAccount();
   }
 
   async listHoldings(owner: Party): Promise<Holding[]> {

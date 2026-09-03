@@ -300,5 +300,9 @@ export async function discoverHoldingsAcrossRegistries(
   }
 
   if (successfulReads === 0 && lastError) throw lastError;
-  return dedupeHoldings(holdings);
+  const resolved = dedupeHoldings(holdings);
+  // Temporary probe: real funding cids read as 00...; a synthetic id here means
+  // the wallet still fabricated holdings.
+  console.info("[holdings] funding cids", resolved.map((h) => h.contractId));
+  return resolved;
 }

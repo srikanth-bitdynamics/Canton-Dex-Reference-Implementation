@@ -288,23 +288,27 @@ function composeAllocationCommands(
   if (factoryCids.length !== allocations.length || allocExtraArgs.length !== allocations.length) {
     throw new Error("allocation authoring: each allocation requires its own factory and choice context");
   }
-  const commands: DamlCommand[] = allocations.map((spec, i) => ({
-    ExerciseCommand: {
-      templateId: ALLOCATION_FACTORY_TID,
-      contractId: factoryCids[i],
-      choice: "AllocationFactory_Allocate",
-      choiceArgument: {
-        settlement: intent.settlement,
-        allocation: spec,
-        requestedAt,
-        // Real per-leg holdings: a funded leg locks its cids; a receipt leg
-        // passes [] and locks nothing.
-        inputHoldingCids: holdingsBySpec[i] ?? [],
-        extraArgs: allocExtraArgs[i],
-        actors: [ctx.party],
+  const commands: DamlCommand[] = allocations.map((spec, i) => {
+    // Real per-leg holdings: a funded leg locks its cids; a receipt leg passes
+    // [] and locks nothing. Every funded cid must be an on-ledger Holding id.
+    const fundingCids = holdingsBySpec[i] ?? [];
+    fundingCids.forEach(assertRealContractId);
+    return {
+      ExerciseCommand: {
+        templateId: ALLOCATION_FACTORY_TID,
+        contractId: factoryCids[i],
+        choice: "AllocationFactory_Allocate",
+        choiceArgument: {
+          settlement: intent.settlement,
+          allocation: spec,
+          requestedAt,
+          inputHoldingCids: fundingCids,
+          extraArgs: allocExtraArgs[i],
+          actors: [ctx.party],
+        },
       },
-    },
-  }));
+    };
+  });
   return {
     commandId: `${commandLabel}-${shortCid(intent.requestCid)}-${ctx.now().getTime()}`,
     actAs: [ctx.party],
@@ -430,6 +434,19 @@ export function extractLiquidityAcceptanceCid(tx: {
 
 function shortCid(cid: ContractId<unknown> | string): string {
   return String(cid).slice(0, 12);
+}
+
+// Funding requires real on-ledger Holding contract ids. Aggregate-balance shims
+// (loop-holding:*, #mock-*) describe a balance, not a lockable contract, and the
+// ledger rejects them — reject such an id before it reaches the wallet.
+function assertRealContractId(cid: string): void {
+  if (
+    cid.startsWith("loop-holding:") ||
+    cid.startsWith("loop-holding-locked:") ||
+    cid.startsWith("#mock-")
+  ) {
+    throw new Error(`Cannot fund allocation with synthetic holding id: ${cid}`);
+  }
 }
 
 function assertFactoryReady(factoryCid: string | undefined, kind: string): void {

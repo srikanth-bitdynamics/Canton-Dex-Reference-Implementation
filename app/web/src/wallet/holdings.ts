@@ -9,7 +9,8 @@
 // case a participant surfaces it without the interface view. Results are keyed
 // by contract id and deduped across both reads.
 
-import type { Holding } from "@/types/contracts";
+import type { Holding, InstrumentId } from "@/types/contracts";
+import { concreteHoldingTemplate } from "./asset-compat";
 import type { Party } from "./types";
 
 export const HOLDING_V2_INTERFACE_ID =
@@ -305,4 +306,111 @@ export async function discoverHoldingsAcrossRegistries(
   // the wallet still fabricated holdings.
   console.info("[holdings] funding cids", resolved.map((h) => h.contractId));
   return resolved;
+}
+
+/** A single-template cumulative filter for a concrete Holding template. */
+function templateFilterCumulative(templateId: string): unknown {
+  return {
+    identifierFilter: {
+      TemplateFilter: {
+        value: {
+          templateId,
+          includeCreatedEventBlob: false,
+        },
+      },
+    },
+  };
+}
+
+/**
+ * Best-effort amount string from a concrete-template payload. The exact shape
+ * a wallet returns for a compat template is confirmed by the live probe log;
+ * a flat `amount` and Splice Amulet's `amount.initialAmount` are both handled.
+ */
+function concreteAmountString(payload: Record<string, unknown>): string | undefined {
+  const direct = payload.amount;
+  if (typeof direct === "string" || typeof direct === "number") return String(direct);
+  const amountRecord = asRecord(direct);
+  const initial = amountRecord?.initialAmount ?? amountRecord?.initial_amount;
+  if (typeof initial === "string" || typeof initial === "number") return String(initial);
+  return undefined;
+}
+
+function concreteLocked(payload: Record<string, unknown>): boolean {
+  if (typeof payload.locked === "boolean") return payload.locked;
+  return payload.lock !== undefined && payload.lock !== null;
+}
+
+/**
+ * Parse a concrete-template ACS response into spendable holdings, stamping the
+ * KNOWN target instrument identity (the query was by that instrument's compat
+ * template, so every contract belongs to it). Only the real contract id and a
+ * best-effort amount are read from each event.
+ */
+function parseConcreteTemplateHoldings(
+  response: unknown,
+  owner: Party,
+  instrument: { admin: string; id: string },
+): Holding[] {
+  const parsed = normalizeAcsResponse(response);
+  return extractContractEvents(parsed)
+    .map(unwrapCreatedEvent)
+    .filter((event): event is Record<string, unknown> => !!event)
+    .map((event): Holding | null => {
+      const contractId = contractIdOf(event);
+      if (!contractId) return null;
+      const payload = contractPayload(event) ?? event;
+      const amountRaw = concreteAmountString(payload);
+      return {
+        contractId,
+        owner,
+        admin: instrument.admin,
+        instrumentId: instrument.id,
+        amount: parseAmount(amountRaw),
+        ...(amountRaw != null ? { amountRaw } : {}),
+        locked: concreteLocked(payload),
+      };
+    })
+    .filter((holding): holding is Holding => !!holding);
+}
+
+/**
+ * Spendable holdings for FUNDING a specific owner + target instrument. Runs the
+ * standard interface + Registry.V2 discovery first (real cids for every
+ * compliant wallet). If that finds nothing for the instrument AND a
+ * wallet-compat concrete template is registered for it, issues one additional
+ * ACS query filtered by that concrete template and returns its real contract
+ * ids as spendable holdings — the fallback that lets a wallet whose HoldingV2
+ * interface query is empty (e.g. Loop for Amulet) still fund. Wallet-agnostic:
+ * the fallback fires only on an empty interface result plus a compat entry, so
+ * an instrument with no compat entry (e.g. USDCx) stays empty.
+ */
+export async function resolveSpendableHoldings(
+  owner: Party,
+  instrument: InstrumentId,
+  packagePrefix: string,
+  request: (req: AcsRequest) => Promise<unknown>,
+): Promise<Holding[]> {
+  const discovered = await discoverHoldingsAcrossRegistries(owner, packagePrefix, request);
+  const matching = discovered.filter(
+    (h) => h.instrumentId === instrument.id && h.admin === instrument.admin,
+  );
+  if (matching.length > 0) return matching;
+
+  const templateId = concreteHoldingTemplate(instrument);
+  if (!templateId) return matching; // no compat entry (e.g. USDCx) → stays empty
+
+  const endResponse = await request({ method: "GET", resource: "/v2/state/ledger-end" });
+  const activeAtOffset = parseLedgerEndOffset(endResponse);
+  const raw = await request({
+    method: "POST",
+    resource: "/v2/state/active-contracts",
+    body: activeContractsBody(owner, activeAtOffset, templateFilterCumulative(templateId)),
+  });
+  // Temporary probes: the live re-test uses these to confirm whether the wallet
+  // returns real Canton contract ids for the compat template.
+  console.info("[funding] concrete-template acs", { templateId, raw });
+  const spendable = parseConcreteTemplateHoldings(raw, owner, instrument);
+  console.info("[funding] spendable cids", spendable.map((h) => h.contractId));
+  return spendable;
 }

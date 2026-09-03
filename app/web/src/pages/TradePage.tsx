@@ -27,9 +27,11 @@ export function TradePage() {
     queryFn: ledger.getPools,
   });
 
-  const { data: holdings } = useQuery({
-    queryKey: ['holdings', party],
-    queryFn: () => ledger.getHoldings(party!),
+  // Display-only aggregate balances for the swap input hint; the swap's funding
+  // resolves spendable cids separately through the resolver.
+  const { data: displayBalances } = useQuery({
+    queryKey: ['balances', party],
+    queryFn: () => ledger.getBalances(party!),
     enabled: !!party,
   });
 
@@ -73,14 +75,11 @@ export function TradePage() {
   // symbol do not sum into one balance. SwapCard looks up the same key.
   const balances: Record<string, number> = useMemo(() => {
     const out: Record<string, number> = {};
-    holdings?.forEach((h) => {
-      if (!h.locked) {
-        const key = instrumentKey({ admin: h.admin, id: h.instrumentId });
-        out[key] = (out[key] ?? 0) + parseFloat(h.amount as unknown as string);
-      }
+    displayBalances?.forEach((b) => {
+      out[instrumentKey(b.instrumentId)] = b.available;
     });
     return out;
-  }, [holdings]);
+  }, [displayBalances]);
 
   // Hooks must run on every render (Rules of Hooks): call the price hooks
   // BEFORE any early return. activePool may be undefined while pools load;

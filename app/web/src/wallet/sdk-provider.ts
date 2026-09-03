@@ -20,8 +20,12 @@ import {
 import { composeCommands } from "./commands";
 import { capabilityFor } from "./capabilities";
 import { submitComposedCommands, type PreparedSubmission } from "./sequential-submit";
-import { discoverHoldingsAcrossRegistries } from "./holdings";
-import type { Holding } from "@/types/contracts";
+import {
+  discoverHoldingsAcrossRegistries,
+  resolveSpendableHoldings,
+  type AcsRequest,
+} from "./holdings";
+import type { Holding, InstrumentId } from "@/types/contracts";
 import type {
   DetectedWallet,
   Party,
@@ -476,21 +480,43 @@ export class SdkProvider implements WalletProvider {
   // through the wallet's CIP-0103 ledgerApi read, so an Amulet / USDCx holding
   // issued by a foreign registry is found alongside the DEX's own.
   async listHoldings(owner: Party): Promise<Holding[]> {
+    this.assertConnectedFor(owner);
+    return discoverHoldingsAcrossRegistries(owner, this.packagePrefix, this.ledgerRequest());
+  }
+
+  // Spendable holdings for funding one instrument: interface discovery first,
+  // then a wallet-compat concrete-template fallback when that is empty.
+  async resolveSpendableHoldings(
+    owner: Party,
+    instrument: InstrumentId,
+  ): Promise<Holding[]> {
+    this.assertConnectedFor(owner);
+    return resolveSpendableHoldings(
+      owner,
+      instrument,
+      this.packagePrefix,
+      this.ledgerRequest(),
+    );
+  }
+
+  private assertConnectedFor(owner: Party): void {
     if (this.status.kind !== "connected") {
       throw new Error("sdk-provider: wallet not connected");
     }
     if (this.status.account.party !== owner) {
       throw new Error("sdk-provider: can only read holdings for the connected party");
     }
-    // The dapp-sdk ledgerApi takes the request body as an object (not a JSON
-    // string) and returns the parsed ledger response.
-    return discoverHoldingsAcrossRegistries(owner, this.packagePrefix, (req) =>
+  }
+
+  // The dapp-sdk ledgerApi takes the request body as an object (not a JSON
+  // string) and returns the parsed ledger response.
+  private ledgerRequest(): (req: AcsRequest) => Promise<unknown> {
+    return (req) =>
       this.sdk.ledgerApi({
         requestMethod: req.method.toLowerCase() as "get" | "post",
         resource: req.resource,
         ...(req.body !== undefined ? { body: req.body as Record<string, unknown> } : {}),
-      }),
-    );
+      });
   }
 
   private async primaryAccount(): Promise<WalletAccount> {

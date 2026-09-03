@@ -16,7 +16,7 @@ import { fmt, fmtUsd, fmtUsdK } from '@/primitives/format';
 import { useToast } from '@/primitives/ToastProvider';
 import { useAssetPricesUsd } from '@/hooks/usePrices';
 import { usePriceHistory, useStats24h } from '@/hooks/useStats';
-import { ledger } from '@/services/ledger';
+import { ledger, resolveCoveringFundingCids } from '@/services/ledger';
 import type { Holding, Pool } from '@/types/contracts';
 import { useCurrentParty } from '@/wallet/hooks';
 
@@ -56,25 +56,6 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
   };
   const balanceOf = (s: string) =>
     holdings.find((h) => h.instrumentId === s && !h.locked)?.amount ?? 0;
-  // The minimal head-first prefix of unlocked holdings whose cumulative
-  // amount covers `target`. The wallet locks these in the DvP allocation.
-  // Over-locking is harmless for correctness — the deposit/burn leg amount is
-  // the action input (authored separately), and Allocation_Settle returns any
-  // surplus of the locked backing to the owner as unlocked change — but the
-  // minimal prefix keeps the surplus (and the number of holdings churned)
-  // small. Best-effort: returns the covering prefix (or all unlocked if it
-  // can't cover, so the on-ledger allocate fails loudly rather than silently
-  // under-funding).
-  const coveringHoldingCids = (s: string, target: number): string[] => {
-    const out: string[] = [];
-    let acc = 0;
-    for (const h of holdings.filter((h) => h.instrumentId === s && !h.locked)) {
-      if (acc >= target) break;
-      out.push(h.contractId);
-      acc += h.amount;
-    }
-    return out;
-  };
   // An Unfunded pool has no reserves and therefore no ratio to match: the first
   // deposit sets the opening price, so both amounts stay independent inputs.
   const isFirstDeposit =
@@ -182,13 +163,31 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
       refreshOnComplete,
     );
     try {
+      if (!party) throw new Error('connect a wallet to add liquidity');
+      // Resolve real, lockable deposit cids through the spendable resolver
+      // (interface discovery, then a wallet-compat concrete-template fallback),
+      // matched on the pool leg's full {admin, id} identity.
+      const [baseHoldingCids, quoteHoldingCids] = await Promise.all([
+        resolveCoveringFundingCids({
+          party,
+          admin: pool.baseInstrumentId.admin,
+          instrumentId: baseId,
+          amount: parseFloat(baseAmt),
+        }),
+        resolveCoveringFundingCids({
+          party,
+          admin: pool.quoteInstrumentId.admin,
+          instrumentId: quoteId,
+          amount: parseFloat(quoteAmt),
+        }),
+      ]);
       await ledger.addLiquidity({
         poolId: pool.contractId,
         baseAmount: parseFloat(baseAmt),
         quoteAmount: parseFloat(quoteAmt),
         minLpTokens: minLpTokensWithSlippage,
-        baseHoldingCids: coveringHoldingCids(baseId, parseFloat(baseAmt)),
-        quoteHoldingCids: coveringHoldingCids(quoteId, parseFloat(quoteAmt)),
+        baseHoldingCids,
+        quoteHoldingCids,
       });
       // Settle returned — only now mark the lifecycle complete (the card sat on
       // its first step through the wallet approval rather than racing to done).

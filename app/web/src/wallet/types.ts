@@ -11,7 +11,7 @@
 // The dApp imports `handToWallet` from `./handoff` which dispatches to
 // the active provider selected in the wallet store.
 
-import type { Holding, InstrumentId } from "@/types/contracts";
+import type { DisplayBalance, Holding, InstrumentId } from "@/types/contracts";
 
 export type Party = string;
 export type ContractId<_T> = string;
@@ -398,6 +398,27 @@ export interface WalletProvider {
    * callers fall back to the operator backend when this is absent or fails.
    */
   listHoldings?(owner: Party): Promise<Holding[]>;
+
+  /**
+   * Optional spendable-holding resolver for FUNDING one target instrument.
+   * Returns real, lockable Holding contract ids for the instrument: the
+   * standard HoldingV2-interface discovery, or — when that is empty and a
+   * wallet-compat concrete template exists — a concrete-template ACS fallback.
+   * Wallet-agnostic; distinct from `listHoldings` (whole portfolio) and from
+   * `getBalances` (aggregate display).
+   */
+  resolveSpendableHoldings?(
+    owner: Party,
+    instrument: InstrumentId,
+  ): Promise<Holding[]>;
+
+  /**
+   * Optional aggregate balance source for DISPLAY. Returns the wallet's native
+   * per-instrument available/locked totals (e.g. Loop's getHolding()), which
+   * carry amounts but no spendable contract id. Absent when the wallet exposes
+   * no native aggregate; callers then derive display balances from holdings.
+   */
+  getBalances?(owner: Party): Promise<DisplayBalance[]>;
 
   /**
    * Optional off-ledger message signing (CIP-0103 signMessage). Used to prove

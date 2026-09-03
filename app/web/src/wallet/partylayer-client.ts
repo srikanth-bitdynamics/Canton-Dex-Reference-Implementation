@@ -13,11 +13,30 @@ import {
   type WalletId,
 } from "@partylayer/sdk";
 
+import type { DisplayBalance } from "@/types/contracts";
 import type {
   PartyLayerClient,
   PartyLayerCommandSubmission,
   PartyLayerLedgerApiParams,
 } from "./partylayer-provider";
+
+// The subset of Loop's SDK aggregate Holding we read for display. Loop's
+// getHolding() reports per-instrument available/locked totals with no contract
+// id; it is display-only and never a funding source.
+interface LoopAggregateHolding {
+  instrument_id: { admin: string; id: string };
+  total_unlocked_coin: string;
+  total_locked_coin: string;
+}
+
+interface LoopBalanceProvider {
+  getHolding?(): Promise<LoopAggregateHolding[]>;
+}
+
+function toDisplayNumber(value: string): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 export interface DexPartyLayerClientOptions {
   appName: string;
@@ -64,13 +83,15 @@ function clearIncompleteLoopSession(): void {
   }
 }
 
-function buildAdapters(): WalletAdapter[] {
-  return [
-    new ConsoleAdapter(),
-    new NightlyAdapter(),
-    new SendAdapter(),
-    new LoopAdapter(),
-  ];
+// Build the adapter set, keeping a reference to the Loop adapter so aggregate
+// display balances can be read from its active provider (Loop's getHolding()),
+// which the CIP-0103 ledgerApi surface does not expose.
+function buildAdapters(): { adapters: WalletAdapter[]; loop: LoopAdapter } {
+  const loop = new LoopAdapter();
+  return {
+    adapters: [new ConsoleAdapter(), new NightlyAdapter(), new SendAdapter(), loop],
+    loop,
+  };
 }
 
 function isMissingWalletError(err: unknown): boolean {
@@ -110,14 +131,24 @@ export function createDexPartyLayerClient(
   options: DexPartyLayerClientOptions,
 ): PartyLayerClient {
   const walletIds = options.walletIds?.length ? options.walletIds : DEFAULT_WALLET_IDS;
+  const { adapters, loop } = buildAdapters();
   const client = createPartyLayer({
     app: { name: options.appName },
     network: normalizeNetwork(options.network),
     registryUrl: options.registryUrl,
     channel: options.channel,
-    adapters: buildAdapters(),
+    adapters,
     telemetry: { enabled: false },
   });
+
+  // The wallet the current session connected through — decides whether the
+  // native aggregate-balance read (Loop's getHolding()) is available.
+  let connectedWalletId: string | undefined;
+  const finishConnect = (session: Parameters<typeof mapSession>[0]) => {
+    const mapped = mapSession(session);
+    connectedWalletId = mapped.walletId;
+    return mapped;
+  };
 
   return {
     async connect(connectOptions) {
@@ -129,7 +160,7 @@ export function createDexPartyLayerClient(
           ...connectOptions,
           walletId: connectOptions.walletId as WalletId,
         });
-        return mapSession(session);
+        return finishConnect(session);
       }
       const missingWalletAttempts: Array<{ walletId: string; error: unknown }> = [];
       for (const walletId of walletIds) {
@@ -138,7 +169,7 @@ export function createDexPartyLayerClient(
             ...connectOptions,
             walletId: walletId as WalletId,
           });
-          return mapSession(session);
+          return finishConnect(session);
         } catch (err) {
           if (!isMissingWalletError(err)) throw err;
           missingWalletAttempts.push({ walletId, error: err });
@@ -178,6 +209,7 @@ export function createDexPartyLayerClient(
       return out.filter((w): w is NonNullable<typeof w> => w !== null);
     },
     async disconnect() {
+      connectedWalletId = undefined;
       await client.disconnect();
     },
     async submitTransaction(params: { signedTx: PartyLayerCommandSubmission }) {
@@ -201,6 +233,23 @@ export function createDexPartyLayerClient(
     },
     async ledgerApi(params: PartyLayerLedgerApiParams) {
       return client.ledgerApi(params);
+    },
+    async getBalances(): Promise<DisplayBalance[]> {
+      // Aggregate display balances are Loop-specific: Loop's SDK provider
+      // exposes getHolding() (available/locked per instrument) but the adapter
+      // does not proxy it through ledgerApi. Reach the connected Loop provider
+      // for a read-only snapshot; non-Loop wallets return [] and the caller
+      // derives display balances from discovered holdings.
+      if (connectedWalletId !== "loop") return [];
+      const provider = (loop as unknown as { currentProvider?: LoopBalanceProvider })
+        .currentProvider;
+      if (!provider?.getHolding) return [];
+      const holdings = await provider.getHolding();
+      return holdings.map((h) => ({
+        instrumentId: { admin: h.instrument_id.admin, id: h.instrument_id.id },
+        available: toDisplayNumber(h.total_unlocked_coin),
+        locked: toDisplayNumber(h.total_locked_coin),
+      }));
     },
   };
 }

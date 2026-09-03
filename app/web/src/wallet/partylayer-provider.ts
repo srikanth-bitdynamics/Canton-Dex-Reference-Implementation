@@ -23,8 +23,10 @@ import { submitComposedCommands, type PreparedSubmission } from "./sequential-su
 import {
   discoverHoldingsAcrossRegistries,
   parseHoldingsAcsResponse,
+  resolveSpendableHoldings,
+  type AcsRequest,
 } from "./holdings";
-import type { Holding } from "@/types/contracts";
+import type { DisplayBalance, Holding, InstrumentId } from "@/types/contracts";
 import type {
   DetectedWallet,
   Party,
@@ -129,6 +131,13 @@ export interface PartyLayerClient {
    * need not implement it.
    */
   listWallets?(): Promise<PartyLayerWalletInfo[]>;
+  /**
+   * Optional wallet-native aggregate balances for DISPLAY. Backed by the
+   * connected wallet's own balance surface (Loop's getHolding()); returns
+   * amounts, never spendable contract ids. Absent when the wallet exposes no
+   * native aggregate.
+   */
+  getBalances?(): Promise<DisplayBalance[]>;
 }
 
 /** Retained export: PartyLayer's `ledgerApi` returns a JSON string envelope. */
@@ -308,20 +317,54 @@ export class PartyLayerProvider implements WalletProvider {
   }
 
   async listHoldings(owner: Party): Promise<Holding[]> {
+    const client = this.connectedClientFor(owner);
+    return discoverHoldingsAcrossRegistries(
+      owner,
+      this.packagePrefix,
+      this.ledgerRequest(client),
+    );
+  }
+
+  async resolveSpendableHoldings(
+    owner: Party,
+    instrument: InstrumentId,
+  ): Promise<Holding[]> {
+    const client = this.connectedClientFor(owner);
+    return resolveSpendableHoldings(
+      owner,
+      instrument,
+      this.packagePrefix,
+      this.ledgerRequest(client),
+    );
+  }
+
+  async getBalances(owner: Party): Promise<DisplayBalance[]> {
+    const client = this.connectedClientFor(owner);
+    if (!client.getBalances) return [];
+    return client.getBalances();
+  }
+
+  /** Guarded access to the connected client for a read on `owner`. */
+  private connectedClientFor(owner: Party): PartyLayerClient {
     if (this.status.kind !== "connected" || !this.client) {
       throw new Error("partylayer-provider: wallet not connected");
     }
     if (this.status.account.party !== owner) {
       throw new Error("partylayer-provider: can only read holdings for the connected party");
     }
-    const client = this.client;
-    return discoverHoldingsAcrossRegistries(owner, this.packagePrefix, (req) =>
+    return this.client;
+  }
+
+  /** ACS read transport over the wallet's `ledgerApi` (body serialized). */
+  private ledgerRequest(
+    client: PartyLayerClient,
+  ): (req: AcsRequest) => Promise<unknown> {
+    return (req) =>
       client.ledgerApi({
         requestMethod: req.method,
         resource: req.resource,
         ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
-      }),
-    );
+      });
   }
 
   private setStatus(s: WalletConnectionStatus): void {

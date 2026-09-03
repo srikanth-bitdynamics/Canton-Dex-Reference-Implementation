@@ -13,6 +13,33 @@ import type { WalletIntent, RequestSwapIntent } from '@/wallet/types';
 const FIXED_NOW = new Date('2026-05-19T12:00:00.000Z');
 const REQUESTED_AT = FIXED_NOW.toISOString();
 
+// The Token Standard V2 AllocationFactory interface id the external-wallet path
+// exercises directly (no BatchingUtilityV2 wrapper).
+const ALLOCATION_FACTORY_TID =
+  '#splice-api-token-allocation-instruction-v2:Splice.Api.Token.AllocationInstructionV2:AllocationFactory';
+
+interface ExerciseCmd {
+  templateId: string;
+  contractId: string;
+  choice: string;
+  choiceArgument: {
+    settlement: unknown;
+    allocation: unknown;
+    requestedAt: string;
+    inputHoldingCids: string[];
+    extraArgs: unknown;
+    actors: string[];
+  };
+}
+
+// Every command an allocation-authoring flow emits is a direct ExerciseCommand.
+function exercisesOf(out: { commands: unknown[] }): ExerciseCmd[] {
+  return out.commands.map((c) => {
+    expect(c).toHaveProperty('ExerciseCommand');
+    return (c as { ExerciseCommand: ExerciseCmd }).ExerciseCommand;
+  });
+}
+
 const ctx: ComposeContext = {
   party: 'alice::1220a',
   packagePrefix: '#canton-dex-trading-v2',
@@ -62,12 +89,13 @@ describe('composeCommands', () => {
     meta: { values: {} },
   });
 
-  it('fund-order (single admin) = one batched allocate', () => {
+  it('fund-order (single admin) = one direct allocate carrying the funding cids', () => {
+    const spec = orderFundingSpec('ad::1', 'USDCx', '100.0');
     const intent: WalletIntent = {
       kind: 'fund-order',
       requestCid: 'orderReqABCDEF',
       settlement: { executors: ['op::1'], id: 'DexOrder-web-1', cid: null, meta: { values: {} } },
-      allocations: [orderFundingSpec('ad::1', 'USDCx', '100.0')],
+      allocations: [spec],
       requestedAt: REQUESTED_AT,
       factoryCids: ['factory1'],
       allocationFactoryExtraArgs: [allocationFactoryExtraArgs],
@@ -79,30 +107,19 @@ describe('composeCommands', () => {
     const out = composeCommands(intent, ctx);
     expect(out.actAs).toEqual(['alice::1220a']);
     expect(out.commandId).toMatch(/^order-fund-batch-/);
+    // One allocation, so one direct AllocationFactory_Allocate exercise.
     expect(out.commands).toHaveLength(1);
-    const cmd = (out.commands[0] as { CreateAndExerciseCommand: { templateId: string; choice: string; choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand;
-    expect(cmd.templateId).toContain('Splice.Util.Token.Wallet.BatchingUtilityV2:BatchingUtility');
-    expect(cmd.choice).toBe('BatchingUtility_ExecuteBatch');
-    const arg = cmd.choiceArgument as {
-      inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
-      actions: { tag: string; value: { cid: string; arg: Record<string, unknown> } }[];
-    };
-    // Order funding authors only the funding allocation; no accept.
-    expect(arg.actions.map((a) => a.tag)).toEqual([
-      'TSA_AllocationFactory_AllocateV2',
-    ]);
-    expect(arg.actions[0].value.cid).toBe('factory1');
-    expect(arg.actions[0].value.arg.inputHoldingCids).toEqual([]);
-    expect(arg.actions[0].value.arg.extraArgs).toEqual(allocationFactoryExtraArgs);
-    // The funding holdings thread through the map, keyed by the lock instrument
-    // read from nextIterationFunding (there is no sender leg to read it from).
-    expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
-    const [scoped, byInstrument] = arg.inputHoldingMap.byAdminAndAccount[0];
-    expect(scoped).toEqual({
-      admin: 'ad::1',
-      account: { owner: 'alice::1220a', provider: null, id: '' },
-    });
-    expect(byInstrument).toEqual({ USDCx: ['holding1', 'holding2'] });
+    const [cmd] = exercisesOf(out);
+    expect(cmd.templateId).toBe(ALLOCATION_FACTORY_TID);
+    expect(cmd.contractId).toBe('factory1');
+    expect(cmd.choice).toBe('AllocationFactory_Allocate');
+    // The funding leg carries its real per-leg holdings directly (no holding map).
+    expect(cmd.choiceArgument.inputHoldingCids).toEqual(['holding1', 'holding2']);
+    expect(cmd.choiceArgument.extraArgs).toEqual(allocationFactoryExtraArgs);
+    expect(cmd.choiceArgument.actors).toEqual(['alice::1220a']);
+    expect(cmd.choiceArgument.settlement).toEqual(intent.settlement);
+    expect(cmd.choiceArgument.allocation).toEqual(spec);
+    expect(cmd.choiceArgument.requestedAt).toBe(REQUESTED_AT);
     expect(out.disclosedContracts).toEqual(disclosure);
   });
 
@@ -125,25 +142,15 @@ describe('composeCommands', () => {
       hint: { instrumentId: 'USDCx', amount: '100.0' },
     };
     const out = composeCommands(intent, ctx);
-    expect(out.commands).toHaveLength(1);
-    const arg = (out.commands[0] as { CreateAndExerciseCommand: { choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand.choiceArgument as {
-      inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
-      actions: { tag: string; value: { cid: string } }[];
-    };
-    // Author both allocations; no accept.
-    expect(arg.actions.map((a) => a.tag)).toEqual([
-      'TSA_AllocationFactory_AllocateV2',
-      'TSA_AllocationFactory_AllocateV2',
-    ]);
-    expect(arg.actions.map((a) => a.value.cid)).toEqual(['quoteFactory', 'baseFactory']);
+    // Two allocations (funding + receipt), so two direct exercises.
+    expect(out.commands).toHaveLength(2);
+    const cmds = exercisesOf(out);
+    expect(cmds.every((c) => c.choice === 'AllocationFactory_Allocate')).toBe(true);
+    expect(cmds.every((c) => c.templateId === ALLOCATION_FACTORY_TID)).toBe(true);
+    expect(cmds.map((c) => c.contractId)).toEqual(['quoteFactory', 'baseFactory']);
     // Only the lock-admin funding spec draws holdings; the receipt locks nothing.
-    expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
-    const [scoped, byInstrument] = arg.inputHoldingMap.byAdminAndAccount[0];
-    expect(scoped).toEqual({
-      admin: 'quote-ad::1',
-      account: { owner: 'alice::1220a', provider: null, id: '' },
-    });
-    expect(byInstrument).toEqual({ USDCx: ['q1'] });
+    expect(cmds[0].choiceArgument.inputHoldingCids).toEqual(['q1']);
+    expect(cmds[1].choiceArgument.inputHoldingCids).toEqual([]);
     // Two created allocation cids expected for the cross-admin order.
     const tx = {
       createdEvents: [
@@ -241,22 +248,14 @@ describe('composeCommands', () => {
     };
     const out = composeCommands(intent, ctx);
     expect(out.commandId).toMatch(/^swap-batch-/);
+    // Single-admin swap collapses to one combined spec = one direct exercise.
     expect(out.commands).toHaveLength(1);
-    const cmd = (out.commands[0] as { CreateAndExerciseCommand: { choice: string; choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand;
-    expect(cmd.choice).toBe('BatchingUtility_ExecuteBatch');
-    const arg = cmd.choiceArgument as {
-      inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
-      actions: { tag: string; value: { cid: string; arg: { requestedAt: string } } }[];
-    };
-    // Swap authors the single combined spec; no accept.
-    expect(arg.actions.map((a) => a.tag)).toEqual([
-      'TSA_AllocationFactory_AllocateV2',
-    ]);
-    expect(arg.actions[0].value.cid).toBe('factory1');
-    expect(arg.actions[0].value.arg.requestedAt).toBe(REQUESTED_AT);
-    // Input holdings routed by the swap-in sender leg's instrument.
-    expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
-    expect(arg.inputHoldingMap.byAdminAndAccount[0][1]).toEqual({ Amulet: ['h1'] });
+    const [cmd] = exercisesOf(out);
+    expect(cmd.choice).toBe('AllocationFactory_Allocate');
+    expect(cmd.contractId).toBe('factory1');
+    expect(cmd.choiceArgument.requestedAt).toBe(REQUESTED_AT);
+    // The swap-in (funding) spec carries its input holding cids directly.
+    expect(cmd.choiceArgument.inputHoldingCids).toEqual(['h1']);
   });
 
   it('request-swap (cross admin) = input allocation + output receipt', () => {
@@ -277,25 +276,15 @@ describe('composeCommands', () => {
       inputHoldingCids: ['h1'],
     };
     const out = composeCommands(intent, ctx);
-    expect(out.commands).toHaveLength(1);
-    const arg = (out.commands[0] as { CreateAndExerciseCommand: { choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand.choiceArgument as {
-      inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
-      actions: { tag: string; value: { cid: string } }[];
-    };
-    expect(arg.actions.map((a) => a.tag)).toEqual([
-      'TSA_AllocationFactory_AllocateV2',
-      'TSA_AllocationFactory_AllocateV2',
-    ]);
+    // Cross-admin swap = two direct exercises, input admin first.
+    expect(out.commands).toHaveLength(2);
+    const cmds = exercisesOf(out);
+    expect(cmds.every((c) => c.choice === 'AllocationFactory_Allocate')).toBe(true);
     // Factories in canonical admin order: input admin first, output admin next.
-    expect(arg.actions.map((a) => a.value.cid)).toEqual(['ccFactory', 'usdcFactory']);
+    expect(cmds.map((c) => c.contractId)).toEqual(['ccFactory', 'usdcFactory']);
     // Only the input (sender) spec draws holdings; the output receipt locks nothing.
-    expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
-    const [scoped, byInstrument] = arg.inputHoldingMap.byAdminAndAccount[0];
-    expect(scoped).toEqual({
-      admin: 'cc-admin',
-      account: { owner: 'alice::1220a', provider: null, id: '' },
-    });
-    expect(byInstrument).toEqual({ Amulet: ['h1'] });
+    expect(cmds[0].choiceArgument.inputHoldingCids).toEqual(['h1']);
+    expect(cmds[1].choiceArgument.inputHoldingCids).toEqual([]);
     // Two created allocation cids, input admin first.
     const tx = {
       createdEvents: [
@@ -368,48 +357,31 @@ describe('composeCommands', () => {
     };
     const out = composeCommands(intent, ctx);
     expect(out.actAs).toEqual(['alice::1220a']);
-    // One CreateAndExercise of the standard BatchingUtilityV2 authors all three
-    // allocations inside one Daml transaction.
-    expect(out.commands).toHaveLength(1);
-    const cmd = (out.commands[0] as { CreateAndExerciseCommand: { templateId: string; createArguments: Record<string, unknown>; choice: string; choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand;
-    expect(cmd.templateId).toContain('Splice.Util.Token.Wallet.BatchingUtilityV2:BatchingUtility');
-    expect(cmd.createArguments).toEqual({ user: 'alice::1220a' });
-    expect(cmd.choice).toBe('BatchingUtility_ExecuteBatch');
-    const arg = cmd.choiceArgument as {
-      inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
-      actions: { tag: string; value: { cid: string; arg: Record<string, unknown> } }[];
-      archiveAfterExecution: boolean;
-    };
-    expect(arg.archiveAfterExecution).toBe(true);
-    // Actions allocate [base, quote, LP] against the right factory, funded via
-    // the holding map (not per-call).
-    expect(arg.actions.map((a) => a.tag)).toEqual([
-      'TSA_AllocationFactory_AllocateV2',
-      'TSA_AllocationFactory_AllocateV2',
-      'TSA_AllocationFactory_AllocateV2',
-    ]);
-    expect(arg.actions[0].value.arg.actors).toEqual(['alice::1220a']);
-    expect(arg.actions.map((a) => a.value.cid)).toEqual(['depF', 'depF', 'lpF']);
-    for (const a of arg.actions) {
-      expect(a.value.arg.inputHoldingCids).toEqual([]);
-      expect(a.value.arg.requestedAt).toBe(REQUESTED_AT);
+    // Three direct AllocationFactory_Allocate exercises in one atomic transaction.
+    expect(out.commands).toHaveLength(3);
+    const cmds = exercisesOf(out);
+    expect(cmds.every((c) => c.templateId === ALLOCATION_FACTORY_TID)).toBe(true);
+    expect(cmds.every((c) => c.choice === 'AllocationFactory_Allocate')).toBe(true);
+    // Exercises allocate [base, quote, LP] against the right factory.
+    expect(cmds.map((c) => c.contractId)).toEqual(['depF', 'depF', 'lpF']);
+    expect(cmds[0].choiceArgument.actors).toEqual(['alice::1220a']);
+    for (const c of cmds) {
+      expect(c.choiceArgument.requestedAt).toBe(REQUESTED_AT);
     }
-    expect(arg.actions.map((a) => a.value.arg.extraArgs)).toEqual([
+    // The two deposits carry their per-leg holdings; the LP receipt locks nothing.
+    expect(cmds.map((c) => c.choiceArgument.inputHoldingCids)).toEqual([
+      ['b1'],
+      ['q1', 'q2'],
+      [],
+    ]);
+    expect(cmds.map((c) => c.choiceArgument.extraArgs)).toEqual([
       allocationFactoryExtraArgs,
       allocationFactoryExtraArgs,
       lpFactoryExtraArgs,
     ]);
-    // Both deposits share one (admin, account) bucket, keyed per instrument.
-    expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
-    const [scoped, byInstrument] = arg.inputHoldingMap.byAdminAndAccount[0];
-    expect(scoped).toEqual({
-      admin: 'reg::1',
-      account: { owner: 'alice::1220a', provider: null, id: '' },
-    });
-    expect(byInstrument).toEqual({ Amulet: ['b1'], USDCx: ['q1', 'q2'] });
   });
 
-  it('remove-liquidity = single batched ExecuteBatch command (base+quote receipts, LP burn-sender)', () => {
+  it('remove-liquidity = three direct exercises (base+quote receipts, LP burn-sender)', () => {
     const baseRcpt = mkSpec('lp-base-out-0', 'Amulet', 'ReceiverSide', false);
     const quoteRcpt = mkSpec('lp-quote-out-0', 'USDCx', 'ReceiverSide', false);
     const burnSpec = mkSpec('lp-burn', 'Amulet-USDCx-LP', 'SenderSide', true);
@@ -430,25 +402,24 @@ describe('composeCommands', () => {
       lpHoldingCids: ['lp1', 'lp2'],
     };
     const out = composeCommands(intent, ctx);
-    // One top-level command, mirroring add.
-    expect(out.commands).toHaveLength(1);
-    const cmd = (out.commands[0] as { CreateAndExerciseCommand: { choice: string; choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand;
-    expect(cmd.choice).toBe('BatchingUtility_ExecuteBatch');
-    const arg = cmd.choiceArgument as {
-      inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
-      actions: { tag: string; value: { cid: string; arg: { requestedAt: string } } }[];
-    };
-    expect(arg.actions.every((a) => a.tag === 'TSA_AllocationFactory_AllocateV2')).toBe(true);
-    expect(arg.actions.map((a) => a.value.cid)).toEqual(['depF', 'depF', 'lpF']);
-    expect(
-      arg.actions.map((a) => a.value.arg.requestedAt),
-    ).toEqual([REQUESTED_AT, REQUESTED_AT, REQUESTED_AT]);
+    // Three direct exercises, mirroring add.
+    expect(out.commands).toHaveLength(3);
+    const cmds = exercisesOf(out);
+    expect(cmds.every((c) => c.choice === 'AllocationFactory_Allocate')).toBe(true);
+    expect(cmds.map((c) => c.contractId)).toEqual(['depF', 'depF', 'lpF']);
+    expect(cmds.map((c) => c.choiceArgument.requestedAt)).toEqual([
+      REQUESTED_AT,
+      REQUESTED_AT,
+      REQUESTED_AT,
+    ]);
     // Only the burn-sender (LP) funds from holdings; the two receipts lock
-    // nothing. ALL fragmented LP holdings are threaded so any position redeems.
-    expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
-    expect(arg.inputHoldingMap.byAdminAndAccount[0][1]).toEqual({
-      'Amulet-USDCx-LP': ['lp1', 'lp2'],
-    });
+    // nothing. ALL fragmented LP holdings ride the burn exercise so any position
+    // redeems.
+    expect(cmds.map((c) => c.choiceArgument.inputHoldingCids)).toEqual([
+      [],
+      [],
+      ['lp1', 'lp2'],
+    ]);
   });
 
   it('extractCreatedAllocationCids ignores the acceptance-evidence create', () => {
@@ -517,25 +488,14 @@ describe('composeCommands', () => {
     };
     const out = composeCommands(intent, ctx);
     expect(out.commandId).toMatch(/^trade-fund-batch-/);
-    expect(out.commands).toHaveLength(1);
-    const arg = (out.commands[0] as { CreateAndExerciseCommand: { choiceArgument: Record<string, unknown> } }).CreateAndExerciseCommand.choiceArgument as {
-      inputHoldingMap: { byAdminAndAccount: [Record<string, unknown>, Record<string, string[]>][] };
-      actions: { tag: string; value: { cid: string } }[];
-    };
-    // Author both specs; no accept.
-    expect(arg.actions.map((a) => a.tag)).toEqual([
-      'TSA_AllocationFactory_AllocateV2',
-      'TSA_AllocationFactory_AllocateV2',
-    ]);
-    expect(arg.actions.map((a) => a.value.cid)).toEqual(['usdcFactory', 'ccFactory']);
-    // Only the USDCx sender spec draws holdings.
-    expect(arg.inputHoldingMap.byAdminAndAccount).toHaveLength(1);
-    const [scoped, byInstrument] = arg.inputHoldingMap.byAdminAndAccount[0];
-    expect(scoped).toEqual({
-      admin: 'usdc-admin',
-      account: { owner: 'alice::1220a', provider: null, id: '' },
-    });
-    expect(byInstrument).toEqual({ USDCx: ['h-usdc'] });
+    // Sender + receiver = two direct exercises.
+    expect(out.commands).toHaveLength(2);
+    const cmds = exercisesOf(out);
+    expect(cmds.every((c) => c.choice === 'AllocationFactory_Allocate')).toBe(true);
+    expect(cmds.map((c) => c.contractId)).toEqual(['usdcFactory', 'ccFactory']);
+    // Only the USDCx sender spec draws holdings; the receiver locks nothing.
+    expect(cmds[0].choiceArgument.inputHoldingCids).toEqual(['h-usdc']);
+    expect(cmds[1].choiceArgument.inputHoldingCids).toEqual([]);
     // Both created allocation cids extracted, in spec order.
     const tx = {
       createdEvents: [
@@ -544,6 +504,118 @@ describe('composeCommands', () => {
       ],
     };
     expect(extractCreatedAllocationCids(intent, tx)).toEqual(['sendAlloc', 'recvAlloc']);
+  });
+
+  // The external-wallet invariant: every allocation-authoring flow emits ONLY
+  // direct Token-Standard AllocationFactory_Allocate exercises against the asset
+  // registry's factory — never a DEX (canton-dex-trading-v2 / CantonDex.*)
+  // template, the batching utility, or an AllocationRequest_Accept.
+  it('external-wallet invariant: only direct AllocationFactory_Allocate, no DEX or utility templates', () => {
+    const singleSwap: WalletIntent = {
+      kind: 'request-swap',
+      poolId: 'pool1234567890',
+      requestCid: 'swapReqSINGLE',
+      settlement: swapSettlement,
+      allocations: [swapSpec('ad::1', [swapInLeg('Amulet', '0.1'), swapOutLeg('USDCx', '1974.31')])],
+      requestedAt: REQUESTED_AT,
+      factoryCids: ['factory1'],
+      allocationFactoryExtraArgs: [allocationFactoryExtraArgs],
+      allocationRequestExtraArgs,
+      disclosure,
+      inputHoldingCids: ['h1'],
+    };
+    const crossSwap: WalletIntent = {
+      kind: 'request-swap',
+      poolId: 'pool1234567890',
+      requestCid: 'swapReqXADMIN',
+      settlement: swapSettlement,
+      allocations: [
+        swapSpec('cc-admin', [swapInLeg('Amulet', '0.1')]),
+        swapSpec('usdc-admin', [swapOutLeg('USDCx', '1974.31')]),
+      ],
+      requestedAt: REQUESTED_AT,
+      factoryCids: ['ccFactory', 'usdcFactory'],
+      allocationFactoryExtraArgs: [allocationFactoryExtraArgs, lpFactoryExtraArgs],
+      allocationRequestExtraArgs,
+      disclosure,
+      inputHoldingCids: ['h1'],
+    };
+    const add: WalletIntent = {
+      kind: 'add-liquidity',
+      requestCid: 'reqABCDEFGH12',
+      settlement,
+      allocations: [
+        mkSpec('lp-base-deposit', 'Amulet', 'SenderSide', true),
+        mkSpec('lp-quote-deposit', 'USDCx', 'SenderSide', true),
+        mkSpec('lp-mint', 'Amulet-USDCx-LP', 'ReceiverSide', false),
+      ],
+      requestedAt: REQUESTED_AT,
+      factoryCids: ['depF', 'depF', 'lpF'],
+      allocationFactoryExtraArgs: [allocationFactoryExtraArgs, allocationFactoryExtraArgs, lpFactoryExtraArgs],
+      allocationRequestExtraArgs,
+      disclosure,
+      baseHoldingCids: ['b1'],
+      quoteHoldingCids: ['q1'],
+    };
+    const remove: WalletIntent = {
+      kind: 'remove-liquidity',
+      requestCid: 'reqREMOVE1234',
+      settlement,
+      allocations: [
+        mkSpec('lp-base-out-0', 'Amulet', 'ReceiverSide', false),
+        mkSpec('lp-quote-out-0', 'USDCx', 'ReceiverSide', false),
+        mkSpec('lp-burn', 'Amulet-USDCx-LP', 'SenderSide', true),
+      ],
+      requestedAt: REQUESTED_AT,
+      factoryCids: ['depF', 'depF', 'lpF'],
+      allocationFactoryExtraArgs: [allocationFactoryExtraArgs, allocationFactoryExtraArgs, lpFactoryExtraArgs],
+      allocationRequestExtraArgs,
+      disclosure,
+      lpHoldingCids: ['lp1'],
+    };
+    const fundOrder: WalletIntent = {
+      kind: 'fund-order',
+      requestCid: 'orderReqXADMIN',
+      settlement: { executors: ['op::1'], id: 'DexOrder-web-2', cid: null, meta: { values: {} } },
+      allocations: [orderFundingSpec('quote-ad::1', 'USDCx', '100.0'), orderReceiptSpec('base-ad::1')],
+      requestedAt: REQUESTED_AT,
+      factoryCids: ['quoteFactory', 'baseFactory'],
+      allocationFactoryExtraArgs: [allocationFactoryExtraArgs, lpFactoryExtraArgs],
+      allocationRequestExtraArgs,
+      disclosure,
+      inputHoldingCids: ['q1'],
+      hint: { instrumentId: 'USDCx', amount: '100.0' },
+    };
+
+    // Expected exercise counts: swap same-admin 1 / cross-admin 2, LP 3, cross-order 2.
+    const cases: Array<{ intent: WalletIntent; count: number }> = [
+      { intent: singleSwap, count: 1 },
+      { intent: crossSwap, count: 2 },
+      { intent: add, count: 3 },
+      { intent: remove, count: 3 },
+      { intent: fundOrder, count: 2 },
+    ];
+
+    for (const { intent, count } of cases) {
+      const out = composeCommands(intent, ctx);
+      expect(out.commands).toHaveLength(count);
+      // exercisesOf asserts each command is a top-level ExerciseCommand.
+      for (const cmd of exercisesOf(out)) {
+        expect(cmd.choice).toBe('AllocationFactory_Allocate');
+        expect(cmd.templateId).toBe(ALLOCATION_FACTORY_TID);
+      }
+      const serialized = JSON.stringify(out.commands);
+      for (const forbidden of [
+        'canton-dex-trading-v2',
+        'splice-util-token-standard-wallet',
+        'CantonDex.',
+        'BatchingUtility',
+        'AllocationRequest_Accept',
+        'CreateAndExerciseCommand',
+      ]) {
+        expect(serialized).not.toContain(forbidden);
+      }
+    }
   });
 
 });

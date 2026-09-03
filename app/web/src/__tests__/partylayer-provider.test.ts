@@ -201,36 +201,38 @@ describe("PartyLayerProvider", () => {
     // updateId-only by design — the operator recovers the created cids from the
     // updateId for all DvP flows (LP add/remove, swap, order funding).
     expect(res.createdAllocationCids).toBeUndefined();
-    // The composed command tree was handed to the wallet to sign: one
-    // BatchingUtilityV2 command that authors the spec.
+    // The composed command tree was handed to the wallet to sign: a single-admin
+    // swap authors its one combined spec as one direct AllocationFactory_Allocate
+    // exercise.
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0].signedTx.actAs).toEqual(["alice::1220a"]);
     expect(fake.calls[0].signedTx.commandId).toMatch(/^swap-batch-/);
     expect(fake.calls[0].signedTx.commands).toHaveLength(1);
     expect(fake.calls[0].signedTx.commands[0]).toHaveProperty(
-      "CreateAndExerciseCommand.choice",
-      "BatchingUtility_ExecuteBatch",
+      "ExerciseCommand.choice",
+      "AllocationFactory_Allocate",
     );
   });
 
-  it("submits a cross-admin (2-allocation) swap batch as one updateId-only command", async () => {
+  it("submits a cross-admin swap as two direct exercises in one updateId-only submission", async () => {
     fake = fakeClient({ updateId: "update-xyz" });
     const p = ctx();
     await p.connect();
     const res = await p.submit(crossAdminSwapIntent);
     expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
-    // No single-allocation assumption: the provider forwards the batch and the
-    // operator recovers BOTH created cids from the updateId.
+    // The provider forwards the whole commands array and the operator recovers
+    // BOTH created cids from the updateId.
     expect(res.createdAllocationCids).toBeUndefined();
     expect(fake.calls).toHaveLength(1);
-    const cmd = (fake.calls[0].signedTx.commands[0] as {
-      CreateAndExerciseCommand: { choice: string; choiceArgument: { actions: { tag: string }[] } };
-    }).CreateAndExerciseCommand;
-    expect(cmd.choice).toBe("BatchingUtility_ExecuteBatch");
-    // One allocate per admin (two here); no accept.
-    expect(cmd.choiceArgument.actions.map((a) => a.tag)).toEqual([
-      "TSA_AllocationFactory_AllocateV2",
-      "TSA_AllocationFactory_AllocateV2",
+    const cmds = fake.calls[0].signedTx.commands as Array<{
+      ExerciseCommand: { choice: string; templateId: string };
+    }>;
+    // One direct AllocationFactory_Allocate per admin (two here); no accept, no
+    // batching utility.
+    expect(cmds).toHaveLength(2);
+    expect(cmds.map((c) => c.ExerciseCommand.choice)).toEqual([
+      "AllocationFactory_Allocate",
+      "AllocationFactory_Allocate",
     ]);
   });
 

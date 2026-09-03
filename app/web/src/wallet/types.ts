@@ -79,14 +79,14 @@ export interface DisclosedContract {
 // intent into a Daml command tree and submits via its signing path.
 
 /**
- * Lock the funds a pending order requires. The wallet accepts the
- * OrderAllocationRequest and authors its specifications via BatchingUtilityV2:
- * the funding allocation under the lock admin, plus a zero-funding receipt under
- * the counter admin for a cross-admin pair (one spec for a single-admin pair).
- * Order_Fund binds each by matching its allocation view to the request's
- * per-admin spec; the created cids (or an updateId) drive that call.
- * `allocations`, `factoryCids`, and `allocationFactoryExtraArgs` are parallel:
- * the lock-admin funding spec first.
+ * Lock the funds a pending order requires. The wallet authors the
+ * OrderAllocationRequest's specifications as direct AllocationFactory_Allocate
+ * exercises: the funding allocation under the lock admin, plus a zero-funding
+ * receipt under the counter admin for a cross-admin pair (one spec for a
+ * single-admin pair). The wallet does not accept the request; Order_Fund binds
+ * each allocation by matching its view to the request's per-admin spec, and the
+ * created cids (or an updateId) drive that call. `allocations`, `factoryCids`,
+ * and `allocationFactoryExtraArgs` are parallel: the lock-admin funding spec first.
  */
 export interface FundOrderIntent {
   kind: "fund-order";
@@ -126,12 +126,13 @@ export interface PlaceOrderIntent {
  * Trader requests a swap (DvP). PoolRules_RequestSwap built one specification
  * per (swapper, admin) — the swap-in leg under the input admin, the swap-out
  * receipt under the output admin — and a SwapAllocationRequest carrying them; a
- * single-admin swap collapses to one combined specification. The wallet accepts
- * that request and authors every specification via BatchingUtilityV2 in one
- * command (locking `inputHoldingCids` on the swap-in spec). The created
- * Allocation cids (input admin first) settle through PoolRules_Swap; an
- * updateId-only wallet returns the updateId and the operator recovers them.
- * `allocations`, `factoryCids`, and `allocationFactoryExtraArgs` are parallel.
+ * single-admin swap collapses to one combined specification. The wallet authors
+ * every specification as a direct AllocationFactory_Allocate exercise (locking
+ * `inputHoldingCids` on the swap-in spec), submitted together as one atomic
+ * transaction, and does not accept the request. The created Allocation cids
+ * (input admin first) settle through PoolRules_Swap; an updateId-only wallet
+ * returns the updateId and the operator recovers them. `allocations`,
+ * `factoryCids`, and `allocationFactoryExtraArgs` are parallel.
  */
 export interface RequestSwapIntent {
   kind: "request-swap";
@@ -171,11 +172,10 @@ export interface MergeHoldingsIntent {
  * Trader provides liquidity (DvP). The operator has created a
  * LiquidityAllocationRequest; the wallet authors the three allocations it
  * names — base deposit + quote deposit (under pool.admin) and the LP-token
- * receipt (under pool.lpRegistrar) — via a CreateAndExercise of the token standard's
- * `BatchingUtilityV2.ExecuteBatch`, which accepts the request (leaving the
- * acceptance receipt) and authors all three inside ONE Daml transaction / one
- * top-level command for gateways that accept one command. `allocations`
- * is the canonical order [base deposit, quote deposit, LP receipt].
+ * receipt (under pool.lpRegistrar) — as three direct AllocationFactory_Allocate
+ * exercises submitted together as ONE atomic transaction. The wallet does not
+ * accept the request; the operator binds the still-live request at settle.
+ * `allocations` is the canonical order [base deposit, quote deposit, LP receipt].
  * `factoryCids` and `allocationFactoryExtraArgs` are parallel to that order;
  * each pair comes from registry discovery for the exact Allocate arguments.
  */
@@ -224,10 +224,11 @@ export interface RemoveLiquidityIntent {
 /**
  * Trader funds their side of an accepted RFQ's MatchedTrade. The operator's
  * MatchedTrade_RequestAllocations created a TradeAllocationRequest carrying one
- * specification per admin this authorizer touches; the wallet accepts it and
- * authors every AllocationFactory_Allocate via BatchingUtilityV2 in one command
- * — the same standard path swap and order funding use. The created Allocation
- * cids (or an updateId) drive the operator's MatchedTrade_Settle.
+ * specification per admin this authorizer touches; the wallet authors every
+ * spec as a direct AllocationFactory_Allocate exercise in one atomic transaction
+ * — the same standard path swap and order funding use — and does not accept the
+ * request. The created Allocation cids (or an updateId) drive the operator's
+ * MatchedTrade_Settle.
  */
 export interface FundMatchedTradeIntent {
   kind: "fund-matched-trade";

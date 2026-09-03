@@ -158,7 +158,7 @@ describe("SdkProvider", () => {
     expect(res.createdAllocationCids).toBeUndefined();
   });
 
-  it("submits a cross-admin (2-allocation) batch as one updateId-only command", async () => {
+  it("submits a cross-admin swap as two direct exercises in one updateId-only submission", async () => {
     const provider = new SdkProvider("#canton-dex-trading-v2");
     await provider.connect();
     const res = await provider.submit(crossAdminSwapIntent);
@@ -166,16 +166,13 @@ describe("SdkProvider", () => {
     expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
     expect(res.createdAllocationCids).toBeUndefined();
     const params = sdk.prepareExecuteAndWait.mock.calls[0]![0] as { commands: unknown[] };
-    // A cross-admin swap is still ONE top-level BatchingUtilityV2 command.
-    expect(params.commands).toHaveLength(1);
-    const cmd = (params.commands[0] as {
-      CreateAndExerciseCommand: { choice: string; choiceArgument: { actions: { tag: string }[] } };
-    }).CreateAndExerciseCommand;
-    expect(cmd.choice).toBe("BatchingUtility_ExecuteBatch");
-    // One allocate per admin (two here); no accept.
-    expect(cmd.choiceArgument.actions.map((a) => a.tag)).toEqual([
-      "TSA_AllocationFactory_AllocateV2",
-      "TSA_AllocationFactory_AllocateV2",
+    // A cross-admin swap = two direct AllocationFactory_Allocate exercises,
+    // forwarded together as one atomic submission.
+    expect(params.commands).toHaveLength(2);
+    const cmds = params.commands as Array<{ ExerciseCommand: { choice: string } }>;
+    expect(cmds.map((c) => c.ExerciseCommand.choice)).toEqual([
+      "AllocationFactory_Allocate",
+      "AllocationFactory_Allocate",
     ]);
   });
 

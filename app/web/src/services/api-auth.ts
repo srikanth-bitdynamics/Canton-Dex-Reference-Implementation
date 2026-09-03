@@ -12,6 +12,7 @@
 const OPERATOR_TOKEN_KEY = "canton-dex.operator-api-token";
 const ADMIN_TOKEN_KEY = "canton-dex.admin-api-token";
 const CALLER_TOKEN_KEY = "canton-dex.caller-token";
+const BOOTSTRAP_TOKEN_KEY = "canton-dex.bootstrap-token";
 
 export interface ApiSessionCredentials {
   operatorToken: string;
@@ -81,12 +82,48 @@ export function clearCallerToken(): void {
   write(CALLER_TOKEN_KEY, "");
 }
 
+/**
+ * Hold the one-time bootstrap token fetched at connect. The client presents it
+ * on trade request/settle so the backend can bind it into the on-ledger
+ * allocation; a valid settle then returns a party JWT (stored as the caller
+ * token). Kept in sessionStorage so it survives a same-tab reload; it can be
+ * re-fetched, so clearing it is never fatal.
+ */
+export function setBootstrapToken(token: string): void {
+  write(BOOTSTRAP_TOKEN_KEY, token);
+}
+
+export function getBootstrapToken(): string | undefined {
+  return read(BOOTSTRAP_TOKEN_KEY) || undefined;
+}
+
+export function clearBootstrapToken(): void {
+  write(BOOTSTRAP_TOKEN_KEY, "");
+}
+
+/**
+ * Upgrade the session to a party JWT when a settle response carries one. Called
+ * centrally after every operator-backend JSON response, so any settle that
+ * returns `callerToken` stores it without per-flow edits.
+ */
+export function absorbSessionToken(json: unknown): void {
+  if (
+    typeof json === "object" &&
+    json !== null &&
+    typeof (json as { callerToken?: unknown }).callerToken === "string" &&
+    (json as { callerToken: string }).callerToken
+  ) {
+    setCallerToken((json as { callerToken: string }).callerToken);
+  }
+}
+
 export function clearApiSessionCredentials(): void {
   const storage = session();
   try {
     storage?.removeItem(OPERATOR_TOKEN_KEY);
     storage?.removeItem(ADMIN_TOKEN_KEY);
     storage?.removeItem(CALLER_TOKEN_KEY);
+    storage?.removeItem(BOOTSTRAP_TOKEN_KEY);
   } catch {
     // Treat unavailable storage as already cleared from the app's point of
     // view. Reads return empty strings and protected requests carry no token.

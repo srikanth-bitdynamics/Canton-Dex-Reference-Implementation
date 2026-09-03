@@ -11,6 +11,17 @@
 // When both pass, mint the scoped HS256 caller token; otherwise the message is
 // captured and logged but NO token is minted.
 //
+// This module also carries the bootstrap-bound path used when a party proves
+// authority through a Token-Standard allocation rather than an off-ledger
+// signature. On connect the browser fetches a one-time, operator-signed
+// bootstrap token carrying a `nonceHash`; the request handlers stamp that
+// nonceHash into the allocation specs (the `authBinding` choice param) so the
+// wallet authors it as standard metadata. At settle the ledger returns the
+// proven `authenticatedParty` and the observed `authBinding`, and the caller
+// token is minted ONLY when the presented bootstrap's nonceHash equals that
+// authBinding, the bootstrap is unconsumed, and the subject is the Daml-proven
+// party (never the HTTP body party). One-time and idempotent on retry.
+//
 // Flow:
 //   1. challenge(party) -> a structured, single-use message binding the domain,
 //      network, party, nonce, and validity window, plus the raw nonce/expiry.
@@ -19,7 +30,14 @@
 //      (when the wallet supplied its public key) Ed25519 + fingerprint-binding
 //      checks and, on success, a minted caller token.
 
-import { createHash, createHmac, createPublicKey, randomBytes, verify as edVerify } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  createPublicKey,
+  randomBytes,
+  timingSafeEqual,
+  verify as edVerify,
+} from "node:crypto";
 import type { KeyObject } from "node:crypto";
 
 import type { Party } from "../types.js";
@@ -29,8 +47,13 @@ const sessionLog = rootLogger.child({ component: "session" });
 
 // A challenge nonce is accepted this long before the wallet must restart.
 const CHALLENGE_TTL_MS = 2 * 60 * 1000;
+// A bootstrap token is valid this long: the wallet must author its allocation
+// and settle within the window for the session upgrade to be available.
+const BOOTSTRAP_TTL_SECONDS = 5 * 60;
 // TTL for the caller token minted once the wallet signature is verified.
 const TOKEN_TTL_SECONDS = 12 * 60 * 60;
+// Marks the bootstrap token so it can never stand in for a caller token.
+const BOOTSTRAP_TYP = "dex-bootstrap";
 
 // SPKI DER prefix wrapping a raw 32-byte Ed25519 public key (RFC 8410).
 const SPKI_ED25519_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -49,6 +72,10 @@ function base64Url(buf: Buffer): string {
     .replace(/=+$/, "");
 }
 
+function base64UrlDecode(s: string): Buffer {
+  return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+}
+
 // Compact HS256 JWT mint -- the mirror of caller-auth.verifyHs256. Mints the
 // scoped caller token once the wallet signature and its party binding verify.
 function signHs256(claims: Record<string, unknown>, secret: string): string {
@@ -58,6 +85,32 @@ function signHs256(claims: Record<string, unknown>, secret: string): string {
     createHmac("sha256", secret).update(`${header}.${payload}`).digest(),
   );
   return `${header}.${payload}.${sig}`;
+}
+
+// Verify an HS256 JWT against the shared secret and return its raw claims, or
+// null on any structural / algorithm / signature / parse failure. Expiry and
+// claim shape are checked by the caller. Kept local so the bootstrap path does
+// not depend on the HTTP layer.
+function verifyHs256Payload(token: string, secret: string): Record<string, unknown> | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sigB64] = parts as [string, string, string];
+  let header: Record<string, unknown>;
+  try {
+    header = JSON.parse(base64UrlDecode(headerB64).toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (header.alg !== "HS256") return null;
+  const expected = createHmac("sha256", secret).update(`${headerB64}.${payloadB64}`).digest();
+  const given = base64UrlDecode(sigB64);
+  if (expected.length !== given.length) return null;
+  if (!timingSafeEqual(expected, given)) return null;
+  try {
+    return JSON.parse(base64UrlDecode(payloadB64).toString("utf8"));
+  } catch {
+    return null;
+  }
 }
 
 export interface SessionConfig {
@@ -104,6 +157,26 @@ export interface VerifyResult {
   /** The verified party, present only when `verified`. */
   party?: Party;
   /** Caller-token expiry (unix ms), present only when `verified`. */
+  expiresAt?: number;
+}
+
+/** A minted bootstrap-bound caller token and its expiry (unix ms). */
+export interface LedgerTokenResult {
+  callerToken: string;
+  expiresAt: number;
+}
+
+// A live bootstrap token's server-side record, keyed by its `jti`. Consumed
+// once a matching settle mints from it; the minted token is cached so an
+// idempotent retry by the same proven party returns the same token.
+interface BootstrapEntry {
+  nonceHash: string;
+  /** Bootstrap expiry, unix seconds (the token's `exp`). */
+  exp: number;
+  consumed: boolean;
+  party?: Party;
+  callerToken?: string;
+  /** Minted caller-token expiry (unix ms), cached alongside `callerToken`. */
   expiresAt?: number;
 }
 
@@ -235,6 +308,11 @@ export class SessionService {
     { party: Party; message: string; expiresAt: number }
   >();
 
+  // Outstanding bootstrap tokens: jti -> entry. In-memory like `pending`: a
+  // bootstrap is a one-time freshness proof, so losing them on restart just
+  // forces a re-connect.
+  private readonly bootstraps = new Map<string, BootstrapEntry>();
+
   constructor(
     private readonly cfg: SessionConfig,
     private readonly now: () => number = () => Date.now(),
@@ -243,6 +321,11 @@ export class SessionService {
   private sweep(): void {
     const t = this.now();
     for (const [nonce, e] of this.pending) if (e.expiresAt <= t) this.pending.delete(nonce);
+  }
+
+  private sweepBootstraps(): void {
+    const t = this.now();
+    for (const [jti, e] of this.bootstraps) if (e.exp * 1000 <= t) this.bootstraps.delete(jti);
   }
 
   challenge(party: Party): Challenge {
@@ -368,10 +451,112 @@ export class SessionService {
 
     const iat = Math.floor(this.now() / 1000);
     const exp = iat + TOKEN_TTL_SECONDS;
-    const claims: Record<string, unknown> = { sub: party, iat, exp };
+    const claims: Record<string, unknown> = {
+      sub: party,
+      iat,
+      exp,
+      network: this.cfg.networkId,
+      auth_method: "signature",
+    };
     if (this.cfg.callerJwtAudience) claims.aud = this.cfg.callerJwtAudience;
     const callerToken = signHs256(claims, this.cfg.callerJwtSecret);
 
     return { captured: true, verified: true, callerToken, party, expiresAt: exp * 1000 };
+  }
+
+  // === bootstrap-bound minting ==========================================
+
+  // Issue a one-time, operator-signed bootstrap token. The nonce is kept only
+  // as its hash: the nonceHash travels in the token (and later in the
+  // allocation's authBinding), while the raw nonce is never exposed.
+  createBootstrap(): { bootstrapToken: string; expiresAt: number } {
+    this.sweepBootstraps();
+    const nonce = randomBytes(32).toString("hex");
+    const nonceHash = sha256Hex(Buffer.from(nonce, "utf8"));
+    const jti = randomBytes(16).toString("hex");
+    const iat = Math.floor(this.now() / 1000);
+    const exp = iat + BOOTSTRAP_TTL_SECONDS;
+    const bootstrapToken = signHs256(
+      { typ: BOOTSTRAP_TYP, jti, nonceHash, network: this.cfg.networkId, iat, exp },
+      this.cfg.callerJwtSecret,
+    );
+    this.bootstraps.set(jti, { nonceHash, exp, consumed: false });
+    return { bootstrapToken, expiresAt: exp * 1000 };
+  }
+
+  // Verify a bootstrap token's signature, type, and expiry, returning the jti
+  // and nonceHash the request handler stamps as the allocation authBinding.
+  // Throws SessionError on any failure.
+  verifyBootstrap(token: string): { jti: string; nonceHash: string } {
+    const claims = verifyHs256Payload(token, this.cfg.callerJwtSecret);
+    if (!claims) throw new SessionError("invalid bootstrap token");
+    if (claims.typ !== BOOTSTRAP_TYP) throw new SessionError("not a bootstrap token");
+    if (typeof claims.exp !== "number" || claims.exp * 1000 <= this.now()) {
+      throw new SessionError("bootstrap token expired");
+    }
+    const jti = typeof claims.jti === "string" ? claims.jti : "";
+    const nonceHash = typeof claims.nonceHash === "string" ? claims.nonceHash : "";
+    if (!jti || !nonceHash) throw new SessionError("bootstrap token missing jti/nonceHash");
+    return { jti, nonceHash };
+  }
+
+  // Mint a scoped caller token for a party proven on-ledger. The subject is
+  // always the Daml-proven party, never any HTTP body field.
+  issueLedgerToken(party: Party): LedgerTokenResult {
+    const iat = Math.floor(this.now() / 1000);
+    const exp = iat + TOKEN_TTL_SECONDS;
+    const claims: Record<string, unknown> = {
+      sub: party,
+      iat,
+      exp,
+      network: this.cfg.networkId,
+      auth_method: "ledger-allocation",
+    };
+    if (this.cfg.callerJwtAudience) claims.aud = this.cfg.callerJwtAudience;
+    const callerToken = signHs256(claims, this.cfg.callerJwtSecret);
+    return { callerToken, expiresAt: exp * 1000 };
+  }
+
+  // The bootstrap-bound mint. Returns a caller token only when the presented
+  // bootstrap's nonceHash equals the settle-observed authBinding, the bootstrap
+  // is live and unconsumed, and a party was proven. Idempotent: a retry by the
+  // same proven party returns the cached token; anything else returns null.
+  mintFromLedgerProof(
+    bootstrapToken: string,
+    authenticatedParty: Party | string,
+    authBinding: string,
+  ): LedgerTokenResult | null {
+    this.sweepBootstraps();
+    let jti: string;
+    let nonceHash: string;
+    try {
+      ({ jti, nonceHash } = this.verifyBootstrap(bootstrapToken));
+    } catch {
+      return null;
+    }
+    const entry = this.bootstraps.get(jti);
+    if (!entry) return null;
+    if (entry.exp * 1000 <= this.now()) {
+      this.bootstraps.delete(jti);
+      return null;
+    }
+    // The proof must match the bootstrap's binding and name a party.
+    if (authBinding !== nonceHash || !authenticatedParty) return null;
+    if (entry.consumed) {
+      if (
+        entry.party === authenticatedParty &&
+        entry.callerToken !== undefined &&
+        entry.expiresAt !== undefined
+      ) {
+        return { callerToken: entry.callerToken, expiresAt: entry.expiresAt };
+      }
+      return null;
+    }
+    const minted = this.issueLedgerToken(authenticatedParty as Party);
+    entry.consumed = true;
+    entry.party = authenticatedParty as Party;
+    entry.callerToken = minted.callerToken;
+    entry.expiresAt = minted.expiresAt;
+    return minted;
   }
 }

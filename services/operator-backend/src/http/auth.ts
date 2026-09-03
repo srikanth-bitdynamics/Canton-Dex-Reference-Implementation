@@ -77,13 +77,10 @@ const OPERATOR_WRITE_EXACT = new Set<string>([
   // (It is additionally gated by walletRelayEnabled + a party allowlist in
   // the handler, but the auth gate is the first line of defence.)
   "/v1/wallet/submit",
-  "/v1/registry/allocation-factory",
-  "/v1/pools/swap",
-  "/v1/pools/swap/request",
-  "/v1/pools/add-liquidity/request",
-  "/v1/pools/add-liquidity/settle",
-  "/v1/pools/remove-liquidity/request",
-  "/v1/pools/remove-liquidity/settle",
+  // Swap, liquidity, and allocation-factory are public in the bootstrap-bound
+  // phase: authority is proven on-ledger, not by the operator token. They are
+  // instead protected by the in-memory rate limiter (see rate-limit.ts).
+  // Orders / matched-trades / rfq (below) stay operator-only.
   "/v1/pools/recover-dvp-allocations",
   "/v1/orders/bind",
   "/v1/orders/fund",

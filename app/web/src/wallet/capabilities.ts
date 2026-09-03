@@ -33,6 +33,16 @@ export interface WalletCapability {
    * must NOT compose split/merge commands.
    */
   coSignsAdmin: boolean;
+  /**
+   * Static capability flags describing what a provider's transport can do,
+   * independent of the connected wallet's runtime state. `supportsSignMessage`
+   * gates the off-ledger session fast path; `hasVerifiablePublicKey` is NOT
+   * here — it is probed at runtime (see services/session.ts), because a wallet
+   * can advertise signMessage yet expose no public key.
+   */
+  supportsSignMessage: boolean;
+  supportsPrepareExecute: boolean;
+  supportsTokenStandardV2: boolean;
 }
 
 export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
@@ -43,26 +53,41 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     dvp: "dev-only",
     note: "Dev only — operator signing relay (operator co-signs your actions). Not a real wallet.",
     coSignsAdmin: true,
+    supportsSignMessage: true,
+    supportsPrepareExecute: false,
+    supportsTokenStandardV2: true,
   },
   sdk: {
     dvp: "ready",
     note: "CIP-0103 wallet; full DvP.",
     coSignsAdmin: false,
+    supportsSignMessage: true,
+    supportsPrepareExecute: true,
+    supportsTokenStandardV2: true,
   },
   mock: {
     dvp: "dev-only",
     note: "Dev only — returns deterministic placeholder cids; no ledger submission.",
     coSignsAdmin: true,
+    supportsSignMessage: false,
+    supportsPrepareExecute: false,
+    supportsTokenStandardV2: false,
   },
   partylayer: {
     dvp: "unproven",
     note: "Multi-wallet SDK; tries configured submit-capable wallets. Swap, order funding, and LP DvP use operator-discovery.",
     coSignsAdmin: false,
+    supportsSignMessage: true,
+    supportsPrepareExecute: true,
+    supportsTokenStandardV2: true,
   },
   walletconnect: {
     dvp: "unsupported",
     note: "Settlement-accept only; cannot complete LP DvP.",
     coSignsAdmin: false,
+    supportsSignMessage: false,
+    supportsPrepareExecute: false,
+    supportsTokenStandardV2: false,
   },
 };
 
@@ -81,6 +106,9 @@ export function capabilityFor(id: WalletProviderId): WalletCapability {
       dvp: "unproven",
       note: "Capability unknown.",
       coSignsAdmin: false,
+      supportsSignMessage: false,
+      supportsPrepareExecute: false,
+      supportsTokenStandardV2: false,
     }
   );
 }

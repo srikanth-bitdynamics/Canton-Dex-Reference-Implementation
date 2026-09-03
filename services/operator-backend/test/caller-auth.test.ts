@@ -100,11 +100,14 @@ describe("checkCallerBinding", () => {
   const cfg = { callerJwtSecret: SECRET };
 
   it("classifies which routes bind a caller", () => {
-    assert.equal(routeBindsCaller("POST /v1/pools/swap"), true);
-    assert.equal(routeBindsCaller("POST /v1/pools/swap/request"), true);
-    assert.equal(routeBindsCaller("POST /v1/pools/add-liquidity/request"), true);
-    assert.equal(routeBindsCaller("POST /v1/pools/remove-liquidity/settle"), true);
+    // RFQ still binds its trader subject to the caller token.
     assert.equal(routeBindsCaller("POST /v1/rfq"), true);
+    // Swap and liquidity left the body-subject binding: they are public and
+    // prove authority on-ledger (the bootstrap-bound session path).
+    assert.equal(routeBindsCaller("POST /v1/pools/swap"), false);
+    assert.equal(routeBindsCaller("POST /v1/pools/swap/request"), false);
+    assert.equal(routeBindsCaller("POST /v1/pools/add-liquidity/request"), false);
+    assert.equal(routeBindsCaller("POST /v1/pools/remove-liquidity/settle"), false);
     // operator/admin-authority routes are NOT caller-bound
     assert.equal(routeBindsCaller("POST /v1/matched-trades/settle"), false);
     assert.equal(routeBindsCaller("POST /v1/orders/match"), false);
@@ -115,8 +118,8 @@ describe("checkCallerBinding", () => {
     const r = checkCallerBinding(
       reqWith(),
       { callerJwtSecret: undefined },
-      "POST /v1/pools/swap/request",
-      { swapper: BOB },
+      "POST /v1/rfq",
+      { trader: BOB },
     );
     assert.equal(r.ok, true);
   });
@@ -126,9 +129,23 @@ describe("checkCallerBinding", () => {
     assert.equal(r.ok, true);
   });
 
+  it("no-op for swap/liquidity now that they are public (non-binding)", () => {
+    for (const route of [
+      "POST /v1/pools/swap",
+      "POST /v1/pools/swap/request",
+      "POST /v1/pools/add-liquidity/request",
+      "POST /v1/pools/remove-liquidity/settle",
+    ]) {
+      // No caller token, a foreign subject party: still ok, because the route no
+      // longer binds a body-party subject.
+      const r = checkCallerBinding(reqWith(), cfg, route, { swapper: BOB, recipient: BOB, holder: BOB });
+      assert.equal(r.ok, true, route);
+    }
+  });
+
   it("rejects a binding route with no caller token (401)", () => {
-    const r = checkCallerBinding(reqWith(), cfg, "POST /v1/pools/swap/request", {
-      swapper: ALICE,
+    const r = checkCallerBinding(reqWith(), cfg, "POST /v1/rfq", {
+      trader: ALICE,
     });
     assert.equal(r.ok, false);
     assert.equal((r as { status: number }).status, 401);
@@ -138,8 +155,8 @@ describe("checkCallerBinding", () => {
     const r = checkCallerBinding(
       reqWith(signHs256({ sub: ALICE })),
       cfg,
-      "POST /v1/pools/swap/request",
-      { swapper: BOB }, // caller is alice, names bob
+      "POST /v1/rfq",
+      { trader: BOB }, // caller is alice, names bob
     );
     assert.equal(r.ok, false);
     assert.equal((r as { status: number }).status, 403);
@@ -149,28 +166,10 @@ describe("checkCallerBinding", () => {
     const r = checkCallerBinding(
       reqWith(signHs256({ sub: ALICE })),
       cfg,
-      "POST /v1/pools/add-liquidity/request",
-      { recipient: ALICE },
+      "POST /v1/rfq",
+      { trader: ALICE },
     );
     assert.equal(r.ok, true);
-  });
-
-  it("binds the swap route via swapperAccount.owner", () => {
-    const ok = checkCallerBinding(
-      reqWith(signHs256({ sub: ALICE })),
-      cfg,
-      "POST /v1/pools/swap",
-      { swapperAccount: { owner: ALICE, provider: null, id: "" } },
-    );
-    assert.equal(ok.ok, true);
-    const bad = checkCallerBinding(
-      reqWith(signHs256({ sub: ALICE })),
-      cfg,
-      "POST /v1/pools/swap",
-      { swapperAccount: { owner: BOB, provider: null, id: "" } },
-    );
-    assert.equal(bad.ok, false);
-    assert.equal((bad as { status: number }).status, 403);
   });
 
   it("accepts a Bearer-prefixed caller token", () => {

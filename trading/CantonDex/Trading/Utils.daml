@@ -2,6 +2,7 @@
 -- leg -> leg-side projection, funding arithmetic, and allocation/spec builders.
 module CantonDex.Trading.Utils where
 
+import DA.List (dedup)
 import DA.Map qualified as Map
 import DA.Optional (isNone)
 import DA.TextMap qualified as TextMap
@@ -180,3 +181,26 @@ nextIterationAllocationCids result =
     nextIterFromResult r = case r.output of
       V2.AllocationResult_Settled cidOpt -> cidOpt
       _ -> None
+
+-- | Metadata key carrying the opaque session auth-binding. The request choices
+-- stamp it into each authored spec; the settle choices read it back.
+authBindingKey : Text
+authBindingKey = "canton-dex.auth-binding"
+
+-- | Stamp the auth-binding into a spec's metadata when present, leaving the
+-- spec untouched when absent.
+withAuthBinding : Optional Text -> V2.AllocationSpecification -> V2.AllocationSpecification
+withAuthBinding mBinding spec = case mBinding of
+  None -> spec
+  Some b ->
+    let updatedMeta = spec.meta with values = TextMap.insert authBindingKey b spec.meta.values
+    in spec with meta = updatedMeta
+
+-- | The auth-binding shared by a set of specs. All specs must agree; None when
+-- no spec carries the key.
+extractAuthBinding : [V2.AllocationSpecification] -> Optional Text
+extractAuthBinding specs =
+  case dedup (map (\s -> TextMap.lookup authBindingKey s.meta.values) specs) of
+    [] -> None
+    [b] -> b
+    _ -> error "extractAuthBinding: auth-binding metadata disagrees across specs"

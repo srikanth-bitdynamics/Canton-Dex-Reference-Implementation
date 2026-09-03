@@ -9,7 +9,7 @@
 // components below this layer should never reach past it.
 
 import { OperatorApi, type SwapQuoteBinding } from './operator-api';
-import { apiAuthHeaders } from './api-auth';
+import { absorbSessionToken, apiAuthHeaders, getBootstrapToken } from './api-auth';
 import { handToWallet } from '@/wallet/handoff';
 import { specFundsHoldings } from '@/wallet/commands';
 import { getProvider } from '@/wallet/registry';
@@ -63,6 +63,12 @@ function connectedParty(): string {
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
 
 const operator = new OperatorApi(API_BASE);
+
+/** Bootstrap-token field for trade request/settle bodies (omitted when unset). */
+function bootstrapField(): { bootstrapToken?: string } {
+  const bootstrapToken = getBootstrapToken();
+  return bootstrapToken ? { bootstrapToken } : {};
+}
 
 async function discoverAllocationFactory(params: {
   admin: string;
@@ -761,9 +767,17 @@ export const ledger = {
     }));
   },
   getOrders: async (trader: string): Promise<Order[]> => {
-    const raw = await fetchJson<Order[]>(
-      `/v1/orders?trader=${encodeURIComponent(trader)}`,
-    );
+    let raw: Order[];
+    try {
+      raw = await fetchJson<Order[]>(
+        `/v1/orders?trader=${encodeURIComponent(trader)}`,
+      );
+    } catch (err) {
+      // A pre-first-settle session holds no party JWT, so the backend has no
+      // private order state to show — treat 401 as an empty book, not an error.
+      if (err instanceof Error && err.message.startsWith('401')) return [];
+      throw err;
+    }
     const num = (v: unknown): number =>
       typeof v === 'number' ? v : parseFloat(String(v ?? 0));
     return raw.map((o) => ({
@@ -1257,6 +1271,7 @@ export const ledger = {
         baseAmount: formatDecimal10(params.baseAmount),
         quoteAmount: formatDecimal10(params.quoteAmount),
         requestedAt,
+        ...bootstrapField(),
       }),
     });
     const holdingInputs = [
@@ -1317,6 +1332,7 @@ export const ledger = {
             minLpTokens: formatDecimal10(params.minLpTokens),
             knownTotalLpSupply: req.knownTotalLpSupply,
             requestedAt,
+            ...bootstrapField(),
           }
         : {
             // operator-discovery path: hand over the updateId and the live
@@ -1330,6 +1346,7 @@ export const ledger = {
             minLpTokens: formatDecimal10(params.minLpTokens),
             knownTotalLpSupply: req.knownTotalLpSupply,
             requestedAt,
+            ...bootstrapField(),
           };
     await fetchJson('/v1/pools/add-liquidity/settle', {
       method: 'POST',
@@ -1373,6 +1390,7 @@ export const ledger = {
         holder: params.holder,
         lpTokensToRedeem,
         requestedAt,
+        ...bootstrapField(),
       }),
     });
     const holdingInputs = [[], [], holderLpHoldingCids];
@@ -1416,6 +1434,7 @@ export const ledger = {
       minBaseOut: formatDecimal10(params.minBaseOut),
       minQuoteOut: formatDecimal10(params.minQuoteOut),
       requestedAt,
+      ...bootstrapField(),
     };
     const settleBody =
       cids && cids.length === 3
@@ -1456,5 +1475,7 @@ async function fetchJson<T>(
   });
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  const json = await res.json();
+  absorbSessionToken(json); // a settle response may carry the party JWT
+  return json as T;
 }

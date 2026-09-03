@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign as edSign, type KeyObject } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  generateKeyPairSync,
+  sign as edSign,
+  type KeyObject,
+} from "node:crypto";
 
 import { SessionService, SessionError, type SignedMessage } from "../src/session/index.js";
 import { verifyHs256 } from "../src/http/caller-auth.js";
@@ -22,6 +28,24 @@ function rawPublicKey(publicKey: KeyObject): Buffer {
 function partyForKey(hint: string, publicKey: KeyObject): string {
   const digest = createHash("sha256").update(rawPublicKey(publicKey)).digest("hex");
   return `${hint}::1220${digest}`;
+}
+
+// Read a compact JWT's claims without verifying (the tests trust the local mint).
+function decodeJwt(token: string): Record<string, unknown> {
+  const payload = token.split(".")[1] ?? "";
+  return JSON.parse(
+    Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"),
+  );
+}
+
+// A structurally valid HS256 token signed with the same secret but with no
+// bootstrap typ — verifyBootstrap must still reject it.
+function signedCallerLikeToken(): string {
+  const b64 = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const header = b64({ alg: "HS256", typ: "JWT" });
+  const payload = b64({ sub: PARTY, exp: Math.floor(Date.now() / 1000) + 3600 });
+  const sig = createHmac("sha256", SECRET).update(`${header}.${payload}`).digest("base64url");
+  return `${header}.${payload}.${sig}`;
 }
 
 function svc(now?: () => number): SessionService {
@@ -178,4 +202,100 @@ test("verify mints nothing when the key is right but the party binding does not 
   const r = s.verify(party, c.nonce, sm, { publicKey: rawPublicKey(publicKey).toString("hex") });
   assert.equal(r.verified, false);
   assert.ok(r.callerToken === undefined);
+});
+
+test("the signature-path token carries auth_method:signature and the network", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const party = partyForKey("alice", publicKey);
+  const s = svc();
+  const c = s.challenge(party);
+  const signature = edSign(null, Buffer.from(c.message, "utf8"), privateKey).toString("hex");
+  const sm: SignedMessage = { signature, partyId: party, message: c.message, nonce: c.nonce };
+  const r = s.verify(party, c.nonce, sm, { publicKey: rawPublicKey(publicKey).toString("hex") });
+  const claims = decodeJwt(r.callerToken as string);
+  assert.equal(claims.auth_method, "signature");
+  assert.equal(claims.network, NETWORK);
+});
+
+// === bootstrap-bound minting ============================================
+
+test("createBootstrap round-trips through verifyBootstrap", () => {
+  const s = svc();
+  const { bootstrapToken, expiresAt } = s.createBootstrap();
+  assert.ok(typeof bootstrapToken === "string" && bootstrapToken.length > 0);
+  assert.ok(expiresAt > Date.now());
+  const { jti, nonceHash } = s.verifyBootstrap(bootstrapToken);
+  assert.ok(jti.length > 0);
+  assert.equal(nonceHash.length, 64); // sha256 hex
+  const claims = decodeJwt(bootstrapToken);
+  assert.equal(claims.typ, "dex-bootstrap");
+  assert.equal(claims.network, NETWORK);
+  assert.equal(claims.nonceHash, nonceHash);
+  assert.equal(claims.jti, jti);
+});
+
+test("a bootstrap token is rejected by caller-token verification (distinct typ)", () => {
+  const s = svc();
+  const { bootstrapToken } = s.createBootstrap();
+  // Even ignoring exp, the dex-bootstrap typ must be refused as a caller token.
+  assert.equal(verifyHs256(bootstrapToken, SECRET, { requireExp: false }), null);
+});
+
+test("verifyBootstrap rejects a tampered / non-bootstrap / expired token", () => {
+  const s = svc();
+  const { bootstrapToken } = s.createBootstrap();
+  const [h, p, sig] = bootstrapToken.split(".");
+  // Tampered signature.
+  assert.throws(() => s.verifyBootstrap(`${h}.${p}.${sig}AA`), SessionError);
+  // A structurally valid HS256 token that is not a bootstrap (no typ).
+  const notBootstrap = signedCallerLikeToken();
+  assert.throws(() => s.verifyBootstrap(notBootstrap), SessionError);
+});
+
+test("mintFromLedgerProof mints when authBinding == nonceHash and a party is proven", () => {
+  const s = svc();
+  const { bootstrapToken } = s.createBootstrap();
+  const { nonceHash } = s.verifyBootstrap(bootstrapToken);
+  const minted = s.mintFromLedgerProof(bootstrapToken, PARTY, nonceHash);
+  assert.ok(minted);
+  assert.ok((minted!.expiresAt ?? 0) > Date.now());
+  const claims = verifyHs256(minted!.callerToken, SECRET, { audience: AUDIENCE });
+  assert.equal(claims?.sub, PARTY);
+  assert.equal(claims?.auth_method, "ledger-allocation");
+  assert.equal(claims?.network, NETWORK);
+});
+
+test("mintFromLedgerProof returns null when the binding differs from the nonceHash", () => {
+  const s = svc();
+  const { bootstrapToken } = s.createBootstrap();
+  assert.equal(s.mintFromLedgerProof(bootstrapToken, PARTY, "deadbeef".repeat(8)), null);
+});
+
+test("mintFromLedgerProof returns null when no party was proven (authenticatedParty None)", () => {
+  const s = svc();
+  const { bootstrapToken } = s.createBootstrap();
+  const { nonceHash } = s.verifyBootstrap(bootstrapToken);
+  assert.equal(s.mintFromLedgerProof(bootstrapToken, "", nonceHash), null);
+});
+
+test("mintFromLedgerProof is idempotent for the same party, null for a different one", () => {
+  const s = svc();
+  const { bootstrapToken } = s.createBootstrap();
+  const { nonceHash } = s.verifyBootstrap(bootstrapToken);
+  const first = s.mintFromLedgerProof(bootstrapToken, PARTY, nonceHash);
+  assert.ok(first);
+  // A retry by the same proven party returns the cached token.
+  const retry = s.mintFromLedgerProof(bootstrapToken, PARTY, nonceHash);
+  assert.equal(retry?.callerToken, first!.callerToken);
+  // A different party presenting the same (consumed) bootstrap gets nothing.
+  assert.equal(s.mintFromLedgerProof(bootstrapToken, "mallory::1220ff", nonceHash), null);
+});
+
+test("mintFromLedgerProof returns null after the bootstrap TTL lapses", () => {
+  let t = 1_000_000;
+  const s = svc(() => t);
+  const { bootstrapToken } = s.createBootstrap();
+  const { nonceHash } = s.verifyBootstrap(bootstrapToken);
+  t += 6 * 60 * 1000; // past the 5-minute bootstrap TTL
+  assert.equal(s.mintFromLedgerProof(bootstrapToken, PARTY, nonceHash), null);
 });

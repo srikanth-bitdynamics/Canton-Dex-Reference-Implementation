@@ -1,15 +1,22 @@
-// Client half of the session-service (BFF) flow.
+// Client half of the session-service (BFF) flow. Wallet connect is a sign-in
+// (partyId + networkId), not party authentication.
 //
-// On connect the dApp asks the connected wallet to sign a backend-issued
-// challenge (off-ledger CIP-0103 signMessage) and posts the SignedMessage back,
-// together with the wallet's primary-account public key, so the backend can
-// verify the signature and its party binding off-ledger and mint a scoped caller
-// token. This is deliberately best-effort — a failure here must never break the
-// wallet connection.
+// On connect the client always fetches a one-time bootstrap token and holds it;
+// it is presented on trade request/settle so the backend can bind it into the
+// on-ledger allocation and, after a valid settle, return a party JWT (stored as
+// the caller token). A wallet that exposes a verifiable public key can instead
+// take a signMessage fast path straight to a caller token at connect. This is
+// deliberately best-effort — a failure here must never break the connection.
 
-import { getProvider } from "../wallet/registry";
+import { getProvider, type WalletProviderId } from "../wallet/registry";
 import { useWalletStore } from "../wallet/store";
-import { clearCallerToken, setCallerToken } from "./api-auth";
+import { capabilityFor } from "../wallet/capabilities";
+import {
+  clearBootstrapToken,
+  clearCallerToken,
+  setBootstrapToken,
+  setCallerToken,
+} from "./api-auth";
 
 const API_BASE =
   (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8080";
@@ -41,29 +48,61 @@ async function postJson<T>(
 }
 
 /**
- * Ask the connected wallet to sign the backend challenge so the backend can
- * verify it and mint a caller token. Returns true when the backend captured the
- * SignedMessage (whether or not a token was minted), false when the deployment
- * runs no session service (a 501), the active wallet cannot sign, or anything
- * went wrong. Never throws — the connection must not break because of the
- * session.
+ * Sign in the connected party. Always fetches a one-time bootstrap token and
+ * holds it. A wallet that both advertises signMessage and exposes a verifiable
+ * public key takes the fast path to a caller token; a keyless wallet (e.g. Loop)
+ * does nothing more on the network — its party JWT arrives after the first
+ * settle. Returns true only when the fast path verified. Never throws, and a
+ * missing session service (501) or any failure just skips — the connection
+ * still works.
  */
 export async function establishSession(party: string): Promise<boolean> {
   clearCallerToken(); // drop any token for a previous party
+  clearBootstrapToken();
+
+  // Always: fetch and hold the bootstrap token. Skip on 501 or any failure.
+  try {
+    const boot = await postJson<{ bootstrapToken: string; expiresAt: number }>(
+      "/v1/session/bootstrap",
+      { party },
+    );
+    if (boot.ok && boot.data && boot.data.bootstrapToken) {
+      setBootstrapToken(boot.data.bootstrapToken);
+    }
+  } catch (e) {
+    console.warn("[session] bootstrap failed (non-fatal):", e);
+  }
+
+  const providerId = useWalletStore.getState().activeProviderId as
+    | WalletProviderId
+    | null;
+  // Fast path only for a signMessage-capable provider. Only then do we probe
+  // for a public key (no debug plumbing).
+  if (!providerId || !capabilityFor(providerId).supportsSignMessage) return false;
+
+  const provider = getProvider(providerId);
+  let account: { publicKey: string; namespace?: string } | undefined;
+  try {
+    const primary = await provider.getPrimaryAccount?.();
+    if (primary?.publicKey) {
+      account = {
+        publicKey: primary.publicKey,
+        ...(primary.namespace ? { namespace: primary.namespace } : {}),
+      };
+    }
+  } catch (e) {
+    console.warn("[session] getPrimaryAccount failed (non-fatal):", e);
+  }
+  // Keyless wallet (e.g. Loop): no verifiable public key, so no challenge and no
+  // signMessage prompt. The party JWT arrives after the first settle.
+  if (!account || !provider.signMessage) return false;
+
   try {
     const ch = await postJson<Challenge>("/v1/session/challenge", { party });
-    if (ch.status === 501) return false; // no session service on this deployment
     if (!ch.ok || !ch.data) {
-      console.warn("[session] challenge failed:", ch.status, ch.text.slice(0, 200));
-      return false;
-    }
-
-    const providerId = useWalletStore.getState().activeProviderId;
-    const provider = providerId ? getProvider(providerId) : null;
-    if (!provider?.signMessage) {
-      console.warn(
-        "[session] active wallet does not support signMessage; skipping session (capture phase)",
-      );
+      if (ch.status !== 501) {
+        console.warn("[session] challenge failed:", ch.status, ch.text.slice(0, 200));
+      }
       return false;
     }
 
@@ -73,33 +112,9 @@ export async function establishSession(party: string): Promise<boolean> {
       domain: ch.data.domain,
     });
 
-    // Best-effort: the wallet's public key lets the backend verify off-ledger.
-    // Omit it when unavailable — the backend then only captures.
-    let account: { publicKey: string; namespace?: string } | undefined;
-    let accountDebug: unknown;
-    try {
-      const primary = await provider.getPrimaryAccount?.();
-      accountDebug = { hasMethod: !!provider.getPrimaryAccount, primary };
-      if (primary?.publicKey) {
-        account = {
-          publicKey: primary.publicKey,
-          ...(primary.namespace ? { namespace: primary.namespace } : {}),
-        };
-      }
-    } catch (e) {
-      accountDebug = { error: e instanceof Error ? `${e.name}: ${e.message}` : String(e) };
-      console.warn("[session] getPrimaryAccount failed (non-fatal):", e);
-    }
-
     const res = await postJson<{ captured?: boolean; verified?: boolean; callerToken?: string }>(
       "/v1/session/verify",
-      {
-        party,
-        nonce: ch.data.nonce,
-        signedMessage,
-        ...(account ? { account } : {}),
-        accountDebug,
-      },
+      { party, nonce: ch.data.nonce, signedMessage, account },
     );
     if (!res.ok || !res.data) {
       console.warn("[session] verify failed:", res.status, res.text.slice(0, 200));
@@ -115,7 +130,8 @@ export async function establishSession(party: string): Promise<boolean> {
   }
 }
 
-/** Drop the caller session (on disconnect). */
+/** Drop the caller session and bootstrap token (on disconnect). */
 export function endSession(): void {
   clearCallerToken();
+  clearBootstrapToken();
 }

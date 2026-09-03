@@ -50,7 +50,7 @@ const SYNCHRONIZER_ID =
     (window as { __CANTON_SYNCHRONIZER__?: string }).__CANTON_SYNCHRONIZER__) ||
     (import.meta.env.VITE_CANTON_SYNCHRONIZER as string | undefined)) ?? "";
 const PACKAGE_PREFIX =
-  (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID as string | undefined) ??
+  (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID as string | undefined) ||
   "#canton-dex-trading-v2";
 
 interface PersistedSession {

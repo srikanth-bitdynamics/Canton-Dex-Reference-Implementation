@@ -13,17 +13,23 @@ import {
   PartyLayerProvider,
   parsePartyLayerHoldings,
   type PartyLayerClient,
+  type PartyLayerCommandSubmission,
+  type PartyLayerTxReceipt,
 } from "@/wallet/partylayer-provider";
 import { recoverCreatedAllocationCid } from "@/services/recover-allocations";
 import type { AddLiquidityIntent, RequestSwapIntent } from "@/wallet/types";
 
 const recoverMock = vi.mocked(recoverCreatedAllocationCid);
 
-// A fake @partylayer/sdk client: records the submitted command tree and returns
-// an updateId-only receipt, matching the provider contract.
-function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
+// A fake @partylayer/sdk client. submitOne submits through the SDK
+// submitTransaction method (the path that drives the wallet signing tab), so the
+// fake records the submitted command trees and answers with a receipt carrying
+// the committed updateId. ACS reads over ledgerApi are answered as before.
+function fakeClient(
+  receipt: PartyLayerTxReceipt = { updateId: "00feed", transactionHash: "h" },
+) {
   const connectCalls: unknown[] = [];
-  const calls: Array<Parameters<PartyLayerClient["submitTransaction"]>[0]> = [];
+  const submitCalls: PartyLayerCommandSubmission[] = [];
   const ledgerApiCalls: Array<Parameters<PartyLayerClient["ledgerApi"]>[0]> = [];
   let connected = false;
   const client: PartyLayerClient = {
@@ -36,7 +42,7 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
       connected = false;
     },
     async submitTransaction(params) {
-      calls.push(params);
+      submitCalls.push(params.signedTx);
       return receipt;
     },
     async ledgerApi(params) {
@@ -89,7 +95,7 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
       };
     },
   };
-  return { client, calls, connectCalls, ledgerApiCalls, isConnected: () => connected };
+  return { client, submitCalls, connectCalls, ledgerApiCalls, isConnected: () => connected };
 }
 
 function failingClient(error: Error) {
@@ -244,73 +250,76 @@ describe("PartyLayerProvider", () => {
   });
 
   it("single-admin swap: one command → one updateId-only request (no split, no recover)", async () => {
-    fake = fakeClient({ updateId: "update-xyz" });
+    fake = fakeClient({ updateId: "00feed", transactionHash: "h" });
     const p = ctx();
     await p.connect();
     const res = await p.submit(swapIntent);
-    expect(res.primaryCid).toBe("update-xyz");
-    expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
+    expect(res.primaryCid).toBe("00feed");
+    expect(res.auxiliaryCids?.updateId).toBe("00feed");
     // One command: nothing to split, so the updateId-only shape is kept and the
     // operator recovers the single cid at settle (operator-discovery).
     expect(res.createdAllocationCids).toBeUndefined();
     expect(recoverMock).not.toHaveBeenCalled();
-    expect(fake.calls).toHaveLength(1);
-    expect(fake.calls[0].signedTx.actAs).toEqual(["alice::1220a"]);
-    expect(fake.calls[0].signedTx.commandId).toMatch(/^swap-batch-/);
-    expect(fake.calls[0].signedTx.commands).toHaveLength(1);
-    expect(fake.calls[0].signedTx.commands[0]).toHaveProperty(
+    // Submit went through the SDK submit method, carrying the composed command tree.
+    expect(fake.submitCalls).toHaveLength(1);
+    expect(fake.submitCalls[0].actAs).toEqual(["alice::1220a"]);
+    expect(fake.submitCalls[0].commandId).toMatch(/^swap-batch-/);
+    expect(fake.submitCalls[0].commands).toHaveLength(1);
+    expect(fake.submitCalls[0].commands[0]).toHaveProperty(
       "ExerciseCommand.choice",
       "AllocationFactory_Allocate",
     );
   });
 
   it("cross-admin swap: two separate single-command requests, cids aggregated in order", async () => {
-    fake = fakeClient({ updateId: "update-xyz" });
+    fake = fakeClient({ updateId: "00feed", transactionHash: "h" });
     const p = ctx();
     await p.connect();
     const res = await p.submit(crossAdminSwapIntent);
     // Two separate wallet requests, each carrying exactly one Allocate.
-    expect(fake.calls).toHaveLength(2);
-    for (const call of fake.calls) {
-      const cmds = call.signedTx.commands as Array<{ ExerciseCommand: { choice: string } }>;
+    expect(fake.submitCalls).toHaveLength(2);
+    for (const call of fake.submitCalls) {
+      const cmds = call.commands as Array<{ ExerciseCommand: { choice: string } }>;
       expect(cmds).toHaveLength(1);
       expect(cmds[0].ExerciseCommand.choice).toBe("AllocationFactory_Allocate");
     }
     // Distinct command ids per request (dedup on the ledger).
-    expect(fake.calls[0].signedTx.commandId).not.toBe(fake.calls[1].signedTx.commandId);
-    // The two recovered cids, in canonical order, are what the settle consumes.
+    expect(fake.submitCalls[0].commandId).not.toBe(fake.submitCalls[1].commandId);
+    // The two recovered cids, in canonical order, are what the settle consumes,
+    // recovered by the committed updateId each submit returned.
     expect(recoverMock).toHaveBeenCalledTimes(2);
+    expect(recoverMock.mock.calls.map((c) => c[0])).toEqual(["00feed", "00feed"]);
     expect(recoverMock.mock.calls.map((c) => c[1])).toEqual(["alice::1220a", "alice::1220a"]);
     expect(res.createdAllocationCids).toEqual(["alloc-1", "alloc-2"]);
     expect(res.primaryCid).toBe("alloc-1");
   });
 
   it("add-liquidity: three separate single-command requests, three cids aggregated", async () => {
-    fake = fakeClient({ updateId: "update-xyz" });
+    fake = fakeClient({ updateId: "00feed", transactionHash: "h" });
     const p = ctx();
     await p.connect();
     const res = await p.submit(addLiquidityIntent);
     // Three separate wallet requests, one Allocate each, in canonical order
     // [base deposit, quote deposit, LP receipt].
-    expect(fake.calls).toHaveLength(3);
-    for (const call of fake.calls) {
-      const cmds = call.signedTx.commands as Array<{ ExerciseCommand: { choice: string } }>;
+    expect(fake.submitCalls).toHaveLength(3);
+    for (const call of fake.submitCalls) {
+      const cmds = call.commands as Array<{ ExerciseCommand: { choice: string } }>;
       expect(cmds).toHaveLength(1);
       expect(cmds[0].ExerciseCommand.choice).toBe("AllocationFactory_Allocate");
     }
-    expect(new Set(fake.calls.map((c) => c.signedTx.commandId)).size).toBe(3);
+    expect(new Set(fake.submitCalls.map((c) => c.commandId)).size).toBe(3);
     expect(recoverMock).toHaveBeenCalledTimes(3);
     expect(res.createdAllocationCids).toEqual(["alloc-1", "alloc-2", "alloc-3"]);
   });
 
   it("surfaces which allocation failed mid-sequence", async () => {
-    fake = fakeClient({ updateId: "update-xyz" });
-    // Fail the second submission only.
+    fake = fakeClient();
+    // Fail the second submit only.
     let n = 0;
     fake.client.submitTransaction = async () => {
       n += 1;
       if (n === 2) throw new Error("package not vetted");
-      return { updateId: "update-xyz" };
+      return { updateId: "00feed", transactionHash: "h" };
     };
     const p = ctx();
     await p.connect();
@@ -319,8 +328,8 @@ describe("PartyLayerProvider", () => {
     );
   });
 
-  it("rejects submit when the wallet receipt has no updateId", async () => {
-    fake = fakeClient({ transactionHash: "tx-hash-9" });
+  it("rejects submit when the receipt carries no updateId", async () => {
+    fake = fakeClient({ transactionHash: "h" });
     const p = ctx();
     await p.connect();
     await expect(p.submit(swapIntent)).rejects.toThrow(/no updateId/);
@@ -339,8 +348,9 @@ describe("PartyLayerProvider", () => {
 
     const holdings = await p.listHoldings("alice::1220a");
 
-    // ledger-end fetched at GET, then one active-contracts read per filter.
-    expect(fake.ledgerApiCalls).toHaveLength(3);
+    // ledger-end fetched at GET, then one active-contracts read per filter
+    // (HoldingV2 interface, HoldingV1 interface, Registry.V2 template).
+    expect(fake.ledgerApiCalls).toHaveLength(4);
     expect(fake.ledgerApiCalls[0]).toMatchObject({
       requestMethod: "GET",
       resource: "/v2/state/ledger-end",
@@ -348,7 +358,7 @@ describe("PartyLayerProvider", () => {
     const acsCalls = fake.ledgerApiCalls.filter(
       (c) => c.resource === "/v2/state/active-contracts",
     );
-    expect(acsCalls).toHaveLength(2);
+    expect(acsCalls).toHaveLength(3);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const acsBodies = acsCalls.map((c) => JSON.parse(c.body ?? "{}") as any);
     for (let i = 0; i < acsCalls.length; i++) {
@@ -364,6 +374,13 @@ describe("PartyLayerProvider", () => {
         (f) =>
           f.InterfaceFilter?.value?.interfaceId ===
           "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding",
+      ),
+    ).toBe(true);
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.InterfaceFilter?.value?.interfaceId ===
+          "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding",
       ),
     ).toBe(true);
     expect(

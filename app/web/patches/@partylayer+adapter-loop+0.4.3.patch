@@ -1,5 +1,5 @@
 diff --git a/node_modules/@partylayer/adapter-loop/dist/index.js b/node_modules/@partylayer/adapter-loop/dist/index.js
-index 15304ca..c175cca 100644
+index 15304ca..fbdce07 100644
 --- a/node_modules/@partylayer/adapter-loop/dist/index.js
 +++ b/node_modules/@partylayer/adapter-loop/dist/index.js
 @@ -110,8 +110,8 @@ var LoopAdapter = class {
@@ -13,7 +13,46 @@ index 15304ca..c175cca 100644
            },
            onAccept: async (provider) => {
              if (resolved) return;
-@@ -376,6 +376,9 @@ var LoopAdapter = class {
+@@ -314,20 +314,32 @@ var LoopAdapter = class {
+         // Passthrough: signedTx is opaque, the caller owns its shape.
+         params.signedTx,
+         {
+-          message: "Submit transaction via PartyLayer"
++          message: "Submit transaction via PartyLayer",
++          executionMode: "wait"
+         }
+       );
+-      const r = result;
+-      if (!r || typeof r.command_id !== "string") {
++      const r = result || {};
++      // TEMPORARY diagnostic: confirm the waited payload shape on the next live run.
++      try {
++        console.info("[loop-adapter] waited submit result", r && typeof r === "object" ? { keys: Object.keys(r), status: r.status, hasUpdateId: typeof r.update_id === "string", hasUpdateData: r.update_data !== void 0 } : typeof r);
++      } catch {
++      }
++      if (r.error_message || r.error && r.error.error_message) {
++        throw new Error(`Loop Wallet submitTransaction failed: ${r.error && r.error.error_message || r.error_message}`);
++      }
++      if (typeof r.status === "string" && /^(failed|failure|rejected|error|errored|aborted|abort|timeout|timed_out|cancelled|canceled|denied)$/i.test(r.status)) {
++        throw new Error(`Loop Wallet submitTransaction did not complete (status=${r.status}).`);
++      }
++      if (typeof r.update_id !== "string" && typeof r.updateId !== "string" && typeof r.command_id !== "string" && typeof r.submission_id !== "string") {
+         throw new Error(
+-          `Loop Wallet submitTransaction returned an unexpected response shape. Expected { command_id, submission_id } but received ${safePreview(r)}. Likely the popup closed before confirmation or the wallet server returned an error payload. Ensure the Daml template ID uses the fully-qualified package-prefixed form (e.g. '#splice-amulet:Splice.Amulet:Amulet') \u2014 Loop does not accept the short Canton form.`
++          `Loop Wallet submitTransaction returned an unexpected response shape. Expected a committed transaction with update_id but received ${safePreview(r)}. Likely the popup closed before confirmation or the wallet server returned an error payload.`
+         );
+       }
+       return {
+-        transactionHash: core.toTransactionHash(r.command_id),
++        transactionHash: core.toTransactionHash(r.command_id || r.update_id || r.submission_id),
+         submittedAt: Date.now(),
+         commandId: r.command_id,
+-        updateId: r.submission_id ?? r.command_id
++        updateId: r.update_id ?? r.updateId ?? r.submission_id ?? r.command_id
+       };
+     } catch (err) {
+       throw core.mapUnknownErrorToPartyLayerError(err, {
+@@ -376,6 +388,9 @@ var LoopAdapter = class {
        if (this.isSubmitRoute(requestMethod, resource)) {
          return this.handleSubmitCommand(resource, body);
        }
@@ -23,7 +62,7 @@ index 15304ca..c175cca 100644
        throw new core.CapabilityNotSupportedError(
          this.walletId,
          `ledgerApi endpoint "${route}" is not supported by Loop wallet. Supported: POST /v2/state/acs, GET /v2/state/acs/active-contracts, POST /v2/commands/submit, POST /v2/commands/submit-and-wait. For full Ledger API access, use Console or Nightly wallet.`
-@@ -434,6 +437,13 @@ var LoopAdapter = class {
+@@ -434,6 +449,13 @@ var LoopAdapter = class {
                interfaceId = templates[0].interfaceId;
                break;
              }
@@ -37,7 +76,7 @@ index 15304ca..c175cca 100644
            }
          }
          if (!templateId && parsed.templateId) {
-@@ -550,9 +560,10 @@ var LoopAdapter = class {
+@@ -550,9 +572,10 @@ var LoopAdapter = class {
    mapNetworkToLoop(network) {
      if (network === "local") return "local";
      if (network === "devnet") return "devnet";
@@ -50,7 +89,7 @@ index 15304ca..c175cca 100644
    }
  };
 diff --git a/node_modules/@partylayer/adapter-loop/dist/index.mjs b/node_modules/@partylayer/adapter-loop/dist/index.mjs
-index 887898a..cee068d 100644
+index 887898a..aacc9ea 100644
 --- a/node_modules/@partylayer/adapter-loop/dist/index.mjs
 +++ b/node_modules/@partylayer/adapter-loop/dist/index.mjs
 @@ -108,8 +108,8 @@ var LoopAdapter = class {
@@ -64,7 +103,46 @@ index 887898a..cee068d 100644
            },
            onAccept: async (provider) => {
              if (resolved) return;
-@@ -374,6 +374,9 @@ var LoopAdapter = class {
+@@ -312,20 +312,32 @@ var LoopAdapter = class {
+         // Passthrough: signedTx is opaque, the caller owns its shape.
+         params.signedTx,
+         {
+-          message: "Submit transaction via PartyLayer"
++          message: "Submit transaction via PartyLayer",
++          executionMode: "wait"
+         }
+       );
+-      const r = result;
+-      if (!r || typeof r.command_id !== "string") {
++      const r = result || {};
++      // TEMPORARY diagnostic: confirm the waited payload shape on the next live run.
++      try {
++        console.info("[loop-adapter] waited submit result", r && typeof r === "object" ? { keys: Object.keys(r), status: r.status, hasUpdateId: typeof r.update_id === "string", hasUpdateData: r.update_data !== void 0 } : typeof r);
++      } catch {
++      }
++      if (r.error_message || r.error && r.error.error_message) {
++        throw new Error(`Loop Wallet submitTransaction failed: ${r.error && r.error.error_message || r.error_message}`);
++      }
++      if (typeof r.status === "string" && /^(failed|failure|rejected|error|errored|aborted|abort|timeout|timed_out|cancelled|canceled|denied)$/i.test(r.status)) {
++        throw new Error(`Loop Wallet submitTransaction did not complete (status=${r.status}).`);
++      }
++      if (typeof r.update_id !== "string" && typeof r.updateId !== "string" && typeof r.command_id !== "string" && typeof r.submission_id !== "string") {
+         throw new Error(
+-          `Loop Wallet submitTransaction returned an unexpected response shape. Expected { command_id, submission_id } but received ${safePreview(r)}. Likely the popup closed before confirmation or the wallet server returned an error payload. Ensure the Daml template ID uses the fully-qualified package-prefixed form (e.g. '#splice-amulet:Splice.Amulet:Amulet') \u2014 Loop does not accept the short Canton form.`
++          `Loop Wallet submitTransaction returned an unexpected response shape. Expected a committed transaction with update_id but received ${safePreview(r)}. Likely the popup closed before confirmation or the wallet server returned an error payload.`
+         );
+       }
+       return {
+-        transactionHash: toTransactionHash(r.command_id),
++        transactionHash: toTransactionHash(r.command_id || r.update_id || r.submission_id),
+         submittedAt: Date.now(),
+         commandId: r.command_id,
+-        updateId: r.submission_id ?? r.command_id
++        updateId: r.update_id ?? r.updateId ?? r.submission_id ?? r.command_id
+       };
+     } catch (err) {
+       throw mapUnknownErrorToPartyLayerError(err, {
+@@ -374,6 +386,9 @@ var LoopAdapter = class {
        if (this.isSubmitRoute(requestMethod, resource)) {
          return this.handleSubmitCommand(resource, body);
        }
@@ -74,7 +152,7 @@ index 887898a..cee068d 100644
        throw new CapabilityNotSupportedError(
          this.walletId,
          `ledgerApi endpoint "${route}" is not supported by Loop wallet. Supported: POST /v2/state/acs, GET /v2/state/acs/active-contracts, POST /v2/commands/submit, POST /v2/commands/submit-and-wait. For full Ledger API access, use Console or Nightly wallet.`
-@@ -432,6 +435,13 @@ var LoopAdapter = class {
+@@ -432,6 +447,13 @@ var LoopAdapter = class {
                interfaceId = templates[0].interfaceId;
                break;
              }
@@ -88,7 +166,7 @@ index 887898a..cee068d 100644
            }
          }
          if (!templateId && parsed.templateId) {
-@@ -548,9 +558,10 @@ var LoopAdapter = class {
+@@ -548,9 +570,10 @@ var LoopAdapter = class {
    mapNetworkToLoop(network) {
      if (network === "local") return "local";
      if (network === "devnet") return "devnet";

@@ -151,14 +151,15 @@ describe('WalletConnectProvider holding discovery', () => {
 
     const holdings = await p.listHoldings('alice');
 
-    // ledger-end fetched, then one active-contracts read per filter.
-    expect(request).toHaveBeenCalledTimes(3);
+    // ledger-end fetched, then one active-contracts read per filter
+    // (HoldingV2 interface, HoldingV1 interface, Registry.V2 template).
+    expect(request).toHaveBeenCalledTimes(4);
     const acsBodies = (request.mock.calls as unknown[][])
       .map((c) => (c[0] as { params: [{ resource: string; body?: string }] }).params[0])
       .filter((p) => p.resource === '/v2/state/active-contracts')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .map((p) => JSON.parse(p.body ?? '{}') as any);
-    expect(acsBodies).toHaveLength(2);
+    expect(acsBodies).toHaveLength(3);
     for (const b of acsBodies) {
       expect(b.activeAtOffset).toBe(7);
       expect(Object.keys(b.filter.filtersByParty)).toEqual(['alice']);
@@ -171,6 +172,13 @@ describe('WalletConnectProvider holding discovery', () => {
         (f) =>
           f.InterfaceFilter?.value?.interfaceId ===
           '#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding',
+      ),
+    ).toBe(true);
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.InterfaceFilter?.value?.interfaceId ===
+          '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding',
       ),
     ).toBe(true);
     expect(

@@ -40,6 +40,14 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     queryKey: ['context'],
     queryFn: ledger.getContext,
   });
+  // Spendable balance for the deposit sufficiency check + max hint. Uses the
+  // wallet's aggregate balance (getBalances), since an external wallet may not
+  // surface per-holding contracts in the `holdings` prop.
+  const { data: balances } = useQuery({
+    queryKey: ['balances', party],
+    queryFn: () => (party ? ledger.getBalances(party) : Promise.resolve([])),
+    enabled: !!party,
+  });
   // Live mid-price USD for both legs of the pool, and 24h stats / price
   // history from the indexer. All nullable — when no data is available
   // the UI renders "—" rather than a hallucinated delta.
@@ -54,8 +62,11 @@ export function PoolDetail({ pool, holdings, lpHeld, onBack }: Props) {
     void queryClient.invalidateQueries({ queryKey: ['pools'] });
     void queryClient.invalidateQueries({ queryKey: ['holdings'] });
   };
-  const balanceOf = (s: string) =>
-    holdings.find((h) => h.instrumentId === s && !h.locked)?.amount ?? 0;
+  const balanceOf = (s: string) => {
+    const agg = balances?.find((b) => b.instrumentId.id === s);
+    if (agg) return agg.available;
+    return holdings.find((h) => h.instrumentId === s && !h.locked)?.amount ?? 0;
+  };
   // An Unfunded pool has no reserves and therefore no ratio to match: the first
   // deposit sets the opening price, so both amounts stay independent inputs.
   const isFirstDeposit =

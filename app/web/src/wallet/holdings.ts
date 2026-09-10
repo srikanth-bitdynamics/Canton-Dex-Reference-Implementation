@@ -16,6 +16,19 @@ import type { Party } from "./types";
 export const HOLDING_V2_INTERFACE_ID =
   "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding";
 
+// Canton Coin's Amulet implements both HoldingV1 and HoldingV2 on the same
+// contract. A wallet whose HoldingV2 interface query returns nothing may still
+// answer the HoldingV1 query, and the cid it yields is the same underlying
+// Amulet contract — usable directly as a V2 allocation input.
+export const HOLDING_V1_INTERFACE_ID =
+  "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding";
+
+// Delay between successive active-contracts reads on one funding resolve, so a
+// rate-limiting wallet (Loop → HTTP 429) is not hit with a tight burst. Zero
+// under test so the suite does not wait on real timers.
+export const ACS_READ_PACE_MS =
+  typeof process !== "undefined" && process.env?.VITEST ? 0 : 400;
+
 /**
  * A Ledger API read routed through a provider's own transport. `/v2/state/acs`
  * shorthand is not part of the Canton JSON Ledger API: holdings are read from
@@ -31,9 +44,11 @@ export interface AcsRequest {
 
 /**
  * The per-party cumulative filters that discover every fundable holding: the
- * token-standard Holding interface (its view requested) across all registries,
+ * token-standard Holding interface (its view requested) across all registries —
+ * HoldingV2 first, then HoldingV1 for a wallet that only answers the V1 query —
  * then the DEX's own Registry.V2 template for a participant that surfaces it
- * without the interface view.
+ * without the interface view. Each filter is queried and tolerated
+ * independently; results are deduped by contract id.
  */
 function holdingCumulativeFilters(packagePrefix: string): unknown[] {
   return [
@@ -42,6 +57,17 @@ function holdingCumulativeFilters(packagePrefix: string): unknown[] {
         InterfaceFilter: {
           value: {
             interfaceId: HOLDING_V2_INTERFACE_ID,
+            includeInterfaceView: true,
+            includeCreatedEventBlob: false,
+          },
+        },
+      },
+    },
+    {
+      identifierFilter: {
+        InterfaceFilter: {
+          value: {
+            interfaceId: HOLDING_V1_INTERFACE_ID,
             includeInterfaceView: true,
             includeCreatedEventBlob: false,
           },
@@ -267,7 +293,8 @@ export function dedupeHoldings(holdings: Holding[]): Holding[] {
  * Discover the owner's fundable holdings across every registry through a
  * provider's own ledger-read transport. Reads the ledger-end offset, then
  * queries `/v2/state/active-contracts` at that offset for each cumulative
- * filter (the HoldingV2 interface, then the DEX template), per-party. `request`
+ * filter (the HoldingV2 interface, the HoldingV1 interface, then the DEX
+ * template), per-party. `request`
  * returns whatever the provider's `ledgerApi`/`canton_ledgerApi` transport
  * yields (string, envelope, or object); it is parsed uniformly. A filter that
  * fails is tolerated as long as one succeeds — a participant may not host the
@@ -286,7 +313,13 @@ export async function discoverHoldingsAcrossRegistries(
   let successfulReads = 0;
   let lastError: unknown = null;
 
+  let firstRead = true;
   for (const cumulative of holdingCumulativeFilters(packagePrefix)) {
+    // Space the reads: some wallets (Loop) answer a burst of active-contracts
+    // queries with HTTP 429. Pacing keeps a multi-filter funding read under that
+    // limit so it rarely has to fall back to the retry backoff.
+    if (!firstRead) await new Promise((r) => setTimeout(r, ACS_READ_PACE_MS));
+    firstRead = false;
     try {
       const response = await request({
         method: "POST",
@@ -374,32 +407,13 @@ function parseConcreteTemplateHoldings(
     .filter((holding): holding is Holding => !!holding);
 }
 
-/**
- * Spendable holdings for FUNDING a specific owner + target instrument. Runs the
- * standard interface + Registry.V2 discovery first (real cids for every
- * compliant wallet). If that finds nothing for the instrument AND a
- * wallet-compat concrete template is registered for it, issues one additional
- * ACS query filtered by that concrete template and returns its real contract
- * ids as spendable holdings — the fallback that lets a wallet whose HoldingV2
- * interface query is empty (e.g. Loop for Amulet) still fund. Wallet-agnostic:
- * the fallback fires only on an empty interface result plus a compat entry, so
- * an instrument with no compat entry (e.g. USDCx) stays empty.
- */
-export async function resolveSpendableHoldings(
+/** One ACS read filtered by a concrete Holding template, parsed to holdings. */
+async function readConcreteTemplateHoldings(
   owner: Party,
-  instrument: InstrumentId,
-  packagePrefix: string,
+  instrument: { admin: string; id: string },
+  templateId: string,
   request: (req: AcsRequest) => Promise<unknown>,
 ): Promise<Holding[]> {
-  const discovered = await discoverHoldingsAcrossRegistries(owner, packagePrefix, request);
-  const matching = discovered.filter(
-    (h) => h.instrumentId === instrument.id && h.admin === instrument.admin,
-  );
-  if (matching.length > 0) return matching;
-
-  const templateId = concreteHoldingTemplate(instrument);
-  if (!templateId) return matching; // no compat entry (e.g. USDCx) → stays empty
-
   const endResponse = await request({ method: "GET", resource: "/v2/state/ledger-end" });
   const activeAtOffset = parseLedgerEndOffset(endResponse);
   const raw = await request({
@@ -407,10 +421,54 @@ export async function resolveSpendableHoldings(
     resource: "/v2/state/active-contracts",
     body: activeContractsBody(owner, activeAtOffset, templateFilterCumulative(templateId)),
   });
-  // Temporary probes: the live re-test uses these to confirm whether the wallet
-  // returns real Canton contract ids for the compat template.
-  console.info("[funding] concrete-template acs", { templateId, raw });
   const spendable = parseConcreteTemplateHoldings(raw, owner, instrument);
-  console.info("[funding] spendable cids", spendable.map((h) => h.contractId));
+  console.info("[funding] concrete-template cids", {
+    templateId,
+    cids: spendable.map((h) => h.contractId),
+  });
   return spendable;
+}
+
+/**
+ * Spendable holdings for FUNDING a specific owner + target instrument.
+ *
+ * When a wallet-compat concrete template is registered for the instrument
+ * (e.g. CC → Amulet), read that template FIRST. A rate-limiting wallet (Loop)
+ * answers a burst of interface/Registry discovery queries for such a token with
+ * HTTP 429 but serves it by concrete template, so the mapped read avoids those
+ * doomed queries and their retries. Only if it finds nothing (or there is no
+ * compat entry, e.g. USDCx) does the standard interface + Registry.V2 discovery
+ * run — the path every compliant wallet uses. The InstrumentId → template map
+ * lives in the wallet-compat descriptor, never in DEX/pool code.
+ */
+export async function resolveSpendableHoldings(
+  owner: Party,
+  instrument: InstrumentId,
+  packagePrefix: string,
+  request: (req: AcsRequest) => Promise<unknown>,
+): Promise<Holding[]> {
+  const templateId = concreteHoldingTemplate(instrument);
+  if (templateId) {
+    const spendable = await readConcreteTemplateHoldings(
+      owner,
+      instrument,
+      templateId,
+      request,
+    );
+    if (spendable.length > 0) return spendable;
+  }
+
+  // No compat entry, or the concrete read found nothing: fall back to the
+  // standard interface + Registry.V2 discovery. It can throw on a wallet that
+  // can't resolve every filter (Loop rejects our un-vetted Registry.V2 query) —
+  // treat that as "found nothing" rather than aborting.
+  let discovered: Holding[] = [];
+  try {
+    discovered = await discoverHoldingsAcrossRegistries(owner, packagePrefix, request);
+  } catch (err) {
+    console.warn("[funding] generic holding discovery failed", err);
+  }
+  return discovered.filter(
+    (h) => h.instrumentId === instrument.id && h.admin === instrument.admin,
+  );
 }

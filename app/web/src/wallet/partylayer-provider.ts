@@ -145,8 +145,44 @@ export function parsePartyLayerHoldings(response: string, owner: Party): Holding
   return parseHoldingsAcsResponse(response, owner);
 }
 
-// Submit one prepared request and resolve to its updateId. PartyLayer's receipt
-// is updateId-only; a receipt without one cannot drive operator-discovery.
+// Some wallets throttle their active-contracts endpoint (Loop answers a burst of
+// reads with HTTP 429). A funding resolve issues several ACS reads in quick
+// succession, so treat a rate-limit response as transient: back off and retry
+// rather than failing the whole flow. Detection is by the surfaced status text
+// because the adapter re-wraps the underlying error into a plain message.
+export const ACS_RETRY_DELAYS_MS = [600, 1500, 3500];
+
+export function isRateLimited(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    /\b429\b/.test(message) ||
+    /too many requests/i.test(message) ||
+    /rate.?limit/i.test(message)
+  );
+}
+
+export async function withAcsRetry<T>(
+  op: () => Promise<T>,
+  delays: readonly number[] = ACS_RETRY_DELAYS_MS,
+  sleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await op();
+    } catch (err) {
+      if (!isRateLimited(err) || attempt >= delays.length) throw err;
+      await sleep(delays[attempt]);
+    }
+  }
+}
+
+// Submit one prepared request through the SDK submit method and resolve to its
+// receipt updateId. The Loop adapter submits in wait mode, so the receipt's
+// updateId is the committed ledger updateId operator recovery walks the
+// transaction tree by (not a fire-and-forget submission id). Going through
+// submitTransaction (rather than a raw wait route) is what drives the wallet's
+// signing tab.
 async function submitOne(
   client: PartyLayerClient,
   submission: PreparedSubmission,
@@ -355,16 +391,22 @@ export class PartyLayerProvider implements WalletProvider {
     return this.client;
   }
 
-  /** ACS read transport over the wallet's `ledgerApi` (body serialized). */
+  /**
+   * ACS read transport over the wallet's `ledgerApi` (body serialized). Each read
+   * is retried with backoff on a wallet rate-limit (429) so a burst of funding
+   * reads does not fail the flow.
+   */
   private ledgerRequest(
     client: PartyLayerClient,
   ): (req: AcsRequest) => Promise<unknown> {
     return (req) =>
-      client.ledgerApi({
-        requestMethod: req.method,
-        resource: req.resource,
-        ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
-      });
+      withAcsRetry(() =>
+        client.ledgerApi({
+          requestMethod: req.method,
+          resource: req.resource,
+          ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
+        }),
+      );
   }
 
   private setStatus(s: WalletConnectionStatus): void {

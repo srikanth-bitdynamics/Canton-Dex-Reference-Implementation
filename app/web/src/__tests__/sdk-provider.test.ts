@@ -377,8 +377,9 @@ describe("SdkProvider", () => {
     await provider.connect();
     const holdings = await provider.listHoldings("alice::1220a");
 
-    // ledger-end fetched, then one active-contracts read per filter.
-    expect(sdk.ledgerApi).toHaveBeenCalledTimes(3);
+    // ledger-end fetched, then one active-contracts read per filter
+    // (HoldingV2 interface, HoldingV1 interface, Registry.V2 template).
+    expect(sdk.ledgerApi).toHaveBeenCalledTimes(4);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const calls = sdk.ledgerApi.mock.calls.map((c) => c[0] as any);
     expect(calls[0]).toMatchObject({
@@ -386,7 +387,7 @@ describe("SdkProvider", () => {
       resource: "/v2/state/ledger-end",
     });
     const acsCalls = calls.filter((c) => c.resource === "/v2/state/active-contracts");
-    expect(acsCalls).toHaveLength(2);
+    expect(acsCalls).toHaveLength(3);
     for (const c of acsCalls) {
       expect(c.requestMethod).toBe("post");
       expect(c.body.activeAtOffset).toBe(42);
@@ -400,6 +401,14 @@ describe("SdkProvider", () => {
         (f) =>
           f.InterfaceFilter?.value?.interfaceId ===
             "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding" &&
+          f.InterfaceFilter?.value?.includeInterfaceView === true,
+      ),
+    ).toBe(true);
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.InterfaceFilter?.value?.interfaceId ===
+            "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding" &&
           f.InterfaceFilter?.value?.includeInterfaceView === true,
       ),
     ).toBe(true);

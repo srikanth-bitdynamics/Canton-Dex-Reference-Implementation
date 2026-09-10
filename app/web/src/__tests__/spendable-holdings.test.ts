@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  HOLDING_V1_INTERFACE_ID,
   HOLDING_V2_INTERFACE_ID,
   resolveSpendableHoldings,
   type AcsRequest,
@@ -28,7 +29,13 @@ function makeRequest(opts: {
   concreteResult?: unknown[];
   offset?: number;
 }) {
-  const calls: Array<{ method: string; resource: string; templateId?: string; isInterface?: boolean }> = [];
+  const calls: Array<{
+    method: string;
+    resource: string;
+    templateId?: string;
+    isInterface?: boolean;
+    interfaceId?: string;
+  }> = [];
   const request = async (req: AcsRequest): Promise<unknown> => {
     if (req.resource === "/v2/state/ledger-end") {
       calls.push({ method: req.method, resource: req.resource });
@@ -38,7 +45,12 @@ function makeRequest(opts: {
     const body = req.body as any;
     const idf = body.filter.filtersByParty[OWNER].cumulative[0].identifierFilter;
     if (idf.InterfaceFilter) {
-      calls.push({ method: req.method, resource: req.resource, isInterface: true });
+      calls.push({
+        method: req.method,
+        resource: req.resource,
+        isInterface: true,
+        interfaceId: idf.InterfaceFilter.value.interfaceId,
+      });
       return { activeContracts: opts.interfaceResult ?? [] };
     }
     const templateId = idf.TemplateFilter.value.templateId as string;
@@ -84,13 +96,11 @@ describe("concreteHoldingTemplate", () => {
 describe("resolveSpendableHoldings", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("falls back to a concrete-template ACS query when the interface path is empty and a compat entry exists", async () => {
+  it("reads the concrete compat template for a compat instrument and returns its real cids", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    // Interface + Registry.V2 both empty for CC; the compat (Amulet) template
-    // returns a real, package-prefixed contract id in Loop's wrapped shape.
+    // The compat (Amulet) template returns a real, package-prefixed contract id
+    // in Loop's wrapped shape.
     const { request, calls } = makeRequest({
-      interfaceResult: [],
-      registryResult: [],
       concreteResult: [
         { template_id: AMULET_TEMPLATE, contract_id: "00ccrealcid", amount: "5.0000000000" },
       ],
@@ -109,14 +119,13 @@ describe("resolveSpendableHoldings", () => {
         locked: false,
       },
     ]);
-    // The concrete-template query actually fired, filtered by the compat template.
+    // The concrete-template query fired, filtered by the compat template.
     expect(calls.some((c) => c.templateId === AMULET_TEMPLATE)).toBe(true);
-    // Both probe logs emitted for the live re-test.
+    // The concrete-template probe log is emitted for the live re-test.
     expect(info).toHaveBeenCalledWith(
-      "[funding] concrete-template acs",
-      expect.objectContaining({ templateId: AMULET_TEMPLATE }),
+      "[funding] concrete-template cids",
+      expect.objectContaining({ templateId: AMULET_TEMPLATE, cids: ["00ccrealcid"] }),
     );
-    expect(info).toHaveBeenCalledWith("[funding] spendable cids", ["00ccrealcid"]);
   });
 
   it("reads Amulet's nested ExpiringAmount.initialAmount for the fallback amount", async () => {
@@ -143,34 +152,32 @@ describe("resolveSpendableHoldings", () => {
     ]);
   });
 
-  it("does NOT issue the concrete-template query when the interface path already returns the instrument", async () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+  it("reads the concrete compat template first and skips interface discovery for a compat instrument", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
     const { request, calls } = makeRequest({
       interfaceResult: [interfaceHolding("if-cc-1", CC, "3.0000000000")],
       concreteResult: [
-        { template_id: AMULET_TEMPLATE, contract_id: "should-not-be-used", amount: "9" },
+        { template_id: AMULET_TEMPLATE, contract_id: "00ccrealcid", amount: "9.0000000000" },
       ],
     });
 
     const spendable = await resolveSpendableHoldings(OWNER, CC, PKG, request);
 
+    // Compat instrument: the Amulet template is read first and used; the
+    // interface/Registry discovery reads never fire (avoiding the 429 burst).
     expect(spendable).toEqual([
       {
-        contractId: "if-cc-1",
+        contractId: "00ccrealcid",
         owner: OWNER,
         admin: CC.admin,
         instrumentId: "Amulet",
-        amount: 3,
-        amountRaw: "3.0000000000",
+        amount: 9,
+        amountRaw: "9.0000000000",
         locked: false,
       },
     ]);
-    // No fallback: the Amulet template was never queried, no fallback probe logged.
-    expect(calls.some((c) => c.templateId === AMULET_TEMPLATE)).toBe(false);
-    expect(info).not.toHaveBeenCalledWith(
-      "[funding] concrete-template acs",
-      expect.anything(),
-    );
+    expect(calls.some((c) => c.templateId === AMULET_TEMPLATE)).toBe(true);
+    expect(calls.some((c) => c.isInterface)).toBe(false);
   });
 
   it("returns empty and issues NO fallback when the instrument has no compat entry (USDCx)", async () => {
@@ -188,5 +195,22 @@ describe("resolveSpendableHoldings", () => {
       "[funding] concrete-template acs",
       expect.anything(),
     );
+  });
+
+  it("discovers across the HoldingV2 interface, the HoldingV1 interface, and the Registry.V2 template", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const { request, calls } = makeRequest({ interfaceResult: [], registryResult: [] });
+
+    await resolveSpendableHoldings(OWNER, USDCX, PKG, request);
+
+    const interfaceIds = calls
+      .filter((c) => c.isInterface)
+      .map((c) => c.interfaceId);
+    expect(interfaceIds).toContain(HOLDING_V2_INTERFACE_ID);
+    expect(interfaceIds).toContain(HOLDING_V1_INTERFACE_ID);
+    // The DEX's own Registry.V2 template is still queried alongside the interfaces.
+    expect(
+      calls.some((c) => c.templateId?.endsWith("CantonDex.Registry.V2:Holding")),
+    ).toBe(true);
   });
 });

@@ -161,7 +161,7 @@ requestAdd
 requestAdd fx recipient baseAmount quoteAmount lpAmount settleAt now =
   submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid = fx.poolCid; recipient; baseAmount; quoteAmount; lpAmount
-    requestedAt = now; settleAt
+    requestedAt = now; settleAt; authBinding = None
 
 -- The remove-side counterpart of `requestAdd`: the operator posts the request
 -- naming the base/quote amounts to return and how much LP to burn.
@@ -171,7 +171,7 @@ requestRemove
 requestRemove fx holder baseOuts quoteOuts lpBurnAmount settleAt now =
   submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestRemoveLiquidity with
     poolCid = fx.poolCid; holder; baseOuts; quoteOuts; lpBurnAmount
-    requestedAt = now; settleAt
+    requestedAt = now; settleAt; authBinding = None
 
 -- Complete one allocation returned by a PoolLiquidityRules preview. The
 -- fixture uses one Registry.V2 for both asset and LP-token operations.
@@ -1069,9 +1069,10 @@ testAcceptCreatesEvidenceThenSettleSucceeds = do
         baseAmount = 10.0; quoteAmount = 200000.0; minLpTokens = 0.0
         knownTotalLpSupply = 0.0
 
-  -- alice (the request observer) exercises the standard accept → consumes the
-  -- request and leaves the acceptance evidence.
-  _ <- submit alice $ exerciseCmd (toInterfaceContractId @V2.AllocationRequest reqCid)
+  -- alice exercises the standard accept → consumes the request and leaves the
+  -- acceptance evidence. The request is operator-only on-ledger; readAs stands
+  -- in for the real-ledger disclosure the wallet receives.
+  _ <- submit (actAs [alice] <> readAs [fx.operator]) $ exerciseCmd (toInterfaceContractId @V2.AllocationRequest reqCid)
     (V2.AllocationRequest_Accept with actors = [alice]; extraArgs = emptyExtraArgs)
 
   -- Settlement must reject a consumed request without acceptance evidence.
@@ -1151,7 +1152,9 @@ testBatchedUtilityAddLiquidity = do
               ] ) ]
 
   -- ONE top-level command: create the utility and execute the whole batch.
-  res <- submit alice $ createAndExerciseCmd
+  -- readAs the operator stands in for the real-ledger disclosure of the
+  -- operator-only request the batched accept consumes.
+  res <- submit (actAs [alice] <> readAs [fx.operator]) $ createAndExerciseCmd
     (BU.BatchingUtility with user = alice)
     BU.BatchingUtility_ExecuteBatch with
       inputHoldingMap

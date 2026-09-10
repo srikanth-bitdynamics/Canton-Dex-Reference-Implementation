@@ -122,7 +122,7 @@ testDvpAddRejectsEmptyContext = do
     poolCid; recipient = lpRegistrar
     baseAmount = 10.0; quoteAmount = 200000.0
     lpAmount = PM.sqrtDecimal 2000000.0
-    requestedAt = now; settleAt = None
+    requestedAt = now; settleAt = None; authBinding = None
   Some req <- queryContractId operator reqCid
   submitMustFail lpRegistrar $
     exerciseCmd factoryCid V2.AllocationFactory_Allocate with
@@ -155,7 +155,7 @@ authorAddAllocations operator factoryCid poolCid dvpCid recipient baseAmount quo
   reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid; recipient; baseAmount; quoteAmount
     lpAmount = PM.sqrtDecimal (baseAmount * quoteAmount)
-    requestedAt = now; settleAt = None
+    requestedAt = now; settleAt = None; authBinding = None
   Some req <- queryContractId operator reqCid
   let mkOne spec = do
         res <- submit recipient $ exerciseCmd factoryCid V2.AllocationFactory_Allocate with

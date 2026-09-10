@@ -31,7 +31,7 @@
 //
 // Env (ledger + parties):
 //   CANTON_LEDGER_URL, CANTON_LEDGER_TOKEN, CANTON_SYNCHRONIZER,
-//   CANTON_DEX_PACKAGE_ID (e.g. #canton-dex-trading-v2),
+//   CANTON_DEX_PACKAGE_ID (e.g. #canton-dex),
 //   CANTON_ALLOC_INSTR_PACKAGE_ID (e.g. #splice-api-token-allocation-instruction-v2),
 //   CANTON_USER_ID (default ledger-api-user),
 //   CANTON_OPERATOR -- the venue party; admin + lpRegistrar are read off the

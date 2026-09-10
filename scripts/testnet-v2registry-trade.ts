@@ -104,7 +104,7 @@ async function queryHoldings(party: string, instrumentId: string) {
                   TemplateFilter: {
                     value: {
                       // Canton 3.5+ requires `#package-name` in query filters.
-                      templateId: `#canton-dex-trading-v2:CantonDex.Registry.V2:Holding`,
+                      templateId: `#canton-dex:CantonDex.Registry.V2:Holding`,
                       includeCreatedEventBlob: false,
                     },
                   },

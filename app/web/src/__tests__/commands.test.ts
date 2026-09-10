@@ -42,7 +42,7 @@ function exercisesOf(out: { commands: unknown[] }): ExerciseCmd[] {
 
 const ctx: ComposeContext = {
   party: 'alice::1220a',
-  packagePrefix: '#canton-dex-trading-v2',
+  packagePrefix: '#canton-dex',
   now: () => FIXED_NOW,
 };
 
@@ -199,7 +199,7 @@ describe('composeCommands', () => {
                 "side": "Bid",
                 "trader": "alice::1220a",
               },
-              "templateId": "#canton-dex-trading-v2:CantonDex.Dex.OrderFundingRequest:OrderFundingRequest",
+              "templateId": "#canton-dex:CantonDex.Dex.OrderFundingRequest:OrderFundingRequest",
             },
           },
         ],
@@ -508,7 +508,7 @@ describe('composeCommands', () => {
 
   // The external-wallet invariant: every allocation-authoring flow emits ONLY
   // direct Token-Standard AllocationFactory_Allocate exercises against the asset
-  // registry's factory — never a DEX (canton-dex-trading-v2 / CantonDex.*)
+  // registry's factory — never a DEX (canton-dex / CantonDex.*)
   // template, the batching utility, or an AllocationRequest_Accept.
   it('external-wallet invariant: only direct AllocationFactory_Allocate, no DEX or utility templates', () => {
     const singleSwap: WalletIntent = {
@@ -606,7 +606,7 @@ describe('composeCommands', () => {
       }
       const serialized = JSON.stringify(out.commands);
       for (const forbidden of [
-        'canton-dex-trading-v2',
+        'canton-dex',
         'splice-util-token-standard-wallet',
         'CantonDex.',
         'BatchingUtility',

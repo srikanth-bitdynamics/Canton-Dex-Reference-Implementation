@@ -162,7 +162,7 @@ This repository separates three representations:
 trading/**/*.daml
     │ dpm build
     ▼
-trading/.daml/dist/canton-dex-trading-v2-1.0.0.dar
+trading/.daml/dist/canton-dex-1.0.0.dar
     │ upload / vet for the target network
     ▼
 Canton participant

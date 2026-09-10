@@ -8,7 +8,7 @@
 //   CANTON_OPERATOR      Operator party (DEX market venue).
 //   CANTON_LP_REGISTRAR  LP registrar party.
 //   CANTON_ADMIN         Asset admin party.
-//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex-trading-v2`) for template ids.
+//   CANTON_DEX_PACKAGE_ID  Hash (or `#canton-dex`) for template ids.
 //
 // Defaulted / optional:
 //   CANTON_USER_ID       JSON Ledger API user id (default: ledger-api-user).

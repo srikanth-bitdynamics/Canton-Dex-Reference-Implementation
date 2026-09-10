@@ -194,7 +194,7 @@ describe("SdkProvider", () => {
   });
 
   it("single-admin swap: one command → one updateId-only request (no split, no recover)", async () => {
-    const provider = new SdkProvider("#canton-dex-trading-v2");
+    const provider = new SdkProvider("#canton-dex");
     await provider.connect();
     const res = await provider.submit(swapIntent);
     expect(res).toEqual({
@@ -209,7 +209,7 @@ describe("SdkProvider", () => {
   });
 
   it("cross-admin swap: two separate single-command requests, cids aggregated in order", async () => {
-    const provider = new SdkProvider("#canton-dex-trading-v2");
+    const provider = new SdkProvider("#canton-dex");
     await provider.connect();
     const res = await provider.submit(crossAdminSwapIntent);
     // Two separate prepareExecuteAndWait calls, each carrying exactly one Allocate.
@@ -232,7 +232,7 @@ describe("SdkProvider", () => {
   });
 
   it("add-liquidity: three separate single-command requests, three cids aggregated", async () => {
-    const provider = new SdkProvider("#canton-dex-trading-v2");
+    const provider = new SdkProvider("#canton-dex");
     await provider.connect();
     const res = await provider.submit(addLiquidityIntent);
     expect(sdk.prepareExecuteAndWait).toHaveBeenCalledTimes(3);
@@ -247,7 +247,7 @@ describe("SdkProvider", () => {
   });
 
   it("submit() forwards disclosedContracts to prepareExecuteAndWait", async () => {
-    const provider = new SdkProvider("#canton-dex-trading-v2");
+    const provider = new SdkProvider("#canton-dex");
     await provider.connect();
     await provider.submit(swapIntent);
     const params = sdk.prepareExecuteAndWait.mock.calls[0]![0] as {
@@ -260,13 +260,13 @@ describe("SdkProvider", () => {
     sdk.prepareExecuteAndWait.mockResolvedValue({
       tx: { status: "executed", commandId: "c1", payload: { updateId: "", completionOffset: 1 } },
     });
-    const provider = new SdkProvider("#canton-dex-trading-v2");
+    const provider = new SdkProvider("#canton-dex");
     await provider.connect();
     await expect(provider.submit(swapIntent)).rejects.toThrow(/no updateId/);
   });
 
   it("detects a wallet-side disconnect via connection.isConnected", async () => {
-    const provider = new SdkProvider("#canton-dex-trading-v2");
+    const provider = new SdkProvider("#canton-dex");
     await provider.connect();
     expect(provider.getStatus().kind).toBe("connected");
     // The SDK exposes connection state under StatusEvent.connection.
@@ -275,7 +275,7 @@ describe("SdkProvider", () => {
   });
 
   it("listWallets() surfaces the configured gateway as a Gateway row", async () => {
-    const provider = new SdkProvider("#canton-dex-trading-v2", {
+    const provider = new SdkProvider("#canton-dex", {
       gatewayUrl: "http://gw.example/api/v0/dapp",
       gatewayName: "Example gateway",
     });
@@ -293,7 +293,7 @@ describe("SdkProvider", () => {
   });
 
   it("fails the connect (not silently routes to the gateway) when the picked wallet is gone", async () => {
-    const provider = new SdkProvider("#canton-dex-trading-v2", {
+    const provider = new SdkProvider("#canton-dex", {
       gatewayUrl: "http://gw.example/api/v0/dapp",
     });
     // SDK offers only the gateway, but the user picked an injected wallet that
@@ -306,7 +306,7 @@ describe("SdkProvider", () => {
   });
 
   it("translates the SDK's opaque picker error into a gateway-unreachable message", async () => {
-    const provider = new SdkProvider("#canton-dex-trading-v2", {
+    const provider = new SdkProvider("#canton-dex", {
       gatewayUrl: "http://gw.example/api/v0/dapp",
     });
     // The SDK masks a gateway-side failure as "Wallet picker is not open".
@@ -373,7 +373,7 @@ describe("SdkProvider", () => {
       };
     });
 
-    const provider = new SdkProvider("#canton-dex-trading-v2");
+    const provider = new SdkProvider("#canton-dex");
     await provider.connect();
     const holdings = await provider.listHoldings("alice::1220a");
 
@@ -416,7 +416,7 @@ describe("SdkProvider", () => {
       identifierFilters.some(
         (f) =>
           f.TemplateFilter?.value?.templateId ===
-          "#canton-dex-trading-v2:CantonDex.Registry.V2:Holding",
+          "#canton-dex:CantonDex.Registry.V2:Holding",
       ),
     ).toBe(true);
     expect(holdings).toEqual([
@@ -442,7 +442,7 @@ describe("SdkProvider", () => {
   });
 
   it("re-wires event listeners after a reconnect", async () => {
-    const provider = new SdkProvider("#canton-dex-trading-v2");
+    const provider = new SdkProvider("#canton-dex");
     await provider.connect();
     await provider.disconnect();
     await provider.connect();

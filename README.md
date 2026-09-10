@@ -247,7 +247,7 @@ then run:
 bash scripts/run-local-daml-tests.sh
 ```
 
-A successful run builds `canton-dex-trading-v2-1.0.0.dar`, reports every Daml
+A successful run builds `canton-dex-1.0.0.dar`, reports every Daml
 Script test as `ok`, and exits 0. At this revision there are 118 test
 declarations. This proves Daml behavior, including real-holding settlement
 fixtures, but still does not run a Canton participant or browser integration.

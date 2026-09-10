@@ -96,12 +96,12 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
   const enablePartyLayer =
     (import.meta.env.VITE_ENABLE_PARTYLAYER ?? "") === "1";
   // `||`, not `??`: an env var set to an empty string (e.g. `.env` parsed
-  // `VITE_...=#canton-dex-trading-v2` as a comment) must still fall back to the
+  // `VITE_...=#canton-dex` as a comment) must still fall back to the
   // package-name default, or every wallet-authored create/exercise submits an
   // empty package id.
   const packagePrefix =
     ((import.meta.env.VITE_CANTON_DEX_PACKAGE_ID as string | undefined) ||
-      "#canton-dex-trading-v2") as string;
+      "#canton-dex") as string;
 
   const map = new Map<WalletProviderId, WalletProvider>();
 

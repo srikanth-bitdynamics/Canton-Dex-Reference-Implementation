@@ -40,11 +40,11 @@ production. Run them with:
 bash scripts/run-local-daml-tests.sh
 ```
 
-which builds the `canton-dex-trading-v2` DAR against the committed Token Standard
+which builds the `canton-dex` DAR against the committed Token Standard
 DARs (`scripts/build-trading-surface.sh`) and then runs the core suite. By hand:
 
 ```bash
-(cd trading       && dpm build)   # -> trading/.daml/dist/canton-dex-trading-v2-1.0.0.dar
+(cd trading       && dpm build)   # -> trading/.daml/dist/canton-dex-1.0.0.dar
 (cd trading-tests && dpm test)    # every script reports "ok"
 ```
 

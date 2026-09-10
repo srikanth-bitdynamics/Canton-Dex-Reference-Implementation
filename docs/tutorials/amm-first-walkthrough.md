@@ -23,7 +23,7 @@ bash scripts/build-trading-surface.sh
 A successful build ends with:
 
 ```text
-canton-dex-trading-v2 built successfully.
+canton-dex built successfully.
 ```
 
 You will work with these files:

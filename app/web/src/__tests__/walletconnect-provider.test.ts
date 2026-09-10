@@ -185,7 +185,7 @@ describe('WalletConnectProvider holding discovery', () => {
       identifierFilters.some(
         (f) =>
           f.TemplateFilter?.value?.templateId ===
-          '#canton-dex-trading-v2:CantonDex.Registry.V2:Holding',
+          '#canton-dex:CantonDex.Registry.V2:Holding',
       ),
     ).toBe(true);
     expect(holdings).toEqual([

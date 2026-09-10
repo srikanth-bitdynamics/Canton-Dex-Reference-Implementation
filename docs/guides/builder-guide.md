@@ -266,7 +266,7 @@ PolicyReceipt               on-ledger record of the operator ranking policy at a
 Registry.V2.*               reference registry implementing Token Standard V2 interfaces
 ```
 
-The Daml package is `canton-dex-trading-v2` (current version `1.0.0`).
+The Daml package is `canton-dex` (current version `1.0.0`).
 
 ### Reference: off-ledger layout
 

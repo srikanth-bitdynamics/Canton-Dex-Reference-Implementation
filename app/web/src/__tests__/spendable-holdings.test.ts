@@ -10,7 +10,7 @@ import { concreteHoldingTemplate } from "@/wallet/asset-compat";
 import type { InstrumentId } from "@/types/contracts";
 
 const OWNER = "alice::1220a";
-const PKG = "#canton-dex-trading-v2";
+const PKG = "#canton-dex";
 
 // The seeded compat instrument (Canton Coin / Amulet) and its concrete template.
 const CC: InstrumentId = {

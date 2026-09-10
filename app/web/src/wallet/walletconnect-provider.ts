@@ -131,7 +131,7 @@ export class WalletConnectProvider implements WalletProvider {
   constructor(
     private readonly projectId: string,
     private readonly networkId: string,
-    private readonly packagePrefix = "#canton-dex-trading-v2",
+    private readonly packagePrefix = "#canton-dex",
   ) {}
 
   getStatus(): WalletConnectionStatus {

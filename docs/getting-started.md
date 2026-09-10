@@ -240,12 +240,12 @@ bash scripts/run-local-daml-tests.sh
 ```
 
 The script first builds
-`trading/.daml/dist/canton-dex-trading-v2-1.0.0.dar`, then runs the
+`trading/.daml/dist/canton-dex-1.0.0.dar`, then runs the
 `trading-tests` package. A successful run includes:
 
 ```text
-==> Building canton-dex-trading-v2 (deps: vendor/splice/dars/*.dar)
-canton-dex-trading-v2 built successfully.
+==> Building canton-dex (deps: vendor/splice/dars/*.dar)
+canton-dex built successfully.
 …
 testRealRegistryDvpSwapSettles: ok
 ```

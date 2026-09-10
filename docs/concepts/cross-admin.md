@@ -187,13 +187,13 @@ front, so settlement cannot add or alter trader authority.
 
 The record and choice changes are not valid smart upgrades of the deployed
 `canton-dex-trading` lineage. They ship in the new package lineage
-`canton-dex-trading-v2` (see `scripts/check-upgrade-compat.sh`). Cutover on a
+`canton-dex` (see `scripts/check-upgrade-compat.sh`). Cutover on a
 running deployment:
 
 1. Pause and drain existing pools; cancel resting orders and their allocations.
 2. Cancel outstanding pool slices and any live allocations.
-3. Deploy the `canton-dex-trading-v2` DAR.
-4. Update template package ids to `#canton-dex-trading-v2`.
+3. Deploy the `canton-dex` DAR.
+4. Update template package ids to `#canton-dex`.
 5. Recreate pools and the order book against the new package.
 
 ## Registry prerequisites
@@ -208,7 +208,7 @@ Both registries in a cross-admin trade must:
 
 ## Build sequence
 
-1. Package lineage and cutover — done (`canton-dex-trading-v2 1.0.0`).
+1. Package lineage and cutover — done (`canton-dex 1.0.0`).
 2. Full `InstrumentId` identity across Daml, backend, indexer, and UI.
 3. Reusable admin-grouping helpers shared by every flow.
 4. Split add/remove liquidity custody settlement by admin.

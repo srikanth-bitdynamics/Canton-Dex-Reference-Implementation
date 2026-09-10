@@ -208,7 +208,7 @@ const addLiquidityIntent: AddLiquidityIntent = {
 };
 
 describe("PartyLayerProvider", () => {
-  const ctx = () => new PartyLayerProvider("#canton-dex-trading-v2", async () => fake.client);
+  const ctx = () => new PartyLayerProvider("#canton-dex", async () => fake.client);
   let fake: ReturnType<typeof fakeClient>;
 
   beforeEach(() => {
@@ -233,14 +233,14 @@ describe("PartyLayerProvider", () => {
 
   it("allows the connect timeout to be overridden", async () => {
     fake = fakeClient({ updateId: "u-1" });
-    const p = new PartyLayerProvider("#canton-dex-trading-v2", async () => fake.client, 240_000);
+    const p = new PartyLayerProvider("#canton-dex", async () => fake.client, 240_000);
     await p.connect();
     expect(fake.connectCalls[0]).toMatchObject({ timeoutMs: 240_000 });
   });
 
   it("disconnects the SDK client after a failed connect attempt", async () => {
     const f = failingClient(new Error("connect timed out"));
-    const p = new PartyLayerProvider("#canton-dex-trading-v2", async () => f.client);
+    const p = new PartyLayerProvider("#canton-dex", async () => f.client);
     await expect(p.connect()).rejects.toThrow(/connect timed out/);
     expect(f.disconnectCalls).toHaveLength(1);
     expect(p.getStatus()).toMatchObject({
@@ -387,7 +387,7 @@ describe("PartyLayerProvider", () => {
       identifierFilters.some(
         (f) =>
           f.TemplateFilter?.value?.templateId ===
-          "#canton-dex-trading-v2:CantonDex.Registry.V2:Holding",
+          "#canton-dex:CantonDex.Registry.V2:Holding",
       ),
     ).toBe(true);
     expect(holdings).toEqual([
@@ -535,7 +535,7 @@ describe("PartyLayerProvider", () => {
         ];
       },
     };
-    const p = new PartyLayerProvider("#canton-dex-trading-v2", async () => client);
+    const p = new PartyLayerProvider("#canton-dex", async () => client);
     const wallets = await p.listWallets();
     expect(wallets).toEqual([
       {

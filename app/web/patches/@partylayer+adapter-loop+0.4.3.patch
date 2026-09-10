@@ -1,5 +1,5 @@
 diff --git a/node_modules/@partylayer/adapter-loop/dist/index.js b/node_modules/@partylayer/adapter-loop/dist/index.js
-index 15304ca..fbdce07 100644
+index 15304ca..b8bf8b6 100644
 --- a/node_modules/@partylayer/adapter-loop/dist/index.js
 +++ b/node_modules/@partylayer/adapter-loop/dist/index.js
 @@ -110,8 +110,8 @@ var LoopAdapter = class {
@@ -13,7 +13,7 @@ index 15304ca..fbdce07 100644
            },
            onAccept: async (provider) => {
              if (resolved) return;
-@@ -314,20 +314,32 @@ var LoopAdapter = class {
+@@ -314,20 +314,27 @@ var LoopAdapter = class {
          // Passthrough: signedTx is opaque, the caller owns its shape.
          params.signedTx,
          {
@@ -25,11 +25,6 @@ index 15304ca..fbdce07 100644
 -      const r = result;
 -      if (!r || typeof r.command_id !== "string") {
 +      const r = result || {};
-+      // TEMPORARY diagnostic: confirm the waited payload shape on the next live run.
-+      try {
-+        console.info("[loop-adapter] waited submit result", r && typeof r === "object" ? { keys: Object.keys(r), status: r.status, hasUpdateId: typeof r.update_id === "string", hasUpdateData: r.update_data !== void 0 } : typeof r);
-+      } catch {
-+      }
 +      if (r.error_message || r.error && r.error.error_message) {
 +        throw new Error(`Loop Wallet submitTransaction failed: ${r.error && r.error.error_message || r.error_message}`);
 +      }
@@ -52,7 +47,7 @@ index 15304ca..fbdce07 100644
        };
      } catch (err) {
        throw core.mapUnknownErrorToPartyLayerError(err, {
-@@ -376,6 +388,9 @@ var LoopAdapter = class {
+@@ -376,6 +383,9 @@ var LoopAdapter = class {
        if (this.isSubmitRoute(requestMethod, resource)) {
          return this.handleSubmitCommand(resource, body);
        }
@@ -62,7 +57,7 @@ index 15304ca..fbdce07 100644
        throw new core.CapabilityNotSupportedError(
          this.walletId,
          `ledgerApi endpoint "${route}" is not supported by Loop wallet. Supported: POST /v2/state/acs, GET /v2/state/acs/active-contracts, POST /v2/commands/submit, POST /v2/commands/submit-and-wait. For full Ledger API access, use Console or Nightly wallet.`
-@@ -434,6 +449,13 @@ var LoopAdapter = class {
+@@ -434,6 +444,13 @@ var LoopAdapter = class {
                interfaceId = templates[0].interfaceId;
                break;
              }
@@ -76,7 +71,7 @@ index 15304ca..fbdce07 100644
            }
          }
          if (!templateId && parsed.templateId) {
-@@ -550,9 +572,10 @@ var LoopAdapter = class {
+@@ -550,9 +567,10 @@ var LoopAdapter = class {
    mapNetworkToLoop(network) {
      if (network === "local") return "local";
      if (network === "devnet") return "devnet";
@@ -89,7 +84,7 @@ index 15304ca..fbdce07 100644
    }
  };
 diff --git a/node_modules/@partylayer/adapter-loop/dist/index.mjs b/node_modules/@partylayer/adapter-loop/dist/index.mjs
-index 887898a..aacc9ea 100644
+index 887898a..6e7378b 100644
 --- a/node_modules/@partylayer/adapter-loop/dist/index.mjs
 +++ b/node_modules/@partylayer/adapter-loop/dist/index.mjs
 @@ -108,8 +108,8 @@ var LoopAdapter = class {
@@ -103,7 +98,7 @@ index 887898a..aacc9ea 100644
            },
            onAccept: async (provider) => {
              if (resolved) return;
-@@ -312,20 +312,32 @@ var LoopAdapter = class {
+@@ -312,20 +312,27 @@ var LoopAdapter = class {
          // Passthrough: signedTx is opaque, the caller owns its shape.
          params.signedTx,
          {
@@ -115,11 +110,6 @@ index 887898a..aacc9ea 100644
 -      const r = result;
 -      if (!r || typeof r.command_id !== "string") {
 +      const r = result || {};
-+      // TEMPORARY diagnostic: confirm the waited payload shape on the next live run.
-+      try {
-+        console.info("[loop-adapter] waited submit result", r && typeof r === "object" ? { keys: Object.keys(r), status: r.status, hasUpdateId: typeof r.update_id === "string", hasUpdateData: r.update_data !== void 0 } : typeof r);
-+      } catch {
-+      }
 +      if (r.error_message || r.error && r.error.error_message) {
 +        throw new Error(`Loop Wallet submitTransaction failed: ${r.error && r.error.error_message || r.error_message}`);
 +      }
@@ -142,7 +132,7 @@ index 887898a..aacc9ea 100644
        };
      } catch (err) {
        throw mapUnknownErrorToPartyLayerError(err, {
-@@ -374,6 +386,9 @@ var LoopAdapter = class {
+@@ -374,6 +381,9 @@ var LoopAdapter = class {
        if (this.isSubmitRoute(requestMethod, resource)) {
          return this.handleSubmitCommand(resource, body);
        }
@@ -152,7 +142,7 @@ index 887898a..aacc9ea 100644
        throw new CapabilityNotSupportedError(
          this.walletId,
          `ledgerApi endpoint "${route}" is not supported by Loop wallet. Supported: POST /v2/state/acs, GET /v2/state/acs/active-contracts, POST /v2/commands/submit, POST /v2/commands/submit-and-wait. For full Ledger API access, use Console or Nightly wallet.`
-@@ -432,6 +447,13 @@ var LoopAdapter = class {
+@@ -432,6 +442,13 @@ var LoopAdapter = class {
                interfaceId = templates[0].interfaceId;
                break;
              }
@@ -166,7 +156,7 @@ index 887898a..aacc9ea 100644
            }
          }
          if (!templateId && parsed.templateId) {
-@@ -548,9 +570,10 @@ var LoopAdapter = class {
+@@ -548,9 +565,10 @@ var LoopAdapter = class {
    mapNetworkToLoop(network) {
      if (network === "local") return "local";
      if (network === "devnet") return "devnet";

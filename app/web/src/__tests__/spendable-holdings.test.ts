@@ -97,7 +97,7 @@ describe("resolveSpendableHoldings", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("reads the concrete compat template for a compat instrument and returns its real cids", async () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "info").mockImplementation(() => {});
     // The compat (Amulet) template returns a real, package-prefixed contract id
     // in Loop's wrapped shape.
     const { request, calls } = makeRequest({
@@ -121,11 +121,6 @@ describe("resolveSpendableHoldings", () => {
     ]);
     // The concrete-template query fired, filtered by the compat template.
     expect(calls.some((c) => c.templateId === AMULET_TEMPLATE)).toBe(true);
-    // The concrete-template probe log is emitted for the live re-test.
-    expect(info).toHaveBeenCalledWith(
-      "[funding] concrete-template cids",
-      expect.objectContaining({ templateId: AMULET_TEMPLATE, cids: ["00ccrealcid"] }),
-    );
   });
 
   it("reads Amulet's nested ExpiringAmount.initialAmount for the fallback amount", async () => {
@@ -181,7 +176,7 @@ describe("resolveSpendableHoldings", () => {
   });
 
   it("returns empty and issues NO fallback when the instrument has no compat entry (USDCx)", async () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "info").mockImplementation(() => {});
     const { request, calls } = makeRequest({ interfaceResult: [], registryResult: [] });
 
     const spendable = await resolveSpendableHoldings(OWNER, USDCX, PKG, request);
@@ -191,10 +186,6 @@ describe("resolveSpendableHoldings", () => {
     // no second ledger-end and no concrete-template query.
     expect(calls.filter((c) => c.resource === "/v2/state/ledger-end")).toHaveLength(1);
     expect(calls.some((c) => c.templateId === AMULET_TEMPLATE)).toBe(false);
-    expect(info).not.toHaveBeenCalledWith(
-      "[funding] concrete-template acs",
-      expect.anything(),
-    );
   });
 
   it("discovers across the HoldingV2 interface, the HoldingV1 interface, and the Registry.V2 template", async () => {

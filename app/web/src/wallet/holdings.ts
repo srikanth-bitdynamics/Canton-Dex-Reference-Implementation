@@ -335,9 +335,6 @@ export async function discoverHoldingsAcrossRegistries(
 
   if (successfulReads === 0 && lastError) throw lastError;
   const resolved = dedupeHoldings(holdings);
-  // Temporary probe: real funding cids read as 00...; a synthetic id here means
-  // the wallet still fabricated holdings.
-  console.info("[holdings] funding cids", resolved.map((h) => h.contractId));
   return resolved;
 }
 
@@ -422,10 +419,6 @@ async function readConcreteTemplateHoldings(
     body: activeContractsBody(owner, activeAtOffset, templateFilterCumulative(templateId)),
   });
   const spendable = parseConcreteTemplateHoldings(raw, owner, instrument);
-  console.info("[funding] concrete-template cids", {
-    templateId,
-    cids: spendable.map((h) => h.contractId),
-  });
   return spendable;
 }
 

@@ -324,6 +324,43 @@ describe("PoolService DvP liquidity", () => {
     );
   });
 
+  it("recoverDvpAllocations retries a not-yet-visible tree, then rethrows if it never appears", async () => {
+    const pool = mkPool(0, 0);
+    const ledger = new CapturingLedger(pool, mkLpPolicy());
+    const alloc = { contractId: "#alloc:0", templateId: "pkg:CantonDex.Registry.V2:Allocation" };
+
+    // Cross-participant lag: the tree read throws twice, then succeeds.
+    let calls = 0;
+    ledger.treeCreatedEvents = async () => {
+      calls += 1;
+      if (calls <= 2) throw new Error("Failed to parse hex string");
+      return [alloc];
+    };
+    const svc = new PoolService(ledger, new StubRegistry(), "op" as never);
+    const noSleep = async () => {};
+
+    const got = await svc.recoverDvpAllocations("update-1", "lp" as never, 1, {
+      sleep: noSleep,
+    });
+    assert.deepEqual(got.allocationCids, ["#alloc:0"]);
+    assert.equal(calls, 3);
+
+    // Always throwing exhausts the attempts and rethrows the last error.
+    let attempts = 0;
+    ledger.treeCreatedEvents = async () => {
+      attempts += 1;
+      throw new Error("Failed to parse hex string");
+    };
+    await assert.rejects(
+      svc.recoverDvpAllocations("update-1", "lp" as never, 1, {
+        attempts: 3,
+        sleep: noSleep,
+      }),
+      /Failed to parse hex string/,
+    );
+    assert.equal(attempts, 3);
+  });
+
   it("requestAddLiquidity creates the LiquidityAllocationRequest with a floored LP quote", async () => {
     const pool = mkPool(0, 0); // unfunded → first-funding sqrt quote
     const ledger = new CapturingLedger(pool, mkLpPolicy());

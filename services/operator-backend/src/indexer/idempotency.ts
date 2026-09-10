@@ -183,6 +183,16 @@ export class IdempotentLedger implements LedgerSubmitter {
     return this.inner.treeCreatedEvents(updateId, party);
   }
 
+  // Same forwarding for the registry-agnostic allocation recovery: dropping it
+  // silently reverts recovery to the concrete-template scan, which misses
+  // allocations minted on external registries (Amulet, USDCx).
+  treeAllocationCids(updateId: string, party: Party): Promise<string[]> {
+    if (!this.inner.treeAllocationCids) {
+      throw new Error("inner ledger does not support treeAllocationCids");
+    }
+    return this.inner.treeAllocationCids(updateId, party);
+  }
+
   /** Delete rows older than TTL. Call periodically. */
   sweep(): void {
     const cutoff = Date.now() - TTL_MS;

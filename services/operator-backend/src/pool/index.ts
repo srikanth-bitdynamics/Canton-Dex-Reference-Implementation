@@ -894,16 +894,40 @@ export class PoolService {
     updateId: string,
     party: Party,
     expectedAllocations: number,
+    opts: {
+      attempts?: number;
+      sleep?: (ms: number) => Promise<void>;
+    } = {},
   ): Promise<{
     allocationCids: ContractId<"Allocation">[];
     acceptanceCid?: ContractId<"LiquidityAllocationAcceptance">;
   }> {
-    const { allocationCids, acceptanceCid } = await recoverCreatedAllocations(
-      this.ledger,
-      party,
-      updateId,
-      expectedAllocations,
-    );
+    // The committed transaction tree may not yet be visible on this participant
+    // when the wallet submitted on another (cross-participant ingestion lag). The
+    // tree is atomic, so the lag surfaces as a thrown fetch error, not a partial
+    // tree — retry the throw a few times before giving up.
+    const attempts = opts.attempts ?? 6;
+    const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+    let lastError: unknown;
+    let recovered:
+      | Awaited<ReturnType<typeof recoverCreatedAllocations>>
+      | undefined;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        recovered = await recoverCreatedAllocations(
+          this.ledger,
+          party,
+          updateId,
+          expectedAllocations,
+        );
+        break;
+      } catch (err) {
+        lastError = err;
+        if (attempt < attempts - 1) await sleep(400);
+      }
+    }
+    if (!recovered) throw lastError;
+    const { allocationCids, acceptanceCid } = recovered;
     return {
       allocationCids: allocationCids as ContractId<"Allocation">[],
       acceptanceCid: acceptanceCid as

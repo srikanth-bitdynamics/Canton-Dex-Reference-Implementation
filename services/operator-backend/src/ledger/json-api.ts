@@ -377,6 +377,27 @@ export class JsonApiLedger implements LedgerSubmitter {
       .map((v) => ({ contractId: v.contractId, templateId: v.templateId ?? "" }));
   }
 
+  // Registry-agnostic recovery: the allocation cids a committed transaction
+  // created, read from each AllocationFactory_Allocate exercise result rather
+  // than from a hardcoded template name. An external-wallet deposit mints the
+  // allocation on its own registry (Amulet, USDCx, ...), so scanning created
+  // events for our template finds none; the exercise result carries the cid
+  // whatever the registry.
+  async treeAllocationCids(updateId: string, party: Party): Promise<string[]> {
+    const tx = await this.fetchTransactionTree(updateId, {
+      actAs: [party],
+      commandId: "",
+      command: { kind: "create", templateId: "", argument: {} },
+    });
+    return Object.values(tx.eventsById)
+      .map((event) => event.ExercisedTreeEvent?.value)
+      .filter((v): v is JsonApiExercisedTreeEvent["value"] => v !== undefined)
+      .filter((v) => v.choice === "AllocationFactory_Allocate")
+      .sort((a, b) => a.nodeId - b.nodeId)
+      .map((v) => allocationCidFromResult(v.exerciseResult))
+      .filter((cid): cid is string => cid !== null);
+  }
+
   private firstCreatedTreeEvent(
     tx: JsonApiTransactionTree,
   ): JsonApiCreatedTreeEvent["value"] | undefined {
@@ -416,6 +437,24 @@ export class JsonApiLedger implements LedgerSubmitter {
 
 // === wire shapes =========================================================
 
+// The allocation cid an AllocationFactory_Allocate exercise result carries when
+// the instruction completed inline. Pending (allocationInstructionCid) and
+// Failed results yield no allocation, so return null for anything but a
+// well-formed AllocationInstructionResult_Completed.
+export function allocationCidFromResult(result: unknown): string | null {
+  const output = (
+    result as { output?: { tag?: string; value?: { allocationCid?: unknown } } } | null
+  )?.output;
+  if (
+    output &&
+    output.tag === "AllocationInstructionResult_Completed" &&
+    typeof output.value?.allocationCid === "string"
+  ) {
+    return output.value.allocationCid;
+  }
+  return null;
+}
+
 interface JsonApiSubmitResponse {
   events?: Array<{
     created?: { contractId: string; payload: unknown };
@@ -451,6 +490,7 @@ interface JsonApiCreatedTreeEvent {
 interface JsonApiExercisedTreeEvent {
   value: {
     nodeId: number;
+    choice?: string;
     exerciseResult: unknown;
   };
 }

@@ -6,20 +6,27 @@
 // — the wallet only ever sees Daml command trees, never our intents.
 //
 // PartyLayer's submit result is `TxReceipt { updateId? }` — it does NOT expose
-// the transaction tree or created-contract ids. So this provider deliberately
-// returns only `primaryCid = updateId` and does NOT populate
-// `createdAllocationCids`; settle, swap, and order-fund calls forward
-// `{ updateId }`, and the operator recovers the created `Allocation` cids (and,
-// for LP, the `LiquidityAllocationAcceptance` cid) from that update's tree.
-// All DvP flows support this operator-discovery path, so an updateId-only wallet
-// can complete them.
+// the transaction tree or created-contract ids. So each submitTransaction is
+// updateId-only, and the operator recovers the created `Allocation` cid from
+// that update's tree.
+//
+// PartyLayer's transaction UI also refuses a request carrying more than one
+// command atom, so (capability `supportsMultiCommandTransaction` false) this
+// provider submits each composed AllocationFactory_Allocate as its own
+// single-command request via the shared `submitComposedCommands`, recovers the
+// one allocation each creates, and aggregates the cids in canonical order —
+// giving the settle orchestration the created cids exactly as before.
 
 import { composeCommands } from "./commands";
+import { capabilityFor } from "./capabilities";
+import { submitComposedCommands, type PreparedSubmission } from "./sequential-submit";
 import {
   discoverHoldingsAcrossRegistries,
   parseHoldingsAcsResponse,
+  resolveSpendableHoldings,
+  type AcsRequest,
 } from "./holdings";
-import type { Holding } from "@/types/contracts";
+import type { DisplayBalance, Holding, InstrumentId } from "@/types/contracts";
 import type {
   DetectedWallet,
   Party,
@@ -94,6 +101,29 @@ export interface PartyLayerClient {
   submitTransaction(params: {
     signedTx: PartyLayerCommandSubmission;
   }): Promise<PartyLayerTxReceipt>;
+  /** Optional so older/fake clients (tests) need not implement it. */
+  signMessage?(params: {
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }): Promise<{
+    signature: string;
+    partyId: string;
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }>;
+  /**
+   * The connected party's primary account (CIP-0103 getPrimaryAccount), carrying
+   * the public key the backend needs to verify a signMessage off-ledger.
+   * Optional so older/fake clients (tests) need not implement it.
+   */
+  getPrimaryAccount?(): Promise<{
+    partyId: string;
+    publicKey: string;
+    namespace?: string;
+    hint?: string;
+  }>;
   ledgerApi(params: PartyLayerLedgerApiParams): Promise<PartyLayerLedgerApiResult>;
   /**
    * Enumerate the configured wallet catalog with per-adapter install
@@ -101,11 +131,80 @@ export interface PartyLayerClient {
    * need not implement it.
    */
   listWallets?(): Promise<PartyLayerWalletInfo[]>;
+  /**
+   * Optional wallet-native aggregate balances for DISPLAY. Backed by the
+   * connected wallet's own balance surface (Loop's getHolding()); returns
+   * amounts, never spendable contract ids. Absent when the wallet exposes no
+   * native aggregate.
+   */
+  getBalances?(): Promise<DisplayBalance[]>;
 }
 
 /** Retained export: PartyLayer's `ledgerApi` returns a JSON string envelope. */
 export function parsePartyLayerHoldings(response: string, owner: Party): Holding[] {
   return parseHoldingsAcsResponse(response, owner);
+}
+
+// Some wallets throttle their active-contracts endpoint (Loop answers a burst of
+// reads with HTTP 429). A funding resolve issues several ACS reads in quick
+// succession, so treat a rate-limit response as transient: back off and retry
+// rather than failing the whole flow. Detection is by the surfaced status text
+// because the adapter re-wraps the underlying error into a plain message.
+export const ACS_RETRY_DELAYS_MS = [600, 1500, 3500];
+
+export function isRateLimited(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    /\b429\b/.test(message) ||
+    /too many requests/i.test(message) ||
+    /rate.?limit/i.test(message)
+  );
+}
+
+export async function withAcsRetry<T>(
+  op: () => Promise<T>,
+  delays: readonly number[] = ACS_RETRY_DELAYS_MS,
+  sleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await op();
+    } catch (err) {
+      if (!isRateLimited(err) || attempt >= delays.length) throw err;
+      await sleep(delays[attempt]);
+    }
+  }
+}
+
+// Submit one prepared request through the SDK submit method and resolve to its
+// receipt updateId. The Loop adapter submits in wait mode, so the receipt's
+// updateId is the committed ledger updateId operator recovery walks the
+// transaction tree by (not a fire-and-forget submission id). Going through
+// submitTransaction (rather than a raw wait route) is what drives the wallet's
+// signing tab.
+async function submitOne(
+  client: PartyLayerClient,
+  submission: PreparedSubmission,
+): Promise<string> {
+  const signedTx: PartyLayerCommandSubmission = {
+    commandId: submission.commandId,
+    actAs: submission.actAs,
+    commands: submission.commands as unknown[],
+    ...(submission.disclosedContracts
+      ? { disclosedContracts: submission.disclosedContracts }
+      : {}),
+  };
+  const receipt = await client.submitTransaction({ signedTx });
+  if (!receipt.updateId) {
+    const hashSuffix = receipt.transactionHash
+      ? ` (transactionHash=${receipt.transactionHash})`
+      : "";
+    throw new Error(
+      `partylayer-provider: submit returned no updateId${hashSuffix}; operator-discovery requires an updateId`,
+    );
+  }
+  return receipt.updateId;
 }
 
 export class PartyLayerProvider implements WalletProvider {
@@ -201,57 +300,113 @@ export class PartyLayerProvider implements WalletProvider {
     if (this.status.kind !== "connected" || !this.client) {
       throw new Error("partylayer-provider: wallet not connected");
     }
+    const client = this.client;
     const party = this.status.account.party;
     const composed = composeCommands(intent, {
       party,
       packagePrefix: this.packagePrefix,
       now: () => new Date(),
     });
-    const signedTx: PartyLayerCommandSubmission = {
-      commandId: composed.commandId,
-      actAs: composed.actAs,
-      commands: composed.commands as unknown[],
-      ...(composed.disclosedContracts
-        ? { disclosedContracts: composed.disclosedContracts }
-        : {}),
-    };
-    const receipt = await this.client.submitTransaction({
-      signedTx,
+    // Until a PartyLayer wallet is proven to accept a multi-atom commands[] in
+    // its transaction UI, each AllocationFactory_Allocate is submitted as its own
+    // single-command request; the created cid per request is recovered from its
+    // updateId and aggregated. Each submitTransaction is still updateId-only.
+    return submitComposedCommands({
+      intent,
+      composed,
+      party,
+      supportsMultiCommandTransaction:
+        capabilityFor(this.id).supportsMultiCommandTransaction,
+      submit: (submission) => submitOne(client, submission),
     });
-    const updateId = receipt.updateId;
-    if (!updateId) {
-      const hashSuffix = receipt.transactionHash
-        ? ` (transactionHash=${receipt.transactionHash})`
-        : "";
-      throw new Error(
-        `partylayer-provider: submit returned no updateId${hashSuffix}; operator-discovery requires an updateId`,
-      );
+  }
+
+  async signMessage(params: {
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }): Promise<{
+    signature: string;
+    partyId: string;
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }> {
+    this.client ??= await this.clientFactory();
+    if (!this.client.signMessage) {
+      throw new Error("partylayer-provider: connected wallet does not support signMessage");
     }
-    // updateId-only by design. createdAllocationCids is intentionally
-    // omitted: the operator recovers the created cids from the updateId for all
-    // DvP flows (LP add/remove, swap, order funding) via operator-discovery.
-    return {
-      submittedBy: party,
-      primaryCid: updateId,
-      auxiliaryCids: { updateId },
-    };
+    return this.client.signMessage(params);
+  }
+
+  async getPrimaryAccount(): Promise<{
+    partyId: string;
+    publicKey: string;
+    namespace?: string;
+    hint?: string;
+  }> {
+    this.client ??= await this.clientFactory();
+    if (!this.client.getPrimaryAccount) {
+      throw new Error("partylayer-provider: connected wallet does not expose getPrimaryAccount");
+    }
+    return this.client.getPrimaryAccount();
   }
 
   async listHoldings(owner: Party): Promise<Holding[]> {
+    const client = this.connectedClientFor(owner);
+    return discoverHoldingsAcrossRegistries(
+      owner,
+      this.packagePrefix,
+      this.ledgerRequest(client),
+    );
+  }
+
+  async resolveSpendableHoldings(
+    owner: Party,
+    instrument: InstrumentId,
+  ): Promise<Holding[]> {
+    const client = this.connectedClientFor(owner);
+    return resolveSpendableHoldings(
+      owner,
+      instrument,
+      this.packagePrefix,
+      this.ledgerRequest(client),
+    );
+  }
+
+  async getBalances(owner: Party): Promise<DisplayBalance[]> {
+    const client = this.connectedClientFor(owner);
+    if (!client.getBalances) return [];
+    return client.getBalances();
+  }
+
+  /** Guarded access to the connected client for a read on `owner`. */
+  private connectedClientFor(owner: Party): PartyLayerClient {
     if (this.status.kind !== "connected" || !this.client) {
       throw new Error("partylayer-provider: wallet not connected");
     }
     if (this.status.account.party !== owner) {
       throw new Error("partylayer-provider: can only read holdings for the connected party");
     }
-    const client = this.client;
-    return discoverHoldingsAcrossRegistries(owner, this.packagePrefix, (req) =>
-      client.ledgerApi({
-        requestMethod: req.method,
-        resource: req.resource,
-        ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
-      }),
-    );
+    return this.client;
+  }
+
+  /**
+   * ACS read transport over the wallet's `ledgerApi` (body serialized). Each read
+   * is retried with backoff on a wallet rate-limit (429) so a burst of funding
+   * reads does not fail the flow.
+   */
+  private ledgerRequest(
+    client: PartyLayerClient,
+  ): (req: AcsRequest) => Promise<unknown> {
+    return (req) =>
+      withAcsRetry(() =>
+        client.ledgerApi({
+          requestMethod: req.method,
+          resource: req.resource,
+          ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
+        }),
+      );
   }
 
   private setStatus(s: WalletConnectionStatus): void {

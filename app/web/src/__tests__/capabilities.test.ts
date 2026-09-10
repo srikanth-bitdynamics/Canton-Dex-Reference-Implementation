@@ -46,6 +46,31 @@ describe("wallet capabilities", () => {
     expect(capabilityFor("mock").dvp).toBe("dev-only");
   });
 
+  it("marks signMessage support on sdk, partylayer, and the operator relay", () => {
+    expect(capabilityFor("sdk").supportsSignMessage).toBe(true);
+    expect(capabilityFor("partylayer").supportsSignMessage).toBe(true);
+    expect(capabilityFor("token-standard").supportsSignMessage).toBe(true);
+    expect(capabilityFor("walletconnect").supportsSignMessage).toBe(false);
+    expect(capabilityFor("mock").supportsSignMessage).toBe(false);
+  });
+
+  it("marks Token Standard V2 support on the real DvP providers only", () => {
+    for (const id of ["sdk", "partylayer", "token-standard"] as const) {
+      expect(capabilityFor(id).supportsTokenStandardV2, id).toBe(true);
+    }
+    for (const id of ["walletconnect", "mock"] as const) {
+      expect(capabilityFor(id).supportsTokenStandardV2, id).toBe(false);
+    }
+  });
+
+  it("no provider claims multi-command transaction support (default false)", () => {
+    // Every wallet's transaction UI is assumed to authorize one command atom per
+    // request until proven otherwise, so each allocation is submitted separately.
+    for (const id of ALL_IDS) {
+      expect(capabilityFor(id).supportsMultiCommandTransaction, id).toBe(false);
+    }
+  });
+
   it("dvpBadge maps readiness → tone", () => {
     expect(dvpBadge("ready").tone).toBe("ok");
     expect(dvpBadge("unproven").tone).toBe("warn");

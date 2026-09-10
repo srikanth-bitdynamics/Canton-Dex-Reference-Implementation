@@ -43,17 +43,14 @@ export interface CallerAuthConfig {
 // rfq/accept's asset admin) are intentionally absent — they are gated by the
 // operator/admin token, not bound to a trader caller.
 //
-// `swapperAccountOwner` marks the swap route whose subject is the nested
-// swapperAccount.owner rather than a flat field.
+// `swapperAccountOwner` binds a subject nested at `swapperAccount.owner` rather
+// than a flat field (retained for nested-subject routes; none use it now).
 type SubjectField = { kind: "field"; field: string } | { kind: "swapperAccountOwner" };
 
 const SUBJECT_PARTY_BY_ROUTE: Record<string, SubjectField> = {
-  "POST /v1/pools/swap": { kind: "swapperAccountOwner" },
-  "POST /v1/pools/swap/request": { kind: "field", field: "swapper" },
-  "POST /v1/pools/add-liquidity/request": { kind: "field", field: "recipient" },
-  "POST /v1/pools/add-liquidity/settle": { kind: "field", field: "recipient" },
-  "POST /v1/pools/remove-liquidity/request": { kind: "field", field: "holder" },
-  "POST /v1/pools/remove-liquidity/settle": { kind: "field", field: "holder" },
+  // Swap and liquidity request/settle no longer bind a body-party subject: they
+  // are public and prove authority on-ledger (the bootstrap-bound session path),
+  // so the settle's Daml-proven party — not any body field — is authoritative.
   "POST /v1/rfq": { kind: "field", field: "trader" },
 };
 
@@ -113,6 +110,11 @@ export function verifyHs256(
   } catch {
     return null;
   }
+
+  // A bootstrap token is signed with the same secret but must never authorize a
+  // caller-bound action: reject it here so it can only ever drive the one-time
+  // bootstrap mint.
+  if (payload.typ === "dex-bootstrap") return null;
 
   // Expiry: required by default, and honoured when present.
   if (typeof payload.exp === "number") {

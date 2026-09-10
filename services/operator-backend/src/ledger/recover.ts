@@ -4,7 +4,7 @@
 // classification live in one place.
 
 import type { Party } from "@canton-dex/registry-client";
-import type { LedgerSubmitter } from "./index.js";
+import type { CreatedEventRef, LedgerSubmitter } from "./index.js";
 
 const ALLOCATION_SUFFIX = "CantonDex.Registry.V2:Allocation";
 const ACCEPTANCE_SUFFIX =
@@ -23,22 +23,39 @@ export async function recoverCreatedAllocations(
   updateId: string,
   expectedAllocations: number,
 ): Promise<{ allocationCids: string[]; acceptanceCid?: string }> {
-  if (!ledger.treeCreatedEvents) {
-    throw new Error(
-      "ledger does not support transaction-tree recovery (treeCreatedEvents)",
-    );
+  // Registry-agnostic path: read the created allocation cids from the
+  // AllocationFactory_Allocate exercise results. An external-wallet deposit
+  // mints its allocation on its own registry (Amulet, USDCx, ...), so the
+  // created-event template scan below finds none for those legs. Fall back to
+  // the template scan for any ledger/fake without `treeAllocationCids`.
+  let allocationCids: string[];
+  let created: CreatedEventRef[] | undefined;
+  if (ledger.treeAllocationCids) {
+    allocationCids = await ledger.treeAllocationCids(updateId, party);
+  } else {
+    if (!ledger.treeCreatedEvents) {
+      throw new Error(
+        "ledger does not support transaction-tree recovery (treeCreatedEvents)",
+      );
+    }
+    created = await ledger.treeCreatedEvents(updateId, party);
+    allocationCids = created
+      .filter((e) => e.templateId.endsWith(ALLOCATION_SUFFIX))
+      .map((e) => e.contractId);
   }
-  const created = await ledger.treeCreatedEvents(updateId, party);
-  const allocationCids = created
-    .filter((e) => e.templateId.endsWith(ALLOCATION_SUFFIX))
-    .map((e) => e.contractId);
   if (allocationCids.length !== expectedAllocations) {
     throw new Error(
       `recoverCreatedAllocations: expected ${expectedAllocations} Allocation creates ` +
         `for updateId=${updateId}, found ${allocationCids.length}`,
     );
   }
-  const acceptanceCid = created.find((e) =>
+  // The optional acceptance is still a create on our own registry, so it comes
+  // from the created events. Reuse the events already fetched by the fallback
+  // path; otherwise fetch them once, but only when the ledger can serve trees.
+  if (created === undefined && ledger.treeCreatedEvents) {
+    created = await ledger.treeCreatedEvents(updateId, party);
+  }
+  const acceptanceCid = created?.find((e) =>
     e.templateId.endsWith(ACCEPTANCE_SUFFIX),
   )?.contractId;
   return { allocationCids, acceptanceCid };

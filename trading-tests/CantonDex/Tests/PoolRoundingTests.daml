@@ -133,6 +133,7 @@ testSwapOutputRoundsDownToKeepConstantProduct = do
       inputSliceCid = addRes.quoteSliceCid
       outputSliceCids = [addRes.baseSliceCid]
       minOutputAmount = 0.0)
+    authBinding = None
   -- Allocation plumbing: give bob the 7 USDC and lock it into the settlement
   -- the request named, the way a real trade would fund its input.
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 7.0

@@ -37,7 +37,7 @@
 // do NOT have HTTP endpoints -- they go through the trader's wallet.
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type { OperatorBackend } from "../index.js";
 import type { ContractId, InstrumentId, Party, Pool } from "../types.js";
 import type { DisclosedContract } from "@canton-dex/registry-client";
@@ -52,9 +52,22 @@ import {
   checkCallerBinding,
   checkCallerRead,
   callerPartyFromRequest,
+  routeBindsCaller,
   type CallerAuthConfig,
 } from "./caller-auth.js";
 import { validateWriteBody, ValidationError } from "./validate.js";
+import {
+  RateLimiter,
+  enforceRateLimit,
+  enforceTokenLimit,
+  clientIp,
+} from "./rate-limit.js";
+import {
+  SessionService,
+  SessionError,
+  type SignedMessage,
+  type SessionAccount,
+} from "../session/index.js";
 import { RfqAuthError } from "../rfq/index.js";
 import { OrderAuthError } from "../order/index.js";
 import { rootLogger } from "../lib/logger.js";
@@ -346,6 +359,23 @@ export function startHttpServer(
   if (typeof slotTimer.unref === "function") slotTimer.unref();
 
   const allowedOrigins = parseAllowedOrigins();
+  // Session service (BFF), capture phase: challenge the wallet to sign an
+  // off-ledger message and capture the result. Available only when the
+  // per-caller JWT secret is configured (kept for the verification phase, which
+  // will mint the scoped caller token). Constructed once so its challenge-nonce
+  // store persists across requests.
+  const session = cfg.callerJwtSecret
+    ? new SessionService({
+        callerJwtSecret: cfg.callerJwtSecret,
+        callerJwtAudience: cfg.callerJwtAudience,
+        domain: cfg.callerJwtAudience ?? allowedOrigins[0] ?? cfg.context.network,
+        networkId: cfg.context.network,
+      })
+    : null;
+  // In-memory rate limiter for the public write surface (bootstrap, swap/
+  // liquidity requests, allocation-factory). Constructed once so its buckets
+  // persist across requests.
+  const rateLimiter = new RateLimiter();
   const server = createServer(async (req, res) => {
     const requestId = (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
     res.setHeader("X-Request-Id", requestId);
@@ -359,6 +389,8 @@ export function startHttpServer(
         () => lastPollSucceeded,
         cfg.db,
         allowedOrigins,
+        session,
+        rateLimiter,
         req,
         res,
       );
@@ -438,6 +470,8 @@ async function routeRequest(
   getSynced: () => boolean,
   db: Db | undefined,
   allowedOrigins: string[],
+  session: SessionService | null,
+  rateLimiter: RateLimiter,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -479,15 +513,145 @@ async function routeRequest(
     return;
   }
 
-  // Operator auth gate: all other state-changing routes require
-  // the operator bearer token (fail-closed unless DEX_DEV_OPEN).
-  const opAuth = checkOperatorAuth(
-    req,
-    { operatorToken: cfg.operatorToken, devOpen: cfg.devOpen ?? false },
-    path,
-  );
-  if (!opAuth.ok) {
-    respondJson(res, opAuth.status, { error: opAuth.message, code: opAuth.code });
+  // Operator auth gate: state-changing routes require the operator bearer token
+  // (fail-closed unless DEX_DEV_OPEN) -- UNLESS the route acts on behalf of a
+  // trader and the request carries a valid per-caller JWT. Then the scoped caller
+  // token authorizes the write instead of the venue's operator secret, and
+  // checkCallerBinding (in readValidatedJson, with the body) still enforces that
+  // the subject party is the caller's own. This is what lets a public user drive
+  // their own swap/liquidity/rfq through a session-service token, never holding
+  // the operator secret. The backend still submits the operator/lpRegistrar
+  // ledger steps with its own server-side credential.
+  const routeKey = `${method} ${path}`;
+  const callerAuthorizes =
+    routeBindsCaller(routeKey) && callerPartyFromRequest(req, callerAuth) !== null;
+  if (!callerAuthorizes) {
+    const opAuth = checkOperatorAuth(
+      req,
+      { operatorToken: cfg.operatorToken, devOpen: cfg.devOpen ?? false },
+      path,
+    );
+    if (!opAuth.ok) {
+      respondJson(res, opAuth.status, { error: opAuth.message, code: opAuth.code });
+      return;
+    }
+  }
+
+  // Rate-limit gate: the public write routes (bootstrap, swap/liquidity
+  // requests, allocation-factory) are no longer behind the operator token, so
+  // meter them per source IP before dispatch. Settle routes and reads are not
+  // limited. The per-bootstrap-token bucket is enforced inside the request
+  // handlers, where the token is in hand.
+  const rl = enforceRateLimit(rateLimiter, method, path, clientIp(req));
+  if (!rl.ok) {
+    respondJson(res, 429, {
+      error: `rate limit exceeded for ${rl.class} requests; retry shortly`,
+      code: "rate_limited",
+    });
+    return;
+  }
+
+  // === session service (BFF) ============================================
+  // Public, capture phase: challenge the wallet to sign an off-ledger message
+  // and capture the result. No operator secret involved, and no caller token is
+  // minted yet; enabled only when the caller-JWT secret is configured.
+  // Public: issue a one-time bootstrap token. The browser presents it on its
+  // request+settle so the backend can mint a party token from the on-ledger
+  // proof (see the session module).
+  if (method === "POST" && path === "/v1/session/bootstrap") {
+    if (!session) {
+      respondJson(res, 501, {
+        error: "session service disabled (set DEX_CALLER_JWT_SECRET)",
+        code: "not_supported",
+      });
+      return;
+    }
+    respondJson(res, 200, session.createBootstrap());
+    return;
+  }
+
+  if (method === "POST" && path === "/v1/session/challenge") {
+    if (!session) {
+      respondJson(res, 501, {
+        error: "session service disabled (set DEX_CALLER_JWT_SECRET)",
+        code: "not_supported",
+      });
+      return;
+    }
+    const body = await readJson<{ party?: unknown }>(req);
+    const party = typeof body?.party === "string" ? body.party : "";
+    if (!party) {
+      respondJson(res, 400, { error: "party is required", code: "bad_request" });
+      return;
+    }
+    respondJson(res, 200, session.challenge(party as Party));
+    return;
+  }
+  if (method === "POST" && path === "/v1/session/verify") {
+    if (!session) {
+      respondJson(res, 501, {
+        error: "session service disabled (set DEX_CALLER_JWT_SECRET)",
+        code: "not_supported",
+      });
+      return;
+    }
+    const body = await readJson<{
+      party?: unknown;
+      nonce?: unknown;
+      signedMessage?: unknown;
+      account?: unknown;
+    }>(req);
+    const party = typeof body?.party === "string" ? body.party : "";
+    const nonce = typeof body?.nonce === "string" ? body.nonce : "";
+    const sm = body?.signedMessage as
+      | { partyId?: unknown; message?: unknown; signature?: unknown; nonce?: unknown; domain?: unknown }
+      | undefined;
+    // Loop returns `signature` as `{ signature: <hex> }`, not a bare string.
+    const rawSig = sm?.signature;
+    const signatureHex =
+      typeof rawSig === "string"
+        ? rawSig
+        : typeof (rawSig as { signature?: unknown })?.signature === "string"
+          ? (rawSig as { signature: string }).signature
+          : null;
+    if (
+      !party ||
+      !nonce ||
+      !sm ||
+      typeof sm.partyId !== "string" ||
+      typeof sm.message !== "string" ||
+      !signatureHex
+    ) {
+      respondJson(res, 400, {
+        error: "party, nonce and signedMessage are required",
+        code: "bad_request",
+      });
+      return;
+    }
+    const signedMessage: SignedMessage = {
+      signature: signatureHex,
+      partyId: sm.partyId,
+      message: sm.message,
+      nonce: typeof sm.nonce === "string" ? sm.nonce : undefined,
+      domain: typeof sm.domain === "string" ? sm.domain : undefined,
+    };
+    const acct = body?.account as { publicKey?: unknown; namespace?: unknown } | undefined;
+    const account: SessionAccount | undefined =
+      acct && typeof acct === "object"
+        ? {
+            ...(typeof acct.publicKey === "string" ? { publicKey: acct.publicKey } : {}),
+            ...(typeof acct.namespace === "string" ? { namespace: acct.namespace } : {}),
+          }
+        : undefined;
+    try {
+      respondJson(res, 200, session.verify(party as Party, nonce, signedMessage, account));
+    } catch (e) {
+      if (e instanceof SessionError) {
+        respondJson(res, 401, { error: e.message, code: "unauthorized" });
+        return;
+      }
+      throw e;
+    }
     return;
   }
 
@@ -1521,17 +1685,28 @@ async function routeRequest(
   }
 
   if (method === "POST" && path === "/v1/pools/swap/request") {
-    const body =
-      await readValidatedJson<Parameters<typeof backend.pool.requestSwap>[0]>(req, "POST /v1/pools/swap/request", callerAuth);
-    const result = await backend.pool.requestSwap(body);
+    const body = await readValidatedJson<
+      Parameters<typeof backend.pool.requestSwap>[0] & { bootstrapToken?: string }
+    >(req, "POST /v1/pools/swap/request", callerAuth);
+    enforceBootstrapTokenLimit(rateLimiter, body.bootstrapToken, session);
+    const authBinding = bindingFromBootstrap(body.bootstrapToken, session);
+    const result = await backend.pool.requestSwap({ ...body, authBinding });
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/pools/swap") {
-    const body = await readValidatedJson<Parameters<typeof backend.pool.swap>[0]>(req, "POST /v1/pools/swap", callerAuth);
+    const body = await readValidatedJson<
+      Parameters<typeof backend.pool.swap>[0] & { bootstrapToken?: string }
+    >(req, "POST /v1/pools/swap", callerAuth);
     const result = await backend.pool.swap(body);
-    respondJson(res, 200, result);
+    const minted = mintBoundToken(
+      session,
+      body.bootstrapToken,
+      result.authenticatedParty,
+      result.authBinding,
+    );
+    respondJson(res, 200, minted ? { ...result, ...minted } : result);
     return;
   }
 
@@ -1601,19 +1776,27 @@ async function routeRequest(
 
   if (method === "POST" && path === "/v1/pools/add-liquidity/request") {
     const body = await readValidatedJson<
-      Parameters<typeof backend.pool.requestAddLiquidity>[0]
+      Parameters<typeof backend.pool.requestAddLiquidity>[0] & { bootstrapToken?: string }
     >(req, "POST /v1/pools/add-liquidity/request", callerAuth);
-    const result = await backend.pool.requestAddLiquidity(body);
+    enforceBootstrapTokenLimit(rateLimiter, body.bootstrapToken, session);
+    const authBinding = bindingFromBootstrap(body.bootstrapToken, session);
+    const result = await backend.pool.requestAddLiquidity({ ...body, authBinding });
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/pools/add-liquidity/settle") {
     const body = await readValidatedJson<
-      Parameters<typeof backend.pool.settleAddLiquidity>[0]
+      Parameters<typeof backend.pool.settleAddLiquidity>[0] & { bootstrapToken?: string }
     >(req, "POST /v1/pools/add-liquidity/settle", callerAuth);
     const result = await backend.pool.settleAddLiquidity(body);
-    respondJson(res, 200, { result });
+    const minted = mintBoundToken(
+      session,
+      body.bootstrapToken,
+      result.authenticatedParty,
+      result.authBinding,
+    );
+    respondJson(res, 200, minted ? { result, ...minted } : { result });
     return;
   }
 
@@ -1633,19 +1816,27 @@ async function routeRequest(
 
   if (method === "POST" && path === "/v1/pools/remove-liquidity/request") {
     const body = await readValidatedJson<
-      Parameters<typeof backend.pool.requestRemoveLiquidity>[0]
+      Parameters<typeof backend.pool.requestRemoveLiquidity>[0] & { bootstrapToken?: string }
     >(req, "POST /v1/pools/remove-liquidity/request", callerAuth);
-    const result = await backend.pool.requestRemoveLiquidity(body);
+    enforceBootstrapTokenLimit(rateLimiter, body.bootstrapToken, session);
+    const authBinding = bindingFromBootstrap(body.bootstrapToken, session);
+    const result = await backend.pool.requestRemoveLiquidity({ ...body, authBinding });
     respondJson(res, 200, result);
     return;
   }
 
   if (method === "POST" && path === "/v1/pools/remove-liquidity/settle") {
     const body = await readValidatedJson<
-      Parameters<typeof backend.pool.settleRemoveLiquidity>[0]
+      Parameters<typeof backend.pool.settleRemoveLiquidity>[0] & { bootstrapToken?: string }
     >(req, "POST /v1/pools/remove-liquidity/settle", callerAuth);
     const result = await backend.pool.settleRemoveLiquidity(body);
-    respondJson(res, 200, { result });
+    const minted = mintBoundToken(
+      session,
+      body.bootstrapToken,
+      result.authenticatedParty,
+      result.authBinding,
+    );
+    respondJson(res, 200, minted ? { result, ...minted } : { result });
     return;
   }
 
@@ -1712,6 +1903,78 @@ async function readValidatedJson<T>(
     throw new HttpError(binding.status, binding.code, binding.message);
   }
   return body;
+}
+
+// The auth-binding to stamp into a request's allocation specs: the presented
+// bootstrap's nonceHash, or null when no (valid) bootstrap accompanies the
+// request. An invalid/expired bootstrap is treated as no binding — the request
+// still proceeds, it just cannot be upgraded to a session token later.
+function bindingFromBootstrap(
+  bootstrapToken: unknown,
+  session: SessionService | null,
+): string | null {
+  if (typeof bootstrapToken !== "string" || bootstrapToken.length === 0 || !session) {
+    return null;
+  }
+  try {
+    return session.verifyBootstrap(bootstrapToken).nonceHash;
+  } catch {
+    return null;
+  }
+}
+
+// A stable, non-spoofable rate-limit handle for a bootstrap token: its jti when
+// the token verifies, else a hash of the raw token.
+function bootstrapTokenKey(bootstrapToken: string, session: SessionService | null): string {
+  if (session) {
+    try {
+      return session.verifyBootstrap(bootstrapToken).jti;
+    } catch {
+      /* fall through to hashing the raw token */
+    }
+  }
+  return createHash("sha256").update(bootstrapToken).digest("hex");
+}
+
+// Enforce the per-bootstrap-token rate bucket for a request route (in addition
+// to the IP bucket already taken before dispatch). No-op when no token is
+// present. Throws HttpError(429) when the token's bucket is exhausted.
+function enforceBootstrapTokenLimit(
+  rateLimiter: RateLimiter,
+  bootstrapToken: unknown,
+  session: SessionService | null,
+): void {
+  if (typeof bootstrapToken !== "string" || bootstrapToken.length === 0) return;
+  const check = enforceTokenLimit(rateLimiter, bootstrapTokenKey(bootstrapToken, session));
+  if (!check.ok) {
+    throw new HttpError(
+      429,
+      "rate_limited",
+      "rate limit exceeded for this bootstrap token; retry shortly",
+    );
+  }
+}
+
+// After a settle proves a party on-ledger, mint the bootstrap-bound caller
+// token — only from the Daml-proven party, never any HTTP body field. Returns
+// the fields to merge into the response, or null when no mint applies.
+function mintBoundToken(
+  session: SessionService | null,
+  bootstrapToken: unknown,
+  authenticatedParty: Party | null,
+  authBinding: string | null,
+): { callerToken: string; callerTokenExpiresAt: number } | null {
+  if (typeof bootstrapToken !== "string" || bootstrapToken.length === 0 || !session) {
+    return null;
+  }
+  const minted = session.mintFromLedgerProof(
+    bootstrapToken,
+    authenticatedParty ?? "",
+    authBinding ?? "",
+  );
+  return minted
+    ? { callerToken: minted.callerToken, callerTokenExpiresAt: minted.expiresAt }
+    : null;
 }
 
 /**

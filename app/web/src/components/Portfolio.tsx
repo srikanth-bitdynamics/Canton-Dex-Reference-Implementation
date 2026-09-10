@@ -14,14 +14,18 @@ import { fmt, fmtUsd } from '@/primitives/format';
 import { useAssetPricesUsd } from '@/hooks/usePrices';
 import { EmptyState } from '@/primitives/EmptyState';
 import type {
-  Holding,
+  DisplayBalance,
   Order,
   Pool,
   TransactionEvent,
 } from '@/types/contracts';
 
 interface PortfolioProps {
-  holdings: Holding[];
+  /**
+   * Aggregate per-instrument balances for display. Carries amounts only — never
+   * spendable contract ids (funding resolves those separately).
+   */
+  balances: DisplayBalance[];
   /** Pool contracts the user has LP positions in. */
   pools: Pool[];
   /** Active trader orders — drives the prefunded allocation rows. */
@@ -39,33 +43,34 @@ interface AllocationRow {
 }
 
 export function Portfolio({
-  holdings,
+  balances,
   pools,
   orders,
   recentActivity,
 }: PortfolioProps) {
-  const isLpOf = (p: Pool, h: Holding) =>
-    p.lpInstrumentId.id === h.instrumentId && p.lpInstrumentId.admin === h.admin;
-  const ordinaryHoldings = holdings.filter(
-    (h) => !pools.some((p) => isLpOf(p, h)),
+  const isLpOf = (p: Pool, b: DisplayBalance) =>
+    p.lpInstrumentId.id === b.instrumentId.id &&
+    p.lpInstrumentId.admin === b.instrumentId.admin;
+  const ordinaryBalances = balances.filter(
+    (b) => !pools.some((p) => isLpOf(p, b)),
   );
-  const grouped = ordinaryHoldings.reduce<
+  const grouped = ordinaryBalances.reduce<
     Record<
       string,
       { admin: string; instrumentId: string; available: number; locked: number }
     >
-  >((acc, h) => {
-    const key = `${h.admin}\u0000${h.instrumentId}`;
+  >((acc, b) => {
+    const key = `${b.instrumentId.admin}\u0000${b.instrumentId.id}`;
     if (!acc[key]) {
       acc[key] = {
-        admin: h.admin,
-        instrumentId: h.instrumentId,
+        admin: b.instrumentId.admin,
+        instrumentId: b.instrumentId.id,
         available: 0,
         locked: 0,
       };
     }
-    if (h.locked) acc[key]!.locked += h.amount;
-    else acc[key]!.available += h.amount;
+    acc[key]!.available += b.available;
+    acc[key]!.locked += b.locked;
     return acc;
   }, {});
 
@@ -83,18 +88,14 @@ export function Portfolio({
   const priceFor = (sym: string): number | null => priceUsd[sym] ?? null;
   const priceOr0 = (sym: string) => priceFor(sym) ?? 0;
 
-  // Match LP holdings on the full (admin, id) identity. Comparing the textual
-  // id alone would conflate instruments issued by different registrars. Split
-  // holding contracts are consolidated into one row per pool.
+  // Match LP balances on the full (admin, id) identity. Comparing the textual
+  // id alone would conflate instruments issued by different registrars. The
+  // aggregate already sums each instrument into one available/locked row.
   const lpRows = pools.flatMap((pool) => {
-    const matching = holdings.filter((h) => isLpOf(pool, h));
+    const matching = balances.filter((b) => isLpOf(pool, b));
     if (matching.length === 0) return [];
-    const available = matching
-      .filter((h) => !h.locked)
-      .reduce((sum, h) => sum + h.amount, 0);
-    const locked = matching
-      .filter((h) => h.locked)
-      .reduce((sum, h) => sum + h.amount, 0);
+    const available = matching.reduce((sum, b) => sum + b.available, 0);
+    const locked = matching.reduce((sum, b) => sum + b.locked, 0);
     const amount = available + locked;
     const pct = pool.totalLpSupply > 0 ? amount / pool.totalLpSupply : 0;
     const baseShare = pct * pool.reserves.baseAmount;

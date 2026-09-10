@@ -68,7 +68,6 @@ describe("auth unit helpers", () => {
   });
 
   it("classifies state-changing operator routes", () => {
-    assert.equal(isOperatorWrite("POST", "/v1/pools/swap"), true);
     assert.equal(isOperatorWrite("POST", "/v1/orders/fund"), true);
     assert.equal(isOperatorWrite("POST", "/v1/orders/abc123/cancel"), true);
     assert.equal(isOperatorWrite("POST", "/v1/rfq/xyz/cancel"), true);
@@ -76,6 +75,14 @@ describe("auth unit helpers", () => {
     // The wallet relay forwards commands under the operator JWT and must be
     // operator-gated.
     assert.equal(isOperatorWrite("POST", "/v1/wallet/submit"), true);
+    // Swap, liquidity and allocation-factory are public in the bootstrap-bound
+    // phase: authority is proven on-ledger, so they are NOT operator-write.
+    assert.equal(isOperatorWrite("POST", "/v1/pools/swap"), false);
+    assert.equal(isOperatorWrite("POST", "/v1/pools/swap/request"), false);
+    assert.equal(isOperatorWrite("POST", "/v1/pools/add-liquidity/request"), false);
+    assert.equal(isOperatorWrite("POST", "/v1/pools/add-liquidity/settle"), false);
+    assert.equal(isOperatorWrite("POST", "/v1/pools/remove-liquidity/settle"), false);
+    assert.equal(isOperatorWrite("POST", "/v1/registry/allocation-factory"), false);
     // Reads and admin routes are not operator-write gated.
     assert.equal(isOperatorWrite("GET", "/v1/pools"), false);
     assert.equal(isOperatorWrite("POST", "/v1/admin/pools"), false);
@@ -85,7 +92,7 @@ describe("auth unit helpers", () => {
     const r = checkOperatorAuth(
       { method: "POST", headers: {} } as never,
       { operatorToken: undefined, devOpen: false },
-      "/v1/pools/swap",
+      "/v1/orders/fund",
     );
     assert.equal(r.ok, false);
   });
@@ -94,7 +101,7 @@ describe("auth unit helpers", () => {
     const r = checkOperatorAuth(
       { method: "POST", headers: {} } as never,
       { operatorToken: undefined, devOpen: true },
-      "/v1/pools/swap",
+      "/v1/orders/fund",
     );
     assert.equal(r.ok, true);
   });
@@ -110,14 +117,22 @@ describe("fail-closed (no token, no devOpen)", () => {
     await close();
   });
 
-  it("rejects a swap write with 401", async () => {
+  it("rejects an operator write (orders/fund) with 401", async () => {
+    const status = await post(url, "/v1/orders/fund", { orderCid: "#o:0" });
+    assert.equal(status, 401);
+  });
+
+  it("does NOT gate a public swap write (now bootstrap-bound, not operator)", async () => {
+    // Swap left the operator-write set, so it is not a 401 even with no token;
+    // it fails downstream instead (no such pool in the stub ledger).
     const status = await post(url, "/v1/pools/swap", {
       poolCid: "#p:0",
       inputInstrumentId: "BTC",
       inputAmount: "1.0",
       minOutputAmount: "0.0",
+      quoteBinding: {},
     });
-    assert.equal(status, 401);
+    assert.notEqual(status, 401);
   });
 
   it("rejects order cancel (cid route) with 401", async () => {
@@ -143,32 +158,27 @@ describe("with operator token", () => {
   });
 
   it("rejects a write with a missing token (401)", async () => {
-    const status = await post(url, "/v1/pools/swap", {
-      poolCid: "#p:0",
-      inputInstrumentId: "BTC",
-      inputAmount: "1.0",
-      minOutputAmount: "0.0",
-    });
+    const status = await post(url, "/v1/orders/fund", { orderCid: "#o:0" });
     assert.equal(status, 401);
   });
 
   it("rejects a write with the wrong token (401)", async () => {
     const status = await post(
       url,
-      "/v1/pools/swap",
-      { poolCid: "#p:0", inputInstrumentId: "BTC", inputAmount: "1.0", minOutputAmount: "0.0" },
+      "/v1/orders/fund",
+      { orderCid: "#o:0" },
       { Authorization: "Bearer nope" },
     );
     assert.equal(status, 401);
   });
 
   it("passes the gate with the valid token (not 401)", async () => {
-    // The stub ledger has no pool so the handler errors downstream, but the
+    // The stub ledger has no order so the handler errors downstream, but the
     // point is the request got past the auth gate — it must not be a 401.
     const status = await post(
       url,
-      "/v1/pools/swap",
-      { poolCid: "#p:0", inputInstrumentId: "BTC", inputAmount: "1.0", minOutputAmount: "0.0" },
+      "/v1/orders/fund",
+      { orderCid: "#o:0" },
       { Authorization: "Bearer op-secret" },
     );
     assert.notEqual(status, 401);

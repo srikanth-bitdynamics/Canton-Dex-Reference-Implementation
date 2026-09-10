@@ -31,6 +31,12 @@ data PoolRules_SwapResult = PoolRules_SwapResult with
     outputSlicesConsumed : Int
     settleResultsByAdmin : Map.Map Party V2.SettlementFactory_SettleBatchResult
     amountOut : Decimal
+    authenticatedParty : Optional Party
+      -- ^ The swapper proven by the validated request; the backend mints from
+      --   this rather than the HTTP body. Optional (added last) for upgrade
+      --   compatibility; always populated on settle.
+    authBinding : Optional Text
+      -- ^ The session auth-binding observed on the validated request, if any.
   deriving (Eq, Show)
 
 -- The settlement descriptor + the swapper's exact per-admin specs the wallet
@@ -184,6 +190,33 @@ swapperAllocationSpecs prepared =
        else [ spec prepared.preparedInputAdmin [swapInLeg]
             , spec prepared.preparedOutputAdmin outputLegs ]
 
+-- Validate one supplied swap request against the Daml-recomputed specs, the
+-- pool settlement, and the swapper account, mirroring liquidity's
+-- validateAgainstBinding. The auth-binding rides in spec metadata, so the base
+-- specs are re-stamped with the binding observed on the request before the
+-- equality check; a tampered spec or a foreign request fails. Returns the
+-- observed auth-binding for the settle result.
+validateSwapBinding
+  : SwapReq.SwapAllocationRequest
+  -> Party
+  -> V2.SettlementInfo
+  -> [V2.AllocationSpecification]
+  -> [ContractId V2.Allocation]
+  -> Update (Optional Text)
+validateSwapBinding req expectedSwapper settlement baseSpecs suppliedAllocCids = do
+  assertMsg "swap: request swapper must match the swapper account"
+    (req.swapper == expectedSwapper)
+  assertMsg "swap: request settlement must match the pool settlement"
+    (req.settlement == settlement)
+  let observed = Utils.extractAuthBinding req.allocations
+  assertMsg "swap: request allocations must match the recomputed specs"
+    (req.allocations == map (Utils.withAuthBinding observed) baseSpecs)
+  forA_ suppliedAllocCids $ \cid -> do
+    v <- view <$> fetch cid
+    assertMsg "swap: supplied allocation does not match any spec in the request"
+      (v.allocation `elem` req.allocations)
+  pure observed
+
 -- Group the swap legs and allocations by admin: the swap-in leg and the pool's
 -- input-slice roll-forward under the input instrument's admin; the output
 -- delivery under the output instrument's admin. Each swapper allocation is
@@ -244,13 +277,14 @@ template PoolRules with
         requestedAt : Time
         settleAt : Optional Time
         quoteBinding : Optional SwapQuoteBinding
+        authBinding : Optional Text
       controller operator
       do
         let swapperAccount = Utils.basicAccount swapper
             binding = fromSomeNote "PoolRules_RequestSwap: quoteBinding is required" quoteBinding
         prepared <- prepareSwap operator poolCid swapperAccount inputInstrumentId inputAmount binding
         let settlement = poolSettlement poolCid operator
-            allocationSpecs = swapperAllocationSpecs prepared
+            allocationSpecs = map (Utils.withAuthBinding authBinding) (swapperAllocationSpecs prepared)
         swapRequestCid <- create SwapReq.SwapAllocationRequest with
           operator; swapper; settlement; allocations = allocationSpecs; requestedAt; settleAt
         pure PoolRules_RequestSwapResult with
@@ -330,9 +364,22 @@ template PoolRules with
           assertMsg ("swap: missing swapper allocation for admin " <> show a)
             (Map.member a swapperAllocationCidsByAdmin)
 
-        forA_ swapAllocationRequestCids $ \reqCid -> do
-          fetch reqCid
+        -- Validate every supplied request against the recomputed specs and the
+        -- pool settlement (liquidity parity), then archive it. Collect the
+        -- auth-binding each request carries.
+        let settlement = poolSettlement poolCid operator
+            baseSpecs = swapperAllocationSpecs prepared
+            suppliedAllocCids = Map.values swapperAllocationCidsByAdmin
+            authParty = Utils.accountOwner swapperAccount
+        observedBindings <- forA swapAllocationRequestCids $ \reqCid -> do
+          req <- fetch reqCid
+          observed <- validateSwapBinding req authParty settlement baseSpecs suppliedAllocCids
           archive reqCid
+          pure observed
+        let authBinding = case dedup observedBindings of
+              [] -> None
+              [b] -> b
+              _ -> error "swap: auth-binding disagrees across supplied requests"
 
         let grouped = swapFragments prepared swapperAllocationCidsByAdmin
         -- The trader authored every leg side, so settlement cannot add or
@@ -407,6 +454,8 @@ template PoolRules with
           outputSlicesConsumed = length draw.fullyConsumed + (case draw.boundary of Some _ -> 1; None -> 0)
           settleResultsByAdmin
           amountOut
+          authenticatedParty = Some authParty
+          authBinding
 
     nonconsuming choice PoolRules_Pause : ContractId PoolState
       with

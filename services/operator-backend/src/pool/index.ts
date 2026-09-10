@@ -185,6 +185,16 @@ export interface PoolRequestSwapInput {
   // Stamped onto the SwapAllocationRequest; defaults to now.
   requestedAt?: Time;
   settleAt?: Time | null;
+  // The session bootstrap nonceHash stamped into the authored allocation specs
+  // (Optional Text on the wire). Null when the request carries no bootstrap.
+  authBinding?: string | null;
+}
+
+// The on-ledger proof a settle surfaces: the party the validated request proved
+// and the session auth-binding it observed. Both are Optional on the wire.
+export interface LedgerSettleAuth {
+  authenticatedParty: Party | null;
+  authBinding: string | null;
 }
 
 export interface PoolSwapQuoteBinding {
@@ -222,6 +232,8 @@ export interface PoolRequestAddLiquidityInput {
    * what every existing caller relies on.
    */
   maxOffRatioBps?: number | Decimal | null;
+  // Session bootstrap nonceHash stamped into the authored specs; see swap.
+  authBinding?: string | null;
 }
 
 /**
@@ -281,6 +293,8 @@ export interface PoolRequestRemoveLiquidityInput {
   lpTokensToRedeem: Decimal;
   requestedAt: Time;
   settleAt?: Time | null;
+  // Session bootstrap nonceHash stamped into the authored specs; see swap.
+  authBinding?: string | null;
 }
 
 export interface PoolRequestRemoveLiquidityResult {
@@ -340,6 +354,20 @@ function selectCoveringPrefix(slices: PoolSlice[], target: bigint): ContractId<"
     if (acc >= target) break;
   }
   return out;
+}
+
+// Surface the settle result's on-ledger proof in a fixed shape: a present
+// Optional Party/Text decodes to the string, an absent one (None / missing) to
+// null. Keeps the rest of the ledger result intact for the JSON response.
+function withSettleAuth<T extends Record<string, unknown>>(result: T): T & LedgerSettleAuth {
+  return {
+    ...result,
+    authenticatedParty:
+      typeof result.authenticatedParty === "string"
+        ? (result.authenticatedParty as Party)
+        : null,
+    authBinding: typeof result.authBinding === "string" ? result.authBinding : null,
+  };
 }
 
 /** Raw Daml `PS_*` constructor -> the spelling types.ts declares. Idempotent. */
@@ -544,7 +572,7 @@ export class PoolService {
     };
   }
 
-  async swap(input: PoolSwapInput): Promise<unknown> {
+  async swap(input: PoolSwapInput): Promise<Record<string, unknown> & LedgerSettleAuth> {
     const pool = await this.fetchPool(input.poolCid);
     const binding = input.quoteBinding;
     if (!binding || !Array.isArray(binding.outputSliceCids)) {
@@ -663,8 +691,8 @@ export class PoolService {
       this.registry,
       preview,
     );
-    return retryOnContention(() =>
-      this.ledger.submit({
+    const result = await retryOnContention(() =>
+      this.ledger.submit<Record<string, unknown>>({
         actAs: [this.operatorParty],
         commandId,
         disclosure,
@@ -681,6 +709,7 @@ export class PoolService {
         },
       }),
     );
+    return withSettleAuth(result);
   }
 
   // Build the exact two-sided allocation and snapshot binding in Daml so the
@@ -741,6 +770,7 @@ export class PoolService {
           requestedAt: input.requestedAt ?? new Date().toISOString(),
           settleAt: input.settleAt ?? null,
           quoteBinding,
+          authBinding: input.authBinding ?? null,
         },
       },
     });
@@ -864,16 +894,40 @@ export class PoolService {
     updateId: string,
     party: Party,
     expectedAllocations: number,
+    opts: {
+      attempts?: number;
+      sleep?: (ms: number) => Promise<void>;
+    } = {},
   ): Promise<{
     allocationCids: ContractId<"Allocation">[];
     acceptanceCid?: ContractId<"LiquidityAllocationAcceptance">;
   }> {
-    const { allocationCids, acceptanceCid } = await recoverCreatedAllocations(
-      this.ledger,
-      party,
-      updateId,
-      expectedAllocations,
-    );
+    // The committed transaction tree may not yet be visible on this participant
+    // when the wallet submitted on another (cross-participant ingestion lag). The
+    // tree is atomic, so the lag surfaces as a thrown fetch error, not a partial
+    // tree — retry the throw a few times before giving up.
+    const attempts = opts.attempts ?? 6;
+    const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+    let lastError: unknown;
+    let recovered:
+      | Awaited<ReturnType<typeof recoverCreatedAllocations>>
+      | undefined;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        recovered = await recoverCreatedAllocations(
+          this.ledger,
+          party,
+          updateId,
+          expectedAllocations,
+        );
+        break;
+      } catch (err) {
+        lastError = err;
+        if (attempt < attempts - 1) await sleep(400);
+      }
+    }
+    if (!recovered) throw lastError;
+    const { allocationCids, acceptanceCid } = recovered;
     return {
       allocationCids: allocationCids as ContractId<"Allocation">[],
       acceptanceCid: acceptanceCid as
@@ -945,6 +999,7 @@ export class PoolService {
             lpAmount: match.lpAmount,
             requestedAt: input.requestedAt,
             settleAt: input.settleAt ?? null,
+            authBinding: input.authBinding ?? null,
           },
         },
       }),
@@ -962,7 +1017,9 @@ export class PoolService {
   }
 
   /** Settle a DvP add. */
-  async settleAddLiquidity(input: PoolSettleAddLiquidityInput): Promise<unknown> {
+  async settleAddLiquidity(
+    input: PoolSettleAddLiquidityInput,
+  ): Promise<Record<string, unknown> & LedgerSettleAuth> {
     const { pool, liquidityRulesCid } = await this.fetchLiquidityPool(input.poolCid);
     const lpPolicyCid = await this.fetchLpAssetPolicy(pool);
 
@@ -974,8 +1031,13 @@ export class PoolService {
     if (input.updateId) {
       const rec = await this.recoverDvpAllocations(input.updateId, this.operatorParty, 3);
       [lpBaseDepositCid, lpQuoteDepositCid, lpReceiptCid] = rec.allocationCids;
-      acceptanceCid = rec.acceptanceCid ?? input.acceptanceCid ?? null;
-      requestCid = null; // accept consumed the request on this path
+      if (rec.acceptanceCid) {
+        acceptanceCid = rec.acceptanceCid;
+        requestCid = null; // accept consumed the request on this path
+      } else {
+        acceptanceCid = input.acceptanceCid ?? null;
+        requestCid = requestCid ?? input.requestCid ?? null;
+      }
     }
     if (!lpBaseDepositCid || !lpQuoteDepositCid || !lpReceiptCid) {
       throw new Error(
@@ -1061,8 +1123,8 @@ export class PoolService {
       settlementPreview,
     );
 
-    return retryOnContention(() =>
-      this.ledger.submit({
+    const result = await retryOnContention(() =>
+      this.ledger.submit<Record<string, unknown>>({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-add-settle:${flowKey}`,
         disclosure,
@@ -1088,6 +1150,7 @@ export class PoolService {
         },
       }),
     );
+    return withSettleAuth(result);
   }
 
   /** Derive the current redemption plan from reserves and slices. */
@@ -1149,6 +1212,7 @@ export class PoolService {
             lpBurnAmount: input.lpTokensToRedeem,
             requestedAt: input.requestedAt,
             settleAt: input.settleAt ?? null,
+            authBinding: input.authBinding ?? null,
           },
         },
       }),
@@ -1167,7 +1231,9 @@ export class PoolService {
   }
 
   /** Settle a DvP remove. */
-  async settleRemoveLiquidity(input: PoolSettleRemoveLiquidityInput): Promise<unknown> {
+  async settleRemoveLiquidity(
+    input: PoolSettleRemoveLiquidityInput,
+  ): Promise<Record<string, unknown> & LedgerSettleAuth> {
     const { pool, liquidityRulesCid } = await this.fetchLiquidityPool(input.poolCid);
     // Re-derive from current state; drift since /request aborts at settle.
     const plan = this.deriveRemovePlan(pool, input.lpTokensToRedeem, input.knownTotalLpSupply);
@@ -1179,8 +1245,13 @@ export class PoolService {
     if (input.updateId) {
       const rec = await this.recoverDvpAllocations(input.updateId, this.operatorParty, 3);
       [holderBaseReceiptCid, holderQuoteReceiptCid, holderBurnSenderCid] = rec.allocationCids;
-      acceptanceCid = rec.acceptanceCid ?? input.acceptanceCid ?? null;
-      requestCid = null;
+      if (rec.acceptanceCid) {
+        acceptanceCid = rec.acceptanceCid;
+        requestCid = null;
+      } else {
+        acceptanceCid = input.acceptanceCid ?? null;
+        requestCid = requestCid ?? input.requestCid ?? null;
+      }
     }
     if (!holderBaseReceiptCid || !holderQuoteReceiptCid || !holderBurnSenderCid) {
       throw new Error(
@@ -1252,8 +1323,8 @@ export class PoolService {
       settlementPreview,
     );
 
-    return retryOnContention(() =>
-      this.ledger.submit({
+    const result = await retryOnContention(() =>
+      this.ledger.submit<Record<string, unknown>>({
         actAs: [this.operatorParty, pool.lpRegistrar],
         commandId: `lp-remove-settle:${flowKey}`,
         disclosure,
@@ -1277,6 +1348,7 @@ export class PoolService {
         },
       }),
     );
+    return withSettleAuth(result);
   }
 
   private async fetchPool(cid: ContractId<"Pool">): Promise<Pool> {

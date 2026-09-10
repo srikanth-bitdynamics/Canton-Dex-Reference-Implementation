@@ -23,6 +23,13 @@ export interface LedgerSubmitter {
    * Optional: implementations that can't serve trees omit it.
    */
   treeCreatedEvents?(updateId: string, party: Party): Promise<CreatedEventRef[]>;
+  /**
+   * Allocation cids created by a committed transaction's AllocationFactory_Allocate
+   * exercises, by `updateId`, in node order — read from each exercise result's
+   * AllocationInstructionResult_Completed.allocationCid, so it is registry-agnostic
+   * (works for Amulet, USDCx, and the DEX LP registry alike). Optional.
+   */
+  treeAllocationCids?(updateId: string, party: Party): Promise<string[]>;
   /** Optional: drivers with no notion of an update omit it. */
   submitWithUpdateId?<R>(req: SubmitRequest): Promise<SubmitReceipt<R>>;
 }

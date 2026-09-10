@@ -13,10 +13,10 @@
 //   place-order             →  CreateCommand OrderFundingRequest
 //   fund-order               → AllocationFactory_Allocate
 //   request-swap            →  AllocationFactory_Allocate (operator settles via PoolRules_Swap)
-//   add-liquidity           →  CreateAndExercise BatchingUtilityV2.ExecuteBatch
-//                               (accept + all 3 allocations in one command)
-//   remove-liquidity        →  CreateAndExercise BatchingUtilityV2.ExecuteBatch
-//                               (accept + all 3 allocations in one command)
+//   add-liquidity           →  3 direct AllocationFactory_Allocate exercises
+//                               (base + quote deposit, LP receipt) in one transaction
+//   remove-liquidity        →  3 direct AllocationFactory_Allocate exercises
+//                               (base + quote receipt, LP burn-sender) in one transaction
 //
 // Development connection lifecycle:
 //   - connect() verifies the operator backend and uses the explicitly
@@ -50,7 +50,7 @@ const SYNCHRONIZER_ID =
     (window as { __CANTON_SYNCHRONIZER__?: string }).__CANTON_SYNCHRONIZER__) ||
     (import.meta.env.VITE_CANTON_SYNCHRONIZER as string | undefined)) ?? "";
 const PACKAGE_PREFIX =
-  (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID as string | undefined) ??
+  (import.meta.env.VITE_CANTON_DEX_PACKAGE_ID as string | undefined) ||
   "#canton-dex-trading-v2";
 
 interface PersistedSession {

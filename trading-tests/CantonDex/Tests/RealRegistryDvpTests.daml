@@ -168,7 +168,7 @@ authorAdd fx lp baseAmount quoteAmount now = do
       lpMintLeg = Lp.lpMintLeg lpAcct lpId lpAmount
   reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid = fx.poolCid; recipient = lp; baseAmount; quoteAmount; lpAmount
-    requestedAt = now; settleAt = None
+    requestedAt = now; settleAt = None; authBinding = None
   baseCids <- holdingCidsFor lp "X"
   quoteCids <- holdingCidsFor lp "Y"
   -- Base and quote deposits use the TestTokenV2 registry.
@@ -411,7 +411,7 @@ testRealRegistryDvpAddRefundsOffRatioExcess = do
   TT2.mint fx.ttReg lpAcct "Y" quoteAmount
   reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid = fx.poolCid; recipient = lp; baseAmount; quoteAmount; lpAmount
-    requestedAt = now; settleAt = None
+    requestedAt = now; settleAt = None; authBinding = None
   baseCids <- holdingCidsFor lp "X"
   quoteCids <- holdingCidsFor lp "Y"
   baseDep <- ttAlloc fx.ttReg lp settlement (depositSpec fx.ttAdmin lpAcct baseLeg) baseCids now
@@ -467,7 +467,7 @@ testRealRegistryDvpRemoveSettles = do
   let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) aliceHs)
   reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestRemoveLiquidity with
     poolCid = fx.poolCid; holder = alice; baseOuts = [10.0]; quoteOuts = [200000.0]
-    lpBurnAmount = lpAmount; requestedAt = now; settleAt = None
+    lpBurnAmount = lpAmount; requestedAt = now; settleAt = None; authBinding = None
   -- Base/quote receipts use TestTokenV2; the burn sender uses our registry.
   baseReceipt <- ttAlloc fx.ttReg alice settlement (mkSpec fx.ttAdmin aliceAcct [baseOutLeg] False) [] now
   quoteReceipt <- ttAlloc fx.ttReg alice settlement (mkSpec fx.ttAdmin aliceAcct [quoteOutLeg] False) [] now
@@ -565,6 +565,7 @@ testRealRegistryDvpSwapSettles = do
     requestedAt = now
     settleAt = None
     quoteBinding
+    authBinding = None
   let swapSpec = head reqRes.allocationSpecs
   swapSpec.nextIterationFunding === None
   swapSpec.committed === False
@@ -883,7 +884,7 @@ crossAddSettle fx lp now = do
       lpMintLeg = Lp.lpMintLeg lpAcct lpId lpAmount
   reqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
     poolCid = fx.poolCid; recipient = lp; baseAmount; quoteAmount; lpAmount
-    requestedAt = now; settleAt = None
+    requestedAt = now; settleAt = None; authBinding = None
   baseCids <- holdingCidsFor lp "B"
   quoteCids <- holdingCidsFor lp "Q"
   baseDep <- ttAlloc fx.ttRegA lp settlement (depositSpec fx.baseAdmin lpAcct baseLeg) baseCids now
@@ -969,6 +970,7 @@ testCrossAdminPoolSettlesAcrossTwoRegistries = do
     inputInstrumentId = (V2.InstrumentId with admin = fx.quoteAdmin; id = "Q"); inputAmount = swapIn
     requestedAt = now; settleAt = None
     quoteBinding
+    authBinding = None
   length reqRes.allocationSpecs === 2
   let inSpec = fromSome (find (\s -> s.admin == fx.quoteAdmin) reqRes.allocationSpecs)
       outSpec = fromSome (find (\s -> s.admin == fx.baseAdmin) reqRes.allocationSpecs)
@@ -1027,7 +1029,7 @@ testCrossAdminPoolSettlesAcrossTwoRegistries = do
   let (lpHoldCid, _) = head (filter (\(_, h) -> h.instrumentId == lpId && not h.locked) lpHs)
   remReqCid <- submit fx.operator $ exerciseCmd fx.dvpCid Dvp.PoolLiquidityRules_RequestRemoveLiquidity with
     poolCid = fx.poolCid; holder = lp; baseOuts = [baseOut]; quoteOuts = [quoteOut]
-    lpBurnAmount = lpAmount; requestedAt = now; settleAt = None
+    lpBurnAmount = lpAmount; requestedAt = now; settleAt = None; authBinding = None
   baseReceipt <- ttAlloc fx.ttRegA lp settlement (mkSpec fx.baseAdmin lpAcct [baseOutLeg] False) [] now
   quoteReceipt <- ttAlloc fx.ttRegB lp settlement (mkSpec fx.quoteAdmin lpAcct [quoteOutLeg] False) [] now
   brres <- submit lp $ exerciseCmd (toInterfaceContractId fx.lpReg : ContractId V2.AllocationFactory)

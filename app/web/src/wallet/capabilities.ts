@@ -33,6 +33,26 @@ export interface WalletCapability {
    * must NOT compose split/merge commands.
    */
   coSignsAdmin: boolean;
+  /**
+   * Static capability flags describing what a provider's transport can do,
+   * independent of the connected wallet's runtime state. `supportsSignMessage`
+   * gates the off-ledger session fast path; `hasVerifiablePublicKey` is NOT
+   * here — it is probed at runtime (see services/session.ts), because a wallet
+   * can advertise signMessage yet expose no public key.
+   */
+  supportsSignMessage: boolean;
+  supportsPrepareExecute: boolean;
+  supportsTokenStandardV2: boolean;
+  /**
+   * Whether the wallet's transaction UI accepts a multi-atom `commands[]` in a
+   * single request. Stays FALSE until a wallet is proven to authorize a
+   * multi-command allocation transaction in its own UI: Loop / PartyLayer's
+   * adapter today refuses a request carrying more than one command atom. When
+   * false, each composed AllocationFactory_Allocate is submitted as its own
+   * single-command wallet request (see wallet/sequential-submit.ts); the
+   * operator settle remains the single atomic point.
+   */
+  supportsMultiCommandTransaction: boolean;
 }
 
 export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
@@ -43,26 +63,46 @@ export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
     dvp: "dev-only",
     note: "Dev only — operator signing relay (operator co-signs your actions). Not a real wallet.",
     coSignsAdmin: true,
+    supportsSignMessage: true,
+    supportsPrepareExecute: false,
+    supportsTokenStandardV2: true,
+    supportsMultiCommandTransaction: false,
   },
   sdk: {
     dvp: "ready",
     note: "CIP-0103 wallet; full DvP.",
     coSignsAdmin: false,
+    supportsSignMessage: true,
+    supportsPrepareExecute: true,
+    supportsTokenStandardV2: true,
+    supportsMultiCommandTransaction: false,
   },
   mock: {
     dvp: "dev-only",
     note: "Dev only — returns deterministic placeholder cids; no ledger submission.",
     coSignsAdmin: true,
+    supportsSignMessage: false,
+    supportsPrepareExecute: false,
+    supportsTokenStandardV2: false,
+    supportsMultiCommandTransaction: false,
   },
   partylayer: {
     dvp: "unproven",
     note: "Multi-wallet SDK; tries configured submit-capable wallets. Swap, order funding, and LP DvP use operator-discovery.",
     coSignsAdmin: false,
+    supportsSignMessage: true,
+    supportsPrepareExecute: true,
+    supportsTokenStandardV2: true,
+    supportsMultiCommandTransaction: false,
   },
   walletconnect: {
     dvp: "unsupported",
     note: "Settlement-accept only; cannot complete LP DvP.",
     coSignsAdmin: false,
+    supportsSignMessage: false,
+    supportsPrepareExecute: false,
+    supportsTokenStandardV2: false,
+    supportsMultiCommandTransaction: false,
   },
 };
 
@@ -81,6 +121,10 @@ export function capabilityFor(id: WalletProviderId): WalletCapability {
       dvp: "unproven",
       note: "Capability unknown.",
       coSignsAdmin: false,
+      supportsSignMessage: false,
+      supportsPrepareExecute: false,
+      supportsTokenStandardV2: false,
+      supportsMultiCommandTransaction: false,
     }
   );
 }

@@ -96,6 +96,7 @@ testReconcileAfterAddSwapRemove = do
       inputSliceCid = addRes.quoteSliceCid
       outputSliceCids = [addRes.baseSliceCid]
       minOutputAmount = 0.0)
+    authBinding = None
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 100.0
   swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement (head reqRes.allocationSpecs)
     [toInterfaceContractId usdcHold] now
@@ -252,6 +253,7 @@ testSwapRejectsOperatorAsSwapper = do
       inputSliceCid = addRes.quoteSliceCid
       outputSliceCids = [addRes.baseSliceCid]
       minOutputAmount = 0.0)
+    authBinding = None
   usdcHold <- PLT.mintHolding fx.registry bob "USDC" 100.0
   swapAlloc <- PLT.mkAlloc fx.factoryCid bob reqRes.settlement (head reqRes.allocationSpecs)
     [toInterfaceContractId usdcHold] now
@@ -332,6 +334,7 @@ testSameSymbolCrossAdminSwapRoutesByIdentity = do
             expectedPoolId = poolId; poolStateCid = stateCid
             inputSliceCid = inSliceCid; outputSliceCids = outSliceCids
             minOutputAmount = 0.0)
+          authBinding = None
 
   -- Input = base identity {adminA,"USD"}: routes as base, swap-in under adminA.
   baseReq <- requestSwap baseId baseSliceCid [quoteSliceCid]
@@ -354,4 +357,5 @@ testSameSymbolCrossAdminSwapRoutesByIdentity = do
       expectedPoolId = poolId; poolStateCid = stateCid
       inputSliceCid = baseSliceCid; outputSliceCids = [quoteSliceCid]
       minOutputAmount = 0.0)
+    authBinding = None
   pure ()

@@ -108,6 +108,18 @@ export interface Holding {
   locked: boolean;
 }
 
+/**
+ * Aggregated, display-only balance for one instrument. Sourced from the
+ * wallet's native aggregate balance (e.g. Loop's getHolding()) and used purely
+ * to render the portfolio; it carries amounts, never a spendable contract id.
+ * Funding uses the separate spendable-holding resolver.
+ */
+export interface DisplayBalance {
+  instrumentId: InstrumentId;
+  available: number;
+  locked: number;
+}
+
 export interface RankedDealer {
   party: string;
   rank: number;

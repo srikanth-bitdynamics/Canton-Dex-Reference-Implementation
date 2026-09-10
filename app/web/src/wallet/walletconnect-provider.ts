@@ -26,8 +26,12 @@ import type {
   WalletResult,
 } from "./types";
 import { LiquidityAllocationUnsupportedError } from "./types";
-import { discoverHoldingsAcrossRegistries } from "./holdings";
-import type { Holding } from "@/types/contracts";
+import {
+  discoverHoldingsAcrossRegistries,
+  resolveSpendableHoldings,
+  type AcsRequest,
+} from "./holdings";
+import type { Holding, InstrumentId } from "@/types/contracts";
 
 // CIP-0103 method names exposed by Canton wallets over WalletConnect.
 // Listed for session permissions; the wallet must support these to
@@ -236,14 +240,45 @@ export class WalletConnectProvider implements WalletProvider {
   // token-standard Holding interface, not only the DEX's own template. Callers
   // fall back to the operator backend when this is absent or fails.
   async listHoldings(owner: Party): Promise<Holding[]> {
+    const conn = this.connectedConnectorFor(owner);
+    return discoverHoldingsAcrossRegistries(
+      owner,
+      this.packagePrefix,
+      this.ledgerRequest(conn),
+    );
+  }
+
+  // Spendable holdings for funding one instrument: interface discovery first,
+  // then a wallet-compat concrete-template fallback when that is empty.
+  async resolveSpendableHoldings(
+    owner: Party,
+    instrument: InstrumentId,
+  ): Promise<Holding[]> {
+    const conn = this.connectedConnectorFor(owner);
+    return resolveSpendableHoldings(
+      owner,
+      instrument,
+      this.packagePrefix,
+      this.ledgerRequest(conn),
+    );
+  }
+
+  private connectedConnectorFor(owner: Party): AppKitUniversalConnector {
     if (this.status.kind !== "connected" || !this.connector) {
       throw new Error("wallet not connected");
     }
     if (this.status.account.party !== owner) {
       throw new Error("walletconnect: can only read holdings for the connected party");
     }
-    const conn = this.connector;
-    return discoverHoldingsAcrossRegistries(owner, this.packagePrefix, (req) =>
+    return this.connector;
+  }
+
+  // ACS read transport over `canton_ledgerApi`, retried with a timeout (reads
+  // are idempotent).
+  private ledgerRequest(
+    conn: AppKitUniversalConnector,
+  ): (req: AcsRequest) => Promise<unknown> {
+    return (req) =>
       withRetry(
         () =>
           withTimeout(
@@ -262,8 +297,7 @@ export class WalletConnectProvider implements WalletProvider {
           ),
         READ_RETRIES,
         "canton_ledgerApi",
-      ),
-    );
+      );
   }
 
   async submit(intent: WalletIntent): Promise<WalletResult> {

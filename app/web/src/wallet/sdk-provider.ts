@@ -18,8 +18,14 @@ import {
 } from "@canton-network/dapp-sdk";
 
 import { composeCommands } from "./commands";
-import { discoverHoldingsAcrossRegistries } from "./holdings";
-import type { Holding } from "@/types/contracts";
+import { capabilityFor } from "./capabilities";
+import { submitComposedCommands, type PreparedSubmission } from "./sequential-submit";
+import {
+  discoverHoldingsAcrossRegistries,
+  resolveSpendableHoldings,
+  type AcsRequest,
+} from "./holdings";
+import type { Holding, InstrumentId } from "@/types/contracts";
 import type {
   DetectedWallet,
   Party,
@@ -370,44 +376,103 @@ export class SdkProvider implements WalletProvider {
       packagePrefix: this.packagePrefix,
       now: () => new Date(),
     });
+    // Until a CIP-0103 wallet is proven to accept a multi-atom commands[] in its
+    // transaction UI, each AllocationFactory_Allocate is submitted as its own
+    // single-command request; the created cid per request is recovered from its
+    // updateId and aggregated. Each prepareExecuteAndWait is still updateId-only.
+    return submitComposedCommands({
+      intent,
+      composed,
+      party,
+      supportsMultiCommandTransaction:
+        capabilityFor(this.id).supportsMultiCommandTransaction,
+      submit: (submission) => this.submitOne(submission),
+    });
+  }
+
+  // Submit one prepared request through the wallet and resolve to its updateId.
+  // prepareExecuteAndWait resolves to { tx: { payload: { updateId } } } and
+  // carries NO created events, so this is an updateId-only transport.
+  private async submitOne(submission: PreparedSubmission): Promise<string> {
     let result: Awaited<ReturnType<DappSDK["prepareExecuteAndWait"]>>;
     try {
       result = await this.sdk.prepareExecuteAndWait({
-        commandId: composed.commandId,
+        commandId: submission.commandId,
         // The SDK deliberately types each Ledger API command payload as opaque;
         // our composer supplies the same tagged command union with stricter
         // inner fields.
-        commands: composed.commands as unknown as Parameters<
+        commands: submission.commands as unknown as Parameters<
           DappSDK["prepareExecuteAndWait"]
         >[0]["commands"],
-        actAs: composed.actAs,
+        actAs: submission.actAs,
         // Off-participant factory/request contracts (AllocationFactory, the
         // AllocationRequest) the trader's participant does not host must be
         // disclosed, or the exercise fails with CONTRACT_NOT_FOUND.
-        ...(composed.disclosedContracts && composed.disclosedContracts.length > 0
-          ? { disclosedContracts: composed.disclosedContracts }
+        ...(submission.disclosedContracts && submission.disclosedContracts.length > 0
+          ? { disclosedContracts: submission.disclosedContracts }
           : {}),
       });
     } catch (e) {
       // Surface the wallet or gateway's normalized error.
       throw new Error(`wallet submission failed: ${describeWalletError(e)}`);
     }
-    // prepareExecuteAndWait resolves to { tx: { status, commandId, payload:
-    // { updateId, completionOffset } } } — it carries NO created events. So this
-    // is an updateId-only provider: the operator recovers the created Allocation
-    // cids (and the LP acceptance receipt) from the updateId tree for every DvP
-    // flow (swap, LP add/remove, order funding), exactly like the PartyLayer
-    // provider. Do NOT try to parse created cids from the result — there are none.
     const updateId = result.tx.payload.updateId;
     if (!updateId) {
       throw new Error(
         "sdk-provider: wallet returned no updateId; operator-discovery requires an updateId",
       );
     }
+    return updateId;
+  }
+
+  // Off-ledger message signing via the dapp-sdk CIP-0103 signMessage RPC, which
+  // binds only `message` — nonce/domain are echoed back for the backend's
+  // structural check but are not forwarded to the wallet to be signed.
+  async signMessage(params: {
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }): Promise<{
+    signature: string;
+    partyId: string;
+    message: string;
+    nonce?: string;
+    domain?: string;
+  }> {
+    if (this.status.kind !== "connected") {
+      throw new Error("sdk-provider: wallet not connected");
+    }
+    await this.ensureInit();
+    const { signature } = await this.sdk.signMessage({ message: params.message });
     return {
-      submittedBy: party,
-      primaryCid: updateId,
-      auxiliaryCids: { updateId },
+      signature,
+      partyId: this.status.account.party,
+      message: params.message,
+      nonce: params.nonce,
+      domain: params.domain,
+    };
+  }
+
+  // The connected party's primary account, carrying the public key the backend
+  // verifies a signMessage against. DappSDK surfaces accounts only via
+  // listAccounts(); pick the primary Wallet (same rule as the connect path).
+  async getPrimaryAccount(): Promise<{
+    partyId: string;
+    publicKey: string;
+    namespace?: string;
+    hint?: string;
+  }> {
+    await this.ensureInit();
+    const accounts: Wallet[] = await this.sdk.listAccounts();
+    const primary = accounts.find((w) => w.primary) ?? accounts[0];
+    if (!primary) {
+      throw new Error("sdk-provider: wallet returned no accounts");
+    }
+    return {
+      partyId: primary.partyId,
+      publicKey: primary.publicKey,
+      namespace: primary.namespace,
+      hint: primary.hint,
     };
   }
 
@@ -415,21 +480,43 @@ export class SdkProvider implements WalletProvider {
   // through the wallet's CIP-0103 ledgerApi read, so an Amulet / USDCx holding
   // issued by a foreign registry is found alongside the DEX's own.
   async listHoldings(owner: Party): Promise<Holding[]> {
+    this.assertConnectedFor(owner);
+    return discoverHoldingsAcrossRegistries(owner, this.packagePrefix, this.ledgerRequest());
+  }
+
+  // Spendable holdings for funding one instrument: interface discovery first,
+  // then a wallet-compat concrete-template fallback when that is empty.
+  async resolveSpendableHoldings(
+    owner: Party,
+    instrument: InstrumentId,
+  ): Promise<Holding[]> {
+    this.assertConnectedFor(owner);
+    return resolveSpendableHoldings(
+      owner,
+      instrument,
+      this.packagePrefix,
+      this.ledgerRequest(),
+    );
+  }
+
+  private assertConnectedFor(owner: Party): void {
     if (this.status.kind !== "connected") {
       throw new Error("sdk-provider: wallet not connected");
     }
     if (this.status.account.party !== owner) {
       throw new Error("sdk-provider: can only read holdings for the connected party");
     }
-    // The dapp-sdk ledgerApi takes the request body as an object (not a JSON
-    // string) and returns the parsed ledger response.
-    return discoverHoldingsAcrossRegistries(owner, this.packagePrefix, (req) =>
+  }
+
+  // The dapp-sdk ledgerApi takes the request body as an object (not a JSON
+  // string) and returns the parsed ledger response.
+  private ledgerRequest(): (req: AcsRequest) => Promise<unknown> {
+    return (req) =>
       this.sdk.ledgerApi({
         requestMethod: req.method.toLowerCase() as "get" | "post",
         resource: req.resource,
         ...(req.body !== undefined ? { body: req.body as Record<string, unknown> } : {}),
-      }),
-    );
+      });
   }
 
   private async primaryAccount(): Promise<WalletAccount> {

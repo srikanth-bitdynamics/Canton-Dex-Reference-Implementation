@@ -1,18 +1,35 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// The provider submits each allocation command as its own single-command request
+// (supportsMultiCommandTransaction is false) and recovers the one created cid per
+// request from its updateId. Mock the recovery so tests stay backend-free; a
+// counter yields distinct cids in submission order.
+vi.mock("@/services/recover-allocations", () => ({
+  recoverCreatedAllocationCid: vi.fn(),
+}));
 
 import {
   DEFAULT_PARTYLAYER_CONNECT_TIMEOUT_MS,
   PartyLayerProvider,
   parsePartyLayerHoldings,
   type PartyLayerClient,
+  type PartyLayerCommandSubmission,
+  type PartyLayerTxReceipt,
 } from "@/wallet/partylayer-provider";
-import type { RequestSwapIntent } from "@/wallet/types";
+import { recoverCreatedAllocationCid } from "@/services/recover-allocations";
+import type { AddLiquidityIntent, RequestSwapIntent } from "@/wallet/types";
 
-// A fake @partylayer/sdk client: records the submitted command tree and returns
-// an updateId-only receipt, matching the provider contract.
-function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
+const recoverMock = vi.mocked(recoverCreatedAllocationCid);
+
+// A fake @partylayer/sdk client. submitOne submits through the SDK
+// submitTransaction method (the path that drives the wallet signing tab), so the
+// fake records the submitted command trees and answers with a receipt carrying
+// the committed updateId. ACS reads over ledgerApi are answered as before.
+function fakeClient(
+  receipt: PartyLayerTxReceipt = { updateId: "00feed", transactionHash: "h" },
+) {
   const connectCalls: unknown[] = [];
-  const calls: Array<Parameters<PartyLayerClient["submitTransaction"]>[0]> = [];
+  const submitCalls: PartyLayerCommandSubmission[] = [];
   const ledgerApiCalls: Array<Parameters<PartyLayerClient["ledgerApi"]>[0]> = [];
   let connected = false;
   const client: PartyLayerClient = {
@@ -25,7 +42,7 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
       connected = false;
     },
     async submitTransaction(params) {
-      calls.push(params);
+      submitCalls.push(params.signedTx);
       return receipt;
     },
     async ledgerApi(params) {
@@ -78,7 +95,7 @@ function fakeClient(receipt: { updateId?: string; transactionHash?: string }) {
       };
     },
   };
-  return { client, calls, connectCalls, ledgerApiCalls, isConnected: () => connected };
+  return { client, submitCalls, connectCalls, ledgerApiCalls, isConnected: () => connected };
 }
 
 function failingClient(error: Error) {
@@ -156,9 +173,50 @@ const crossAdminSwapIntent: RequestSwapIntent = {
   disclosure: [],
 };
 
+// DvP add: three allocations (base deposit, quote deposit, LP receipt) authored
+// as three separate single-command requests.
+const lpBaseLeg = { ...swapInLeg, transferLegId: "lp-base", instrumentId: "Amulet" };
+const lpQuoteLeg = { ...swapInLeg, transferLegId: "lp-quote", instrumentId: "USDCx" };
+const lpReceiptLeg = {
+  ...swapOutLeg, transferLegId: "lp-mint", side: "ReceiverSide" as const, instrumentId: "AMM-LP",
+};
+const addLiquidityIntent: AddLiquidityIntent = {
+  kind: "add-liquidity",
+  requestCid: "lpReqABCDEFGH",
+  settlement: { executors: ["op"], id: "lp-s", cid: null, meta: { values: {} } },
+  allocations: [
+    {
+      admin: "dep-admin", authorizer: alice, transferLegSides: [lpBaseLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: true, meta: { values: {} },
+    },
+    {
+      admin: "dep-admin", authorizer: alice, transferLegSides: [lpQuoteLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: true, meta: { values: {} },
+    },
+    {
+      admin: "lp-admin", authorizer: alice, transferLegSides: [lpReceiptLeg],
+      settlementDeadline: null, nextIterationFunding: null, committed: false, meta: { values: {} },
+    },
+  ],
+  requestedAt: "2026-05-19T12:00:00.000Z",
+  factoryCids: ["depF", "depF", "lpF"],
+  allocationFactoryExtraArgs: [emptyArgs, emptyArgs, emptyArgs],
+  allocationRequestExtraArgs: emptyArgs,
+  disclosure: [],
+  baseHoldingCids: ["b1"],
+  quoteHoldingCids: ["q1"],
+};
+
 describe("PartyLayerProvider", () => {
   const ctx = () => new PartyLayerProvider("#canton-dex-trading-v2", async () => fake.client);
   let fake: ReturnType<typeof fakeClient>;
+
+  beforeEach(() => {
+    // Distinct recovered cids per submission, in call order.
+    let n = 0;
+    recoverMock.mockReset();
+    recoverMock.mockImplementation(async () => `alloc-${++n}`);
+  });
 
   it("connects and exposes the wallet party", async () => {
     fake = fakeClient({ updateId: "u-1" });
@@ -191,52 +249,87 @@ describe("PartyLayerProvider", () => {
     });
   });
 
-  it("submit returns updateId as primaryCid and does NOT set createdAllocationCids", async () => {
-    fake = fakeClient({ updateId: "update-xyz" });
+  it("single-admin swap: one command → one updateId-only request (no split, no recover)", async () => {
+    fake = fakeClient({ updateId: "00feed", transactionHash: "h" });
     const p = ctx();
     await p.connect();
     const res = await p.submit(swapIntent);
-    expect(res.primaryCid).toBe("update-xyz");
-    expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
-    // updateId-only by design — the operator recovers the created cids from the
-    // updateId for all DvP flows (LP add/remove, swap, order funding).
+    expect(res.primaryCid).toBe("00feed");
+    expect(res.auxiliaryCids?.updateId).toBe("00feed");
+    // One command: nothing to split, so the updateId-only shape is kept and the
+    // operator recovers the single cid at settle (operator-discovery).
     expect(res.createdAllocationCids).toBeUndefined();
-    // The composed command tree was handed to the wallet to sign: one
-    // BatchingUtilityV2 command that accepts the request and authors the spec.
-    expect(fake.calls).toHaveLength(1);
-    expect(fake.calls[0].signedTx.actAs).toEqual(["alice::1220a"]);
-    expect(fake.calls[0].signedTx.commandId).toMatch(/^swap-batch-/);
-    expect(fake.calls[0].signedTx.commands).toHaveLength(1);
-    expect(fake.calls[0].signedTx.commands[0]).toHaveProperty(
-      "CreateAndExerciseCommand.choice",
-      "BatchingUtility_ExecuteBatch",
+    expect(recoverMock).not.toHaveBeenCalled();
+    // Submit went through the SDK submit method, carrying the composed command tree.
+    expect(fake.submitCalls).toHaveLength(1);
+    expect(fake.submitCalls[0].actAs).toEqual(["alice::1220a"]);
+    expect(fake.submitCalls[0].commandId).toMatch(/^swap-batch-/);
+    expect(fake.submitCalls[0].commands).toHaveLength(1);
+    expect(fake.submitCalls[0].commands[0]).toHaveProperty(
+      "ExerciseCommand.choice",
+      "AllocationFactory_Allocate",
     );
   });
 
-  it("submits a cross-admin (2-allocation) swap batch as one updateId-only command", async () => {
-    fake = fakeClient({ updateId: "update-xyz" });
+  it("cross-admin swap: two separate single-command requests, cids aggregated in order", async () => {
+    fake = fakeClient({ updateId: "00feed", transactionHash: "h" });
     const p = ctx();
     await p.connect();
     const res = await p.submit(crossAdminSwapIntent);
-    expect(res.auxiliaryCids?.updateId).toBe("update-xyz");
-    // No single-allocation assumption: the provider forwards the batch and the
-    // operator recovers BOTH created cids from the updateId.
-    expect(res.createdAllocationCids).toBeUndefined();
-    expect(fake.calls).toHaveLength(1);
-    const cmd = (fake.calls[0].signedTx.commands[0] as {
-      CreateAndExerciseCommand: { choice: string; choiceArgument: { actions: { tag: string }[] } };
-    }).CreateAndExerciseCommand;
-    expect(cmd.choice).toBe("BatchingUtility_ExecuteBatch");
-    // Accept the request, then one allocate per admin (two here).
-    expect(cmd.choiceArgument.actions.map((a) => a.tag)).toEqual([
-      "TSA_AllocationRequest_AcceptV2",
-      "TSA_AllocationFactory_AllocateV2",
-      "TSA_AllocationFactory_AllocateV2",
-    ]);
+    // Two separate wallet requests, each carrying exactly one Allocate.
+    expect(fake.submitCalls).toHaveLength(2);
+    for (const call of fake.submitCalls) {
+      const cmds = call.commands as Array<{ ExerciseCommand: { choice: string } }>;
+      expect(cmds).toHaveLength(1);
+      expect(cmds[0].ExerciseCommand.choice).toBe("AllocationFactory_Allocate");
+    }
+    // Distinct command ids per request (dedup on the ledger).
+    expect(fake.submitCalls[0].commandId).not.toBe(fake.submitCalls[1].commandId);
+    // The two recovered cids, in canonical order, are what the settle consumes,
+    // recovered by the committed updateId each submit returned.
+    expect(recoverMock).toHaveBeenCalledTimes(2);
+    expect(recoverMock.mock.calls.map((c) => c[0])).toEqual(["00feed", "00feed"]);
+    expect(recoverMock.mock.calls.map((c) => c[1])).toEqual(["alice::1220a", "alice::1220a"]);
+    expect(res.createdAllocationCids).toEqual(["alloc-1", "alloc-2"]);
+    expect(res.primaryCid).toBe("alloc-1");
   });
 
-  it("rejects submit when the wallet receipt has no updateId", async () => {
-    fake = fakeClient({ transactionHash: "tx-hash-9" });
+  it("add-liquidity: three separate single-command requests, three cids aggregated", async () => {
+    fake = fakeClient({ updateId: "00feed", transactionHash: "h" });
+    const p = ctx();
+    await p.connect();
+    const res = await p.submit(addLiquidityIntent);
+    // Three separate wallet requests, one Allocate each, in canonical order
+    // [base deposit, quote deposit, LP receipt].
+    expect(fake.submitCalls).toHaveLength(3);
+    for (const call of fake.submitCalls) {
+      const cmds = call.commands as Array<{ ExerciseCommand: { choice: string } }>;
+      expect(cmds).toHaveLength(1);
+      expect(cmds[0].ExerciseCommand.choice).toBe("AllocationFactory_Allocate");
+    }
+    expect(new Set(fake.submitCalls.map((c) => c.commandId)).size).toBe(3);
+    expect(recoverMock).toHaveBeenCalledTimes(3);
+    expect(res.createdAllocationCids).toEqual(["alloc-1", "alloc-2", "alloc-3"]);
+  });
+
+  it("surfaces which allocation failed mid-sequence", async () => {
+    fake = fakeClient();
+    // Fail the second submit only.
+    let n = 0;
+    fake.client.submitTransaction = async () => {
+      n += 1;
+      if (n === 2) throw new Error("package not vetted");
+      return { updateId: "00feed", transactionHash: "h" };
+    };
+    const p = ctx();
+    await p.connect();
+    await expect(p.submit(addLiquidityIntent)).rejects.toThrow(
+      /add-liquidity: wallet request for allocation 2 of 3 failed .*package not vetted/,
+    );
+  });
+
+  it("rejects submit when the receipt carries no updateId", async () => {
+    fake = fakeClient({ transactionHash: "h" });
     const p = ctx();
     await p.connect();
     await expect(p.submit(swapIntent)).rejects.toThrow(/no updateId/);
@@ -255,8 +348,9 @@ describe("PartyLayerProvider", () => {
 
     const holdings = await p.listHoldings("alice::1220a");
 
-    // ledger-end fetched at GET, then one active-contracts read per filter.
-    expect(fake.ledgerApiCalls).toHaveLength(3);
+    // ledger-end fetched at GET, then one active-contracts read per filter
+    // (HoldingV2 interface, HoldingV1 interface, Registry.V2 template).
+    expect(fake.ledgerApiCalls).toHaveLength(4);
     expect(fake.ledgerApiCalls[0]).toMatchObject({
       requestMethod: "GET",
       resource: "/v2/state/ledger-end",
@@ -264,7 +358,7 @@ describe("PartyLayerProvider", () => {
     const acsCalls = fake.ledgerApiCalls.filter(
       (c) => c.resource === "/v2/state/active-contracts",
     );
-    expect(acsCalls).toHaveLength(2);
+    expect(acsCalls).toHaveLength(3);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const acsBodies = acsCalls.map((c) => JSON.parse(c.body ?? "{}") as any);
     for (let i = 0; i < acsCalls.length; i++) {
@@ -280,6 +374,13 @@ describe("PartyLayerProvider", () => {
         (f) =>
           f.InterfaceFilter?.value?.interfaceId ===
           "#splice-api-token-holding-v2:Splice.Api.Token.HoldingV2:Holding",
+      ),
+    ).toBe(true);
+    expect(
+      identifierFilters.some(
+        (f) =>
+          f.InterfaceFilter?.value?.interfaceId ===
+          "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding",
       ),
     ).toBe(true);
     expect(

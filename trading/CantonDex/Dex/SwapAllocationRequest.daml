@@ -25,7 +25,6 @@ template SwapAllocationRequest with
     settleAt : Optional Time
   where
     signatory operator
-    observer swapper
 
     ensure allocations /= []
 

@@ -127,7 +127,7 @@ dvpFundPool operator lpRegistrar factoryCid settleCid poolId poolCid stateCid po
   -- Operator opens the add-liquidity request; it lists three required mock
   -- allocation specifications: base, quote, and the LP-mint receipt.
   reqCid <- submit operator $ exerciseCmd dvpCid Dvp.PoolLiquidityRules_RequestAddLiquidity with
-    poolCid; recipient; baseAmount; quoteAmount; lpAmount; requestedAt = now; settleAt = None
+    poolCid; recipient; baseAmount; quoteAmount; lpAmount; requestedAt = now; settleAt = None; authBinding = None
   Some req <- queryContractId operator reqCid
   -- The three specifications, in order, and a helper that creates one mock
   -- Allocation contract for each (the fixture completes immediately).

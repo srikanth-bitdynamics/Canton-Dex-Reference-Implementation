@@ -3,7 +3,13 @@
 // through `wallet/handoff.ts`; hosted RFQ routes are the documented relay
 // exception.
 
-import { apiAuthHeaders } from "./api-auth";
+import { absorbSessionToken, apiAuthHeaders, getBootstrapToken } from "./api-auth";
+
+/** Bootstrap-token field for trade request/settle bodies (omitted when unset). */
+function bootstrapField(): { bootstrapToken?: string } {
+  const bootstrapToken = getBootstrapToken();
+  return bootstrapToken ? { bootstrapToken } : {};
+}
 
 export type Party = string;
 export type ContractId<_T> = string;
@@ -147,6 +153,9 @@ export class OperatorApi {
     inputInstrumentId: InstrumentId;
     inputAmount: Decimal;
     minOutputAmount: Decimal;
+    // Optional settlement deadline stamped onto the SwapAllocationRequest so the
+    // locked allocations auto-release if the swap is not settled in time.
+    settleAt?: string;
   }): Promise<{
     // One spec per (swapper, admin): input admin first, then output admin; one
     // combined spec for a single-admin swap.
@@ -155,7 +164,7 @@ export class OperatorApi {
     settlement: unknown;
     quoteBinding: SwapQuoteBinding;
   }> {
-    return this.post("/v1/pools/swap/request", req);
+    return this.post("/v1/pools/swap/request", { ...req, ...bootstrapField() });
   }
 
   async swap(req: {
@@ -169,8 +178,11 @@ export class OperatorApi {
     // updateId for operator-discovery.
     swapperAllocationCids?: ContractId<"Allocation">[];
     updateId?: string;
+    // The still-live SwapAllocationRequest(s) for the settle to archive when the
+    // wallet did not consume the request via accept.
+    swapAllocationRequestCids?: ContractId<"SwapAllocationRequest">[];
   }): Promise<unknown> {
-    return this.post("/v1/pools/swap", req);
+    return this.post("/v1/pools/swap", { ...req, ...bootstrapField() });
   }
 
   /** Scoped to one party: the operator observes every RFQ and quote. */
@@ -343,6 +355,8 @@ export class OperatorApi {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-    return (await res.json()) as T;
+    const json = await res.json();
+    absorbSessionToken(json); // a settle response may carry the party JWT
+    return json as T;
   }
 }

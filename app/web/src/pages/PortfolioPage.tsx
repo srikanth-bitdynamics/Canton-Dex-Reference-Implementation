@@ -8,9 +8,11 @@ import { fmt } from '@/primitives/format';
 
 export function PortfolioPage() {
   const party = useCurrentParty();
-  const { data: holdings, isLoading, error: holdingsError } = useQuery({
-    queryKey: ['holdings', party],
-    queryFn: () => ledger.getHoldings(party!),
+  // Display uses the aggregate balance path (wallet getHolding() when native,
+  // otherwise derived from holdings) — never the spendable-cid resolver.
+  const { data: balances, isLoading, error: holdingsError } = useQuery({
+    queryKey: ['balances', party],
+    queryFn: () => ledger.getBalances(party!),
     enabled: !!party,
     retry: false,
   });
@@ -85,7 +87,7 @@ export function PortfolioPage() {
 
   return (
     <Portfolio
-      holdings={holdings ?? []}
+      balances={balances ?? []}
       pools={pools ?? []}
       orders={orders ?? []}
       recentActivity={recentActivity}

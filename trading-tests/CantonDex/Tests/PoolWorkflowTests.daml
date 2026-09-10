@@ -189,6 +189,7 @@ testPoolSwapWorkflow = do
     requestedAt = now
     settleAt = None
     quoteBinding
+    authBinding = None
   let bobAllocateArg = WC.mkAllocationFactoryAllocate
         reqRes.settlement (head reqRes.allocationSpecs) now [] [bob] emptyExtraArgs
 
@@ -280,6 +281,7 @@ testPoolSwapViaRequestSwap = do
       inputSliceCid = initRes.quoteSliceCid
       outputSliceCids = [initRes.baseSliceCid]
       minOutputAmount = 0.0)
+    authBinding = None
 
   -- Bob (the wallet) authors that exact spec via the allocation factory.
   let bobAccount = Utils.basicAccount bob

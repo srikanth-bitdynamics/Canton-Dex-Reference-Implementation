@@ -85,6 +85,18 @@ jobs:
             echo "development-only wallet authority leaked into the production bundle" >&2
             exit 1
           fi
+      - name: Build hosted testnet profile
+        run: VITE_ENABLE_HOSTED_WALLET=1 VITE_CANTON_NETWORK_ID=canton:testnet npm run build
+      - name: Verify hosted bundle excludes development authority adapters
+        run: |
+          if grep -R -E '/v1/wallet/(submit|execute)|VITE_CANTON_AUTH_TOKEN|Direct Canton|Operator Relay' dist; then
+            echo "development-only wallet authority leaked into the hosted bundle" >&2
+            exit 1
+          fi
+      - name: Install proof dependencies
+        run: npm ci --prefix ../../services/registry-client && npm ci --prefix ../../services/operator-backend
+      - name: Typecheck external signing proof
+        run: npx tsc -p ../../scripts/tsconfig.hosted-proof.json
 
   docs:
     name: Documentation build

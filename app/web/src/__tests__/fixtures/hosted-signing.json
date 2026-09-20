@@ -1,0 +1,60 @@
+{
+  "topology": {
+    "partyId": "dex-user-21d8e96b232fc0054ed2::1220a268bb4ca9a2d67ee1228e15a738f0fb2e650d6209f9a2edfe68e92c561c0326",
+    "publicKeyFingerprint": "1220a268bb4ca9a2d67ee1228e15a738f0fb2e650d6209f9a2edfe68e92c561c0326",
+    "topologyTransactions": [
+      "CoECCAEQARr6AUr3AQpjZGV4LXVzZXItMjFkOGU5NmIyMzJmYzAwNTRlZDI6OjEyMjBhMjY4YmI0Y2E5YTJkNjdlZTEyMjhlMTVhNzM4ZjBmYjJlNjUwZDYyMDlmOWEyZWRmZTY4ZTkyYzU2MWMwMzI2EAEaUQpNc2FuZGJveDo6MTIyMDYyNzgyZmIzYjEzMmNjNjliMmRiNDcwNDk2MDhmZGM1OTBlOWUyN2YxMjU4YTE4ODVlNDg1YWExYmU4Y2FmNjQQAjI7CjcQBBosMCowBQYDK2VwAyEA0fTljEYVM3GTOe4rboIO0jHrgxoAW8WrCl0WId/TPXEqAwEFBDABEAEQHg=="
+    ],
+    "multiHash": "EiCRJfjJhzYQWd88vBsKSEbuNXEzaTHc/l4oB3UsPqWNPQ==",
+    "allocated": false
+  },
+  "publicKey": "0fTljEYVM3GTOe4rboIO0jHrgxoAW8WrCl0WId/TPXE=",
+  "cfg": {
+    "origin": "http://localhost:5173",
+    "network": "canton:testnet",
+    "synchronizerId": "synchronizer-1::122073ac10d58eb4bd736ea61c8e6ea4ef71eef212a8a2167148005f50515f638f9f",
+    "participantId": "sandbox::122062782fb3b132cc69b2db47049608fdc590e9e27f1258a1885e485aa1be8caf64"
+  },
+  "prepared": {
+    "id": "c4f345fe-aa8f-4b47-be09-7e605ca2e59b",
+    "preparedTransaction": "Co0MCgMyLjESATAa3gsKATDCPtcLCtQLCgMyLjESQjAwNmYzZTJmYzkwOTA2YTM0NzFiZjg5NDQxMzVhOGU3Y2MxYzQxMjM0ZWU2ZGZhMTlkNTZlMTYwOTMwZjZiM2EyORoVY2FudG9uLWRleC10cmFkaW5nLXYyInoKQDgwMjBkODU2MTlhNTMzYmRkZjkwNDFlYTVlYmQ5ZjRjNmJlMTU0MWY3ZDhhOTYwMmYzYjk4YzlhNWFhMzQ5MmISIUNhbnRvbkRleC5EZXguT3JkZXJGdW5kaW5nUmVxdWVzdBoTT3JkZXJGdW5kaW5nUmVxdWVzdCrcB3LZBwp6CkA4MDIwZDg1NjE5YTUzM2JkZGY5MDQxZWE1ZWJkOWY0YzZiZTE1NDFmN2Q4YTk2MDJmM2I5OGM5YTVhYTM0OTJiEiFDYW50b25EZXguRGV4Lk9yZGVyRnVuZGluZ1JlcXVlc3QaE09yZGVyRnVuZGluZ1JlcXVlc3QSWwoIb3BlcmF0b3ISTzpNc2FuZGJveDo6MTIyMDYyNzgyZmIzYjEzMmNjNjliMmRiNDcwNDk2MDhmZGM1OTBlOWUyN2YxMjU4YTE4ODVlNDg1YWExYmU4Y2FmNjQSbwoGdHJhZGVyEmU6Y2RleC11c2VyLTIxZDhlOTZiMjMyZmMwMDU0ZWQyOjoxMjIwYTI2OGJiNGNhOWEyZDY3ZWUxMjI4ZTE1YTczOGYwZmIyZTY1MGQ2MjA5ZjlhMmVkZmU2OGU5MmM1NjFjMDMyNhLuAQoQYmFzZUluc3RydW1lbnRJZBLZAXLWAQpsCkA0YjdlY2ZjMzY2ZDc5Y2NjNWVkMDdjODBmMjZmZTQ4OWNmMmRmZDQzY2UyODU2YzA2YTc4ZTZhMDQ4ZGI3MDMyEhpTcGxpY2UuQXBpLlRva2VuLkhvbGRpbmdWMhoMSW5zdHJ1bWVudElkElgKBWFkbWluEk86TXNhbmRib3g6OjEyMjA2Mjc4MmZiM2IxMzJjYzY5YjJkYjQ3MDQ5NjA4ZmRjNTkwZTllMjdmMTI1OGExODg1ZTQ4NWFhMWJlOGNhZjY0EgwKAmlkEgZCBEJBU0US8AEKEXF1b3RlSW5zdHJ1bWVudElkEtoBctcBCmwKQDRiN2VjZmMzNjZkNzljY2M1ZWQwN2M4MGYyNmZlNDg5Y2YyZGZkNDNjZTI4NTZjMDZhNzhlNmEwNDhkYjcwMzISGlNwbGljZS5BcGkuVG9rZW4uSG9sZGluZ1YyGgxJbnN0cnVtZW50SWQSWAoFYWRtaW4STzpNc2FuZGJveDo6MTIyMDYyNzgyZmIzYjEzMmNjNjliMmRiNDcwNDk2MDhmZGM1OTBlOWUyN2YxMjU4YTE4ODVlNDg1YWExYmU4Y2FmNjQSDQoCaWQSB0IFUVVPVEUSbwoEc2lkZRJnggFkCl0KQDgwMjBkODU2MTlhNTMzYmRkZjkwNDFlYTVlYmQ5ZjRjNmJlMTU0MWY3ZDhhOTYwMmYzYjk4YzlhNWFhMzQ5MmISE0NhbnRvbkRleC5EZXguT3JkZXIaBFNpZGUSA0JpZBIcCgpsaW1pdFByaWNlEg4yDDIuMDAwMDAwMDAwMBIaCghxdWFudGl0eRIOMgwxLjAwMDAwMDAwMDAyY2RleC11c2VyLTIxZDhlOTZiMjMyZmMwMDU0ZWQyOjoxMjIwYTI2OGJiNGNhOWEyZDY3ZWUxMjI4ZTE1YTczOGYwZmIyZTY1MGQ2MjA5ZjlhMmVkZmU2OGU5MmM1NjFjMDMyNjpjZGV4LXVzZXItMjFkOGU5NmIyMzJmYzAwNTRlZDI6OjEyMjBhMjY4YmI0Y2E5YTJkNjdlZTEyMjhlMTVhNzM4ZjBmYjJlNjUwZDYyMDlmOWEyZWRmZTY4ZTkyYzU2MWMwMzI2Ok1zYW5kYm94OjoxMjIwNjI3ODJmYjNiMTMyY2M2OWIyZGI0NzA0OTYwOGZkYzU5MGU5ZTI3ZjEyNThhMTg4NWU0ODVhYTFiZThjYWY2NCIiEiAJwaeZa10itFFr5zi9pRAmxbm0jz6q2P6tSYz5R2OGJhKoAhKaAQpjZGV4LXVzZXItMjFkOGU5NmIyMzJmYzAwNTRlZDI6OjEyMjBhMjY4YmI0Y2E5YTJkNjdlZTEyMjhlMTVhNzM4ZjBmYjJlNjUwZDYyMDlmOWEyZWRmZTY4ZTkyYzU2MWMwMzI2EjNleHRlcm5hbC1vcmRlci0zNTJkYTZiYi00NWY0LTRjZTItOTFlNS0xY2NmYmI5ODNkMGQaWnN5bmNocm9uaXplci0xOjoxMjIwNzNhYzEwZDU4ZWI0YmQ3MzZlYTYxYzhlNmVhNGVmNzFlZWYyMTJhOGEyMTY3MTQ4MDA1ZjUwNTE1ZjYzOGY5Zjo6MzUtMCokNjRkYTY5ODUtOWNmMy00MTBhLWE5ZGUtYmQ1NzAwMjA0NGVjMNTJw6Dw/ZYD",
+    "preparedTransactionHash": "YiID+iVwROxlhYqVf7OY9ccfi1evP+vrlxubukCDKCE=",
+    "hashingSchemeVersion": "HASHING_SCHEME_VERSION_V2",
+    "hashingDetails": null,
+    "costEstimation": {
+      "estimationTimestamp": "2026-09-20T19:19:42.527527Z",
+      "confirmationRequestTrafficCostEstimation": 0,
+      "confirmationResponseTrafficCostEstimation": 0,
+      "totalTrafficCostEstimation": 0
+    }
+  },
+  "submission": {
+    "commandId": "external-order-352da6bb-45f4-4ce2-91e5-1ccfbb983d0d",
+    "actAs": [
+      "dex-user-21d8e96b232fc0054ed2::1220a268bb4ca9a2d67ee1228e15a738f0fb2e650d6209f9a2edfe68e92c561c0326"
+    ],
+    "commands": [
+      {
+        "CreateCommand": {
+          "templateId": "#canton-dex-trading-v2:CantonDex.Dex.OrderFundingRequest:OrderFundingRequest",
+          "createArguments": {
+            "operator": "sandbox::122062782fb3b132cc69b2db47049608fdc590e9e27f1258a1885e485aa1be8caf64",
+            "trader": "dex-user-21d8e96b232fc0054ed2::1220a268bb4ca9a2d67ee1228e15a738f0fb2e650d6209f9a2edfe68e92c561c0326",
+            "baseInstrumentId": {
+              "admin": "sandbox::122062782fb3b132cc69b2db47049608fdc590e9e27f1258a1885e485aa1be8caf64",
+              "id": "BASE"
+            },
+            "quoteInstrumentId": {
+              "admin": "sandbox::122062782fb3b132cc69b2db47049608fdc590e9e27f1258a1885e485aa1be8caf64",
+              "id": "QUOTE"
+            },
+            "side": "Bid",
+            "limitPrice": "2.0000000000",
+            "quantity": "1.0000000000",
+            "expiry": null
+          }
+        }
+      }
+    ]
+  }
+}

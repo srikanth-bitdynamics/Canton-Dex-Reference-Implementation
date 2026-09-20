@@ -489,6 +489,11 @@ community expectations.
 
 ## Security
 
+The release review boundary and known limitations are in [AUDIT_SCOPE.md](AUDIT_SCOPE.md).
+The optional testnet profile with user-controlled external-party signing is
+documented in [HOSTED_TESTNET.md](HOSTED_TESTNET.md), including its funding,
+wallet, participant and reserve-custody limitations.
+
 Please do not open public issues for suspected vulnerabilities. See
 [`SECURITY.md`](SECURITY.md) for the disclosure process.
 

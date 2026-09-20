@@ -180,6 +180,7 @@ export interface DexStatus {
 }
 
 export interface HttpServerConfig {
+  hostedWallet?: import("../hosted-wallet/index.js").HostedWalletService;
   backend: OperatorBackend;
   port: number;
   host?: string;
@@ -503,6 +504,37 @@ async function routeRequest(
   if (method === "OPTIONS") {
     res.statusCode = 204;
     res.end();
+    return;
+  }
+
+  if (path.startsWith("/v1/hosted-wallet/")) {
+    res.setHeader("Cache-Control", "no-store");
+    const wallet = cfg.hostedWallet;
+    if (!wallet) {
+      respondJson(res, 404, { error: "hosted wallet disabled" });
+      return;
+    }
+    const action = path.slice("/v1/hosted-wallet/".length);
+    if (origin !== wallet.config().origin && !(method === "GET" && action === "config" && origin === undefined)) {
+      respondJson(res, 403, { error: "hosted wallet requires its configured browser origin" });
+      return;
+    }
+    try {
+      if (method === "GET" && action === "config") {
+        respondJson(res, 200, wallet.config());
+      } else if (method === "POST") {
+        const body = await readJson<Record<string, unknown>>(req);
+        if (!body || typeof body !== "object" || Array.isArray(body)) badRequest("expected JSON object");
+        const result = action === "challenge"
+          ? wallet.challenge(body, clientIp(req))
+          : await wallet.request(action, body, clientIp(req));
+        respondJson(res, 200, result);
+      } else respondJson(res, 405, { error: "method not allowed" });
+    } catch (error) {
+      const { HostedWalletError } = await import("../hosted-wallet/index.js");
+      if (!(error instanceof HostedWalletError)) throw error;
+      respondJson(res, error.status, { error: error.message });
+    }
     return;
   }
 

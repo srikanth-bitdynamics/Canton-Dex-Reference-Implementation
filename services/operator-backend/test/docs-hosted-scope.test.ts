@@ -10,15 +10,14 @@ import { join, relative } from "node:path";
 import { ROOT, docFiles } from "./docs-harness.ts";
 
 describe("hosted deployment scope", () => {
-  it("does not advertise the retired external hostname", () => {
+  it("limits public deployment claims to the documented hosted profile", () => {
     const hits = docFiles().filter((file) =>
       /testnet-dex\.bitdynamics\.cc/i.test(readFileSync(file, "utf8")),
     );
     assert.deepEqual(
       hits.map((file) => relative(ROOT, file)),
-      [],
-      "The old hosted endpoint is not provisioned by this repository. " +
-        "Keep historical reports as provenance, not current setup instructions.",
+      ["HOSTED_TESTNET.md"],
+      "Keep live deployment claims and prerequisites in the hosted profile.",
     );
   });
 
@@ -31,7 +30,7 @@ describe("hosted deployment scope", () => {
     );
     assert.match(
       security,
-      /does not provision or promise a public testnet deployment/i,
+      /user-controlled external-party keys/i,
     );
   });
 
@@ -56,8 +55,9 @@ describe("hosted deployment scope", () => {
       "utf8",
     );
 
-    assert.match(api, /has no `\/v1\/testnet\/\*` namespace, party faucet/i);
-    assert.match(nonGoals, /does not create parties, mint faucet assets/i);
+    assert.match(api, /has no `\/v1\/testnet\/\*` namespace or reference-token faucet/i);
+    assert.match(api, /verified key binding/i);
+    assert.match(nonGoals, /does not mint faucet assets/i);
     assert.match(feedback, /does \*\*not\*\* provision a public hostname/i);
   });
 

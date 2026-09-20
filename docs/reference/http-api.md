@@ -23,10 +23,15 @@ operator, so the backend ledger user must hold those act-as rights.
 per-caller JWT binding. Do not describe or expose that authority model as
 self-custodial.
 
-The server in this repository has no `/v1/testnet/*` namespace, party faucet,
-or public-host provisioning. Those are deployment concerns, not hidden API
-routes. The only generic signing relay is the development-only endpoint
-documented below.
+The server has no `/v1/testnet/*` namespace or reference-token faucet. The optional
+`/v1/hosted-wallet/*` API onboards user-key-controlled external parties on the
+configured participant. `GET config` and `POST challenge` are public within the
+configured origin; `POST topology`, `allocate`, `session`, `holdings`, `prepare`
+and `execute` require a signed, one-time challenge for their exact payload.
+Every private action derives its party from the verified key binding. This
+module enforces authentication itself before ledger access, independently of
+the legacy caller-route map. Disabled profiles return `404`.
+See [hosted testnet configuration](../../HOSTED_TESTNET.md).
 
 ```mermaid
 flowchart LR

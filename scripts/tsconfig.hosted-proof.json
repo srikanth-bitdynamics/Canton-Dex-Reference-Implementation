@@ -1,0 +1,11 @@
+{
+  "extends": "../app/web/tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "typeRoots": ["../services/operator-backend/node_modules/@types"],
+    "paths": { "@/*": ["../app/web/src/*"] },
+    "baseUrl": ".",
+    "noUnusedLocals": false
+  },
+  "include": ["./live-hosted-wallet.mts", "../app/web/src/vite-env.d.ts"]
+}

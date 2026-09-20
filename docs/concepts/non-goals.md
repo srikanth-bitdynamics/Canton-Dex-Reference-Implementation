@@ -111,15 +111,17 @@ The repository includes `POST /v1/wallet/submit` only for local developer
 diagnosis. It is disabled by default, requires `DEX_DEV_WALLET_RELAY=1`, is
 registered by the dApp only in a development build, and restricts submissions
 to `DEX_DEV_RELAY_PARTIES`. The production-oriented testnet server does not
-enable it. It does not create parties, mint faucet assets, impose public-user
-quotas, or implement a `/v1/testnet/*` surface.
+enable it. The separate `/v1/hosted-wallet/*` profile creates external parties
+with user-controlled keys, signed caller authentication and persistent limits.
+It does not mint faucet assets or implement the retired `/v1/testnet/*` surface.
+See [the hosted profile](../../HOSTED_TESTNET.md) for its limits and prerequisites.
 
 That relay is not self-custody: the backend forwards commands with its ledger
 credential and therefore needs permission to act for every requested party. A
 real deployment must instead use a compatible wallet (PartyLayer or a
 CIP-0103 provider), or deliberately design and secure its own delegation or
-co-submission service. The repository neither provisions nor promises a public
-hosted deployment. See [connecting a wallet](../guides/using-the-dapp.md#connecting-a-wallet)
+co-submission service. A deployed hosted profile still needs explicit operational
+configuration and verification. See [connecting a wallet](../guides/using-the-dapp.md#connecting-a-wallet)
 and the [historical ecosystem feedback](../reference/ecosystem-feedback.md).
 
 The separately named `DEX_HOSTED_RFQ_RELAY` option is narrower: it can enable

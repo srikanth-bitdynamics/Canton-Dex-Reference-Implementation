@@ -78,7 +78,7 @@ function base64UrlDecode(s: string): Buffer {
 
 // Compact HS256 JWT mint -- the mirror of caller-auth.verifyHs256. Mints the
 // scoped caller token once the wallet signature and its party binding verify.
-function signHs256(claims: Record<string, unknown>, secret: string): string {
+export function signHs256(claims: Record<string, unknown>, secret: string): string {
   const header = base64Url(Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })));
   const payload = base64Url(Buffer.from(JSON.stringify(claims)));
   const sig = base64Url(

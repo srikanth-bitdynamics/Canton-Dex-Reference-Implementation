@@ -39,6 +39,8 @@
 //   npm run live:add-liquidity   # add only; still needs trader != operator
 
 import * as dec from "../services/operator-backend/src/pool/decimal.js";
+import { JsonApiLedger } from "../services/operator-backend/src/ledger/json-api.js";
+import { recoverCreatedAllocations } from "../services/operator-backend/src/ledger/recover.js";
 
 function req(name: string): string {
   const v = process.env[name];
@@ -317,10 +319,33 @@ async function authorAlloc(
       },
     },
   }]);
-  return only(
+  const allocationCid = only(
     creates(tx, "CantonDex.Registry.V2:Allocation"),
     `${label} allocation`,
   ).contractId;
+  let interfaceLookups = 0;
+  const recoveryLedger = new JsonApiLedger({
+    baseUrl: cfg.baseUrl,
+    token: cfg.token,
+    applicationId: cfg.userId,
+    fetchImpl: async (input, init) => {
+      const response = await fetch(input, init);
+      if (String(input).includes("/v2/state/active-contracts")) interfaceLookups++;
+      if (!response.ok || !String(input).includes("/transaction-tree-by-id/")) return response;
+      const body = await response.json() as {
+        transaction: { eventsById: Record<string, { CreatedTreeEvent?: unknown }> };
+      };
+      body.transaction.eventsById = Object.fromEntries(
+        Object.entries(body.transaction.eventsById).filter(([, event]) => event.CreatedTreeEvent),
+      );
+      return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+  const recovered = await recoverCreatedAllocations(recoveryLedger, party, tx.transaction.updateId, 1);
+  if (interfaceLookups !== 1 || recovered.allocationCids[0] !== allocationCid) {
+    throw new Error(`${label}: allocation recovery without factory results failed`);
+  }
+  return allocationCid;
 }
 
 // Stage one operator/registrar allocation from a preview plan: the plan is a

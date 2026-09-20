@@ -23,15 +23,10 @@ export async function recoverCreatedAllocations(
   updateId: string,
   expectedAllocations: number,
 ): Promise<{ allocationCids: string[]; acceptanceCid?: string }> {
-  // Registry-agnostic path: read the created allocation cids from the
-  // AllocationFactory_Allocate exercise results. An external-wallet deposit
-  // mints its allocation on its own registry (Amulet, USDCx, ...), so the
-  // created-event template scan below finds none for those legs. Fall back to
-  // the template scan for any ledger/fake without `treeAllocationCids`.
   let allocationCids: string[];
   let created: CreatedEventRef[] | undefined;
   if (ledger.treeAllocationCids) {
-    allocationCids = await ledger.treeAllocationCids(updateId, party);
+    allocationCids = await ledger.treeAllocationCids(updateId, party, expectedAllocations);
   } else {
     if (!ledger.treeCreatedEvents) {
       throw new Error(

@@ -61,12 +61,10 @@ describe("server entrypoints", () => {
 
   it("testnet-server uses the per-admin fixed self-registry adapter", () => {
     const source = readFileSync(join(SRC, "testnet-server.ts"), "utf8");
-    assert.match(source, /class ConfiguredRegistry extends FixedRegistryClient/);
-    assert.match(source, /super\(\(admin\)\s*=>/);
-    assert.match(source, /factoriesByAdmin\.get\(admin\)/);
+    assert.match(source, /import \{ ConfiguredRegistry \} from "\.\/configured-registry\.js"/);
     assert.match(
       source,
-      /const configuredRegistry = new ConfiguredRegistry\(factoriesByAdmin\)/,
+      /const configuredRegistry = new ConfiguredRegistry\(factoriesByAdmin, rawLedger\)/,
     );
     // External-registry discovery is opt-in: the fixed per-admin adapter stays
     // the default whenever DEX_EXTERNAL_REGISTRIES is unset.

@@ -91,6 +91,42 @@ export class JsonApiLedger implements LedgerSubmitter {
   }
 
   async query<T>(filter: SubscriptionFilter): Promise<T[]> {
+    const body = await this.queryActiveContracts(filter, false);
+    return body
+      .map((e) => e.contractEntry?.JsActiveContract?.createdEvent)
+      .filter((ev): ev is Canton3CreatedEvent => ev !== undefined)
+      .map((ev) => this.payloadOfCanton3<T>(ev));
+  }
+
+  async discloseContracts(filter: SubscriptionFilter, contractIds: string[]): Promise<DisclosedContract[]> {
+    if (contractIds.length === 0) return [];
+    const entries = await this.queryActiveContracts(filter, true);
+    const contracts = new Map(entries.flatMap((entry) => {
+      const active = entry.contractEntry?.JsActiveContract;
+      return active?.createdEvent ? [[active.createdEvent.contractId, active] as const] : [];
+    }));
+    return [...new Set(contractIds)].map((contractId) => {
+      const active = contracts.get(contractId);
+      const event = active?.createdEvent;
+      if (!event) {
+        throw new LedgerError("validation", `factory contract ${contractId} is not active or visible to ${filter.observingParty}`, false);
+      }
+      if (!event.createdEventBlob || !event.templateId || event.templateId.startsWith("#")) {
+        throw new LedgerError("validation", `factory contract ${contractId} has no valid disclosure`, false);
+      }
+      return {
+        contractId,
+        templateId: event.templateId,
+        createdEventBlob: event.createdEventBlob,
+        ...(active?.synchronizerId ? { synchronizerId: active.synchronizerId } : {}),
+      };
+    });
+  }
+
+  private async queryActiveContracts(
+    filter: SubscriptionFilter,
+    includeCreatedEventBlob: boolean,
+  ): Promise<Canton3AcsEntry[]> {
     // Need a concrete `activeAtOffset` for Canton 3 ACS queries. Fetch
     // ledger end first; it's a cheap call.
     const endRes = await this.fetchImpl(
@@ -110,13 +146,13 @@ export class JsonApiLedger implements LedgerSubmitter {
               TemplateFilter: {
                 value: {
                   templateId: qualifiedTid,
-                  includeCreatedEventBlob: false,
+                  includeCreatedEventBlob,
                 },
               },
             },
           },
         ]
-      : [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }];
+      : [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob } } } }];
 
     const envelope = {
       verbose: false,
@@ -138,11 +174,7 @@ export class JsonApiLedger implements LedgerSubmitter {
     if (!res.ok) {
       throw await this.errorFor(res);
     }
-    const body = (await res.json()) as Canton3AcsEntry[];
-    return body
-      .map((e) => e.contractEntry?.JsActiveContract?.createdEvent)
-      .filter((ev): ev is Canton3CreatedEvent => ev !== undefined)
-      .map((ev) => this.payloadOfCanton3<T>(ev));
+    return (await res.json()) as Canton3AcsEntry[];
   }
 
   async *subscribe<T>(
@@ -562,6 +594,7 @@ interface Canton3AcsEntry {
   contractEntry?: {
     JsActiveContract?: {
       createdEvent?: Canton3CreatedEvent;
+      synchronizerId?: string;
     };
   };
 }
@@ -569,6 +602,7 @@ interface Canton3AcsEntry {
 interface Canton3CreatedEvent {
   contractId: string;
   templateId: string;
+  createdEventBlob?: string;
   createArgument: Record<string, unknown>;
   signatories: Party[];
   observers: Party[];

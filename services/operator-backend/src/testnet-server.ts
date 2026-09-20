@@ -40,6 +40,7 @@
 // startHttpServer() so the dApp doesn't change.
 
 import { JsonApiLedger } from "./ledger/json-api.js";
+import { ConfiguredRegistry } from "./configured-registry.js";
 import { OperatorBackend } from "./index.js";
 import { startHttpServer } from "./http/index.js";
 import { openDb } from "./indexer/db.js";
@@ -47,7 +48,6 @@ import { Indexer } from "./indexer/index.js";
 import { IdempotentLedger } from "./indexer/idempotency.js";
 import { DealersService } from "./dealers/index.js";
 import {
-  FixedRegistryClient,
   RegistryClient,
   RegistryError,
 } from "@canton-dex/registry-client";
@@ -71,27 +71,6 @@ function required(name: string): string {
     process.exit(1);
   }
   return v;
-}
-
-// Lightweight registry client for the two reference registrars. It is
-// intentionally explicit per admin: returning one registry CID for every
-// party breaks LP issuance as soon as asset governance and LP custody are
-// separated. Deployments that list arbitrary third-party assets should replace
-// this map with the registry HTTP discovery client.
-class ConfiguredRegistry extends FixedRegistryClient {
-  constructor(factoriesByAdmin: ReadonlyMap<Party, FactoryRefs>) {
-    super((admin) => {
-      const factories = factoriesByAdmin.get(admin);
-      if (!factories) {
-        throw new RegistryError(
-          "factory-stale",
-          `no configured factory mapping for admin=${admin}`,
-          false,
-        );
-      }
-      return factories;
-    });
-  }
 }
 
 // Routes registry discovery by instrument admin. The DEX's own registrars use
@@ -293,7 +272,7 @@ async function main(): Promise<void> {
   const sweepTimer = setInterval(() => ledger.sweep(), 60 * 60 * 1000);
   if (typeof sweepTimer.unref === "function") sweepTimer.unref();
 
-  const configuredRegistry = new ConfiguredRegistry(factoriesByAdmin);
+  const configuredRegistry = new ConfiguredRegistry(factoriesByAdmin, rawLedger);
   const externalRegistryMap = externalRegistries();
   const amulet = await resolveAmuletRegistry();
   if (amulet) externalRegistryMap.set(amulet.admin, amulet.url);

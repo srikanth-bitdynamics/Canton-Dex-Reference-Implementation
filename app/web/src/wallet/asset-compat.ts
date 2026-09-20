@@ -17,12 +17,9 @@ interface AssetCompatEntry {
   holdingTemplateId: string;
 }
 
-// Seed: Canton Coin (Amulet). The DSO admin is resolved from scan; the concrete
-// template is Splice's Amulet.
-//
-// USDCx is intentionally absent: its concrete Holding template is not yet
-// known and MUST be discovered from the registry's metadata before a wallet
-// lacking the interface-query path can fund USDCx. Do not guess it.
+export const UTILITY_HOLDING_TEMPLATE =
+  "#utility-registry-holding-v0:Utility.Registry.Holding.V0.Holding:Holding";
+
 const ASSET_COMPAT: AssetCompatEntry[] = [
   {
     instrument: {
@@ -30,6 +27,13 @@ const ASSET_COMPAT: AssetCompatEntry[] = [
       id: "Amulet",
     },
     holdingTemplateId: "#splice-amulet:Splice.Amulet:Amulet",
+  },
+  {
+    instrument: {
+      admin: "decentralized-usdc-interchain-rep::122049e2af8a725bd19759320fc83c638e7718973eac189d8f201309c512d1ffec61",
+      id: "USDCx",
+    },
+    holdingTemplateId: UTILITY_HOLDING_TEMPLATE,
   },
 ];
 

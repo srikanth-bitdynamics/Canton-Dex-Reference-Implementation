@@ -10,7 +10,7 @@
 // by contract id and deduped across both reads.
 
 import type { Holding, InstrumentId } from "@/types/contracts";
-import { concreteHoldingTemplate } from "./asset-compat";
+import { concreteHoldingTemplate, UTILITY_HOLDING_TEMPLATE } from "./asset-compat";
 import type { Party } from "./types";
 
 export const HOLDING_V2_INTERFACE_ID =
@@ -214,9 +214,11 @@ function parseHoldingPayload(
     payload.admin,
     payload.instrumentAdmin,
     payload.instrument_admin,
+    payload.registrar,
     instrumentRecord?.admin,
     instrumentRecord?.instrumentAdmin,
     instrumentRecord?.instrument_admin,
+    instrumentRecord?.source,
   );
   const resolvedOwner =
     typeof payloadOwner === "string"
@@ -371,16 +373,11 @@ function concreteLocked(payload: Record<string, unknown>): boolean {
   return payload.lock !== undefined && payload.lock !== null;
 }
 
-/**
- * Parse a concrete-template ACS response into spendable holdings, stamping the
- * KNOWN target instrument identity (the query was by that instrument's compat
- * template, so every contract belongs to it). Only the real contract id and a
- * best-effort amount are read from each event.
- */
 function parseConcreteTemplateHoldings(
   response: unknown,
   owner: Party,
   instrument: { admin: string; id: string },
+  templateId: string,
 ): Holding[] {
   const parsed = normalizeAcsResponse(response);
   return extractContractEvents(parsed)
@@ -390,6 +387,17 @@ function parseConcreteTemplateHoldings(
       const contractId = contractIdOf(event);
       if (!contractId) return null;
       const payload = contractPayload(event) ?? event;
+      if (templateId === UTILITY_HOLDING_TEMPLATE) {
+        const utilityInstrument = asRecord(payload.instrument);
+        if (
+          payload.owner !== owner ||
+          payload.registrar !== instrument.admin ||
+          utilityInstrument?.source !== instrument.admin ||
+          utilityInstrument?.id !== instrument.id ||
+          utilityInstrument?.scheme !== "RegistrarInternalScheme"
+        ) return null;
+        return parseHoldingPayload(contractId, owner, payload);
+      }
       const amountRaw = concreteAmountString(payload);
       return {
         contractId,
@@ -418,22 +426,10 @@ async function readConcreteTemplateHoldings(
     resource: "/v2/state/active-contracts",
     body: activeContractsBody(owner, activeAtOffset, templateFilterCumulative(templateId)),
   });
-  const spendable = parseConcreteTemplateHoldings(raw, owner, instrument);
+  const spendable = parseConcreteTemplateHoldings(raw, owner, instrument, templateId);
   return spendable;
 }
 
-/**
- * Spendable holdings for FUNDING a specific owner + target instrument.
- *
- * When a wallet-compat concrete template is registered for the instrument
- * (e.g. CC → Amulet), read that template FIRST. A rate-limiting wallet (Loop)
- * answers a burst of interface/Registry discovery queries for such a token with
- * HTTP 429 but serves it by concrete template, so the mapped read avoids those
- * doomed queries and their retries. Only if it finds nothing (or there is no
- * compat entry, e.g. USDCx) does the standard interface + Registry.V2 discovery
- * run — the path every compliant wallet uses. The InstrumentId → template map
- * lives in the wallet-compat descriptor, never in DEX/pool code.
- */
 export async function resolveSpendableHoldings(
   owner: Party,
   instrument: InstrumentId,
@@ -442,13 +438,15 @@ export async function resolveSpendableHoldings(
 ): Promise<Holding[]> {
   const templateId = concreteHoldingTemplate(instrument);
   if (templateId) {
-    const spendable = await readConcreteTemplateHoldings(
-      owner,
-      instrument,
-      templateId,
-      request,
-    );
-    if (spendable.length > 0) return spendable;
+    try {
+      const spendable = await readConcreteTemplateHoldings(
+        owner,
+        instrument,
+        templateId,
+        request,
+      );
+      if (spendable.length > 0) return spendable;
+    } catch {}
   }
 
   // No compat entry, or the concrete read found nothing: fall back to the

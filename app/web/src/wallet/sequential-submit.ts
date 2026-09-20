@@ -96,17 +96,10 @@ export async function submitComposedCommands(
         prepared(`${composed.commandId}-${i + 1}`, [composed.commands[i]]),
       );
     } catch (err) {
-      // Surface which allocation failed. The settleAt deadline on the request is
-      // the primary liveness escape: earlier locked authorizations auto-release
-      // rather than staging indefinitely.
-      // TODO: for prompt recovery of the already-created allocations, the
-      // operator can recover + release them by updateId via
-      // /v1/pools/recover-dvp-allocations; not wired here to avoid a full
-      // workflow-state machine in this pass.
       throw new Error(
         `${intent.kind}: wallet request for allocation ${i + 1} of ${total} failed ` +
           `(${err instanceof Error ? err.message : String(err)}). ` +
-          `Any earlier authorizations auto-release at the settle deadline.`,
+          `Any earlier authorizations may remain locked; check and release them before retrying.`,
       );
     }
     updateIds.push(updateId);
@@ -117,7 +110,7 @@ export async function submitComposedCommands(
         throw new Error(
           `${intent.kind}: authorized allocation ${i + 1} of ${total} but could not ` +
             `recover its contract id (${err instanceof Error ? err.message : String(err)}). ` +
-            `Locked authorizations auto-release at the settle deadline.`,
+            `The authorization may remain locked; check and release it before retrying.`,
         );
       }
     }

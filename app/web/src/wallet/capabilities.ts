@@ -20,6 +20,7 @@ export type DvpReadiness =
   | "unsupported";
 
 export interface WalletCapability {
+  supportsCallerSession?: boolean;
   dvp: DvpReadiness;
   /** Short human note shown in the connect menu. */
   note: string;
@@ -56,6 +57,16 @@ export interface WalletCapability {
 }
 
 export const WALLET_CAPABILITIES: Record<WalletProviderId, WalletCapability> = {
+  hosted: {
+    supportsCallerSession: true,
+    dvp: "unproven",
+    note: "Testnet external party; browser-held signing key. Requires this participant's onboarding configuration.",
+    coSignsAdmin: false,
+    supportsSignMessage: false,
+    supportsPrepareExecute: true,
+    supportsTokenStandardV2: true,
+    supportsMultiCommandTransaction: false,
+  },
   "token-standard": {
     // The operator signing relay: the operator signs trader writes on the
     // user's behalf. Convenient for local dev, but it is NOT a real wallet and

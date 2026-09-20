@@ -352,6 +352,7 @@ export interface DetectedWallet {
 // === provider interface ==================================================
 
 export interface WalletProvider {
+  authenticateSession?(): Promise<string>;
   /** Stable identifier; used in logs and to remember the user's choice. */
   readonly id: string;
   /** Human-readable label for the Connect UI. */

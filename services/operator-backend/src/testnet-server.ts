@@ -61,6 +61,7 @@ import type {
   RegistryDiscovery,
 } from "@canton-dex/registry-client";
 import { rootLogger } from "./lib/logger.js";
+import { HostedWalletService, hostedLedgerClient, verifyHostedLedgerAccess } from "./hosted-wallet/index.js";
 
 const log = rootLogger.child({ component: "testnet-server" });
 
@@ -340,7 +341,25 @@ async function main(): Promise<void> {
 
   const port = Number(process.env.PORT ?? 8080);
   const host = process.env.HOST ?? "127.0.0.1";
+  let hostedWallet: HostedWalletService | undefined;
+  if (process.env.DEX_HOSTED_WALLET === "1") {
+    if (readOnly || network !== "canton:testnet" || hostedRfqEnabled) {
+      throw new Error("hosted external wallet requires testnet write mode with hosted RFQ relay disabled");
+    }
+    const hostedUser = required("DEX_HOSTED_LEDGER_USER");
+    if (hostedUser === userId) throw new Error("hosted wallet must use a separate ledger user");
+    const hostedToken = required("DEX_HOSTED_LEDGER_TOKEN");
+    await verifyHostedLedgerAccess(baseUrl, hostedUser, hostedToken);
+    hostedWallet = new HostedWalletService({
+      db, origin: required("DEX_HOSTED_WALLET_ORIGIN"), network,
+      synchronizerId: required("CANTON_SYNCHRONIZER"), participantId: required("DEX_HOSTED_PARTICIPANT_ID"),
+      ledgerUserId: hostedUser, callerJwtSecret: required("DEX_CALLER_JWT_SECRET"),
+      callerJwtAudience: process.env.DEX_CALLER_JWT_AUDIENCE || undefined,
+      ledger: hostedLedgerClient(baseUrl, hostedToken, required("DEX_HOSTED_ADMIN_TOKEN")),
+    });
+  }
   const { url, close } = await startHttpServer({
+    hostedWallet,
     backend,
     port,
     host,

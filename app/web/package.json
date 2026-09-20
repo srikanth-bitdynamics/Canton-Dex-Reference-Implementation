@@ -18,6 +18,7 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@canton-network/core-tx-visualizer": "1.11.1",
     "@canton-network/dapp-sdk": "^1.5.1",
     "@partylayer/sdk": "^0.18.2",
     "@reown/appkit": "^1.8.19",

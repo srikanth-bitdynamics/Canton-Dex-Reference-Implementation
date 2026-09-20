@@ -7,11 +7,13 @@ import {
   type PartyLayerClient,
 } from "./partylayer-provider";
 import { SdkProvider } from "./sdk-provider";
+import { HostedWalletProvider } from "./hosted-provider";
 import { TokenStandardProvider } from "./token-standard-provider";
 import { WalletConnectProvider } from "./walletconnect-provider";
 import type { WalletProvider } from "./types";
 
 export type WalletProviderId =
+  | "hosted"
   | "sdk"
   | "partylayer"
   | "token-standard"
@@ -105,6 +107,10 @@ function buildRegistry(): Map<WalletProviderId, WalletProvider> {
 
   const map = new Map<WalletProviderId, WalletProvider>();
 
+  if (import.meta.env.VITE_ENABLE_HOSTED_WALLET === "1" && networkId === "canton:testnet") {
+    map.set("hosted", new HostedWalletProvider(apiBase, packagePrefix, networkId));
+  }
+
   if (enableSdk) {
     map.set(
       "sdk",
@@ -170,6 +176,7 @@ export function getProvider(id: WalletProviderId): WalletProvider {
 // In dev builds we keep `token-standard` as the convenient default so local
 // flows work without a wallet, but it is clearly labelled "dev only".
 function resolveDefaultProviderId(): WalletProviderId | null {
+  if (import.meta.env.VITE_ENABLE_HOSTED_WALLET === "1" && import.meta.env.VITE_CANTON_NETWORK_ID === "canton:testnet") return "hosted";
   const enablePartyLayer = (import.meta.env.VITE_ENABLE_PARTYLAYER ?? "") === "1";
   const hasWalletConnect = !!(import.meta.env.VITE_WC_PROJECT_ID ?? "");
   const enableSdk = (import.meta.env.VITE_ENABLE_SDK ?? "") === "1";

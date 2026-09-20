@@ -78,9 +78,16 @@ export async function establishSession(party: string): Promise<boolean> {
     | null;
   // Fast path only for a signMessage-capable provider. Only then do we probe
   // for a public key (no debug plumbing).
-  if (!providerId || !capabilityFor(providerId).supportsSignMessage) return false;
+  if (!providerId) return false;
+  const capability = capabilityFor(providerId);
+  if (!capability.supportsSignMessage && !capability.supportsCallerSession) return false;
 
   const provider = getProvider(providerId);
+  if (provider.authenticateSession) {
+    setCallerToken(await provider.authenticateSession());
+    return true;
+  }
+  if (!capabilityFor(providerId).supportsSignMessage) return false;
   let account: { publicKey: string; namespace?: string } | undefined;
   try {
     const primary = await provider.getPrimaryAccount?.();

@@ -181,6 +181,11 @@ DEPLOY_SEED_MARKETS=0 \
 printf '%s\n' '==> Running the live-Canton DvP proof'
 (cd "$ROOT_DIR/services/operator-backend" && npm run live:roundtrip)
 
+if [[ "${DEX_PROVE_EXTERNAL_SIGNING:-0}" == "1" ]]; then
+  printf '%s\n' '==> Proving external-party user signing'
+  (cd "$ROOT_DIR/services/operator-backend" && node --import tsx ../../scripts/live-hosted-wallet.mts)
+fi
+
 printf '%s\n' \
   '==> PASS: portable live-Canton proof completed' \
   '    The throwaway sandbox is now stopping; no persistent ledger state remains.'

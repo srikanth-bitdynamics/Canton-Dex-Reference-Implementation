@@ -5,8 +5,10 @@
 Only the `main` branch is supported. We do not backport fixes to
 older tags or releases.
 
-This repository does not provision or promise a public testnet deployment. An
-operator's supported ledger surface is the exact DAR/package id they deploy from
+The optional hosted testnet profile uses user-controlled external-party keys;
+its configuration and limitations are documented in [HOSTED_TESTNET.md](HOSTED_TESTNET.md).
+The immutable review baseline and evidence requirements are in [AUDIT_SCOPE.md](AUDIT_SCOPE.md).
+An operator's supported ledger surface is the exact DAR/package id they deploy from
 `main`. Once a version is deployed, its DAR is committed under
 `trading/upgrade-baseline/` to validate future Daml package compatibility; no
 baseline is committed yet, so that check is dormant and a green CI run is not

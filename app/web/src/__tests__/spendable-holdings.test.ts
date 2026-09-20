@@ -6,7 +6,7 @@ import {
   resolveSpendableHoldings,
   type AcsRequest,
 } from "@/wallet/holdings";
-import { concreteHoldingTemplate } from "@/wallet/asset-compat";
+import { concreteHoldingTemplate, UTILITY_HOLDING_TEMPLATE } from "@/wallet/asset-compat";
 import type { InstrumentId } from "@/types/contracts";
 
 const OWNER = "alice::1220a";
@@ -19,6 +19,10 @@ const CC: InstrumentId = {
 };
 const AMULET_TEMPLATE = "#splice-amulet:Splice.Amulet:Amulet";
 const USDCX: InstrumentId = { admin: "usdc-admin", id: "USDCx" };
+const TESTNET_USDCX: InstrumentId = {
+  admin: "decentralized-usdc-interchain-rep::122049e2af8a725bd19759320fc83c638e7718973eac189d8f201309c512d1ffec61",
+  id: "USDCx",
+};
 
 // A fake ACS transport that answers ledger-end and routes each active-contracts
 // read by the single cumulative filter it carries: the HoldingV2 interface, the
@@ -58,7 +62,7 @@ function makeRequest(opts: {
     if (templateId.endsWith("CantonDex.Registry.V2:Holding")) {
       return { activeContracts: opts.registryResult ?? [] };
     }
-    if (templateId === AMULET_TEMPLATE) {
+    if (templateId === AMULET_TEMPLATE || templateId === UTILITY_HOLDING_TEMPLATE) {
       return { activeContracts: opts.concreteResult ?? [] };
     }
     return { activeContracts: [] };
@@ -91,10 +95,54 @@ describe("concreteHoldingTemplate", () => {
   it("returns undefined for an instrument with no compat entry (USDCx)", () => {
     expect(concreteHoldingTemplate(USDCX)).toBeUndefined();
   });
+
+  it("maps only the verified testnet USDCx issuer to the Utility holding template", () => {
+    expect(concreteHoldingTemplate(TESTNET_USDCX)).toBe(UTILITY_HOLDING_TEMPLATE);
+    expect(concreteHoldingTemplate({ ...TESTNET_USDCX, id: "OTHER" })).toBeUndefined();
+  });
 });
 
 describe("resolveSpendableHoldings", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("finds USDCx in Utility's shared template without relabeling other holdings", async () => {
+    const payload = {
+      owner: OWNER,
+      registrar: TESTNET_USDCX.admin,
+      instrument: { source: TESTNET_USDCX.admin, id: "USDCx", scheme: "RegistrarInternalScheme" },
+      amount: "1.5000000000",
+    };
+    const event = (contractId: string, createArgument: unknown) => ({
+      contractEntry: { JsActiveContract: { createdEvent: { contractId, createArgument } } },
+    });
+    const { request, calls } = makeRequest({ concreteResult: [
+      event("00usdc", payload),
+      event("00other-owner", { ...payload, owner: "bob" }),
+      event("00other-admin", { ...payload, registrar: "other-admin" }),
+      event("00other-token", { ...payload, instrument: { ...payload.instrument, id: "OTHER" } }),
+      event("00other-source", { ...payload, instrument: { ...payload.instrument, source: "other-admin" } }),
+      event("00other-scheme", { ...payload, instrument: { ...payload.instrument, scheme: "OtherScheme" } }),
+      event("00unknown-token", { amount: "100" }),
+    ] });
+
+    const holdings = await resolveSpendableHoldings(OWNER, TESTNET_USDCX, PKG, request);
+    expect(holdings).toEqual([{
+      contractId: "00usdc", owner: OWNER, admin: TESTNET_USDCX.admin,
+      instrumentId: "USDCx", amount: 1.5, amountRaw: "1.5000000000", locked: false,
+    }]);
+    expect(calls.some((c) => c.templateId === UTILITY_HOLDING_TEMPLATE)).toBe(true);
+    expect(calls.some((c) => c.isInterface)).toBe(false);
+  });
+
+  it("uses standard interface discovery if a wallet rejects the concrete Utility query", async () => {
+    const { request } = makeRequest({ interfaceResult: [interfaceHolding("00via-interface", TESTNET_USDCX, "2")] });
+    const transport = async (req: AcsRequest) => {
+      if (JSON.stringify(req.body ?? {}).includes(UTILITY_HOLDING_TEMPLATE)) throw new Error("unsupported template");
+      return request(req);
+    };
+    const holdings = await resolveSpendableHoldings(OWNER, TESTNET_USDCX, PKG, transport);
+    expect(holdings.map((h) => h.contractId)).toEqual(["00via-interface"]);
+  });
 
   it("reads the concrete compat template for a compat instrument and returns its real cids", async () => {
     vi.spyOn(console, "info").mockImplementation(() => {});

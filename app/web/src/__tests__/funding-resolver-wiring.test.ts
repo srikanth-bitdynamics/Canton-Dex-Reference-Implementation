@@ -22,7 +22,7 @@ vi.mock("@/wallet/registry", () => ({
 // path over the resolver's holdings (never split/merge).
 vi.mock("@/wallet/capabilities", () => ({ coSignsAdmin: () => false }));
 
-import { normalizeSwapFunding } from "@/services/ledger";
+import { normalizeSwapFunding, resolveCoveringFundingCids } from "@/services/ledger";
 
 const h = (contractId: string, amountRaw: string): Holding => ({
   contractId,
@@ -32,6 +32,28 @@ const h = (contractId: string, amountRaw: string): Holding => ({
   amount: Number(amountRaw),
   amountRaw,
   locked: false,
+});
+
+describe("liquidity funding resolution", () => {
+  const request = { party: OWNER, admin: "usdc-admin", instrumentId: "USDCx", amount: "1" };
+  const usdc = (amountRaw: string): Holding => ({
+    ...h("00usdc", amountRaw), admin: request.admin, instrumentId: request.instrumentId,
+  });
+
+  it("returns a covering USDCx holding to the liquidity flow", async () => {
+    providerMock = { resolveSpendableHoldings: vi.fn(async () => [usdc("1.5")]) };
+    await expect(resolveCoveringFundingCids(request)).resolves.toEqual(["00usdc"]);
+  });
+
+  it.each([
+    { holdings: [] },
+    { holdings: [usdc("0.5")] },
+    { holdings: [{ ...usdc("2"), locked: true }] },
+    { holdings: [{ ...usdc("2"), admin: "another-issuer" }] },
+  ])("rejects missing or insufficient spendable USDCx instead of returning empty funding", async ({ holdings }) => {
+    providerMock = { resolveSpendableHoldings: vi.fn(async () => holdings) };
+    await expect(resolveCoveringFundingCids(request)).rejects.toThrow(/Cannot fund 1 USDCx/);
+  });
 });
 
 beforeEach(() => {

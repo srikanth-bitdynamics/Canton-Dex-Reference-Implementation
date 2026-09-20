@@ -312,6 +312,16 @@ describe("PartyLayerProvider", () => {
     expect(res.createdAllocationCids).toEqual(["alloc-1", "alloc-2", "alloc-3"]);
   });
 
+  it("rejects an unfunded USDCx deposit before opening even the CC approval", async () => {
+    fake = fakeClient();
+    const p = ctx();
+    await p.connect();
+    await expect(p.submit({ ...addLiquidityIntent, quoteHoldingCids: [] }))
+      .rejects.toThrow(/allocation 2: no input holdings for USDCx/);
+    expect(fake.submitCalls).toHaveLength(0);
+    expect(recoverMock).not.toHaveBeenCalled();
+  });
+
   it("surfaces which allocation failed mid-sequence", async () => {
     fake = fakeClient();
     // Fail the second submit only.

@@ -39,6 +39,9 @@
 //   npm run live:add-liquidity   # add only; still needs trader != operator
 
 import * as dec from "../services/operator-backend/src/pool/decimal.js";
+import { JsonApiLedger } from "../services/operator-backend/src/ledger/json-api.js";
+import { recoverCreatedAllocations } from "../services/operator-backend/src/ledger/recover.js";
+import type { DisclosedContract, FactoryRefs } from "../services/registry-client/src/types.js";
 
 function req(name: string): string {
   const v = process.env[name];
@@ -63,6 +66,12 @@ const cfg = {
   pkgAllocInstr: req("CANTON_ALLOC_INSTR_PACKAGE_ID"),
 };
 const lpRegistrar = cfg.admin; // self-registry: admin issues base/quote AND LP
+const liveLedger = new JsonApiLedger({
+  baseUrl: cfg.baseUrl,
+  token: cfg.token,
+  applicationId: cfg.userId,
+  templateIdPrefix: cfg.pkg,
+});
 // Distinct settlement admins for a DvP add/remove batch: the asset admin and
 // the LP registrar. They collapse to one key when they are the same party, so
 // batchesByAdmin has exactly one entry per distinct admin the pool settles.
@@ -158,6 +167,7 @@ function encInt(v: unknown): unknown {
 
 async function submit(
   actAs: string[], cid: string, commands: unknown[], readAs: string[] = [],
+  disclosedContracts: DisclosedContract[] = [],
 ): Promise<Tx> {
   const uniqueActAs = [...new Set(actAs)];
   const uniqueReadAs = [...new Set(readAs)].filter((party) => !uniqueActAs.includes(party));
@@ -170,6 +180,7 @@ async function submit(
         userId: cfg.userId,
         actAs: uniqueActAs,
         ...(uniqueReadAs.length > 0 ? { readAs: uniqueReadAs } : {}),
+        ...(disclosedContracts.length > 0 ? { disclosedContracts } : {}),
         ...(cfg.sync ? { synchronizerId: cfg.sync } : {}),
         commands: encInt(commands),
       },
@@ -302,25 +313,56 @@ async function authorAlloc(
   inputHoldingCids: string[],
   label: string,
 ): Promise<string> {
+  const choiceArgument = {
+    settlement,
+    allocation,
+    requestedAt: new Date().toISOString(),
+    inputHoldingCids,
+    extraArgs: EXTRA,
+    actors: [party],
+  };
+  const { ConfiguredRegistry } = await import("../services/operator-backend/src/configured-registry.js");
+  const registry = new ConfiguredRegistry(new Map([[cfg.admin, {
+    allocationFactoryCid: regCid as FactoryRefs["allocationFactoryCid"],
+    settlementFactoryCid: regCid as FactoryRefs["settlementFactoryCid"],
+    disclosure: [],
+  }]]), liveLedger);
+  const factory = await registry.getAllocationFactory(cfg.admin, choiceArgument);
   const tx = await submit([party], `${RUN}-author-${label}`, [{
     ExerciseCommand: {
       templateId: `${cfg.pkgAllocInstr}:Splice.Api.Token.AllocationInstructionV2:AllocationFactory`,
-      contractId: regCid,
+      contractId: factory.factoryCid,
       choice: "AllocationFactory_Allocate",
-      choiceArgument: {
-        settlement,
-        allocation,
-        requestedAt: new Date().toISOString(),
-        inputHoldingCids,
-        extraArgs: EXTRA,
-        actors: [party],
-      },
+      choiceArgument,
     },
-  }]);
-  return only(
+  }], [], factory.disclosure);
+  const allocationCid = only(
     creates(tx, "CantonDex.Registry.V2:Allocation"),
     `${label} allocation`,
   ).contractId;
+  let interfaceLookups = 0;
+  const recoveryLedger = new JsonApiLedger({
+    baseUrl: cfg.baseUrl,
+    token: cfg.token,
+    applicationId: cfg.userId,
+    fetchImpl: async (input, init) => {
+      const response = await fetch(input, init);
+      if (String(input).includes("/v2/state/active-contracts")) interfaceLookups++;
+      if (!response.ok || !String(input).includes("/transaction-tree-by-id/")) return response;
+      const body = await response.json() as {
+        transaction: { eventsById: Record<string, { CreatedTreeEvent?: unknown }> };
+      };
+      body.transaction.eventsById = Object.fromEntries(
+        Object.entries(body.transaction.eventsById).filter(([, event]) => event.CreatedTreeEvent),
+      );
+      return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+  const recovered = await recoverCreatedAllocations(recoveryLedger, party, tx.transaction.updateId, 1);
+  if (interfaceLookups !== 1 || recovered.allocationCids[0] !== allocationCid) {
+    throw new Error(`${label}: allocation recovery without factory results failed`);
+  }
+  return allocationCid;
 }
 
 // Stage one operator/registrar allocation from a preview plan: the plan is a
@@ -416,11 +458,17 @@ async function main() {
         templateId: tid("CantonDex.Registry.V2:Registry"),
         createArguments: {
           admin: cfg.admin,
-          users: [...new Set([cfg.operator, cfg.trader, cfg.swapper])],
+          users: [cfg.operator],
         },
       },
     }]);
     return creates(tx, "CantonDex.Registry.V2:Registry")[0]!.contractId;
+  });
+  await step("verify trader cannot query the registry factory", async () => {
+    const visible = await acs(cfg.trader, "CantonDex.Registry.V2:Registry");
+    if (visible.some((contract) => contract.contractId === regCid)) {
+      throw new Error("trader must not be a registry observer in this proof");
+    }
   });
   // RegisterInstrument returns an InstrumentConfig; Mint consumes the
   // latest config (BumpSupply) and rotates it. Track per-instrument.

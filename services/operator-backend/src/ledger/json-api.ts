@@ -91,6 +91,42 @@ export class JsonApiLedger implements LedgerSubmitter {
   }
 
   async query<T>(filter: SubscriptionFilter): Promise<T[]> {
+    const body = await this.queryActiveContracts(filter, false);
+    return body
+      .map((e) => e.contractEntry?.JsActiveContract?.createdEvent)
+      .filter((ev): ev is Canton3CreatedEvent => ev !== undefined)
+      .map((ev) => this.payloadOfCanton3<T>(ev));
+  }
+
+  async discloseContracts(filter: SubscriptionFilter, contractIds: string[]): Promise<DisclosedContract[]> {
+    if (contractIds.length === 0) return [];
+    const entries = await this.queryActiveContracts(filter, true);
+    const contracts = new Map(entries.flatMap((entry) => {
+      const active = entry.contractEntry?.JsActiveContract;
+      return active?.createdEvent ? [[active.createdEvent.contractId, active] as const] : [];
+    }));
+    return [...new Set(contractIds)].map((contractId) => {
+      const active = contracts.get(contractId);
+      const event = active?.createdEvent;
+      if (!event) {
+        throw new LedgerError("validation", `factory contract ${contractId} is not active or visible to ${filter.observingParty}`, false);
+      }
+      if (!event.createdEventBlob || !event.templateId || event.templateId.startsWith("#")) {
+        throw new LedgerError("validation", `factory contract ${contractId} has no valid disclosure`, false);
+      }
+      return {
+        contractId,
+        templateId: event.templateId,
+        createdEventBlob: event.createdEventBlob,
+        ...(active?.synchronizerId ? { synchronizerId: active.synchronizerId } : {}),
+      };
+    });
+  }
+
+  private async queryActiveContracts(
+    filter: SubscriptionFilter,
+    includeCreatedEventBlob: boolean,
+  ): Promise<Canton3AcsEntry[]> {
     // Need a concrete `activeAtOffset` for Canton 3 ACS queries. Fetch
     // ledger end first; it's a cheap call.
     const endRes = await this.fetchImpl(
@@ -110,13 +146,13 @@ export class JsonApiLedger implements LedgerSubmitter {
               TemplateFilter: {
                 value: {
                   templateId: qualifiedTid,
-                  includeCreatedEventBlob: false,
+                  includeCreatedEventBlob,
                 },
               },
             },
           },
         ]
-      : [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }];
+      : [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob } } } }];
 
     const envelope = {
       verbose: false,
@@ -138,11 +174,7 @@ export class JsonApiLedger implements LedgerSubmitter {
     if (!res.ok) {
       throw await this.errorFor(res);
     }
-    const body = (await res.json()) as Canton3AcsEntry[];
-    return body
-      .map((e) => e.contractEntry?.JsActiveContract?.createdEvent)
-      .filter((ev): ev is Canton3CreatedEvent => ev !== undefined)
-      .map((ev) => this.payloadOfCanton3<T>(ev));
+    return (await res.json()) as Canton3AcsEntry[];
   }
 
   async *subscribe<T>(
@@ -377,25 +409,76 @@ export class JsonApiLedger implements LedgerSubmitter {
       .map((v) => ({ contractId: v.contractId, templateId: v.templateId ?? "" }));
   }
 
-  // Registry-agnostic recovery: the allocation cids a committed transaction
-  // created, read from each AllocationFactory_Allocate exercise result rather
-  // than from a hardcoded template name. An external-wallet deposit mints the
-  // allocation on its own registry (Amulet, USDCx, ...), so scanning created
-  // events for our template finds none; the exercise result carries the cid
-  // whatever the registry.
-  async treeAllocationCids(updateId: string, party: Party): Promise<string[]> {
+  async treeAllocationCids(
+    updateId: string,
+    party: Party,
+    expectedAllocations?: number,
+  ): Promise<string[]> {
     const tx = await this.fetchTransactionTree(updateId, {
       actAs: [party],
       commandId: "",
       command: { kind: "create", templateId: "", argument: {} },
     });
-    return Object.values(tx.eventsById)
+    const exercises = Object.values(tx.eventsById)
       .map((event) => event.ExercisedTreeEvent?.value)
       .filter((v): v is JsonApiExercisedTreeEvent["value"] => v !== undefined)
       .filter((v) => v.choice === "AllocationFactory_Allocate")
-      .sort((a, b) => a.nodeId - b.nodeId)
-      .map((v) => allocationCidFromResult(v.exerciseResult))
-      .filter((cid): cid is string => cid !== null);
+      .sort((a, b) => a.nodeId - b.nodeId);
+    const recovered = new Map<string, number>();
+    for (const exercise of exercises) {
+      const cid = allocationCidFromResult(exercise.exerciseResult);
+      if (cid) recovered.set(cid, exercise.nodeId);
+    }
+    if (recovered.size > 0 && (expectedAllocations === undefined || recovered.size === expectedAllocations)) {
+      return [...recovered.keys()];
+    }
+
+    const created = Object.values(tx.eventsById)
+      .map((event) => event.CreatedTreeEvent?.value)
+      .filter((v): v is JsonApiCreatedTreeEvent["value"] => v !== undefined);
+    if (created.length === 0) return [...recovered.keys()];
+    if (tx.offset === undefined || !/^\d+$/.test(String(tx.offset))) {
+      throw new LedgerError("validation", `allocation recovery: transaction ${updateId} has no valid offset`, false);
+    }
+    const res = await this.fetchImpl(
+      new URL("/v2/state/active-contracts", this.config.baseUrl).toString(),
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({
+          verbose: false,
+          activeAtOffset: tx.offset,
+          filter: {
+            filtersByParty: {
+              [party]: {
+                cumulative: [{
+                  identifierFilter: {
+                    InterfaceFilter: {
+                      value: {
+                        interfaceId: "#splice-api-token-allocation-v2:Splice.Api.Token.AllocationV2:Allocation",
+                        includeInterfaceView: false,
+                        includeCreatedEventBlob: false,
+                      },
+                    },
+                  },
+                }],
+              },
+            },
+          },
+        }),
+      },
+    );
+    if (!res.ok) throw await this.errorFor(res);
+    const active = (await res.json()) as Canton3AcsEntry[];
+    const allocationIds = new Set(active
+      .map((entry) => entry.contractEntry?.JsActiveContract?.createdEvent?.contractId)
+      .filter((cid): cid is string => typeof cid === "string"));
+    for (const event of created) {
+      if (allocationIds.has(event.contractId) && !recovered.has(event.contractId)) {
+        recovered.set(event.contractId, event.nodeId);
+      }
+    }
+    return [...recovered.entries()].sort((a, b) => a[1] - b[1]).map(([cid]) => cid);
   }
 
   private firstCreatedTreeEvent(
@@ -471,6 +554,7 @@ interface JsonApiTransactionTreeResponse {
 }
 
 interface JsonApiTransactionTree {
+  offset?: number | string;
   eventsById: Record<string, JsonApiTreeEvent>;
 }
 
@@ -510,6 +594,7 @@ interface Canton3AcsEntry {
   contractEntry?: {
     JsActiveContract?: {
       createdEvent?: Canton3CreatedEvent;
+      synchronizerId?: string;
     };
   };
 }
@@ -517,6 +602,7 @@ interface Canton3AcsEntry {
 interface Canton3CreatedEvent {
   contractId: string;
   templateId: string;
+  createdEventBlob?: string;
   createArgument: Record<string, unknown>;
   signatories: Party[];
   observers: Party[];

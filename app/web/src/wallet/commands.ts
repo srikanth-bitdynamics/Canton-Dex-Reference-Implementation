@@ -292,6 +292,12 @@ function composeAllocationCommands(
     // Real per-leg holdings: a funded leg locks its cids; a receipt leg passes
     // [] and locks nothing. Every funded cid must be an on-ledger Holding id.
     const fundingCids = holdingsBySpec[i] ?? [];
+    if (spec.authorizer.owner !== null && specFundsHoldings(spec) && fundingCids.length === 0) {
+      throw new Error(
+        `allocation ${i + 1}: no input holdings for ${fundingInstrumentId(spec)}. ` +
+          `Resolve spendable holding contracts before requesting wallet approval.`,
+      );
+    }
     fundingCids.forEach(assertRealContractId);
     return {
       ExerciseCommand: {

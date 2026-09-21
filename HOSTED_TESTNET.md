@@ -6,6 +6,11 @@ control their own Ed25519 signing keys. This profile must be enabled explicitly;
 merging the code does not establish that the website has been deployed or that
 live CC/USDCx transactions have passed.
 
+The [audit scope](AUDIT_SCOPE.md) covers the whole reference implementation,
+including every wallet adapter and use across participants. Enabling this
+profile for the public demo does not narrow that scope or establish that other
+wallet/participant combinations have passed validation.
+
 The same contracts support other participants that install and vet the required
 DARs, connect to the synchronizer, and meet the relevant registries' requirements.
 A wallet connection to Loop does not relocate its party to the DEX participant.

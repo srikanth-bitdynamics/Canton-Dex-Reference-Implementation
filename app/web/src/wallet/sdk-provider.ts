@@ -169,10 +169,10 @@ export class SdkProvider implements WalletProvider {
   private accountsListener: ((e: AccountsChangedEvent) => void) | null = null;
 
   private readonly sdk: DappSDK;
-  private readonly gatewayAdapter: RemoteAdapter;
+  private readonly gatewayAdapter: RemoteAdapter | null;
   private readonly gatewayName: string;
-  private readonly gatewayUrl: string;
-  private readonly gatewayProviderId: string;
+  private readonly gatewayUrl: string | undefined;
+  private readonly gatewayProviderId: string | undefined;
   // Set by connect(walletId) so the walletPicker routes to the chosen wallet
   // instead of prompting. Cleared in connect()'s finally.
   private pendingWalletId: string | null = null;
@@ -181,15 +181,15 @@ export class SdkProvider implements WalletProvider {
     private readonly packagePrefix: string,
     options: SdkProviderOptions = {},
   ) {
-    this.gatewayUrl = options.gatewayUrl ?? DEFAULT_WALLET_GATEWAY_URL;
+    this.gatewayUrl = options.gatewayUrl?.trim() || (import.meta.env.DEV ? DEFAULT_WALLET_GATEWAY_URL : undefined);
     this.gatewayName = options.gatewayName ?? DEFAULT_WALLET_GATEWAY_NAME;
-    this.gatewayProviderId = `remote:${this.gatewayUrl}`;
-    this.gatewayAdapter = new RemoteAdapter({
-      providerId: this.gatewayProviderId,
+    this.gatewayProviderId = this.gatewayUrl ? `remote:${this.gatewayUrl}` : undefined;
+    this.gatewayAdapter = this.gatewayUrl ? new RemoteAdapter({
+      providerId: this.gatewayProviderId!,
       name: this.gatewayName,
       rpcUrl: this.gatewayUrl,
       description: "CIP-103 Splice / Amulet wallet gateway",
-    });
+    }) : null;
     this.sdk = new DappSDK({
       walletPicker: (entries: PickerEntry[]) => this.pickWallet(entries),
     } as unknown as ConstructorParameters<typeof DappSDK>[0]);
@@ -197,10 +197,7 @@ export class SdkProvider implements WalletProvider {
 
   private async ensureInit(): Promise<void> {
     if (this.initialised) return;
-    // The configured gateway is the sole `defaultAdapters` entry, replacing the
-    // SDK's baked-in localhost:3030 default. Injected / announced CIP-103
-    // wallets are still discovered independently of `defaultAdapters`.
-    await this.sdk.init({ defaultAdapters: [this.gatewayAdapter] });
+    await this.sdk.init({ defaultAdapters: this.gatewayAdapter ? [this.gatewayAdapter] : [] });
     this.initialised = true;
   }
 
@@ -230,6 +227,7 @@ export class SdkProvider implements WalletProvider {
   /** POST a CIP-103 `status` probe at the gateway to tell "gateway down" apart
    * from other failures. Throws an actionable error when unreachable. */
   private async assertGatewayReachable(): Promise<void> {
+    if (!this.gatewayUrl) throw new Error("No wallet gateway is configured.");
     try {
       const res = await fetch(this.gatewayUrl, {
         method: "POST",
@@ -254,7 +252,7 @@ export class SdkProvider implements WalletProvider {
   async connect(walletId?: string): Promise<WalletAccount> {
     this.setStatus({ kind: "connecting" });
     this.pendingWalletId = walletId ?? null;
-    const targetIsGateway = !walletId || walletId.startsWith("remote:");
+    const targetIsGateway = !!this.gatewayAdapter && (!walletId || walletId === this.gatewayProviderId);
     try {
       await this.ensureInit();
       const conn = await this.sdk.connect();
@@ -290,15 +288,16 @@ export class SdkProvider implements WalletProvider {
 
   /**
    * Enumerate the wallets this provider can reach: the configured CIP-103
-   * gateway (always), plus any injected (`window.canton*`) and announced
+   * gateway when configured, plus any injected (`window.canton*`) and announced
    * (browser-extension) CIP-103 wallets discovered at call time. The gateway
    * row routes exactly (its providerId is our RemoteAdapter's); injected /
    * announced rows are surfaced and best-effort routed (the SDK re-discovers
    * and connects them on pick).
    */
   async listWallets(): Promise<readonly DetectedWallet[]> {
-    const out: DetectedWallet[] = [
-      {
+    const out: DetectedWallet[] = [];
+    if (this.gatewayProviderId) {
+      out.push({
         id: `sdk:${this.gatewayProviderId}`,
         providerId: this.id,
         walletId: this.gatewayProviderId,
@@ -306,8 +305,8 @@ export class SdkProvider implements WalletProvider {
         description: "CIP-103 Splice / Amulet wallet gateway",
         installed: true,
         badge: "Gateway",
-      },
-    ];
+      });
+    }
 
     try {
       for (const inj of discoverInjectedWallets()) {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import type { RequestSwapIntent } from "@/wallet/types";
 
@@ -70,6 +70,8 @@ vi.mock("@/services/recover-allocations", () => ({
 import { SdkProvider } from "@/wallet/sdk-provider";
 import { recoverCreatedAllocationCid } from "@/services/recover-allocations";
 import type { AddLiquidityIntent } from "@/wallet/types";
+
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 const recoverMock = vi.mocked(recoverCreatedAllocationCid);
 
@@ -275,6 +277,7 @@ describe("SdkProvider", () => {
   });
 
   it("listWallets() surfaces the configured gateway as a Gateway row", async () => {
+    vi.stubEnv("DEV", false);
     const provider = new SdkProvider("#canton-dex-trading-v2", {
       gatewayUrl: "http://gw.example/api/v0/dapp",
       gatewayName: "Example gateway",
@@ -290,6 +293,28 @@ describe("SdkProvider", () => {
         installed: true,
       }),
     );
+  });
+
+  it("production discovers and connects browser wallets without adding a localhost gateway", async () => {
+    vi.stubEnv("DEV", false);
+    vi.stubGlobal("canton", { request: vi.fn(), on: vi.fn(), emit: vi.fn(), removeListener: vi.fn() });
+    const provider = new SdkProvider("#canton-dex-trading-v2", { gatewayUrl: " " });
+    const wallets = await provider.listWallets();
+    expect(wallets).toEqual([expect.objectContaining({ walletId: "browser:canton", badge: "Injected" })]);
+    sdk.pickerEntries = [{ providerId: "browser:canton", name: "Browser wallet", type: "injected" }];
+    await provider.connect("browser:canton");
+    expect(sdk.init).toHaveBeenLastCalledWith({ defaultAdapters: [] });
+    expect(provider.getStatus().kind).toBe("connected");
+  });
+
+  it("production does not probe localhost when a browser wallet connection fails", async () => {
+    vi.stubEnv("DEV", false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new SdkProvider("#canton-dex-trading-v2");
+    sdk.connect.mockRejectedValueOnce(new Error("Wallet picker is not open"));
+    await expect(provider.connect()).rejects.toThrow("Wallet picker is not open");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("fails the connect (not silently routes to the gateway) when the picked wallet is gone", async () => {

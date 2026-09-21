@@ -28,7 +28,7 @@ network you deploy.
 
 | Picker integration | Current scope | Enable with |
 |---|---|---|
-| **Canton wallet (dapp SDK / CIP-0103)** | Composes the Daml commands and delegates authorization and submission to a CIP-0103 wallet. The current capability table marks its update-id discovery path DvP-ready. | `VITE_ENABLE_SDK=1`; optionally set `VITE_WALLET_GATEWAY_URL` and `VITE_WALLET_GATEWAY_NAME` |
+| **Canton wallet (dapp SDK / CIP-0103)** | Composes the Daml commands and delegates authorization and submission to a CIP-0103 wallet. The current capability table marks its update-id discovery path DvP-ready. | `VITE_ENABLE_SDK=1` enables browser-wallet discovery. Set `VITE_WALLET_GATEWAY_URL` to add a gateway; production has no default gateway. `VITE_WALLET_GATEWAY_NAME` sets its label. |
 | **PartyLayer** | Opens PartyLayer's configured wallet catalog. Its update-id discovery path is implemented, but deliberately marked **unproven** until the selected wallet and deployment pass the live validator plan. | `VITE_ENABLE_PARTYLAYER=1` plus the PartyLayer variables in `.env.example` |
 | **WalletConnect** | Connects an external wallet through Reown. The current adapter is marked **no DvP** and explicitly rejects LP add/remove, so enable it only for wallet/intent combinations you have validated. | `VITE_WC_PROJECT_ID` and `VITE_CANTON_NETWORK_ID` |
 

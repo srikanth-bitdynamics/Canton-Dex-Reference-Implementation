@@ -1,15 +1,19 @@
 # Hosted testnet profile
 
-The intended public deployment is `https://testnet-dex.bitdynamics.cc`. Its
-users create external parties hosted on the configured DEX participant and
-control their own Ed25519 signing keys. This profile must be enabled explicitly;
-merging the code does not establish that the website has been deployed or that
-live CC/USDCx transactions have passed.
+This optional profile on `main` lets users create external parties hosted on the
+configured DEX participant and control their own Ed25519 signing keys. It must
+be enabled explicitly; merging the code does not establish a live deployment or
+prove CC/USDCx transactions.
 
-The [audit scope](AUDIT_SCOPE.md) covers the whole reference implementation,
-including every wallet adapter and use across participants. Enabling this
-profile for the public demo does not narrow that scope or establish that other
-wallet/participant combinations have passed validation.
+The public demo at `https://testnet-dex.bitdynamics.cc` uses the separate
+`testnet-hosted-party-onboarding` branch with operator-signed demo accounts and
+reference assets. It does not currently run the user-signed profile described
+here.
+
+The [Milestone 4 audit scope](AUDIT_SCOPE.md) covers the reference Daml package.
+This profile's browser signer, backend, wallet integration and deployment are
+outside that engagement. A Daml audit does not establish their security or
+compatibility with other wallet/participant combinations.
 
 The same contracts support other participants that install and vet the required
 DARs, connect to the synchronizer, and meet the relevant registries' requirements.

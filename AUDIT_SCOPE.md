@@ -1,193 +1,140 @@
 # Audit scope
 
-The audit covers the entire first-party reference DEX implementation for users
-across participants and wallet integrations. Review all contracts, services,
-wallet adapters and shared submission paths, regardless of which features are
-enabled on the hosted testnet. The hosted profile is one deployment of this
-code; it does not define or limit the audit boundary.
+## Milestone 4 boundary
 
-The intended design admits users through any wallet that implements the required
-interfaces and operations, with the required participant and registry setup.
-Auditors must assess whether the implementation meets that design and report
-wallet-specific assumptions, participant coupling and unsupported operations as
-gaps. Compatibility is a property to establish with evidence; including an
-adapter in the audit does not certify that every wallet already works.
+The milestone commissions a security audit of the reference Daml package.
+The explicit scope is recorded in the
+[Milestone 4 clarification dated 8 September 2026](https://github.com/canton-foundation/canton-dev-fund/pull/108#issuecomment-5589893920):
 
-This audit targets the source and build inputs identified by the annotated
-`audit-2026-09-20` tag on `main`. The tag identifies a review baseline, not an
-audit result or a production approval. Subsequent changes require a new commit
-and an explicit review delta; the tag must not be moved.
-Scope clarifications after that tag supplement the same code baseline. Supply
-their commit IDs to reviewers alongside the baseline manifest.
+> a single third-party security audit of the reference Daml package
 
-Generate the source and DAR checksums from a clean checkout with:
+That clarification separates the security audit from the maintenance milestone.
+The audit follows a frozen Milestone 3 scope and deployment-critical workflows.
+The original proposal's broader reference-implementation deliverables do not
+make every repository component part of this audit engagement.
+
+The review target is `canton-dex-trading-v2`, built from `trading/daml.yaml`
+(current package version `1.4.0`, Daml SDK `3.5.2`). Review the complete
+first-party Daml package, including its DEX workflows, LP logic, reference
+registry, instrument contracts and shared helpers. Its contract behavior for
+parties on different participants is in scope; this is not a review limited to
+a particular hosted demo or wallet.
+
+## Included code and supporting material
+
+| Material | Audit treatment |
+| --- | --- |
+| All Daml source under `trading/CantonDex/` | Primary review target: every template, interface implementation, choice and helper compiled into the reference package |
+| `Dex/` | Pairs, orders, RFQs, matched trades, pool state, slices, allocation requests, settlement rules and policy receipts |
+| `Lp/`, `Registry/`, `Instrument/`, `Trading/`, `Testing/` | LP issuance/redemption, reference token registry, instrument lifecycle, shared workflow logic and reference implementations included in the package |
+| `trading-tests/` | Supporting Daml tests and fixtures; assess coverage and whether the tests substantiate the package's stated invariants |
+| `trading/daml.yaml`, dependency DARs and build scripts | Reproduce and identify the reviewed artifact and its dependency versions |
+| Architecture, workflow, custody and token-standard documentation | Specifications, assumptions and known limitations supporting the Daml review |
+
+The package boundary, rather than a list of selected templates, defines the
+review target. New Daml modules included in the frozen package are not excluded
+because they are helpers, examples or reference-registry code. Upstream Canton,
+Daml and Splice implementations are dependencies, not separate audit targets;
+review this package's use of their interfaces and its assumptions about them.
+
+## Outside this audit engagement
+
+The following implementations are outside the milestone's Daml-package audit:
+
+- Frontend application and browser UI (`app/web/`).
+- Operator backend and registry discovery client (`services/`).
+- Wallet adapters, browser key storage, session authentication and third-party
+  wallet implementations.
+- Participant infrastructure, server configuration, deployment operations and
+  the live website.
+- The operator-signed demo on `testnet-hosted-party-onboarding`.
+
+These components may be supplied as integration context or used by a test
+harness. Their presence in the repository or in a source-checksum manifest does
+not make them audited. If an off-ledger assumption affects a Daml security
+property, state that assumption and its consequences in the audit report.
+A full application or infrastructure security review would be a separate scope.
+
+## Frozen source and artifact
+
+Use a clean checkout of `main` pinned to a full commit ID for the handoff.
+Record the Daml package ID, DAR checksum, compiler version and dependency pins.
+The existing annotated `audit-2026-09-20` tag identifies an earlier review
+baseline, not an audit result or a production approval. Do not move that tag.
+For a later handoff commit, identify any changes to the Daml source and build
+inputs explicitly; documentation and off-ledger changes must not be mistaken
+for changes to the audited package.
+
+Generate the build evidence and source manifest with:
 
 ```sh
 bash scripts/run-local-daml-tests.sh
 node scripts/audit-manifest.mjs > /tmp/canton-dex-audit-manifest.json
 ```
 
-The manifest records the full source commit, the source tree, tracked-file
-checksums, dependency pins and the built trading DAR. Supply it with the CI
-results and deployment evidence to the reviewers. A moving branch name or a
+The manifest records the full source commit, source tree, tracked-file checksums,
+dependency pins and built trading DAR. It inventories the repository for
+provenance; the audit boundary remains the Daml package defined above. Supply
+Daml test output and relevant CI results alongside it. A moving branch name or
 package name alone does not identify the reviewed release.
 
-## Included components
-
-| Component | Paths | Review focus |
-| --- | --- | --- |
-| DEX and reference token registry | `trading/CantonDex/` | Controllers, visibility, ownership, issuance, settlement, arithmetic and lifecycle rules |
-| Contract tests | `trading-tests/` | Positive and negative proofs; fidelity to the stated invariants |
-| Operator backend | `services/operator-backend/src/` | Caller authorization, command construction, contexts, disclosures, retries, recovery, indexing and persistence |
-| Registry discovery client | `services/registry-client/src/` | Per-admin routing, response validation, authentication and operation-specific contexts |
-| Browser application | `app/web/src/` | Account and network binding, wallet authorization, funding selection, receipts and error recovery |
-| Every wallet adapter and shared wallet code | `app/web/src/wallet/`, `app/web/src/services/` | SDK/CIP-0103, PartyLayer, WalletConnect, hosted signing, capability gates, session binding and recovery; disabled and development adapters included |
-| Configuration and deployment inputs | `.github/workflows/`, `scripts/`, Dockerfiles, Compose files, package locks and Daml manifests | Reproducibility, authority exposure, defaults and dependency selection |
-| Documentation and documentation tooling | `README.md`, `SECURITY.md`, `docs/`, `website/`, this file | Agreement between claims, supported configurations and actual enforcement; build and publishing inputs |
-
-These paths identify review areas, not an allowlist of files. All first-party
-source, tests, build tooling and configuration at the baseline are in scope.
-Feature flags, lack of deployment, incomplete support or known limitations do
-not exclude code from review. Any exclusion must be expressly recorded in the
-audit engagement and final report.
-
-Tests and documentation are evidence and specifications for the review, not
-substitutes for reviewing the executable code. Any new public onboarding or
-submission adapter included in this release is part of the backend and browser
-scope; it cannot be excluded merely because it is enabled only on testnet.
-
-## Required participant and wallet review
-
-| Surface | Required review |
-| --- | --- |
-| Users on the operator's participant | Independent signing authority, caller binding, private reads and separation from operator and registrar rights |
-| Users hosted on other participants | No dependency on local party ownership or operator `CanActAs` rights; correct visibility, disclosure, contexts, package resolution and allocation recovery |
-| Users and registries across participants | Atomic settlement and consistent ownership across CC, USDCx and reference LP operations; private-contract handling and retries |
-| SDK/CIP-0103 and PartyLayer adapters | Account/network selection, transaction construction, wallet response validation, signing, receipt extraction and cancellation/error behavior |
-| WalletConnect adapter | The same authority and response checks, plus explicit treatment of the current lack of LP DvP support |
-| Hosted browser signer | Key storage, topology validation, transaction verification and signing, caller authentication and participant permissions |
-| Disabled, mock and development adapters | Enforced production exclusion and prevention of fallback to operator signing or simulated success |
-| Wallet-independent extension points | Standards-facing interfaces, capability negotiation, and assumptions that would prevent another compatible wallet from using the same DEX contracts and flows |
-
-Review successful and adversarial cases: wrong party or network, insufficient
-authority, missing or unvetted packages, stale or undisclosed contracts, rejected
-approvals, partial allocation authorization, timeouts and duplicate settlement.
-Failures must not silently change the signing party, select another asset,
-bypass authorization or report settlement that did not occur.
-
-The final report must distinguish security findings, unsupported wallet
-operations and missing interoperability evidence. A path marked unproven or
-unsupported remains in scope. A successful run on the hosted participant alone
-does not establish cross-participant or cross-wallet compatibility.
+The public demo uses a separate hosting branch and older package lineage.
+Its deployment and successful transactions do not establish correctness of the
+Daml package handed to the auditors. Evidence must identify the exact package
+and source revision exercised.
 
 ## Contract properties to review
 
+- Signatories, controllers, observers, visibility and delegated authority for
+  every workflow, including transactions involving independently hosted parties.
 - Instrument identity includes both the administering party and textual ID.
 - Allocations are bound to the intended party, asset, settlement and amounts.
 - A caller cannot mint, burn, allocate or release another party's holdings
-  without the required authority.
-- Per-admin settlement batches contain exactly the relevant transfer legs and
+  without the authority required by the contract's stated model.
+- Per-admin settlement batches contain the relevant transfer legs and
   authorizations. Failure of one registry operation rolls back the full Daml
   transaction, including reserve and LP-supply changes.
-- LP issuance matches the accepted deposit and pool share calculation;
-  redemption consumes the required LP holdings and pays the correct reserves.
+- LP issuance matches accepted deposits and pool share calculations; redemption
+  consumes the required LP holdings and pays the correct reserves.
 - Slice backing, aggregate reserves and LP supply remain consistent across
-  add, swap, partial remove, complete remove and retries.
+  add, swap, partial remove, complete remove and repeated settlement attempts.
 - Rounding, dust, slippage, deadlines, cancellation and iterated funding cannot
-  increase an executor's authority beyond the allocation it received.
+  expand an executor's authority beyond the allocation it received.
 - Orders and RFQs retain owner binding, price/quantity constraints and
   protections against duplicate settlement and self-trading where enforced.
+- Token-standard choices receive the required context and authority, with
+  external registry assumptions made explicit at the contract boundary.
 
-## Backend and wallet properties to review
+## Known contract limitations and trust assumptions
 
-- Party IDs are identifiers, not authentication credentials. Party-scoped
-  requests must bind to an authenticated caller or ledger-proven authority.
-- Operator, registrar, participant-administration and trader authority remain
-  separate. Privileged credentials never enter the browser bundle.
-- Contexts and disclosed contracts are resolved for the exact operation and
-  instrument admin. Missing context fails closed.
-- Funding uses real, correctly owned holdings with the intended full
-  instrument identity; another asset with the same textual name cannot fund it.
-- A successful wallet authorization is not reported as successful settlement.
-  Recovery uses the committed update and cannot select unrelated allocations.
-- Retries, timeouts, database restarts and duplicate submissions cannot credit
-  shares twice, repeat payouts or silently forget locked allocations.
-- Public onboarding and submission limits apply before privileged work and
-  survive the documented deployment lifecycle.
-
-## Deployment boundary
-
-The reference contracts do not depend on a particular website or participant
-identifier. A participant executing the relevant contracts must install and vet
-the required release packages and dependencies. Additional participants also
-need compatible Canton/Splice versions, synchronizer connectivity, party
-authorization, registry credentials where applicable and working discovery and
-submission integrations.
-
-The designated testnet deployment hosts its user parties on the operator's
-configured participant. This is a deployment profile, not a contract-level
-restriction on other participants. Connecting a wallet hosted elsewhere does
-not move that wallet's party onto this participant.
-
-CC and USDCx remain administered by Splice/DSO and DA Utilities respectively.
-Installing their packages locally does not make the DEX their issuer. The
-reference LP registry is a separate issuer component using the TSv2 interfaces;
-its ownership by the DEX operator does not make its tokens off-chain balances.
-
-The optional [hosted profile](HOSTED_TESTNET.md) adds browser-generated keys,
-encrypted key backups, strict topology/transaction validation and externally
-signed submission. Its full browser and backend implementation is in scope.
-The retired operator-signed hosted branch and its faucet are not reused.
-Review request authentication, secret isolation, backup loss, browser-origin
-trust, key revocation, resource limits and ambiguous submission outcomes.
-
-## Known limitations
-
-- LP holdings exist on-ledger, but pool reserves are operator-controlled.
+- LP holdings are on-ledger, but pool reserves are operator-controlled.
   Redemption requires the operator and LP registrar. There is no unilateral
   holder emergency withdrawal from reserve slices.
-- Hosted users control external signing keys, but the browser and served
-  frontend are trusted while unlocked. The operator still runs the confirming
-  participant. Lost keys have no operator reset; automatic key rotation and
-  topology-based session revocation are not implemented.
-- Public account creation does not fund the account. Real CC/USDCx acquisition,
-  issuer onboarding, incoming-transfer acceptance and traffic funding remain
-  deployment prerequisites. The embedded adapter is not a general-purpose wallet.
-- A TSv2 interface implementation does not guarantee every wallet supports its
-  concrete package, version or operation. Loop's unvetted LP package is a known
-  integration restriction, not a reason to bypass ledger authorization.
-- The reference registry's credential records are illustrative. Its supplied
-  claim checks are not production credential verification; holder requirements
-  are not enforced as a production credential policy. Use empty requirements
-  for the reference profile.
-- Pool reserve totals remain a serialization point. Separate slices avoid an
-  unbounded allocation list on pool state but do not establish horizontal AMM
-  throughput.
-- Pool state trusts its signing operator; see the documented parallel-state
+- The reference registry's credential records and claim checks are illustrative,
+  not production credential verification. Holder requirements are not enforced
+  as a production credential policy; the reference profile uses empty requirements.
+- Pool reserve totals remain a serialization point. Separate slices do not
+  establish horizontal AMM throughput.
+- Pool state trusts its signing operator. Review the documented parallel-state
   and reconciliation-completeness assumptions.
-- The upgrade check is not evidence of compatibility when no deployed baseline
-  DAR is provided. Existing testnet contracts must match the recorded package
-  lineage and deployment artifact.
+- Daml atomicity applies to final settlement. Separate allocation authorizations
+  can leave funds locked when the overall application workflow is interrupted;
+  review the contract cancellation, expiry and recovery paths.
+- Package vetting, compatible participant versions, registry credentials and
+  off-ledger orchestration remain integration prerequisites. A Daml audit alone
+  does not establish compatibility with every wallet or participant.
+- Upgrade compatibility is not established without an applicable baseline DAR.
+  Existing contracts must match the reviewed package lineage and artifact.
 
-## Evidence boundaries
+## Evidence and report
 
-| Evidence | Establishes | Does not establish |
-| --- | --- | --- |
-| TypeScript tests | Application behavior under the tested dependencies and fixtures | Canton execution or wallet compatibility |
-| Daml Script tests | Contract execution and assertions in the test environment | Public onboarding or independent participant topology |
-| Throwaway Canton proof | Actual JSON Ledger API add/swap/remove execution | Real testnet CC/USDCx or independent user signing |
-| External signing sandbox proof | User-key topology, rejection of unsigned submission, signed order and LP receipt allocation, browser hash validation | Funded live CC/USDCx settlement or another participant |
-| Testnet transaction records | The specific parties, assets, packages and topology exercised | Untested wallets, participants or future versions |
+Daml Script tests and Canton transaction proofs support the review; they do not
+replace it. Distinguish reference-asset tests from real CC/USDCx transactions,
+and single-participant execution from independent-participant evidence. Browser
+and backend test results are supporting integration information, not evidence
+that those implementations received a security audit.
 
-For a claim of live interoperability, retain update IDs and configuration for
-an add/swap/remove cycle against actual testnet CC and USDCx plus the reference
-LP registry. For a claim of independent user control, include user-controlled
-signing. For support across participants, include a second user-hosting
-participant with the required packages vetted. Do not label these checks passed
-until their corresponding evidence exists.
-
-Upstream Canton, Splice, DA Utilities, third-party wallets and their operations
-are external dependencies. Their implementations are outside this repository's
-audit, while the assumptions and integrations this repository makes about them
-are in scope. Traffic fees, external asset availability, validator operations,
-key custody services and package vetting remain deployment responsibilities.
+The audit report or published summary must identify the reviewed commit,
+package, exclusions, assumptions and remaining findings. Record a fix or an
+accepted-risk disposition with rationale for every critical/high finding,
+consistent with the milestone's remediation and maintenance commitments.

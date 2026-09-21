@@ -1,9 +1,24 @@
 # Audit scope
 
+The audit covers the entire first-party reference DEX implementation for users
+across participants and wallet integrations. Review all contracts, services,
+wallet adapters and shared submission paths, regardless of which features are
+enabled on the hosted testnet. The hosted profile is one deployment of this
+code; it does not define or limit the audit boundary.
+
+The intended design admits users through any wallet that implements the required
+interfaces and operations, with the required participant and registry setup.
+Auditors must assess whether the implementation meets that design and report
+wallet-specific assumptions, participant coupling and unsupported operations as
+gaps. Compatibility is a property to establish with evidence; including an
+adapter in the audit does not certify that every wallet already works.
+
 This audit targets the source and build inputs identified by the annotated
 `audit-2026-09-20` tag on `main`. The tag identifies a review baseline, not an
 audit result or a production approval. Subsequent changes require a new commit
 and an explicit review delta; the tag must not be moved.
+Scope clarifications after that tag supplement the same code baseline. Supply
+their commit IDs to reviewers alongside the baseline manifest.
 
 Generate the source and DAR checksums from a clean checkout with:
 
@@ -26,13 +41,44 @@ package name alone does not identify the reviewed release.
 | Operator backend | `services/operator-backend/src/` | Caller authorization, command construction, contexts, disclosures, retries, recovery, indexing and persistence |
 | Registry discovery client | `services/registry-client/src/` | Per-admin routing, response validation, authentication and operation-specific contexts |
 | Browser application | `app/web/src/` | Account and network binding, wallet authorization, funding selection, receipts and error recovery |
+| Every wallet adapter and shared wallet code | `app/web/src/wallet/`, `app/web/src/services/` | SDK/CIP-0103, PartyLayer, WalletConnect, hosted signing, capability gates, session binding and recovery; disabled and development adapters included |
 | Configuration and deployment inputs | `.github/workflows/`, `scripts/`, Dockerfiles, Compose files, package locks and Daml manifests | Reproducibility, authority exposure, defaults and dependency selection |
-| Documentation | `README.md`, `SECURITY.md`, `docs/`, this file | Agreement between claims, supported configurations and actual enforcement |
+| Documentation and documentation tooling | `README.md`, `SECURITY.md`, `docs/`, `website/`, this file | Agreement between claims, supported configurations and actual enforcement; build and publishing inputs |
+
+These paths identify review areas, not an allowlist of files. All first-party
+source, tests, build tooling and configuration at the baseline are in scope.
+Feature flags, lack of deployment, incomplete support or known limitations do
+not exclude code from review. Any exclusion must be expressly recorded in the
+audit engagement and final report.
 
 Tests and documentation are evidence and specifications for the review, not
 substitutes for reviewing the executable code. Any new public onboarding or
 submission adapter included in this release is part of the backend and browser
 scope; it cannot be excluded merely because it is enabled only on testnet.
+
+## Required participant and wallet review
+
+| Surface | Required review |
+| --- | --- |
+| Users on the operator's participant | Independent signing authority, caller binding, private reads and separation from operator and registrar rights |
+| Users hosted on other participants | No dependency on local party ownership or operator `CanActAs` rights; correct visibility, disclosure, contexts, package resolution and allocation recovery |
+| Users and registries across participants | Atomic settlement and consistent ownership across CC, USDCx and reference LP operations; private-contract handling and retries |
+| SDK/CIP-0103 and PartyLayer adapters | Account/network selection, transaction construction, wallet response validation, signing, receipt extraction and cancellation/error behavior |
+| WalletConnect adapter | The same authority and response checks, plus explicit treatment of the current lack of LP DvP support |
+| Hosted browser signer | Key storage, topology validation, transaction verification and signing, caller authentication and participant permissions |
+| Disabled, mock and development adapters | Enforced production exclusion and prevention of fallback to operator signing or simulated success |
+| Wallet-independent extension points | Standards-facing interfaces, capability negotiation, and assumptions that would prevent another compatible wallet from using the same DEX contracts and flows |
+
+Review successful and adversarial cases: wrong party or network, insufficient
+authority, missing or unvetted packages, stale or undisclosed contracts, rejected
+approvals, partial allocation authorization, timeouts and duplicate settlement.
+Failures must not silently change the signing party, select another asset,
+bypass authorization or report settlement that did not occur.
+
+The final report must distinguish security findings, unsupported wallet
+operations and missing interoperability evidence. A path marked unproven or
+unsupported remains in scope. A successful run on the hosted participant alone
+does not establish cross-participant or cross-wallet compatibility.
 
 ## Contract properties to review
 

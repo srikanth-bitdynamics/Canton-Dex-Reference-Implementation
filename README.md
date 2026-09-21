@@ -489,9 +489,10 @@ community expectations.
 
 ## Security
 
-The audit covers the entire reference implementation, including all wallet
-adapters and use across participants. Its review requirements and known
-limitations are in [AUDIT_SCOPE.md](AUDIT_SCOPE.md).
+The Milestone 4 audit covers the reference Daml package. Its contract review
+requirements, supporting evidence, exclusions and known limitations are in
+[AUDIT_SCOPE.md](AUDIT_SCOPE.md). Frontend, backend, wallet integrations and
+deployment infrastructure are outside that audit engagement.
 The optional testnet profile with user-controlled external-party signing is
 documented in [HOSTED_TESTNET.md](HOSTED_TESTNET.md), including its funding,
 wallet, participant and reserve-custody limitations.
